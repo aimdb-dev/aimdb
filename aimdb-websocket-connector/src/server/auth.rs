@@ -2,16 +2,11 @@
 //!
 //! The [`AuthHandler`] trait provides pluggable auth hooks for:
 //!
-//! 1. **Connection upgrade** — `authenticate()`: decide whether to accept the WebSocket
-//!    handshake and assign per-client permissions.
-//! 2. **Topic subscriptions** — `authorize_subscribe()`: gate which topics a client can
-//!    receive data from.
-//! 3. **Inbound writes** — `authorize_write()`: gate which topics a client may write to.
-//! 4. **Historical reads** — `authorize_query()`: gate the `record.query` pattern.
-//! 5. **Introspection** — `authorize_list()`: gate which `record.list` rows a client sees.
-//!
-//! (4) and (5) default to (2), so overriding `authorize_subscribe` governs all
-//! three read paths.
+//! 1. **Connection upgrade** — `authenticate()`: resolve per-client permissions into bitmasks
+//!    which checked for before message broadcasting.
+//!    `authenticate()` does not gate topic subscription, so clients could claim unregistered topics,
+//!    and receive nothing during their lifetime.
+//! 2. **Inbound writes** — `authorize_write()`: gate which topic a client may write to.
 //!
 //! The default implementation ([`NoAuth`]) allows all operations.
 
@@ -22,6 +17,7 @@ use std::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 
+use aimdb_core::remote::QueryRecord;
 use axum::http::HeaderMap;
 
 // ════════════════════════════════════════════════════════════════════
@@ -44,57 +40,141 @@ pub struct ClientInfo {
     pub id: ClientId,
     pub remote_addr: SocketAddr,
     pub permissions: Permissions,
+    /// Bitsets represent accessibility of record at index `i`
+    /// Records maintain the same order as in `AimdDb.inner`
+    pub record_perms: Arc<RecordsBits>,
 }
 
 /// Per-client permission set assigned during authentication.
 ///
-/// Each field is a list of topic *patterns* (supporting `*` and `#` wildcards
+/// Each field is a list of record key *patterns* (supporting `*` and `#` wildcards
 /// as defined by [`aimdb_core::topic_matches`]).
 ///
 /// An empty `Vec` means *"no access"*. Use `["#"]` for unrestricted access.
 #[derive(Debug, Clone, Default)]
 pub struct Permissions {
-    /// Topic patterns the client may subscribe to.
-    pub subscribe_patterns: Vec<String>,
+    /// Record name patterns the client may read from.
+    pub read_patterns: Vec<String>,
     /// Topic patterns the client may write to.
     pub write_patterns: Vec<String>,
 }
 
 impl Permissions {
-    /// Creates a permission set that grants full access to everything.
+    /// Creates a permission set that grants full access to all records.
     pub fn allow_all() -> Self {
         Self {
-            subscribe_patterns: vec!["#".to_string()],
+            read_patterns: vec!["#".to_string()],
             write_patterns: vec!["#".to_string()],
         }
     }
 
-    /// Returns `true` if the client is allowed to subscribe to `topic`.
+    /// Returns `true` if the client is allowed to access to record with `key`.
     ///
-    /// `topic` is the client's requested subscription, which may itself be a
-    /// wildcard — so this asks **pattern containment**
+    /// `key` is a registered record key or a pattern of record key —
+    /// so this asks **pattern containment**
+    /// Currently, the server passes concrete keys to setup permissions bitmasks
+    /// for a client during http upgrade.
     /// ([`pattern_contains`](aimdb_core::pattern_contains)):
     /// does a granted pattern cover the *whole* requested pattern? Plain
     /// [`topic_matches`](aimdb_core::topic_matches) would let a one-level grant
     /// (`sensors.*`) admit an all-levels request (`sensors.#`) by having the
     /// `*` swallow the `#`, silently widening the grant. For a concrete request
-    /// `pattern_contains` collapses to `topic_matches`, so exact subscribes are
+    /// `pattern_contains` collapses to `topic_matches`, so exact permissions are
     /// unaffected.
-    pub fn can_subscribe(&self, topic: &str) -> bool {
-        self.subscribe_patterns
+    pub fn can_read(&self, key: &str) -> bool {
+        self.read_patterns
             .iter()
-            .any(|p| aimdb_core::pattern_contains(p, topic))
+            .any(|p| aimdb_core::pattern_contains(p, key))
     }
 
-    /// Returns `true` if the client is allowed to write to `topic`.
+    /// Returns `true` if the client is allowed to write to a record given with key.
     ///
-    /// Writes target a single concrete record, so `topic` is never a wildcard
+    /// Writes target a single concrete record, so `key` is never a wildcard
     /// here and plain [`topic_matches`](aimdb_core::topic_matches) is the right
-    /// check (a wildcard write topic would resolve to no record downstream).
+    /// check (a wildcard write key would resolve to no record downstream).
     pub fn can_write(&self, topic: &str) -> bool {
         self.write_patterns
             .iter()
             .any(|p| aimdb_core::topic_matches(p, topic))
+    }
+}
+
+/// Bit mask to store records that client has access to.
+///
+/// Index `i` of the mask represent access to record id `i`.
+/// The record having `id` assigned incrementally, according to [`aimdb_core::builder::AimDbInner`]
+/// As the crate does not use any dependency for bit set, we craft one
+/// from vector of `u8` for finer granularity.
+///
+/// `i` is proportionate to bit significance, so a block mask could be easily constructed
+/// using `1u8 << i`
+#[derive(Debug, Clone)]
+pub struct RecordsBits {
+    length: usize,
+    masks: Vec<u8>,
+}
+
+impl RecordsBits {
+    pub fn new(length: usize) -> Self {
+        let blocks = length.div_ceil(8);
+        let masks: Vec<u8> = vec![0u8; blocks];
+        Self { length, masks }
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    /// Simply check for length of the bitmap
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// Create from Permissions
+    pub fn resolve_permissions(records: &[String], permissions: &Permissions) -> Self {
+        let mut records_bits = Self::new(records.len());
+        records.iter().enumerate().for_each(|(i, key)| {
+            if permissions.can_read(key.as_str()) {
+                let _ = records_bits.set(i);
+            };
+        });
+        records_bits
+    }
+
+    /// Checks whether record at `index` is accessible.
+    /// Out-of-index index return `false`, so no panic.
+    pub fn is_allowed(&self, index: usize) -> bool {
+        if index >= self.length {
+            return false;
+        };
+
+        // Bit index inside the block,
+        let block_index = Self::block_index(index);
+        let offset = Self::offset(index);
+        let mask = 1u8 << offset;
+        self.masks[block_index] & mask != 0
+    }
+
+    /// Set record at `index` accessible, out-of-index returns `false`
+    pub fn set(&mut self, index: usize) -> bool {
+        if index >= self.length {
+            return false;
+        };
+
+        // Bit index inside the block,
+        let block_index = Self::block_index(index);
+        let offset = Self::offset(index);
+        let mask = 1u8 << offset;
+        self.masks[block_index] |= mask;
+        true
+    }
+
+    fn block_index(index: usize) -> usize {
+        index / 8
+    }
+
+    fn offset(index: usize) -> usize {
+        index % 8
     }
 }
 
@@ -168,17 +248,6 @@ pub trait AuthHandler: Send + Sync + 'static {
         request: &'a AuthRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>>;
 
-    /// Called before allowing a topic subscription.
-    ///
-    /// The default implementation delegates to [`Permissions::can_subscribe`].
-    fn authorize_subscribe<'a>(
-        &'a self,
-        client: &'a ClientInfo,
-        topic: &'a str,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-        Box::pin(async move { client.permissions.can_subscribe(topic) })
-    }
-
     /// Called before routing an inbound write to a producer.
     ///
     /// The default implementation delegates to [`Permissions::can_write`].
@@ -190,35 +259,17 @@ pub trait AuthHandler: Send + Sync + 'static {
         Box::pin(async move { client.permissions.can_write(topic) })
     }
 
-    /// Called before serving a `record.query` (historical read).
-    ///
-    /// `pattern` is the query's `name`, possibly wildcarded — so this is the
-    /// containment check [`authorize_subscribe`](Self::authorize_subscribe)
-    /// performs, which it delegates to by default. A query omitting `name` asks
-    /// for `"*"`, which a narrower grant does not contain: it fails closed.
-    fn authorize_query<'a>(
+    /// Keeps records having key matched grants
+    /// `records` are from a [QueryHandlerFn](aimdb_core::remote::QueryHandlerFn)
+    fn authorize_query_record<'a>(
         &'a self,
         client: &'a ClientInfo,
-        pattern: &'a str,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-        self.authorize_subscribe(client, pattern)
-    }
-
-    /// Called for each `record.list` row; `false` drops the row and the call
-    /// still succeeds. Defaults to
-    /// [`authorize_subscribe`](Self::authorize_subscribe).
-    ///
-    /// `record_key` is the row's database key, *not* its WebSocket topic. The
-    /// two coincide under `link_to("ws://<key>")`, but a `TopicProvider` that
-    /// computes the topic per value has no single topic to check against —
-    /// grant the record key itself (`["sensors.#", "inject"]`) to keep such a
-    /// record introspectable.
-    fn authorize_list<'a>(
-        &'a self,
-        client: &'a ClientInfo,
-        record_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-        self.authorize_subscribe(client, record_key)
+        records: Vec<QueryRecord>,
+    ) -> Vec<QueryRecord> {
+        records
+            .into_iter()
+            .filter(|r| client.permissions.can_read(&r.topic))
+            .collect()
     }
 }
 
@@ -243,13 +294,52 @@ pub(crate) type DynAuthHandler = Arc<dyn AuthHandler>;
 
 #[cfg(test)]
 mod tests {
-    use super::Permissions;
+    use super::{Permissions, RecordsBits};
 
     fn perms(subscribe: &[&str]) -> Permissions {
         Permissions {
-            subscribe_patterns: subscribe.iter().map(|s| s.to_string()).collect(),
+            read_patterns: subscribe.iter().map(|s| s.to_string()).collect(),
             write_patterns: Vec::new(),
         }
+    }
+
+    #[test]
+    fn records_bits_works() {
+        let mut records_bits = RecordsBits::new(20);
+
+        assert_eq!(records_bits.masks.len(), 3);
+
+        records_bits.set(11);
+        assert!(records_bits.is_allowed(11));
+        assert!(!records_bits.is_allowed(10));
+
+        // Out of index
+        assert!(!records_bits.set(20));
+    }
+
+    #[test]
+    fn records_bits_boundaries() {
+        // Length on a byte boundary: exactly two blocks, no spare one
+        let mut records_bits = RecordsBits::new(16);
+        assert_eq!(records_bits.masks.len(), 2);
+
+        // First and last bit of each block
+        for i in [0, 7, 8, 15] {
+            assert!(records_bits.set(i));
+            assert!(records_bits.is_allowed(i));
+        }
+        assert!(!records_bits.is_allowed(1));
+        assert!(!records_bits.is_allowed(14));
+
+        // `len` is the first out-of-range index, for both set and read
+        assert!(!records_bits.set(16));
+        assert!(!records_bits.is_allowed(16));
+
+        // Zero records: nothing to set or read, no panic
+        let mut empty = RecordsBits::new(0);
+        assert!(empty.masks.is_empty());
+        assert!(!empty.set(0));
+        assert!(!empty.is_allowed(0));
     }
 
     #[test]
@@ -257,9 +347,9 @@ mod tests {
         // A one-level grant must not admit an all-levels request (the `*`-eats-`#`
         // escalation): `sensors.*` covers one level, `sensors.#` covers all.
         let p = perms(&["sensors.*"]);
-        assert!(p.can_subscribe("sensors.temp")); // in scope
-        assert!(!p.can_subscribe("sensors.#")); // escalation — denied
-        assert!(!p.can_subscribe("sensors.temp.vienna")); // deeper — denied
+        assert!(p.can_read("sensors.temp")); // in scope
+        assert!(!p.can_read("sensors.#")); // escalation — denied
+        assert!(!p.can_read("sensors.temp.vienna")); // deeper — denied
     }
 
     #[test]
@@ -268,21 +358,54 @@ mod tests {
         // of the subtree: the `#` used to short-circuit the whole match, so every
         // segment after it was ignored and this grant behaved like `tenant.#`.
         let p = perms(&["tenant.#.secret"]);
-        assert!(p.can_subscribe("tenant.secret"));
-        assert!(p.can_subscribe("tenant.a.b.secret"));
-        assert!(!p.can_subscribe("tenant.public"));
-        assert!(!p.can_subscribe("tenant.a.b.public"));
-        assert!(!p.can_subscribe("tenant.#")); // no escalation to the subtree
+        assert!(p.can_read("tenant.secret"));
+        assert!(p.can_read("tenant.a.b.secret"));
+        assert!(!p.can_read("tenant.public"));
+        assert!(!p.can_read("tenant.a.b.public"));
+        assert!(!p.can_read("tenant.#")); // no escalation to the subtree
     }
 
     #[test]
     fn subscribe_allows_requests_the_grant_actually_covers() {
-        assert!(perms(&["#"]).can_subscribe("sensors.#"));
+        assert!(perms(&["#"]).can_read("sensors.#"));
         let p = perms(&["sensors.#"]);
-        assert!(p.can_subscribe("sensors.#"));
-        assert!(p.can_subscribe("sensors.temp.#"));
-        assert!(p.can_subscribe("sensors.temp"));
+        assert!(p.can_read("sensors.#"));
+        assert!(p.can_read("sensors.temp.#"));
+        assert!(p.can_read("sensors.temp"));
         // Out of the granted subtree stays denied.
-        assert!(!p.can_subscribe("commands.#"));
+        assert!(!p.can_read("commands.#"));
+    }
+
+    #[test]
+    fn permissions_bitmask_from_grant_and_perms() {
+        // Seed permissions
+        let perms = perms(&["home.#", "front.#.test", "garage.#"]);
+        let mut records: Vec<String> = Vec::new();
+        records.extend(
+            [
+                "home.1.1",
+                "back.1",
+                "front.1",
+                "front.2.test",
+                "back.2",
+                "garage.inner.1",
+                "garage.outer.1",
+                "storage.1",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+
+        let record_perms = RecordsBits::resolve_permissions(&records, &perms);
+
+        assert_eq!(record_perms.len(), records.len());
+        assert!(record_perms.is_allowed(0));
+        assert!(!record_perms.is_allowed(1));
+        assert!(!record_perms.is_allowed(2));
+        assert!(record_perms.is_allowed(3));
+        assert!(!record_perms.is_allowed(4));
+        assert!(record_perms.is_allowed(5));
+        assert!(record_perms.is_allowed(6));
+        assert!(!record_perms.is_allowed(7));
     }
 }

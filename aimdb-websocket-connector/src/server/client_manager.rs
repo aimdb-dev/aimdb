@@ -20,6 +20,8 @@ use aimdb_core::{topic_matches, BoxStream, Payload, SubUpdate};
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 
+use crate::server::auth::RecordsBits;
+
 use super::auth::ClientId;
 
 /// One live subscription: a wildcard pattern + the channel feeding its stream.
@@ -34,6 +36,11 @@ struct SubEntry {
     /// this, a drop *here* (upstream of where the pump assigns `seq`) would be
     /// silent, and a slow fan-out consumer would under-report its loss.
     dropped: AtomicU64,
+
+    /// A bit mask encodes what record that the client could read from.
+    /// `SubEntry` is created when a client subscribes to a topic, so it ultimately
+    /// could carry a bit of `ClientInfo`
+    record_perms: Arc<RecordsBits>,
 }
 
 /// Drop guard for SubEntry
@@ -128,7 +135,11 @@ impl ClientManager {
     /// through a guard that the stream owns.
     /// The next matching [`broadcast`](Self::broadcast) keeps trying to lazily prune the entry.
     /// This could serve as a safety net to make sure nothing leaks.
-    pub fn subscribe(&self, pattern: &str) -> (u64, BoxStream<'static, SubUpdate>) {
+    pub fn subscribe(
+        &self,
+        pattern: &str,
+        record_perms: Arc<RecordsBits>,
+    ) -> (u64, BoxStream<'static, SubUpdate>) {
         let id = self.next_sub.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel::<SubUpdate>(self.sub_capacity);
         self.subs.insert(
@@ -137,6 +148,7 @@ impl ClientManager {
                 pattern: pattern.to_string(),
                 tx,
                 dropped: AtomicU64::new(0),
+                record_perms,
             },
         );
         // A drop guard for RAII, thankfully self.subs is already Arc<_>
@@ -160,7 +172,11 @@ impl ClientManager {
     /// A full channel drops the update (slow-client protection) but records it on
     /// the subscription's `dropped` counter, folded into the next delivered
     /// update's `skipped` so the loss still surfaces as a `seq` gap.
-    pub async fn broadcast(&self, topic: &str, payload_bytes: &[u8]) {
+    pub async fn broadcast(&self, topic: &str, record_index: usize, payload_bytes: &[u8]) {
+        // A record could comes with multiple topic, or none
+        // But a client may not have access to some records due to server's authorization process
+        // Broadcasting must check for allowed records of each client
+
         let payload = Payload::from(payload_bytes);
         let tag: Arc<str> = Arc::from(topic);
         let mut dead: Vec<u64> = Vec::new();
@@ -168,6 +184,12 @@ impl ClientManager {
             if !topic_matches(&entry.pattern, topic) {
                 continue;
             }
+
+            // Do not broadcast for non-authorized records
+            if !entry.record_perms.is_allowed(record_index) {
+                continue;
+            }
+
             // Carry any drops accumulated since the last delivered update, so a
             // broadcast-stage loss rides this update's `skipped` into a `seq`
             // gap. Take them now; restore on failure so nothing is lost.
@@ -221,12 +243,20 @@ mod tests {
     use super::*;
     use futures_util::StreamExt;
 
+    /// A simple record permissions that allow client to read record having index 0
+    fn simple_record_perms() -> Arc<RecordsBits> {
+        let mut record_pems = RecordsBits::new(1);
+        let _ = record_pems.set(0);
+        Arc::new(record_pems)
+    }
+
     #[tokio::test]
     async fn broadcast_reaches_matching_subscriptions() {
         let mgr = ClientManager::new(256);
-        let (_id, mut stream) = mgr.subscribe("sensors.#");
+        let record_perms = simple_record_perms();
+        let (_id, mut stream) = mgr.subscribe("sensors.#", record_perms);
 
-        mgr.broadcast("sensors.temp.vienna", b"22.5").await;
+        mgr.broadcast("sensors.temp.vienna", 0, b"22.5").await;
 
         // Delivery is the raw payload tagged with the real topic — even for the
         // wildcard sub; the envelope is the per-connection codec's job.
@@ -239,8 +269,9 @@ mod tests {
     async fn non_matching_topic_is_not_delivered() {
         use futures_util::FutureExt;
         let mgr = ClientManager::new(256);
-        let (_id, mut stream) = mgr.subscribe("commands.#");
-        mgr.broadcast("sensors.temp", b"22.5").await;
+        let record_perms = simple_record_perms();
+        let (_id, mut stream) = mgr.subscribe("commands.#", record_perms);
+        mgr.broadcast("sensors.temp", 0, b"22.5").await;
         // Nothing queued: the next() future is not ready.
         assert!(stream.next().now_or_never().is_none());
     }
@@ -251,11 +282,12 @@ mod tests {
         // dropped, but the loss must ride the next delivered update's `skipped`
         // so it becomes a `seq` gap downstream (not a silent hole).
         let mgr = ClientManager::new(1);
-        let (_id, mut stream) = mgr.subscribe("#");
+        let record_perms = simple_record_perms();
+        let (_id, mut stream) = mgr.subscribe("#", record_perms);
 
-        mgr.broadcast("t", b"1").await; // fills the one slot
-        mgr.broadcast("t", b"2").await; // full → dropped (counter = 1)
-        mgr.broadcast("t", b"3").await; // full → dropped (counter = 2)
+        mgr.broadcast("t", 0, b"1").await; // fills the one slot
+        mgr.broadcast("t", 0, b"2").await; // full → dropped (counter = 1)
+        mgr.broadcast("t", 0, b"3").await; // full → dropped (counter = 2)
 
         // First delivery is the update that got through, lossless.
         let first = stream.next().await.expect("first update");
@@ -264,7 +296,7 @@ mod tests {
 
         // With the slot now free, the next broadcast is delivered and carries the
         // two drops that happened while the channel was full.
-        mgr.broadcast("t", b"4").await;
+        mgr.broadcast("t", 0, b"4").await;
         let second = stream.next().await.expect("second update");
         assert_eq!(&second.data[..], b"4");
         assert_eq!(
@@ -276,8 +308,11 @@ mod tests {
     #[tokio::test]
     async fn fan_out_to_n_subscribers() {
         let mgr = ClientManager::new(256);
-        let mut streams: Vec<_> = (0..5).map(|_| mgr.subscribe("#").1).collect();
-        mgr.broadcast("any/topic", b"\"v\"").await;
+        let record_perms = simple_record_perms();
+        let mut streams: Vec<_> = (0..5)
+            .map(|_| mgr.subscribe("#", record_perms.clone()).1)
+            .collect();
+        mgr.broadcast("any/topic", 0, b"\"v\"").await;
         for s in &mut streams {
             let update = s.next().await.unwrap();
             assert_eq!(update.topic.as_deref(), Some("any/topic"));
@@ -289,6 +324,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_prunes_closed_channel_matched_pattern() {
         let mgr = ClientManager::new(256);
+        let record_perms = simple_record_perms();
         let (tx, rx) = mpsc::channel::<SubUpdate>(256);
         mgr.subs.insert(
             1,
@@ -296,17 +332,18 @@ mod tests {
                 pattern: "dropped_channel".to_string(),
                 tx,
                 dropped: AtomicU64::new(0),
+                record_perms,
             },
         );
         drop(rx);
         assert_eq!(mgr.subscription_count(), 1);
 
         // Non-matching patterns survive the prune
-        mgr.broadcast("false_pattern", b"v").await;
+        mgr.broadcast("false_pattern", 0, b"v").await;
         assert_eq!(mgr.subscription_count(), 1);
 
         // Matched pattern get pruned
-        mgr.broadcast("dropped_channel", b"v").await;
+        mgr.broadcast("dropped_channel", 0, b"v").await;
         assert_eq!(mgr.subscription_count(), 0);
     }
 
@@ -315,8 +352,11 @@ mod tests {
     #[tokio::test]
     async fn broadcast_shares_one_payload_to_all() {
         let mgr = ClientManager::new(256);
-        let mut streams: Vec<_> = (0..8).map(|_| mgr.subscribe("#").1).collect();
-        mgr.broadcast("t", b"123").await;
+        let record_perms = simple_record_perms();
+        let mut streams: Vec<_> = (0..8)
+            .map(|_| mgr.subscribe("#", record_perms.clone()).1)
+            .collect();
+        mgr.broadcast("t", 0, b"123").await;
         let mut updates = Vec::new();
         for s in &mut streams {
             updates.push(s.next().await.unwrap());
@@ -333,7 +373,8 @@ mod tests {
     #[tokio::test]
     async fn subscription_dropped_when_stream_dropped() {
         let mgr = ClientManager::new(256);
-        let (_id, stream) = mgr.subscribe("quiet.topic");
+        let record_perms = simple_record_perms();
+        let (_id, stream) = mgr.subscribe("quiet.topic", record_perms);
 
         // Count before stream dropping
         assert_eq!(mgr.subscription_count(), 1);

@@ -19,8 +19,8 @@ use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 
 use super::client_manager::ClientManager;
 
-/// Shared late-join cache: topic → last serialized bytes.
-pub(crate) type SnapshotCache = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+/// Shared late-join cache: (RecordId, topic)  → last serialized bytes.
+pub(crate) type SnapshotCache = Arc<Mutex<HashMap<(usize, String), Vec<u8>>>>;
 
 /// Outbound sink: feeds each serialized record value into the broadcast bus.
 pub(crate) struct WsBusSink {
@@ -34,21 +34,33 @@ impl Connector for WsBusSink {
     fn publish(
         &self,
         destination: &str,
-        _config: &ConnectorConfig,
+        config: &ConnectorConfig,
         payload: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
         // Own the args so the returned future borrows only `&self` (the trait
         // binds the future's lifetime to the receiver, not the arguments).
         let dest = destination.to_string();
         let bytes = payload.to_vec();
+        let record_index = config.record_index;
         Box::pin(async move {
-            if let Some(map) = &self.snapshot {
-                map.lock().unwrap().insert(dest.clone(), bytes.clone());
-            }
             // The bus carries raw record-value bytes tagged with the topic; the
             // per-connection AimX codec applies the `event` envelope downstream.
-            self.client_mgr.broadcast(&dest, &bytes).await;
-            Ok(())
+            if let Some(index) = record_index {
+                if let Some(map) = &self.snapshot {
+                    map.lock()
+                        .unwrap()
+                        .insert((index, dest.clone()), bytes.clone());
+                }
+                self.client_mgr.broadcast(&dest, index, &bytes).await;
+                Ok(())
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    "WsBusSink.publish for dest {} not fired due to null record_index",
+                    &dest
+                );
+                Err(PublishError::InvalidDestination)
+            }
         })
     }
 }

@@ -125,7 +125,7 @@ pub type WebSocketConnector = server::builder::WebSocketConnectorBuilder;
 
 #[cfg(feature = "server")]
 pub use server::auth::{
-    AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions,
+    AuthError, AuthHandler, AuthRequest, ClientId, ClientInfo, NoAuth, Permissions, RecordsBits,
 };
 #[cfg(feature = "server")]
 pub use server::client_manager::ClientManager;

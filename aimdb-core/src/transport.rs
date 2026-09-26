@@ -33,6 +33,11 @@ pub struct ConnectorConfig {
     /// Protocol-specific options as key-value pairs
     /// Allows custom configuration without polluting the base struct
     pub protocol_options: Vec<(String, String)>,
+
+    /// The index of the record key that is setup together with the outbound route.
+    /// The record key is unique, and its order in `AimDb::inner.storage` is immutable
+    /// so this `record_index` could be used for `O(1)` lookup.
+    pub record_index: Option<usize>,
 }
 
 impl Default for ConnectorConfig {
@@ -40,6 +45,7 @@ impl Default for ConnectorConfig {
         Self {
             timeout_ms: Some(5000),
             protocol_options: Vec::new(),
+            record_index: None,
         }
     }
 }
@@ -51,8 +57,9 @@ impl ConnectorConfig {
     /// per-route configuration through to [`Connector::publish`] without changing
     /// the `publish` signature.
     ///
-    /// Only the protocol-agnostic `timeout_ms` is lifted into the typed field;
-    /// every other key is passed through verbatim in
+    /// Only the protocol-agnostic `timeout_ms` and `record_index` (stamped by
+    /// `AimDb::collect_outbound_routes`; the last occurrence wins) are lifted
+    /// into typed fields; every other key is passed through verbatim in
     /// [`protocol_options`](ConnectorConfig::protocol_options) for the
     /// connector to interpret with its own defaults.
     pub fn from_query(query: &[(String, String)]) -> ConnectorConfig {
@@ -62,6 +69,11 @@ impl ConnectorConfig {
                 "timeout_ms" => {
                     if let Ok(n) = v.parse::<u32>() {
                         cfg.timeout_ms = Some(n);
+                    }
+                }
+                "record_index" => {
+                    if let Ok(i) = v.parse::<usize>() {
+                        cfg.record_index = Some(i);
                     }
                 }
                 _ => cfg.protocol_options.push((k.clone(), v.clone())),

@@ -235,8 +235,8 @@ impl WebSocketConnectorBuilder {
     ///
     /// Without this, `record.query` delegates to the `QueryHandlerFn` that
     /// `aimdb-persistence::with_persistence` registers in Extensions; with
-    /// neither, clients get `not_found`. Either way the requested pattern passes
-    /// [`AuthHandler::authorize_query`] first.
+    /// neither, clients get `not_found`. Rows outside of client's permissions
+    /// and query pattern are not returned.
     pub fn with_query_handler(mut self, handler: impl QueryHandler + 'static) -> Self {
         self.query_handler = Some(Arc::new(handler));
         self
@@ -306,6 +306,15 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             // the dispatch the name lookup to stamp onto core's rows.
             let schema_by_type = Arc::new(self.streamable_registry.schema_by_type_id());
 
+            // List of record key from inner db, order maintained as registration order
+            // This list is immutable after this `build` completed
+            let records: Arc<Vec<String>> = Arc::new(
+                db.list_records()
+                    .iter()
+                    .map(|m| m.record_key.clone())
+                    .collect(),
+            );
+
             // ── Shared dispatch (one Arc<dyn Dispatch> per server) ───
             let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
                 db: db.clone(),
@@ -339,6 +348,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 max_clients: self.max_clients.max(1),
                 max_subs_per_connection: self.max_subs_per_connection.max(1),
                 started_at: Instant::now(),
+                records,
             };
             let additional = self.additional_routes.clone();
             let server_future =
@@ -356,16 +366,17 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
 // Dynamic snapshot provider backed by the shared Mutex<HashMap>
 // ════════════════════════════════════════════════════════════════════
 
+/// Wrapper for SnapshotCache
 struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {
-    fn snapshots(&self, pattern: &str) -> Vec<(String, Vec<u8>)> {
+    fn snapshots(&self, pattern: &str) -> Vec<(usize, String, Vec<u8>)> {
         let Ok(map) = self.0.lock() else {
             return Vec::new();
         };
         map.iter()
-            .filter(|(topic, _)| topic_matches(pattern, topic))
-            .map(|(topic, bytes)| (topic.clone(), bytes.clone()))
+            .filter(|((_, topic), _)| topic_matches(pattern, topic))
+            .map(|((record_id, topic), bytes)| (*record_id, topic.clone(), bytes.clone()))
             .collect()
     }
 }

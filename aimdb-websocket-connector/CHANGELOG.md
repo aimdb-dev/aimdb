@@ -7,6 +7,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking, API)
+
+- **Read grants are record-key patterns, not topic patterns.**
+  `Permissions::subscribe_patterns` is renamed to `read_patterns` and
+  `Permissions::can_subscribe(topic)` is renamed `can_read(key)`. The rename
+  carries a sublte change: the read patterns are now matched against **record
+  keys** — the string passed to `configure::<T>(key, ...)` — rather than against
+  the ws topic registered at `link_to("ws://...")`. `write_patterns` and `can_write` are
+  unchanged and remain **topic**-based. An operator migrating a config
+  replaces each topic grant with the key(s) of the records publishing there;
+  where the two namespaces coincide (`link_to("ws://cfg")` on record `cfg`) no
+  change is needed.
+
+- **`AuthHandler::authorize_subscribe`, `authorize_query` and `authorize_list`
+  are removed.** Authorization is resolved once, at the HTTP upgrade, into a
+  per-client record bitset; the three read paths consult that bitset instead of
+  calling back into the handler. A handler that overrode any of them must move
+  the logic into `authenticate`, which now returns the grants that become the
+  bitset. `authorize_write` is unaffected.
+
+  **Read grants are now fixed for the lifetime of a connection.** Previously a
+  handler overriding these hooks could consult external or mutable state (an ACL
+  service, a revocation list) on every `sub`, `record.query` and `record.list`,
+  and so refuse *new* read requests on an open connection once a grant changed.
+  That per-request re-check is gone: nothing on the read path calls back into
+  the handler after `authenticate`. With the default handler nothing changes —
+  grants were already fixed at the upgrade. Live subscriptions were never
+  re-checked per event, before or after this change, so revoking a client's
+  reads still means closing its connection and letting it re-authenticate.
+
+- **`AuthHandler::authorize_query_record` added**, a `record.query` post-filter
+  receiving the handler's rows and returning the subset the client may read.
+  It defaults to `Permissions::can_read` on each row's key, so implementors need
+  it only to narrow further. This is deliberately pattern-based rather than
+  bitset-based: history outlives configuration, so a query may legitimately name
+  a record the running server no longer registers.
+
+- **`ClientInfo` carries `record_perms: Arc<RecordsBits>`**, the resolved bitset,
+  alongside the `Permissions` it was built from. `RecordsBits` is public
+  (`new`, `set`, `is_allowed`, `len`, `is_empty`,
+  `resolve_permissions`); one bit per registered record, indexed by record id —
+  registration order in the builder, which is also the index
+  `AimDb::list_records` reports.
+
+- **`ClientManager::subscribe` and `broadcast` signatures changed.**
+  `subscribe(pattern)` becomes `subscribe(pattern, Arc<RecordsBits>)` — a
+  subscription now carries the grants it delivers under — and
+  `broadcast(topic, payload)` becomes `broadcast(topic, record_index, payload)`,
+  since the topic alone no longer identifies which record a message came from.
+
+- **`SnapshotProvider::snapshots` returns `Vec<(usize, String, Vec<u8>)>`**
+  instead of `Vec<(String, Vec<u8>)>`; the added `usize` is the record id the
+  cached value belongs to. Two records publishing on one topic now yield two
+  entries rather than one overwriting the other.
+
+- **`ConnectorConfig` carry an additional attr `record_index: Option<usize>`
+  to `WsBusSink`**, so record index could join topic at outbound routes.
+
+### Changed (breaking, wire)
+
+- **A late-join burst may carry several `snap` frames for the same topic** — one
+  per granted record publishing there — where previously a topic produced at
+  most one. Each rides its own `seq`, and `last` still closes the burst, so a
+  client tracking sequence numbers is unaffected; a client indexing snapshots by
+  topic must expect collisions.
+
+- **`record.query`'s `total` is the number of rows returned**, after
+  authorization, rather than the handler's own match count. The trait doc for
+  `QueryHandler::handle_query` is updated to say so: a client is never told how
+  many rows it was not allowed to see. The built-in persistence handler already
+  returned `records.len()`, so only custom handlers change behaviour.
+
+  However, there is a limit to this design: in case `total` < `limit`, it does not mean
+  that there is no more record, but records returned from `QueryHandlerFn` are filtered by grants.
+  A better design is to resolve search name against grants then dedicate the filtering
+  to `QueryHandlerFn` instead of let it stay in `WsSession`.
+
+- **`record.query` distinguishes "not permitted" from "nothing matched".**
+  `denied` is returned only when the client holds no read grants at all;
+  a client with grants that match no stored rows gets `{"records": [], "total": 0}`.
+  Querying a record the server no longer registers is allowed if the grant
+  covers its key, so history survives a record's retirement from the config.
+
+- **Subscribing to a topic no records publish on now succeeds and stays silent**
+  rather than being refused. Topics are not part of the authorization model any
+  more, so the server cannot tell an unregistered topic from one whose records
+  the client may not read. Only a client holding no read grants at all is
+  refused with `denied`; a client whose grants match no registered record
+  subscribes and stays silent, as does any client on a server with no records.
+
+- **`record.list` returns only the records the client may read.** Previously the
+  full database was enumerable by any authenticated client.
+
+### Fixed
+
+- **Late-join snapshots no longer lose a record when two share a topic.** The
+  snapshot cache was keyed by topic, so the most recent publisher overwrote the
+  other's cached value and a late-joining client received only one of them —
+  and, once grants became per record, sometimes neither. It is now keyed by
+  `(record id, topic)`.
+
+### Security
+
+- **A read grant no longer leaks records it does not name.** Grants lived in
+  topic space while records are keyed independently, so a client granted one
+  record's topic received every record publishing there — including records it
+  held no grant for, over `event` frames, late-join snapshots, `record.list` and
+  `record.query` alike. Records whose topic comes from a `TopicProvider` made
+  this unbounded, since the topic is chosen per value at runtime. Grants are now
+  resolved against record keys at the upgrade and enforced at every delivery
+  point, so a record's data reaches only clients granted that record.
+
 ## [0.3.0] - 2026-09-18
 
 ### Added

@@ -64,6 +64,9 @@ struct RecordEntry {
 pub struct AimDbInner {
     /// Record entries, indexed by `RecordId`. Order matches registration
     /// order. Immutable after build().
+    ///
+    /// Per-client authorization is based on index of RecordEntry in `storage`
+    /// Never reorder, remove, or `swap_remove` entries as these could break current logic.
     storages: Vec<RecordEntry>,
 
     /// Name → RecordId lookup (control plane)
@@ -1222,7 +1225,14 @@ impl AimDb {
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
         let mut routes = Vec::new();
 
-        for entry in &self.inner.storages {
+        for (i, entry) in self.inner.storages.iter().enumerate() {
+            // i and RecordId must match
+            debug_assert_eq!(
+                self.inner.by_key.get(&entry.key).map(|id| id.index()),
+                Some(i),
+                "record storage order diverges from RecordId for key {}",
+                entry.key.as_str()
+            );
             let outbound_links = entry.record.outbound_connectors();
 
             for link in outbound_links {
@@ -1231,11 +1241,15 @@ impl AimDb {
                     continue;
                 }
 
+                // config must carry the record index
+                let mut config = link.config.clone();
+                config.push(("record_index".to_string(), i.to_string()));
+
                 // Create the fused source using the stored factory
                 routes.push(OutboundRoute {
                     topic: link.url.resource_id().to_string(),
                     source: link.create_source(self),
-                    config: link.config.clone(),
+                    config,
                 });
             }
         }
