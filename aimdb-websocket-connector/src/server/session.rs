@@ -37,7 +37,8 @@ pub type QueryFuture<'a> =
 pub trait QueryHandler: Send + Sync + 'static {
     /// Execute a history query and return `(records, total_count)`.
     /// `total_count` is limited to the handler's pattern match count,
-    /// and could be further restricted by clients' [`Permissions.read_patterns`].
+    /// and could be further restricted by clients'
+    /// [`Permissions::read_patterns`](crate::Permissions::read_patterns).
     ///
     /// - `pattern` — topic pattern (MQTT wildcards, `"*"` for all)
     /// - `from` / `to` — time range (inclusive; units are the handler's
