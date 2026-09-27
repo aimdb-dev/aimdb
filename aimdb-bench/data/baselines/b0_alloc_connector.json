@@ -1,0 +1,47 @@
+[
+  {
+    "profile": "inbound_route",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "inbound_pump_source_minimal",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 4000,
+    "total_bytes": 50000,
+    "batch_size": 2000,
+    "allocs_per_msg": 2.0,
+    "bytes_per_msg": 25.0
+  },
+  {
+    "profile": "outbound_scratch_static_topic",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 4001,
+    "total_bytes": 146064,
+    "batch_size": 2000,
+    "allocs_per_msg": 2.0005,
+    "bytes_per_msg": 73.032
+  },
+  {
+    "profile": "outbound_scratch_dynamic_topic",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 6000,
+    "total_bytes": 162000,
+    "batch_size": 2000,
+    "allocs_per_msg": 3.0,
+    "bytes_per_msg": 81.0
+  },
+  {
+    "profile": "outbound_owned_static_topic",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 6000,
+    "total_bytes": 162000,
+    "batch_size": 2000,
+    "allocs_per_msg": 3.0,
+    "bytes_per_msg": 81.0
+  }
+]
