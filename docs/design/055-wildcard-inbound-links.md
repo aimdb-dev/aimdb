@@ -1,15 +1,16 @@
 # 055 — Wildcard inbound links
 
-**Status:** 📝 Proposed (revised after review, 2026-09-27)
+**Status:** 📝 Proposed — validated by a spike (§3), 2026-09-27
 
 **Scope:** inbound links whose topic is a pattern: matching in
 `aimdb-core`'s router, the matched topic and captures passed to a
-match-aware deserializer, optional per-link key interning, and the MQTT
-grammar in `aimdb-mqtt-connector`. **Additive:** no existing public signature
-changes; `RuntimeContext` and `IngestFn` are untouched.
+match-aware deserializer, optional per-record key interning surfaced in
+record metadata, a grammar trait implemented by connectors, and the MQTT
+grammar in `aimdb-mqtt-connector`. `RuntimeContext` and `IngestFn` are
+untouched; §5.8 lists the two public structs that gain fields.
 
 **Independent of** [054](./054-zero-alloc-connector-boundary.md). This
-design ships on today's interfaces; §6 describes what changes when 054 lands.
+design ships on today's interfaces; §7 describes what changes when 054 lands.
 
 ---
 
@@ -44,10 +45,12 @@ Two facts make a small change sufficient:
 - G2. Named captures (`{device}`) are available to the deserializer as
   `&str`, together with the full topic.
 - G3. Optionally, a capture becomes a **key**: a small integer assigned the
-  first time a value is seen, with a bounded table per link.
+  first time a value is seen, from a bounded table per record.
 - G4. No change to existing links, routers or connectors that do not use
   patterns.
 - G5. No per-message allocation on pattern routes, and none for a known key.
+- G6. Protocols with different wildcard rules (MQTT, Zenoh) plug in without
+  changing core.
 
 **Non-goals**
 
@@ -57,15 +60,67 @@ Two facts make a small change sufficient:
 - The AimX/WebSocket wildcard grammar over record keys
   (`session/topic_match.rs`). It matches dot-separated record keys, not broker
   topics.
-- Making the match visible to plain `with_deserializer` closures (§4.3).
+- Making the match visible to plain `with_deserializer` closures (§5.5).
+- Releasing or reusing keys. A key lives as long as the process.
+- An index (trie) over pattern routes. Routes are scanned linearly (§5.4).
 
-## 3. User API
+## 3. Evaluation
+
+Before this revision, the design was implemented as a spike on the
+in-tree code: core (`topic_pattern.rs`, router, builder, link builder,
+metadata), both MQTT backends, the `b0_alloc_connector` bench rows and
+end-to-end tests. About 775 changed lines plus 1,250 new ones, most of them
+tests. Everything below was measured on that spike, not estimated.
+
+### 3.1 Results
+
+| Question | Result |
+|---|---|
+| Allocations per message: exact / pattern / known key / new key | **0 / 0 / 0 / 1** (the key name, 24 bytes) |
+| Routing time, 64 other routes, release build | exact 76–83 ns, pattern with key 132–143 ns, no match 41–47 ns |
+| Grammar as a trait (`&'static dyn`) instead of a data struct | same allocations; latency within run-to-run noise |
+| Zenoh-style `a/**/b` (multi-level wildcard mid-pattern) | works through the trait, with a backtracking matcher; not expressible with the data struct |
+| Both MQTT backends against one broker, pattern next to a covered exact link | each subscribes only `parity/+/in`; each record gets the message once; capture and key reach the deserializer |
+| `mountain-mqtt` with `+` in SUBSCRIBE | accepted unchanged |
+| Mosquitto 2.0.18, overlapping subscriptions, one publish | **MQTT 3.1.1 client: 1 copy. MQTT 5 client: 2 copies.** |
+| Key table memory | about 66 bytes per key plus the name; 1,024 keys ≈ 67 KB, 65,535 keys ≈ 4.3 MB |
+| Key table growing lazily instead of reserving capacity | still 1 allocation per new key on average (log₂ n extra in total) |
+| thumbv7em-none-eabihf: core (`alloc`, `connector-session`, `remote`) and the embedded MQTT backend | builds |
+
+### 3.2 What the evaluation changed
+
+1. **The covering set is required, not an optimisation.** The native backend
+   speaks MQTT 3.1.1 and the embedded one MQTT 5, and Mosquitto sends
+   overlapping subscriptions one copy and two copies respectively. Without
+   the covering set (§5.7) the backends would disagree.
+2. **The grammar is a trait.** Zenoh allows `**` anywhere and hides
+   verbatim `@…` chunks from wildcards at any level. A data struct with
+   tokens and a "must be last" rule cannot say that (§5.1).
+3. **Fewer checks run at `build()`.** "Capture shares a level with text"
+   needs the separator, and "multi-level capture must be last" depends on
+   the grammar. Both run when the connector builds (§5.3).
+4. **Hand-written `+`/`#` stay broken on the old path.** Whether `+` is a
+   wildcard depends on the grammar, so `collect_inbound_routes` cannot spot
+   such links. Every in-tree connector moves to `inbound_router` (§5.2).
+5. **Keys are per record.** With per-link tables, two keyed links on one
+   record handed out overlapping `KeyId`s. One table per record fixes that
+   and matches the "array indexed by `KeyId`" guidance (§5.6).
+6. **Key tables grow lazily.** Reserving full capacity cost 67 KB for 1,024
+   keys before any device appeared; lazy growth costs nothing measurable on
+   the per-message path (§5.6).
+7. **Two public structs gain fields** (§5.8), so "additive" needs a caveat.
+8. **Rules the first draft left implicit:** setting both deserializers is an
+   error; a literal topic with a match-aware deserializer takes the pattern
+   path; the dropped counter is `AtomicU32` (thumbv7em has no 64-bit
+   atomics).
+
+## 4. User API
 
 ```rust
 builder.configure::<Reading>("sensors.readings", |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 256 })
        .link_from("mqtt://sensors/{device}/temp")
-       .key("device", 1024)                        // optional (§4.4)
+       .key("device", 1024)                        // optional (§5.6)
        .with_match_deserializer(|ctx, m, bytes| {
            let device = m.get("device").unwrap();   // &str borrowed from the topic
            let key = m.key();                       // Option<KeyId>; Some when .key(..) is set
@@ -75,120 +130,139 @@ builder.configure::<Reading>("sensors.readings", |reg| {
 });
 ```
 
-- `{name}` matches exactly one level. `{name..}` matches the remaining levels
-  (zero or more) and must be last.
+- `{name}` matches exactly one level. `{name..}` matches zero or more
+  levels; where it may stand is the grammar's rule (MQTT: last only).
 - The grammar's own wildcards (`+`, `#` for MQTT) are also accepted as
   unnamed levels, for users who write filters by hand.
 - `with_match_deserializer` is the only way to see the match. A pattern link
   with a plain `with_deserializer(|ctx, bytes|)` still works (every matching
-  message is ingested) but cannot tell publishers apart.
+  message is ingested) but cannot tell publishers apart. Setting both on one
+  link is a configuration error.
 
-## 4. Design
+## 5. Design
 
-### 4.1 Grammar is chosen by the connector
+### 5.1 The grammar is a connector-supplied trait
 
-Wildcard syntax is protocol-specific (MQTT `/` `+` `#`; Zenoh `*` `**`; KNX
-none), and the router is protocol-agnostic. Core defines the grammar as a
-plain data struct; connectors supply a value:
+Wildcard syntax is protocol-specific and the router is protocol-agnostic.
+Core owns one matcher; a grammar only answers questions about single levels:
 
 ```rust
 // aimdb-core
-#[derive(Clone, Copy)]
-pub struct TopicGrammar {
-    pub separator: char,
-    /// The grammar's single-level and multi-level wildcard tokens.
-    pub single: &'static str,
-    pub multi: &'static str,
-    /// Topics that wildcards must not match (MQTT: leading `$`).
-    pub hidden: fn(&str) -> bool,
+pub enum LevelKind { Literal, Single, Multi, Invalid(&'static str) }
+
+pub trait TopicGrammar: Send + Sync {
+    /// `false`: every `{…}` link on this connector is an error.
+    fn supports_patterns(&self) -> bool { true }
+    fn separator(&self) -> char;
+    /// What a hand-written level is (`+` → Single, `a+` → Invalid, …).
+    fn classify(&self, level: &str) -> LevelKind;
+    /// Tokens used to render `{name}` / `{name..}` for the subscription.
+    fn single_token(&self) -> &str;
+    fn multi_token(&self) -> &str;
+    /// Zenoh `a/**/b`: true. MQTT `#`: false (last only).
+    fn multi_anywhere(&self) -> bool { false }
+    /// Whether a wildcard at level `index` may match `level`.
+    /// MQTT: not a leading `$…`. Zenoh: not a verbatim `@…` chunk.
+    fn wildcard_matches(&self, index: usize, level: &str) -> bool { true }
 }
 
-impl TopicGrammar {
-    /// No wildcards: every resource id is literal (today's behaviour).
-    /// A pattern link on an EXACT connector is a configuration error.
-    pub const EXACT: Self = /* … */;
-}
+/// KNX, WebSocket, AimX session connectors: no wildcards.
+pub struct ExactGrammar;
 
+// aimdb-mqtt-connector
+pub struct MqttGrammar;   // '/', "+", "#", `$` hidden at level 0
+```
+
+- Grammars are passed as `&'static dyn TopicGrammar` (unit structs:
+  `&MqttGrammar`). `Router` stays non-generic and the per-match dynamic
+  calls are one `separator()` at compile time and one
+  `wildcard_matches()` per wildcard level; §3.1 shows no measurable cost.
+- Features outside the trait are rejected by `classify` with a reason, e.g.
+  Zenoh's `$*` sub-chunk wildcards. Supporting them later is a trait
+  addition, not a change to the router.
+
+### 5.2 One inbound router per connector
+
+```rust
 impl AimDb {
-    /// The one inbound router for `scheme`: pattern links compiled against
-    /// `grammar`, key tables attached (§4.4). Both subscription and routing
-    /// use this router, so they cannot disagree.
-    pub fn inbound_router(&self, scheme: &str, grammar: TopicGrammar)
+    /// Exact links as `collect_inbound_routes`, plus pattern links compiled
+    /// against `grammar`, with key tables attached.
+    pub fn inbound_router(&self, scheme: &str, grammar: &'static dyn TopicGrammar)
         -> DbResult<Router>;
 }
 
-pub fn pump_source_with(db: &AimDb, scheme: &str, src: impl Source + 'static,
-                        grammar: TopicGrammar) -> DbResult<Vec<BoxFuture>>;
-// pump_source(..) keeps its signature and uses TopicGrammar::EXACT.
+impl Router {
+    /// Subscription filters with any filter covered by another removed.
+    pub fn covering_resource_ids(&self) -> Vec<Arc<str>>;
+}
 
-// aimdb-mqtt-connector
-pub const MQTT_GRAMMAR: TopicGrammar = /* '/', "+", "#", leading '$' hidden */;
+pub fn pump_source_with(db: &AimDb, scheme: &str, src: impl Source + 'static,
+                        grammar: &'static dyn TopicGrammar)
+    -> DbResult<Vec<BoxFuture>>;
+// pump_source(..) keeps its signature and behaviour.
 ```
 
-The struct keeps `Router` non-generic, which is what makes this additive.
-The pattern walk is one function in core, parameterised at runtime by the
-struct's tokens.
+- A connector subscribes and routes with the **same** router, so the two
+  cannot disagree. The spike replaced the separate
+  `RouterBuilder::from_routes(..)` calls in `native.rs` and
+  `embedded/mod.rs::inbound_topics`.
+- **Every in-tree connector moves to `inbound_router`** in the same change:
+  MQTT with `&MqttGrammar`; KNX, the WebSocket server and client, and
+  core's AimX session client (TCP, UDS, serial) with `&ExactGrammar`. Only then is a `{…}` link on those
+  connectors an error instead of a warning, and a hand-written `+` on MQTT
+  starts working.
+- `collect_inbound_routes` keeps its signature for out-of-tree connectors.
+  It returns exact links only and logs a warning for each `{…}` link it
+  skips. A hand-written `+`/`#` link without braces still goes through it
+  as an exact route: it subscribes and never matches, which is today's
+  behaviour.
 
-`collect_inbound_routes` keeps its signature and returns exact links only;
-it logs a warning for each pattern link it skips. Out-of-tree connectors that
-use it keep working for exact links, and in-tree connectors move to
-`inbound_router`.
+### 5.3 Validation
 
-### 4.2 Compilation, validation and matching
+**At `AimDbBuilder::build()`**: the grammar-independent `{…}` syntax.
+Errors name the record key and URL:
 
-Validation happens in two places, because the grammar is only known when the
-connector builds.
-
-**At `AimDbBuilder::build()`** — the `{…}` syntax, which is the same for
-every grammar. Errors name the record key and URL, like other link
-configuration errors:
-
-- a capture sharing a level with text (`sensors/dev-{id}`);
-- a multi-level capture that is not last;
+- unbalanced braces, empty names, names outside `[A-Za-z0-9_]`;
 - two captures with the same name;
 - more than 8 captures;
-- `.key(name, ..)` naming a capture that the pattern does not have, or a
-  capacity outside `1..=65535`.
+- `.key(name, ..)` naming a capture that the pattern does not have, a
+  capacity of 0, or a capacity that differs from another keyed link on the
+  same record (§5.6).
 
-**At connector build** (`inbound_router` / `pump_source_with`, which return
-`DbResult`) — everything that needs the grammar or the connector:
+**At connector build** (`inbound_router` / `pump_source_with`, returning
+`DbResult`): everything that needs the grammar:
 
-- a hand-written multi-level wildcard (`#`) that is not last;
-- any pattern (captures or grammar wildcards) on a connector using
-  `TopicGrammar::EXACT`, e.g. KNX or the WebSocket server;
-- patterns returned by a `TopicResolverFn` (018): the resolved string is
-  compiled and checked exactly like a URL pattern.
+- a capture sharing a level with text (`sensors/dev-{id}`);
+- a multi-level capture or wildcard where the grammar forbids it;
+- a level `classify` rejects (`a+` in MQTT, `$*` in Zenoh);
+- any `{…}` on a connector whose grammar has `supports_patterns() == false`;
+- patterns returned by a `TopicResolverFn` (018), compiled and checked like
+  URL patterns.
 
-Each pattern route is parsed once into levels: `Literal(Arc<str>)`,
-`Capture { name, multi }` or `Wildcard { multi }`.
+### 5.4 Matching
 
-`Router::route` checks exact routes as today, then pattern routes by walking
-`topic.split(separator)` against the compiled levels. Capture positions are
-recorded as byte ranges into the topic in a fixed array; no allocation for
-matching. A topic matching several routes (exact or pattern) is delivered to
-each, as today.
+Each pattern route is compiled once into levels: `Literal`, `Single` or
+`Multi`, each wildcard optionally carrying a capture slot.
 
-`Router::resource_ids()` returns each pattern rendered in the grammar
-(`sensors/{device}/temp` → `sensors/+/temp`).
+`Router::route` checks exact routes as today, then pattern routes in
+registration order. The matcher walks the topic in place, recording capture
+positions as byte ranges in a fixed `[(u16, u16); 8]`. A `Multi` level that
+is last takes the rest in one step; one followed by more levels (Zenoh)
+backtracks over split points. A topic matching several routes is delivered
+to each, as today.
 
-### 4.3 The match reaches the deserializer as a borrow
+Routes are scanned linearly. At 64 routes a pattern route costs about 60 ns
+over an exact one (§3.1). An index can come later if a benchmark asks for it.
 
-`IngestFn` is `Fn(&RuntimeContext, &[u8])` and stays unchanged; exact routes
-keep using it. Pattern routes use a second, internal ingest type, and
-`Route` holds one or the other:
+### 5.5 The match reaches the deserializer as a borrow
+
+Exact routes keep `IngestFn`. Pattern routes use a second ingest type:
 
 ```rust
-// aimdb-core (internal)
-type MatchIngestFn =
+pub type MatchIngestFn =
     Arc<dyn Fn(&RuntimeContext, &TopicMatch<'_>, &[u8]) -> Result<(), String> + Send + Sync>;
 
-// public
-pub struct TopicMatch<'a> {
-    topic: &'a str,
-    spans: [(u16, u16); 8],
-    names: &'a [Arc<str>],    // from the compiled route
-    key: Option<KeyId>,
-}
+pub struct TopicMatch<'a> { /* topic: &'a str, spans, names, key */ }
 
 impl<'a> TopicMatch<'a> {
     pub fn topic(&self) -> &'a str;
@@ -198,76 +272,104 @@ impl<'a> TopicMatch<'a> {
 ```
 
 - `Router::route(&self, topic: &str, ..)` already borrows the topic for the
-  whole call, so the router builds `TopicMatch` on its stack and passes a
-  reference. **No per-message allocation**, and no change to
-  `RuntimeContext`.
-- The match cannot outlive its message: `TopicMatch` borrows the topic, so
-  a closure cannot keep it.
-- `with_match_deserializer(|ctx, m, bytes|)` builds a `MatchIngestFn`;
-  `with_deserializer` on a pattern link builds one that ignores `m`.
+  whole call, so the router builds `TopicMatch` on its stack. No allocation,
+  no change to `RuntimeContext`, and the match cannot outlive its message.
+- `with_match_deserializer` builds a `MatchIngestFn`. A `{…}` link with a
+  plain `with_deserializer` gets one that ignores the match. A **literal**
+  topic with `with_match_deserializer` becomes an all-literal pattern route
+  so the closure still receives the topic.
+- The closure takes `RuntimeContext` by value, like `with_deserializer`.
+  That clones an `Arc` per message (an atomic increment, no allocation).
+  Passing `&RuntimeContext` would be cheaper but is a change for both
+  builders; it belongs in 054's breaking window.
 
-### 4.4 Keys
+### 5.6 Keys
 
 ```rust
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct KeyId(NonZeroU16);   // Option<KeyId> is 2 bytes
+pub struct KeyId(NonZeroU16);   // Option<KeyId> is 2 bytes; .index() is 0-based
 
-.key("device", 1024)            // capture name, capacity 1..=65535 (required)
+.key("device", 1024)            // capture name, capacity 1..=65535
 ```
 
-- **Ownership.** The table belongs to the link and is created at `build()`
-  as an `Arc<KeyTable>`. Every router built from the link holds a clone, so
-  `KeyId`s are the same everywhere, and `db.inbound_key_name` looks there.
-- The table is `HashMap<Box<str>, KeyId>` (hashbrown, created with full
-  capacity) plus `Vec<Box<str>>` for the reverse direction, under one
-  `spin::Mutex`. Both dependencies are already in `aimdb-core`.
-- A value seen for the first time gets the next `KeyId`; storing its name is
-  one allocation, once. Later messages look it up by `&str` without
-  allocating.
-- A `{name..}` capture can be a key; its value is the whole remainder
-  (`site/{loc..}` on `site/a/b/c` → key for `a/b/c`).
-- **When the table is full**, the message is dropped and a per-link counter
-  increases (logged; visible in record metadata with `observability`).
-  Capacity is therefore also an admission limit. A message that reaches the
+- **One table per record.** All keyed links of a record share it, so a
+  `KeyId` names one value per record, and the same device seen through
+  `temp/{dev}` and `hum/{id}` gets the same key. Keyed links on one record
+  must give the same capacity.
+- The table is `HashMap<Arc<str>, KeyId>` (hashbrown) plus
+  `Vec<Arc<str>>` for the reverse direction, under one `spin::Mutex`. Both
+  dependencies are already in `aimdb-core`.
+- **It grows as keys arrive**; capacity is a limit, not a reservation.
+  Memory is about 66 bytes per key plus the name (§3.1).
+- A new value costs one allocation (its name); a known value costs none.
+- A `{name..}` capture can be a key; its value is the whole remainder.
+- **When the table is full**, the message is dropped and the table's
+  `dropped` counter (`AtomicU32`) increases. A message that reaches the
   deserializer of a keyed link always has `m.key() == Some(_)`.
 - Keys are never reused while the process runs.
-- `db.inbound_key_name("sensors.readings", key) -> Option<Arc<str>>` resolves
-  a key for display, AimX and logs.
+- `db.inbound_key_name("sensors.readings", key) -> Option<Arc<str>>`
+  resolves a key for display, AimX and logs.
 
-The lock is taken once per message by the single task that runs routing for
-the connector, so it is uncontended. 054's `InboundDispatch` does not remove
-it by itself; moving the table to `&mut` ownership is a follow-up if
-measurements show the lock.
+**Record metadata.** `RecordMetadata` gains
 
-### 4.5 MQTT specifics
+```rust
+#[serde(default, skip_serializing_if = "Option::is_none")]
+pub inbound_keys: Option<InboundKeysInfo>,
 
-- `MQTT_GRAMMAR` follows MQTT 3.1.1 §4.7: `+` one level, `#` the rest
-  including the parent level (`a/#` matches `a`), topics starting with `$`
-  are not matched by a leading wildcard.
-- Both backends build their subscription list from
-  `db.inbound_router("mqtt", MQTT_GRAMMAR)`, replacing the separate
-  `RouterBuilder::from_routes(..)` calls in `native.rs` and
-  `embedded/mod.rs::inbound_topics`, and switch from `pump_source` to
-  `pump_source_with(.., MQTT_GRAMMAR)`.
-- **Overlapping filters.** Some brokers deliver one copy per matching
-  subscription, so `sensors/{d}/temp` next to `sensors/kitchen/temp` could
-  ingest a message twice. The connector subscribes only the **covering set**:
-  a filter is dropped from the subscription list when another filter matches
-  every topic it matches. The router still fans out locally, so each record
-  receives exactly one copy. Coverage is a level-by-level comparison over the
-  compiled patterns. The subscription QoS of a covering filter is the highest
-  QoS of the filters it covers (both backends subscribe at a fixed QoS 1
-  today, so this only matters once per-link subscribe QoS is honoured).
+pub struct InboundKeysInfo {
+    pub captures: Vec<String>,   // one per keyed link
+    pub capacity: u16,
+    pub assigned: usize,
+    pub dropped: u32,
+}
+```
+
+It is filled on every build, not only with `observability`: a full table
+silently turns away new publishers, so the numbers matter everywhere. The
+field is optional in serde, so older AimX clients keep working. Key names
+are not listed (there can be 65,535); `inbound_key_name` resolves one.
+
+The lock is taken once per keyed message by the single task that routes for
+the connector, so it is uncontended.
+
+### 5.7 MQTT specifics
+
+- `MqttGrammar` follows MQTT 3.1.1 §4.7: `+` one level, `#` the rest
+  including the parent level (`a/#` matches `a`) and only last, a leading
+  wildcard does not match a `$…` topic, and a wildcard must be a whole
+  level.
+- Both backends subscribe `covering_resource_ids()` of
+  `db.inbound_router("mqtt", &MqttGrammar)` and route with
+  `pump_source_with(.., &MqttGrammar)`.
+- **Covering set.** A filter is left out when another matches every topic
+  it matches (`sensors/kitchen/temp` under `sensors/+/temp`; `a/+/b` under
+  `a/#`). Required for backend parity (§3.1). The router still fans each
+  message out to every route. Both backends subscribe at a fixed QoS 1
+  today; once per-link subscribe QoS is honoured, a covering filter takes
+  the highest QoS of the filters it covers.
 - Outbound links reject patterns at `build()`: you cannot publish to a
   filter.
 
-## 5. Guidance for pattern records
+### 5.8 Compatibility
+
+No existing function or type signature changes. Two public structs with
+public fields gain fields, which breaks code that builds them as struct
+literals:
+
+- `InboundConnectorLink` gains `match_ingest_factory` and `key`. It has
+  `InboundConnectorLink::new`, and no in-tree code uses a literal.
+- `RecordMetadata` gains `inbound_keys`. It has `RecordMetadata::new`; the
+  serde form is backward compatible.
+
+Mark both `#[non_exhaustive]` in the same change, so later fields are not
+breaking.
+
+## 6. Guidance for pattern records
 
 A pattern record is one interleaved stream: its latest value is whichever
 publisher sent last. Applications that need per-publisher state keep it
-downstream, for example a transform holding an array indexed by `KeyId`.
-Use `SpmcRing`; `SingleLatest` would drop other publishers' values between
-reads.
+downstream, for example a transform holding an array indexed by
+`KeyId::index()`. Use `SpmcRing`; `SingleLatest` would drop other
+publishers' values between reads.
 
 When the broker binds topics to credentials (e.g. an ACL allowing a client
 to publish only under `sensors/<its-name>/…`), the topic is the
@@ -275,7 +377,10 @@ authenticated part of a message and the payload is the publisher's claim.
 Keep them separate in the record: identity from `m.get(..)`/`m.key()`,
 everything else from the payload.
 
-## 6. Relation to 054
+Watch `inbound_keys.dropped` in record metadata: a non-zero value means
+publishers are being turned away because the key table is full.
+
+## 7. Relation to 054
 
 When 054 lands, `InboundDispatch::dispatch(topic, payload)` borrows the topic
 for the whole ingest call, exactly as `Router::route` does today. Because
@@ -283,72 +388,80 @@ for the whole ingest call, exactly as `Router::route` does today. Because
 
 - `with_match_deserializer`'s closure signature and `TopicMatch<'a>` are
   unchanged.
-- `InboundDispatch::new` gains a grammar argument (or a `with_grammar`
-  variant) and replaces `inbound_router` + `pump_source_with` for migrated
-  connectors.
-- The `TopicGrammar` struct may become a trait for inlining if the
-  054 bench shows the pattern walk.
+- `InboundDispatch::new` takes a `&'static dyn TopicGrammar` and replaces
+  `inbound_router` + `pump_source_with` for migrated connectors.
+- 054's breaking window is where `&RuntimeContext` can replace the by-value
+  context in both deserializer builders (§5.5).
 
-## 7. Alternatives considered
+## 8. Alternatives considered
 
 1. **Reuse `topic_matches` from `session/topic_match.rs`.** Wrong grammar:
    dot-separated with `*` for one level. Translating MQTT filters breaks on
    topics that contain dots.
 2. **MQTT grammar hard-coded in core.** Makes the router protocol-aware; Zenoh
    (053) would add a second hard-coded grammar.
-3. **Change `IngestFn` to take the topic.** Clean, but breaking; 054 is the
+3. **Grammar as a data struct** (separator, tokens, a `hidden` function).
+   Fits MQTT but cannot express Zenoh's mid-pattern `**` or per-level hidden
+   chunks (§3.2). The trait costs nothing measurable.
+4. **Change `IngestFn` to take the topic.** Clean, but breaking; 054 is the
    breaking window that removes the need.
-4. **Records created per new topic at runtime.** Per-publisher buffers and
+5. **Match carried in `RuntimeContext` (`ctx.inbound_match()`).** Reaches
+   plain `with_deserializer` users, but costs one allocation per message,
+   lets the match outlive the message through a cloned context, and breaks
+   when 054 turns the topic into a borrow.
+6. **Records created per new topic at runtime.** Per-publisher buffers and
    AimX addresses, but it is the post-`run()` registration problem, far
    larger than this.
-5. **Positional captures only (`+` → index 0).** Indices shift when a pattern
+7. **Positional captures only (`+` → index 0).** Indices shift when a pattern
    changes; names cost nothing at runtime.
-6. **Match carried in `RuntimeContext` (`ctx.inbound_match()`).** Reaches
-   plain `with_deserializer` users, but the context cannot borrow the topic,
-   so it costs one allocation per message, the match can outlive the message
-   through a cloned context, and it breaks when 054 turns the topic into a
-   borrow. Rejected in review.
-7. **Declaring grammars on the builder** so every check runs at `build()`.
-   Adds a registration step for every connector; connector-build errors are
-   early enough.
-8. **Allowing overlapping subscriptions** and documenting duplicates, or
-   **rejecting overlaps** at build. The first gives records duplicate
-   messages on some brokers; the second rules out a legitimate layout.
-9. **Delivering unkeyed messages when the key table is full.** Keeps
-   messages, but every consumer then has to handle `key() == None` on a
-   keyed link. Capacity as an admission limit is the simpler contract.
+8. **All checks at `build()`** by declaring grammars on the builder. Adds a
+   registration step for every connector; connector-build errors are early
+   enough.
+9. **Subscribing every filter as written.** Duplicates on MQTT 5 but not
+   3.1.1 (§3.1), so the backends would disagree. **Rejecting overlaps**
+   instead rules out a legitimate layout.
+10. **Delivering unkeyed messages when the key table is full.** Every
+    consumer of a keyed link would have to handle `key() == None`.
+11. **One key table per link.** Overlapping `KeyId`s on a record with two
+    keyed links (§3.2).
+12. **Reserving the key table's full capacity.** 67 KB for 1,024 keys up
+    front; lazy growth measured the same per message.
+13. **An index over pattern routes.** Not needed at the measured cost;
+    revisit with a benchmark.
 
-## 8. Open questions
+## 9. Open questions
 
-- **`mountain-mqtt` subscriptions.** Confirm `subscribe_packet` accepts `+`
-  and `#` unchanged.
-- **Broker duplicate behaviour.** The covering set makes it irrelevant for
-  correctness, but record Mosquitto 2.x and EMQX behaviour in the
-  integration test notes so the rationale is checked.
+- **Per-link subscribe QoS.** Both backends subscribe at QoS 1. When
+  per-link QoS is honoured, confirm the covering filter's QoS rule (§5.7) in
+  the parity test.
 
-## 9. Acceptance criteria
+## 10. Acceptance criteria
 
-1. Router unit tests: the MQTT §4.7 cases above, captures at first, middle
-   and last level, `{name..}` matching zero levels, exact and pattern routes
-   on one topic both delivering, `TopicGrammar::EXACT` routers unchanged.
-2. `build()` rejects each `{…}` error in §4.2 with the record key;
-   `inbound_router` rejects each connector-build error in §4.2, including a
-   pattern on an `EXACT` connector and an invalid resolver-returned pattern.
+1. Matcher unit tests: the MQTT §4.7 cases; captures at first, middle and
+   last level; `{name..}` matching zero levels; a Zenoh-style test grammar
+   with `a/**/b`, a mid-pattern `{path..}` and verbatim `@` chunks;
+   `ExactGrammar` routers unchanged.
+2. `build()` rejects each §5.3 build-time error with the record key;
+   `inbound_router` rejects each connector-build error, including a pattern
+   on an `ExactGrammar` connector and an invalid resolver-returned pattern.
 3. Covering-set unit tests: `sensors/+/temp` covers `sensors/kitchen/temp`;
-   `a/#` covers `a` and `a/+/b`; unrelated filters are all kept.
-4. Tokio integration test against a local Mosquitto: two clients publish to
-   `sensors/a/temp` and `sensors/b/temp`; one record receives both; the
-   deserializer sees `device = a` and `b`; distinct `KeyId`s;
-   `db.inbound_key_name` returns the names; a table of capacity 1 drops the
-   second device and counts it. An exact link on `sensors/a/temp` next to the
-   pattern link receives each message once, and the pattern record once.
-5. `b0_alloc_connector` gains `inbound_route_pattern` (0 allocs/msg),
-   `inbound_route_keyed_known` (0 allocs/msg) and `inbound_route_keyed_new`
-   (1 alloc, the key name). Existing rows unchanged.
-6. `weather-station-gamma` and the embedded MQTT demo build for
+   `a/#` covers `a` and `a/+/b`; `a/**/b` covers `a/*/b`; unrelated filters
+   are all kept.
+4. Parity test, both backends against one broker: a pattern link beside a
+   covered exact link subscribes only the covering filter; each record
+   receives the message once; capture and key reach the deserializer.
+5. End-to-end test: two devices on one pattern record get distinct
+   `KeyId`s; `inbound_key_name` resolves them; a table of capacity 2 drops
+   the third device and counts it; two keyed links on one record share keys;
+   `RecordMetadata::inbound_keys` reports captures, capacity, assigned and
+   dropped.
+6. `b0_alloc_connector` gains `inbound_route_pattern` (0 allocs/msg),
+   `inbound_route_keyed_known` (0) and `inbound_route_keyed_new` (1).
+   Existing rows unchanged.
+7. `weather-station-gamma` and the embedded MQTT demo build for
    `thumbv7em-none-eabihf` with no behaviour change.
 
-## 10. References
+## 11. References
 
 - [018 — Dynamic MQTT topics](./018-M7-dynamic-mqtt-topics.md)
 - [052 — Runtime-neutral connectors](./052-runtime-neutral-connectors.md)
@@ -356,3 +469,4 @@ for the whole ingest call, exactly as `Router::route` does today. Because
 - [053 — Zenoh connector](./053-zenoh-connector.md) (a second grammar)
 - [054 — Zero-allocation connector boundary](./054-zero-alloc-connector-boundary.md)
 - [MQTT 3.1.1 §4.7 — Topic names and topic filters](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718106)
+- [Zenoh key expressions](https://github.com/eclipse-zenoh/roadmap/blob/main/rfcs/ALL/Key%20Expressions.md)
