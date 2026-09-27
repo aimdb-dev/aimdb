@@ -62,6 +62,11 @@ harness = false
 name = "b1_b2_remote_json"
 harness = false
 
+# Connector-boundary allocations per message (design 054 baseline).
+[[bench]]
+name = "b0_alloc_connector"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
