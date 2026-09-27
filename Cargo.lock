@@ -79,6 +79,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-cdr"
+version = "0.1.0"
+dependencies = [
+ "hiroz-cdr",
+ "serde",
+]
+
+[[package]]
 name = "aimdb-cli"
 version = "0.7.0"
 dependencies = [
@@ -736,6 +744,26 @@ name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
+
+[[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
 
 [[package]]
 name = "byteorder"
@@ -2336,6 +2364,19 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "hiroz-cdr"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69398421bf7e64822904d8a4744186af65c56fce141756965c86ad27565c2e43"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+ "serde",
+ "thiserror 2.0.17",
+ "zenoh-buffers",
+]
 
 [[package]]
 name = "hkdf"
@@ -5714,6 +5755,24 @@ dependencies = [
  "quote",
  "syn 2.0.108",
  "synstructure",
+]
+
+[[package]]
+name = "zenoh-buffers"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "555a8169c9888fc5571f1b38d2843a63db786621e153abad1b075c40b20e83b4"
+dependencies = [
+ "zenoh-collections",
+]
+
+[[package]]
+name = "zenoh-collections"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c05abd8dcfd2239a8dfb5b79bd4ed85094c6bb6d6b991d3529bff364cc48e29"
+dependencies = [
+ "ahash",
 ]
 
 [[package]]

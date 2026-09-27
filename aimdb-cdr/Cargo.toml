@@ -1,0 +1,25 @@
+[package]
+name = "aimdb-cdr"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "no_std serde encoding for OMG CDR (XCDR1), the ROS 2 wire format"
+keywords = ["cdr", "ros2", "serde", "no-std", "aimdb"]
+categories = ["encoding", "no-std", "embedded"]
+
+[features]
+default = ["alloc"]
+# `to_vec`, owned `String`/`Vec` decoding, and error messages from serde impls.
+alloc = ["serde/alloc"]
+
+[dependencies]
+serde = { version = "1.0", default-features = false }
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# Reference encoder: byte-for-byte oracle for the little-endian output.
+hiroz-cdr = "0.2"
