@@ -191,9 +191,17 @@ impl AimDb {
         -> DbResult<Router>;
 }
 
+#[non_exhaustive]
+pub struct Subscription {
+    pub filter: Arc<str>,
+    /// Config of every link this filter stands for: itself, identical
+    /// topics and the filters it covers (§5.7).
+    pub links: Vec<Arc<[(String, String)]>>,
+}
+
 impl Router {
     /// Subscription filters with any filter covered by another removed.
-    pub fn covering_resource_ids(&self) -> Vec<Arc<str>>;
+    pub fn subscriptions(&self) -> Vec<Subscription>;
 }
 
 pub fn pump_source_with(db: &AimDb, scheme: &str, src: impl Source + 'static,
@@ -206,6 +214,10 @@ pub fn pump_source_with(db: &AimDb, scheme: &str, src: impl Source + 'static,
   cannot disagree. The spike replaced the separate
   `RouterBuilder::from_routes(..)` calls in `native.rs` and
   `embedded/mod.rs::inbound_topics`.
+- The router keeps its grammar (covering needs it, §5.7) and each link's
+  config, so a connector can read per-link subscribe options. Core does not
+  interpret the config. A `Router` built with `Router::new` reports
+  `links: []`; `Route` and `collect_inbound_routes` are unchanged.
 - **Every in-tree connector moves to `inbound_router`** in the same change:
   MQTT with `&MqttGrammar`; KNX, the WebSocket server and client, and
   core's AimX session client (TCP, UDS, serial) with `&ExactGrammar`. Only then is a `{…}` link on those
@@ -236,8 +248,11 @@ Errors name the record key and URL:
 - a multi-level capture or wildcard where the grammar forbids it;
 - a level `classify` rejects (`a+` in MQTT, `$*` in Zenoh);
 - any `{…}` on a connector whose grammar has `supports_patterns() == false`;
-- patterns returned by a `TopicResolverFn` (018), compiled and checked like
-  URL patterns.
+- patterns returned by a `TopicResolverFn` (018). They go through every
+  check in this section, including the `.key(..)` capture check: the router
+  looks up the key's capture slot in the resolved pattern, and a missing
+  capture is an error rather than a keyed link without keys (§5.6). Both
+  paths share one parser for the `{…}` syntax.
 
 ### 5.4 Matching
 
@@ -315,6 +330,7 @@ pub struct KeyId(NonZeroU16);   // Option<KeyId> is 2 bytes; .index() is 0-based
 #[serde(default, skip_serializing_if = "Option::is_none")]
 pub inbound_keys: Option<InboundKeysInfo>,
 
+#[non_exhaustive]
 pub struct InboundKeysInfo {
     pub captures: Vec<String>,   // one per keyed link
     pub capacity: u16,
@@ -337,15 +353,25 @@ the connector, so it is uncontended.
   including the parent level (`a/#` matches `a`) and only last, a leading
   wildcard does not match a `$…` topic, and a wildcard must be a whole
   level.
-- Both backends subscribe `covering_resource_ids()` of
+- Both backends subscribe `subscriptions()` of
   `db.inbound_router("mqtt", &MqttGrammar)` and route with
   `pump_source_with(.., &MqttGrammar)`.
 - **Covering set.** A filter is left out when another matches every topic
   it matches (`sensors/kitchen/temp` under `sensors/+/temp`; `a/+/b` under
   `a/#`). Required for backend parity (§3.1). The router still fans each
-  message out to every route. Both backends subscribe at a fixed QoS 1
-  today; once per-link subscribe QoS is honoured, a covering filter takes
-  the highest QoS of the filters it covers.
+  message out to every route.
+- A wildcard covers a literal level only where `wildcard_matches` allows
+  it. `#` and `+/x` do not cover `$SYS/x`: the broker never delivers `$…`
+  topics to a leading wildcard, so dropping `$SYS/x` would silence that
+  link. `sensors/+` does cover `sensors/$x` (the rule is level 0 only). A
+  wildcard in the covered filter is covered by one at the same level,
+  because `wildcard_matches` does not depend on the wildcard kind.
+- **Subscribe QoS.** Each filter is subscribed at the highest `qos` among
+  its `links` (set by `with_qos`), default 1. A subscriber receives
+  `min(publish, subscribe)` QoS, so every covered link gets at least what
+  it asked for. The embedded backend caps at 1 (mountain-mqtt rejects QoS 2
+  subscriptions) and `warn_unsupported_qos` names each inbound route that
+  asks for 2, once at build.
 - Outbound links reject patterns at `build()`: you cannot publish to a
   filter.
 
@@ -361,7 +387,12 @@ literals:
   serde form is backward compatible.
 
 Mark both `#[non_exhaustive]` in the same change, so later fields are not
-breaking.
+breaking. The attribute itself also breaks struct literals and exhaustive
+destructuring outside the crate, so it ships in the same breaking change as
+the fields. The new `InboundKeysInfo` is `#[non_exhaustive]` from the start.
+
+One behaviour change: inbound `with_qos` takes effect. Both backends ignored
+it and subscribed at QoS 1.
 
 ## 6. Guidance for pattern records
 
@@ -431,9 +462,7 @@ for the whole ingest call, exactly as `Router::route` does today. Because
 
 ## 9. Open questions
 
-- **Per-link subscribe QoS.** Both backends subscribe at QoS 1. When
-  per-link QoS is honoured, confirm the covering filter's QoS rule (§5.7) in
-  the parity test.
+None.
 
 ## 10. Acceptance criteria
 
@@ -443,13 +472,22 @@ for the whole ingest call, exactly as `Router::route` does today. Because
    `ExactGrammar` routers unchanged.
 2. `build()` rejects each §5.3 build-time error with the record key;
    `inbound_router` rejects each connector-build error, including a pattern
-   on an `ExactGrammar` connector and an invalid resolver-returned pattern.
+   on an `ExactGrammar` connector, an invalid resolver-returned pattern, and
+   a resolver-returned pattern without the keyed capture (the error names
+   the record and the resolved topic).
 3. Covering-set unit tests: `sensors/+/temp` covers `sensors/kitchen/temp`;
    `a/#` covers `a` and `a/+/b`; `a/**/b` covers `a/*/b`; unrelated filters
-   are all kept.
+   are all kept. Hidden levels: `#` and `+/x` do not cover `$SYS/x`;
+   `$SYS/#` covers `$SYS/x`; `#` covers `+/x`; `sensors/+` covers
+   `sensors/$x`; with the Zenoh-style grammar, `a/*` does not cover `a/@x`
+   and `a/**` does not cover `a/@x/y`. `subscriptions()` groups each
+   filter's link config.
 4. Parity test, both backends against one broker: a pattern link beside a
    covered exact link subscribes only the covering filter; each record
-   receives the message once; capture and key reach the deserializer.
+   receives the message once; capture and key reach the deserializer. With
+   `with_qos(2)` on the covered link, the native backend subscribes the
+   covering filter at QoS 2 (granted QoS in the `SubAck`) and the embedded
+   backend at QoS 1. Unit test: the highest `qos` wins, the default is 1.
 5. End-to-end test: two devices on one pattern record get distinct
    `KeyId`s; `inbound_key_name` resolves them; a table of capacity 2 drops
    the third device and counts it; two keyed links on one record share keys;
