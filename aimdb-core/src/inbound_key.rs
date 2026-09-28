@@ -83,15 +83,18 @@ impl KeyTable {
         lock(&self.keys).names.get(key.index()).cloned()
     }
 
+    #[cfg(any(test, feature = "remote"))]
     pub(crate) fn capacity(&self) -> u16 {
         self.capacity.get()
     }
 
+    #[cfg(any(test, feature = "remote"))]
     pub(crate) fn assigned(&self) -> usize {
         lock(&self.keys).names.len()
     }
 
     /// Messages turned away because the table was full.
+    #[cfg(any(test, feature = "remote"))]
     pub(crate) fn dropped(&self) -> u32 {
         self.dropped.load(Ordering::Relaxed)
     }

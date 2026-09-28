@@ -101,6 +101,14 @@ impl<'a> TopicPattern<'a> {
         self.topic
     }
 
+    /// Capture names in capture-number order.
+    pub(crate) fn capture_names(&self) -> impl Iterator<Item = &'a str> + '_ {
+        self.parts.iter().filter_map(|p| match p {
+            PatternPart::Capture { name, .. } => Some(*name),
+            PatternPart::Text(_) => None,
+        })
+    }
+
     /// Text and captures; captures are numbered in this order.
     pub fn parts(&self) -> &[PatternPart<'a>] {
         &self.parts
@@ -205,6 +213,85 @@ impl TopicFilter for ExactFilter {
 
     fn matches(&self, topic: &str, _spans: &mut Spans) -> bool {
         topic == &*self.0
+    }
+}
+
+/// A stub grammar for tests of the router and of `inbound_router`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use alloc::string::ToString;
+
+    /// `/`-separated levels; `+` and `{name}` match one level.
+    pub(crate) struct Plus;
+
+    pub(crate) struct PlusFilter {
+        filter: String,
+        /// Per level: `None` for a wildcard.
+        levels: Vec<Option<String>>,
+        /// Per level: capture number.
+        captures: Vec<Option<usize>>,
+    }
+
+    impl TopicGrammar for Plus {
+        fn compile(&self, pattern: &TopicPattern<'_>) -> Result<Box<dyn TopicFilter>, String> {
+            let mut filter = String::new();
+            let mut captures = Vec::new();
+            for part in pattern.parts() {
+                match part {
+                    PatternPart::Text(t) => filter.push_str(t),
+                    PatternPart::Capture { .. } => {
+                        filter.push('+');
+                        captures.push(filter.split('/').count() - 1);
+                    }
+                }
+            }
+            let levels: Vec<Option<String>> = filter
+                .split('/')
+                .map(|l| (l != "+").then(|| l.to_string()))
+                .collect();
+            let captures = (0..levels.len())
+                .map(|i| captures.iter().position(|&c| c == i))
+                .collect();
+            Ok(Box::new(PlusFilter {
+                filter,
+                levels,
+                captures,
+            }))
+        }
+
+        fn covers(&self, a: &str, b: &str) -> bool {
+            a.split('/').count() == b.split('/').count()
+                && a.split('/')
+                    .zip(b.split('/'))
+                    .all(|(x, y)| x == "+" || x == y)
+        }
+    }
+
+    impl TopicFilter for PlusFilter {
+        fn filter(&self) -> &str {
+            &self.filter
+        }
+        fn is_literal(&self) -> bool {
+            self.levels.iter().all(Option::is_some)
+        }
+        fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
+            if topic.split('/').count() != self.levels.len() {
+                return false;
+            }
+            let mut start = 0;
+            for (i, level) in topic.split('/').enumerate() {
+                match &self.levels[i] {
+                    Some(lit) if lit != level => return false,
+                    _ => {}
+                }
+                if let Some(c) = self.captures[i] {
+                    spans[c] = (start as u16, (start + level.len()) as u16);
+                }
+                start += level.len() + 1;
+            }
+            true
+        }
     }
 }
 

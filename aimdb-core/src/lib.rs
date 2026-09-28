@@ -85,8 +85,6 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
-// Used by the router once pattern routes land.
-#[allow(dead_code)]
 mod inbound_key;
 #[cfg(feature = "observability")]
 pub mod profiling;
@@ -142,9 +140,9 @@ pub use remote::topic_leaf;
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    is_wildcard, pattern_contains, pump_sink, pump_source, topic_matches, AuthError, BoxFut,
-    BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener,
-    Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
+    is_wildcard, pattern_contains, pump_sink, pump_source, pump_source_with, topic_matches,
+    AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound,
+    Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
     TransportError, TransportResult,
 };
 

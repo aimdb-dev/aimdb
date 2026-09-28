@@ -230,9 +230,9 @@ impl Router {
     pub fn subscriptions(&self) -> Vec<Arc<str>>;
 }
 
-pub fn pump_source_with(db: &AimDb, scheme: &str, src: impl Source + 'static,
-                        grammar: &'static dyn TopicGrammar)
-    -> DbResult<Vec<BoxFuture>>;
+/// Routes `src` with the router the connector subscribed from.
+pub fn pump_source_with(db: &AimDb, router: Router, src: impl Source + 'static)
+    -> Vec<BoxFuture>;
 // pump_source(..) keeps its signature and behaviour.
 ```
 
@@ -265,8 +265,8 @@ Errors name the record key and URL:
   capacity of 0, or a capacity that differs from another keyed link on the
   same record (§5.6).
 
-**At connector build** (`inbound_router` / `pump_source_with`, returning
-`DbResult`): everything that needs the grammar:
+**At connector build** (`inbound_router`, returning `DbResult`):
+everything that needs the grammar:
 
 - whatever `TopicGrammar::compile` rejects. For MQTT: a capture sharing a
   level with text (`sensors/dev-{id}`), a multi-level capture or `#` that
@@ -375,8 +375,8 @@ the connector, so it is uncontended.
   wildcard does not match a `$…` topic, and a wildcard must be a whole
   level.
 - Both backends subscribe `subscriptions()` of
-  `db.inbound_router("mqtt", &MqttGrammar)` and route with
-  `pump_source_with(.., &MqttGrammar)`.
+  `db.inbound_router("mqtt", &MqttGrammar)` and pass that router to
+  `pump_source_with`.
 - **Covering set.** A filter is left out when another matches every topic
   it matches (`sensors/kitchen/temp` under `sensors/+/temp`; `a/+/b` under
   `a/#`). Required for backend parity (§3.1). The router still fans each

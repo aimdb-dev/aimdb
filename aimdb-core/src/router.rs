@@ -92,12 +92,11 @@ impl CompiledRoute {
             matcher: None,
             names: Box::new([]),
             key: None,
-            ingest: Arc::new(move |ctx, _m, payload| ingest(ctx, payload)),
+            ingest: crate::connector::ignore_match(ingest),
         }
     }
 
     /// A route matching through `filter`.
-    #[allow(dead_code)]
     pub(crate) fn pattern(
         filter: Box<dyn TopicFilter>,
         names: Box<[Box<str>]>,
@@ -143,7 +142,6 @@ impl Router {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn compiled(grammar: &'static dyn TopicGrammar, routes: Vec<CompiledRoute>) -> Self {
         Self { routes, grammar }
     }
@@ -479,81 +477,9 @@ mod tests {
 
     // ---- pattern routes ---------------------------------------------------
 
-    use crate::topic_pattern::{PatternPart, TopicPattern};
+    use crate::topic_pattern::{test_support::Plus, TopicPattern};
     use core::num::NonZeroU16;
     use std::sync::Mutex;
-
-    /// `/`-separated levels; `+` and `{name}` match one level.
-    struct Plus;
-
-    struct PlusFilter {
-        filter: String,
-        /// Per level: `None` for a wildcard.
-        levels: Vec<Option<String>>,
-        /// Per level: capture number.
-        captures: Vec<Option<usize>>,
-    }
-
-    impl TopicGrammar for Plus {
-        fn compile(&self, pattern: &TopicPattern<'_>) -> Result<Box<dyn TopicFilter>, String> {
-            let mut filter = String::new();
-            let mut captures = Vec::new();
-            for part in pattern.parts() {
-                match part {
-                    PatternPart::Text(t) => filter.push_str(t),
-                    PatternPart::Capture { .. } => {
-                        filter.push('+');
-                        captures.push(filter.split('/').count() - 1);
-                    }
-                }
-            }
-            let levels: Vec<Option<String>> = filter
-                .split('/')
-                .map(|l| (l != "+").then(|| l.to_string()))
-                .collect();
-            let captures = (0..levels.len())
-                .map(|i| captures.iter().position(|&c| c == i))
-                .collect();
-            Ok(Box::new(PlusFilter {
-                filter,
-                levels,
-                captures,
-            }))
-        }
-
-        fn covers(&self, a: &str, b: &str) -> bool {
-            a.split('/').count() == b.split('/').count()
-                && a.split('/')
-                    .zip(b.split('/'))
-                    .all(|(x, y)| x == "+" || x == y)
-        }
-    }
-
-    impl TopicFilter for PlusFilter {
-        fn filter(&self) -> &str {
-            &self.filter
-        }
-        fn is_literal(&self) -> bool {
-            self.levels.iter().all(Option::is_some)
-        }
-        fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
-            if topic.split('/').count() != self.levels.len() {
-                return false;
-            }
-            let mut start = 0;
-            for (i, level) in topic.split('/').enumerate() {
-                match &self.levels[i] {
-                    Some(lit) if lit != level => return false,
-                    _ => {}
-                }
-                if let Some(c) = self.captures[i] {
-                    spans[c] = (start as u16, (start + level.len()) as u16);
-                }
-                start += level.len() + 1;
-            }
-            true
-        }
-    }
 
     type Seen = Arc<Mutex<Vec<(String, Vec<Option<String>>, Option<usize>)>>>;
 
@@ -575,14 +501,7 @@ mod tests {
         key: Option<(Arc<KeyTable>, usize)>,
     ) -> CompiledRoute {
         let pattern = TopicPattern::parse(topic).unwrap();
-        let names = pattern
-            .parts()
-            .iter()
-            .filter_map(|p| match p {
-                PatternPart::Capture { name, .. } => Some(Box::from(*name)),
-                PatternPart::Text(_) => None,
-            })
-            .collect();
+        let names = pattern.capture_names().map(Box::from).collect();
         CompiledRoute::pattern(Plus.compile(&pattern).unwrap(), names, key, ingest)
     }
 

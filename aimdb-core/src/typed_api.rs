@@ -1275,10 +1275,7 @@ where
                         "key '{capture}' needs a capacity of at least 1"
                     ));
                 };
-                let has_capture = pattern.parts().iter().any(
-                    |p| matches!(p, crate::PatternPart::Capture { name, .. } if *name == capture),
-                );
-                if !has_capture {
+                if !pattern.capture_names().any(|n| n == capture) {
                     return Err(alloc::format!(
                         "key '{capture}' is not a capture of the topic"
                     ));
@@ -2158,6 +2155,167 @@ mod tests {
         assert_eq!(topic, "cmd/in");
         ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
         assert_eq!(last.load(Ordering::SeqCst), "cmd/in".len() as i32);
+    }
+
+    // ====================================================================
+    // inbound_router: patterns, keys and connector-build errors
+    // ====================================================================
+
+    use crate::topic_pattern::test_support::Plus;
+
+    /// A record `rec.in` whose buffer stores the last value and a count.
+    async fn inbound_db(
+        links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
+    ) -> (crate::AimDb, Arc<AtomicI32>, Arc<AtomicUsize>) {
+        let last = Arc::new(AtomicI32::new(-1));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (buf_last, buf_count) = (last.clone(), count.clone());
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(RecordingBuffer {
+                last: buf_last,
+                count: buf_count,
+            }));
+            links(reg);
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+        (db, last, count)
+    }
+
+    /// The key index, or -1 without a key.
+    fn key_deser(
+        _ctx: &crate::RuntimeContext,
+        m: &crate::TopicMatch<'_>,
+        _bytes: &[u8],
+    ) -> Result<TestRecord, String> {
+        Ok(TestRecord {
+            value: m.key().map_or(-1, |k| k.index() as i32),
+        })
+    }
+
+    #[tokio::test]
+    async fn inbound_router_routes_patterns_with_shared_keys() {
+        let keys: Arc<spin::Mutex<Vec<crate::KeyId>>> = Default::default();
+        let seen = keys.clone();
+        let (db, last, count) = inbound_db(move |reg| {
+            reg.link_from("mqtt://temp/{d}")
+                .key("d", 2)
+                .with_match_deserializer(move |ctx, m, bytes| {
+                    seen.lock().extend(m.key());
+                    key_deser(ctx, m, bytes)
+                })
+                .finish();
+            reg.link_from("mqtt://hum/{id}")
+                .key("id", 2)
+                .with_match_deserializer(key_deser)
+                .finish();
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 100 }))
+                .finish();
+        })
+        .await;
+
+        let router = db.inbound_router("mqtt", &Plus).expect("routes compile");
+        let subscriptions: Vec<String> = router
+            .subscriptions()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(subscriptions, ["cmd/in", "hum/+", "temp/+"]);
+
+        let ctx = db.runtime_ctx();
+        let route = |topic: &str| {
+            router.route(topic, b"", &ctx).unwrap();
+            last.load(Ordering::SeqCst)
+        };
+        assert_eq!(route("temp/a"), 0);
+        assert_eq!(route("hum/b"), 1);
+        assert_eq!(route("hum/a"), 0, "one key table per record");
+        assert_eq!(route("cmd/in"), 100);
+        let produced = count.load(Ordering::SeqCst);
+        route("temp/c");
+        assert_eq!(count.load(Ordering::SeqCst), produced, "full table drops");
+
+        let a = keys.lock()[0];
+        assert_eq!(db.inbound_key_name("rec.in", a).as_deref(), Some("a"));
+        assert_eq!(db.inbound_key_name("other", a), None);
+
+        #[cfg(feature = "remote")]
+        {
+            let records = db.list_records();
+            let info = records[0].inbound_keys.as_ref().expect("keyed record");
+            assert_eq!(info.captures, ["d", "id"]);
+            assert_eq!((info.capacity, info.assigned, info.dropped), (2, 2, 1));
+        }
+    }
+
+    fn config_errors(result: crate::DbResult<crate::Router>) -> Vec<crate::ConfigError> {
+        match result {
+            Err(crate::DbError::InvalidConfiguration { errors }) => errors,
+            Err(e) => panic!("unexpected error {e:?}"),
+            Ok(_) => panic!("expected configuration errors"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_router_rejects_links_it_cannot_compile() {
+        let (db, _, _) = inbound_db(|reg| {
+            reg.link_from("mqtt://s/{d}/t")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+            reg.link_from("mqtt://r/one")
+                .with_topic_resolver(|| Some("r/{d".into()))
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+            reg.link_from("mqtt://k/{d}")
+                .key("d", 4)
+                .with_topic_resolver(|| Some("k/{x}".into()))
+                .with_match_deserializer(key_deser)
+                .finish();
+        })
+        .await;
+
+        let errors = config_errors(db.inbound_router("mqtt", &Plus));
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|e| e.record_key == "rec.in"));
+        assert!(errors[0].message.contains("unbalanced '{' in 'r/{d'"));
+        assert!(errors[1]
+            .message
+            .contains("key 'd' is not a capture of 'k/{x}'"));
+
+        let errors = config_errors(db.inbound_router("mqtt", &crate::ExactGrammar));
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors[0]
+            .message
+            .contains("does not support topic patterns"));
+    }
+
+    #[cfg(feature = "connector-session")]
+    #[tokio::test]
+    async fn pump_source_with_routes_through_the_given_router() {
+        struct Once(Option<(String, crate::Payload)>);
+        impl crate::Source for Once {
+            fn next(&mut self) -> crate::BoxFut<'_, Option<(String, crate::Payload)>> {
+                let next = self.0.take();
+                Box::pin(async move { next })
+            }
+        }
+
+        let (db, last, _) = inbound_db(|reg| {
+            reg.link_from("mqtt://temp/{d}")
+                .key("d", 2)
+                .with_match_deserializer(key_deser)
+                .finish();
+        })
+        .await;
+        let router = db.inbound_router("mqtt", &Plus).unwrap();
+        let source = Once(Some(("temp/a".into(), Arc::from(&b"x"[..]))));
+        for pump in crate::pump_source_with(&db, router, source) {
+            pump.await;
+        }
+        assert_eq!(last.load(Ordering::SeqCst), 0);
     }
 
     // ====================================================================

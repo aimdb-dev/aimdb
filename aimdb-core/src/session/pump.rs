@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use super::Source;
 use crate::builder::{AimDb, BoxFuture};
-use crate::router::RouterBuilder;
+use crate::router::{Router, RouterBuilder};
 use crate::transport::{Connector, ConnectorConfig};
 
 /// Outbound pump: one publisher future per outbound route on `scheme`.
@@ -138,9 +138,19 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
 ///
 /// [`Router`]: crate::router::Router
 /// [`Router::route`]: crate::router::Router::route
-pub fn pump_source(db: &AimDb, scheme: &str, mut src: impl Source + 'static) -> Vec<BoxFuture> {
+pub fn pump_source(db: &AimDb, scheme: &str, src: impl Source + 'static) -> Vec<BoxFuture> {
     let routes = db.collect_inbound_routes(scheme);
-    let router = Arc::new(RouterBuilder::from_routes(routes).build());
+    pump_source_with(db, RouterBuilder::from_routes(routes).build(), src)
+}
+
+/// Like [`pump_source`], routing with `router`, typically from
+/// [`AimDb::inbound_router`], whose subscriptions the connector made.
+pub fn pump_source_with(
+    db: &AimDb,
+    router: Router,
+    mut src: impl Source + 'static,
+) -> Vec<BoxFuture> {
+    let router = Arc::new(router);
     let ctx = db.runtime_ctx();
 
     vec![Box::pin(async move {

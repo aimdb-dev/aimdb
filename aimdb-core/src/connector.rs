@@ -535,6 +535,11 @@ pub type IngestFactoryFn = Arc<dyn Fn(&AimDb) -> IngestFn + Send + Sync>;
 /// Like [`IngestFactoryFn`], for links set with `with_match_deserializer`.
 pub type MatchIngestFactoryFn = Arc<dyn Fn(&AimDb) -> MatchIngestFn + Send + Sync>;
 
+/// Runs a plain ingest where a [`MatchIngestFn`] is expected.
+pub(crate) fn ignore_match(ingest: IngestFn) -> MatchIngestFn {
+    Arc::new(move |ctx, _m, payload| ingest(ctx, payload))
+}
+
 /// Runs a match-aware ingest where only an [`IngestFn`] fits: every message
 /// is on `topic`, with no captures and no key.
 pub(crate) fn match_as_ingest(ingest: MatchIngestFn, topic: Arc<str>) -> IngestFn {
