@@ -340,8 +340,8 @@ pub struct KeyId(NonZeroU16);   // Option<KeyId> is 2 bytes; .index() is 0-based
   `temp/{dev}` and `hum/{id}` gets the same key. Keyed links on one record
   must give the same capacity.
 - The table is `HashMap<Arc<str>, KeyId>` (hashbrown) plus
-  `Vec<Arc<str>>` for the reverse direction, under one `spin::Mutex`. Both
-  dependencies are already in `aimdb-core`.
+  `Vec<Arc<str>>` for the reverse direction, under one mutex (`std` or
+  `spin`, as elsewhere in `aimdb-core`).
 - **It grows as keys arrive**; capacity is a limit, not a reservation.
   Memory is about 66 bytes per key plus the name (§3.1).
 - A new value costs one allocation (its name); a known value costs none.

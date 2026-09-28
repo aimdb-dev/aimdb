@@ -85,6 +85,9 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
+// Used by the router once pattern routes land.
+#[allow(dead_code)]
+mod inbound_key;
 #[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
@@ -173,6 +176,9 @@ pub use topic_pattern::{
     ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicPattern,
     MAX_CAPTURES,
 };
+
+// Keys assigned to capture values of keyed inbound links
+pub use inbound_key::KeyId;
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};
