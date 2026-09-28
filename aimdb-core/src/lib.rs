@@ -162,7 +162,7 @@ pub use profiling::{
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
-pub use connector::{IngestFactoryFn, IngestFn, MatchIngestFn};
+pub use connector::{IngestFactoryFn, IngestFn, MatchIngestFactoryFn, MatchIngestFn};
 pub use connector::{
     SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,
     SourceFactoryFn,

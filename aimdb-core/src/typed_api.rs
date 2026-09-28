@@ -755,6 +755,8 @@ where
             url: url.to_string(),
             config: Vec::new(),
             context_deserializer: None,
+            match_deserializer: None,
+            key: None,
             topic_resolver: None,
         }
     }
@@ -903,6 +905,15 @@ where
         let url_string = url.to_string();
         let scheme = url.scheme().to_string();
 
+        if crate::TopicPattern::parse(url.resource_id()).is_ok_and(|p| p.has_captures()) {
+            self.registrar.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(self.url),
+                "Outbound links cannot use topic patterns",
+            ));
+            return self.registrar;
+        }
+
         // Adapt the stored serializer to the fused calling convention. Stays
         // typed: fused with the consumer below, no `Box<dyn Any>` per message
         //.
@@ -1021,12 +1032,83 @@ where
 // InboundConnectorBuilder - Fluent inbound connector configuration
 // ============================================================================
 
+/// The producer an inbound ingest factory writes to. Factories run during
+/// build() after every record is registered and validated, so a failed lookup
+/// is an aimdb bug, not a user mistake.
+#[allow(
+    clippy::panic,
+    reason = "the factory returns no Result and this lookup was validated at build() time"
+)]
+fn inbound_producer<T>(db: &AimDb, record_key: &str) -> Producer<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    let typed_rec = db
+        .inner()
+        .get_typed_record_by_key::<T>(record_key)
+        .unwrap_or_else(|e| {
+            panic!(
+                "ingest factory: record '{record_key}' lookup failed ({e:?}) — \
+                 this is a bug in aimdb-core"
+            )
+        });
+    Producer::<T>::new(typed_rec.writer_handle())
+}
+
+/// Fused ingest factory: resolves the typed producer once at route-collection
+/// time; per message the returned closure runs deserialize + produce with no
+/// erasure crossing.
+fn plain_ingest_factory<T>(
+    record_key: String,
+    deser: TypedContextDeserializerFn<T>,
+) -> crate::connector::IngestFactoryFn
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    Arc::new(move |db: &AimDb| {
+        let producer = inbound_producer::<T>(db, &record_key);
+        let deser = deser.clone();
+        Arc::new(move |ctx: &crate::RuntimeContext, payload: &[u8]| {
+            producer.produce(deser(ctx.clone(), payload)?);
+            Ok(())
+        }) as crate::connector::IngestFn
+    })
+}
+
+/// Like [`plain_ingest_factory`], for `with_match_deserializer`.
+fn match_ingest_factory<T>(
+    record_key: String,
+    deser: TypedMatchDeserializerFn<T>,
+) -> crate::connector::MatchIngestFactoryFn
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    Arc::new(move |db: &AimDb| {
+        let producer = inbound_producer::<T>(db, &record_key);
+        let deser = deser.clone();
+        Arc::new(
+            move |ctx: &crate::RuntimeContext, m: &crate::TopicMatch<'_>, payload: &[u8]| {
+                producer.produce(deser(ctx, m, payload)?);
+                Ok(())
+            },
+        ) as crate::connector::MatchIngestFn
+    })
+}
+
 /// Type alias for typed context-aware deserializer callbacks
 ///
 /// Stays typed until `finish()` fuses it with the producer — no per-message
 /// erasure.
 type TypedContextDeserializerFn<T> =
     Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
+
+/// Like [`TypedContextDeserializerFn`], also receiving the topic match.
+type TypedMatchDeserializerFn<T> = Arc<
+    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Builder for configuring inbound connector links (External → AimDB)
 ///
@@ -1037,6 +1119,8 @@ pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Cl
     url: String,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
+    match_deserializer: Option<TypedMatchDeserializerFn<T>>,
+    key: Option<(String, u16)>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
@@ -1061,6 +1145,28 @@ where
         F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
         self.context_deserializer = Some(Arc::new(f));
+        self
+    }
+
+    /// Like [`with_deserializer`](Self::with_deserializer), also receiving the
+    /// topic the message arrived on, its captures and its key. The context is
+    /// borrowed, so no reference count changes per message.
+    pub fn with_match_deserializer<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.match_deserializer = Some(Arc::new(f));
+        self
+    }
+
+    /// Assigns each value of capture `name` a [`KeyId`](crate::KeyId), up to
+    /// `capacity` values per record. Messages with a value beyond that are
+    /// dropped.
+    pub fn key(mut self, name: &str, capacity: u16) -> Self {
+        self.key = Some((name.to_string(), capacity));
         self
     }
 
@@ -1108,104 +1214,106 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
-    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{InboundConnectorLink, LinkAddress};
-        use crate::error::ConfigError;
+    pub fn finish(mut self) -> &'r mut RecordRegistrar<'a, T> {
+        match self.link() {
+            Ok(link) => self.registrar.rec.add_inbound_connector(link),
+            Err(message) => {
+                let key = self.registrar.record_key.clone();
+                let error = crate::error::ConfigError::new(key, Some(self.url), message);
+                self.registrar.rec.push_config_error(error);
+            }
+        }
+        self.registrar
+    }
 
+    /// The link `finish()` registers, or why it is rejected.
+    ///
+    /// The buffer requirement and mutual exclusion with local producers
+    /// (.source()/.transform()) are validated by `build()`: `.buffer()` may
+    /// legitimately be called after `.link_from()`.
+    fn link(&mut self) -> Result<crate::connector::InboundConnectorLink, String> {
+        use crate::connector::{InboundConnectorLink, LinkAddress};
+
+        let url = LinkAddress::parse(&self.url).map_err(|_| "Invalid connector URL")?;
         let record_key = self.registrar.record_key.clone();
 
-        let Ok(url) = LinkAddress::parse(&self.url) else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Invalid connector URL",
-            ));
-            return self.registrar;
+        let (ingest_factory, match_ingest_factory) = match (
+            self.context_deserializer.take(),
+            self.match_deserializer.take(),
+        ) {
+            (Some(deser), None) => (plain_ingest_factory(record_key, deser), None),
+            (None, Some(deser)) => {
+                let factory = match_ingest_factory(record_key, deser);
+                let topic: Arc<str> = url.resource_id().into();
+                let inner = factory.clone();
+                let plain: crate::connector::IngestFactoryFn = Arc::new(move |db: &AimDb| {
+                    crate::connector::match_as_ingest(inner(db), topic.clone())
+                });
+                (plain, Some(factory))
+            }
+            (Some(_), Some(_)) => {
+                return Err(
+                    "Set either .with_deserializer() or .with_match_deserializer(), not both"
+                        .into(),
+                )
+            }
+            (None, None) => {
+                return Err("Inbound connector requires a deserializer. Call \
+                                .with_deserializer() or .with_match_deserializer()"
+                    .into())
+            }
         };
 
-        let scheme = url.scheme().to_string();
+        // The `{…}` syntax; the connector checks the rest.
+        let pattern = crate::TopicPattern::parse(url.resource_id()).map_err(|e| e.to_string())?;
 
-        // NOTE: the buffer requirement is validated by `build()`, not here —
-        // `.buffer()` may legitimately be called after `.link_from()`.
-
-        // Mutual exclusion with local producers (.source()/.transform()) is
-        // validated once, in build(), where the record key is known.
-
-        // Adapt the stored deserializer to the fused calling convention. Stays
-        // typed: fused with the producer below, no `Box<dyn Any>` per message
-        //.
-        type UnifiedDeserializeFn<T> =
-            Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync>;
-        let deserialize: UnifiedDeserializeFn<T> = if let Some(deser) = self.context_deserializer {
-            Arc::new(move |ctx, bytes| deser(ctx.clone(), bytes))
-        } else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Inbound connector requires a deserializer. Call .with_deserializer()",
-            ));
-            return self.registrar;
+        let key = match self.key.take() {
+            None => None,
+            Some((capture, capacity)) => {
+                let Some(capacity) = core::num::NonZeroU16::new(capacity) else {
+                    return Err(alloc::format!(
+                        "key '{capture}' needs a capacity of at least 1"
+                    ));
+                };
+                let has_capture = pattern.parts().iter().any(
+                    |p| matches!(p, crate::PatternPart::Capture { name, .. } if *name == capture),
+                );
+                if !has_capture {
+                    return Err(alloc::format!(
+                        "key '{capture}' is not a capture of the topic"
+                    ));
+                }
+                let links = self.registrar.rec.inbound_connectors();
+                if let Some((_, other)) = links.iter().find_map(|l| l.key.as_ref()) {
+                    if *other != capacity {
+                        return Err(alloc::format!(
+                            "key '{capture}' has capacity {capacity}, another keyed link of \
+                             this record has {other}"
+                        ));
+                    }
+                }
+                Some((capture, capacity))
+            }
         };
 
-        // Validation: Connector builder must be registered
-        let has_connector = self
+        let scheme = url.scheme();
+        if !self
             .registrar
             .connector_builders
             .iter()
-            .any(|b| b.scheme() == scheme);
-
-        if !has_connector {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                alloc::format!(
-                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
-                ),
+            .any(|b| b.scheme() == scheme)
+        {
+            return Err(alloc::format!(
+                "No connector registered for scheme '{scheme}'. Register via .with_connector()"
             ));
-            return self.registrar;
         }
 
-        // Fused ingest factory that captures type T and record key: resolves
-        // the typed producer once at route-collection time; per message the
-        // returned IngestFn runs deserialize + produce with no erasure
-        // crossing. The factory runs during build() after every record is
-        // registered and validated, so failures here are aimdb bugs, not
-        // user mistakes.
-        #[allow(
-            clippy::panic,
-            reason = "the factory returns no Result and these lookups were validated at build() time"
-        )]
-        let ingest_factory: crate::connector::IngestFactoryFn = {
-            let record_key = self.registrar.record_key.clone();
-            Arc::new(move |db: &AimDb| {
-                let typed_rec = db
-                    .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "ingest factory: record '{record_key}' lookup failed ({e:?}) — \
-                             this is a bug in aimdb-core"
-                        )
-                    });
-                let producer = Producer::<T>::new(typed_rec.writer_handle());
-                let deserialize = deserialize.clone();
-                Arc::new(move |ctx: &crate::RuntimeContext, payload: &[u8]| {
-                    producer.produce(deserialize(ctx, payload)?);
-                    Ok(())
-                }) as crate::connector::IngestFn
-            })
-        };
-
-        // Create inbound connector link
         let mut link = InboundConnectorLink::new(url, ingest_factory);
-        link.config = self.config;
-
-        // Wire through the topic resolver
-        link.topic_resolver = self.topic_resolver;
-
-        // Add to record
-        self.registrar.rec.add_inbound_connector(link);
-        self.registrar
+        link.config = core::mem::take(&mut self.config);
+        link.match_ingest_factory = match_ingest_factory;
+        link.key = key;
+        link.topic_resolver = self.topic_resolver.take();
+        Ok(link)
     }
 }
 
@@ -1372,6 +1480,145 @@ mod tests {
             .contains("Inbound connector requires a deserializer"));
         assert_eq!(errors[0].record_key, "test::Record");
         assert_eq!(errors[0].url.as_deref(), Some("mqtt://broker/topic"));
+    }
+
+    // ====================================================================
+    // Topic patterns and keys on inbound links
+    // ====================================================================
+
+    /// Runs `configure` against a fresh registrar with an `mqtt` connector
+    /// and returns the record's links and recorded errors.
+    fn register(
+        configure: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>),
+    ) -> (
+        Vec<crate::connector::InboundConnectorLink>,
+        Vec<crate::error::ConfigError>,
+    ) {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        configure(&mut make_registrar(&mut rec, &builders, &extensions));
+        (rec.inbound_connectors().to_vec(), drain_errors(&mut rec))
+    }
+
+    fn match_deser(
+        _ctx: &crate::RuntimeContext,
+        m: &crate::TopicMatch<'_>,
+        _bytes: &[u8],
+    ) -> Result<TestRecord, String> {
+        Ok(TestRecord {
+            value: m.topic().len() as i32,
+        })
+    }
+
+    #[test]
+    fn inbound_finish_registers_match_link_with_key() {
+        let (links, errors) = register(|reg| {
+            reg.link_from("mqtt://s/{device}/t")
+                .key("device", 16)
+                .with_match_deserializer(match_deser)
+                .finish();
+        });
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(links[0].match_ingest_factory.is_some());
+        let (capture, capacity) = links[0].key.clone().unwrap();
+        assert_eq!((capture.as_str(), capacity.get()), ("device", 16));
+    }
+
+    #[test]
+    fn inbound_finish_rejects_both_deserializers() {
+        let (links, errors) = register(|reg| {
+            reg.link_from("mqtt://s/{device}/t")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_match_deserializer(match_deser)
+                .finish();
+        });
+        assert!(links.is_empty());
+        assert!(errors[0].message.contains("not both"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn inbound_finish_rejects_invalid_pattern_syntax() {
+        for topic in [
+            "s/{d",
+            "s/{}",
+            "s/{d-1}",
+            "{d}/{d}",
+            "{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}",
+        ] {
+            let url = alloc::format!("mqtt://{topic}");
+            let (links, errors) = register(|reg| {
+                reg.link_from(&url)
+                    .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                    .finish();
+            });
+            assert!(links.is_empty(), "{topic}");
+            assert_eq!(errors.len(), 1, "{topic}");
+            assert_eq!(errors[0].record_key, "test::Record");
+            assert_eq!(errors[0].url.as_deref(), Some(url.as_str()));
+        }
+    }
+
+    #[test]
+    fn inbound_finish_rejects_bad_keys() {
+        for (topic, key, capacity, needle) in [
+            ("s/{d}/t", "device", 4, "not a capture"),
+            ("s/{d}/t", "d", 0, "at least 1"),
+        ] {
+            let (links, errors) = register(|reg| {
+                reg.link_from(&alloc::format!("mqtt://{topic}"))
+                    .key(key, capacity)
+                    .with_match_deserializer(match_deser)
+                    .finish();
+            });
+            assert!(links.is_empty());
+            assert!(errors[0].message.contains(needle), "{:?}", errors[0]);
+        }
+    }
+
+    #[test]
+    fn keyed_links_of_one_record_share_a_capacity() {
+        let (links, errors) = register(|reg| {
+            reg.link_from("mqtt://temp/{d}")
+                .key("d", 8)
+                .with_match_deserializer(match_deser)
+                .finish();
+            reg.link_from("mqtt://hum/{id}")
+                .key("id", 8)
+                .with_match_deserializer(match_deser)
+                .finish();
+            reg.link_from("mqtt://co2/{id}")
+                .key("id", 16)
+                .with_match_deserializer(match_deser)
+                .finish();
+        });
+        assert_eq!(links.len(), 2);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("has 8"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn outbound_finish_rejects_patterns() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_to("mqtt://out/{device}")
+            .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .finish();
+
+        assert!(rec.outbound_connectors().is_empty());
+        let errors = drain_errors(&mut rec);
+        assert!(errors[0].message.contains("cannot use topic patterns"));
     }
 
     // ====================================================================
@@ -1878,6 +2125,39 @@ mod tests {
         let (_, ingest) = &routes[0];
         ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
         assert_eq!(last.load(Ordering::SeqCst), 7);
+    }
+
+    /// The pre-pattern route API skips `{…}` links and gives a literal-topic
+    /// match link its topic.
+    #[tokio::test]
+    async fn collect_inbound_routes_skips_patterns_and_passes_literal_topics() {
+        let last = Arc::new(AtomicI32::new(-1));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (buf_last, buf_count) = (last.clone(), count.clone());
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(RecordingBuffer {
+                last: buf_last,
+                count: buf_count,
+            }));
+            reg.link_from("mqtt://s/{d}/t")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+            reg.link_from("mqtt://cmd/in")
+                .with_match_deserializer(match_deser)
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let routes = db.collect_inbound_routes("mqtt");
+        assert_eq!(routes.len(), 1);
+        let (topic, ingest) = &routes[0];
+        assert_eq!(topic, "cmd/in");
+        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
+        assert_eq!(last.load(Ordering::SeqCst), "cmd/in".len() as i32);
     }
 
     // ====================================================================

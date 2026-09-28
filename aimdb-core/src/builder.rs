@@ -1173,7 +1173,8 @@ impl AimDb {
     /// Vector of tuples: (topic, ingest)
     ///
     /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
-    /// otherwise the static topic from the URL is used.
+    /// otherwise the static topic from the URL is used. Links whose topic has
+    /// `{…}` captures are skipped with a warning.
     pub fn collect_inbound_routes(
         &self,
         scheme: &str,
@@ -1192,8 +1193,22 @@ impl AimDb {
                 // Resolve topic: dynamic (from resolver) or static (from URL)
                 let topic = link.resolve_topic();
 
+                if crate::TopicPattern::parse(&topic).is_ok_and(|p| p.has_captures()) {
+                    log_warn!(
+                        "Skipping inbound link '{}': this connector does not support topic patterns",
+                        topic
+                    );
+                    continue;
+                }
+
                 // Create the fused ingest callback using the stored factory
-                routes.push((topic, link.create_ingest(self)));
+                let ingest = match &link.match_ingest_factory {
+                    Some(factory) => {
+                        crate::connector::match_as_ingest(factory(self), topic.as_str().into())
+                    }
+                    None => link.create_ingest(self),
+                };
+                routes.push((topic, ingest));
             }
         }
 

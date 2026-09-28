@@ -314,10 +314,10 @@ impl<'a> TopicMatch<'a> {
   plain `with_deserializer` gets one that ignores the match. A **literal**
   topic with `with_match_deserializer` becomes an all-literal pattern route
   so the closure still receives the topic.
-- The closure takes `RuntimeContext` by value, like `with_deserializer`.
-  That clones an `Arc` per message (an atomic increment, no allocation).
-  Passing `&RuntimeContext` would be cheaper but is a change for both
-  builders; it belongs in 054's breaking window.
+- The closure borrows the context (`&RuntimeContext`), so no reference
+  count changes per message. `with_deserializer` takes it by value and
+  clones an `Arc` per message; moving it to a borrow is a breaking change
+  for a later release.
 
 ### 5.6 Keys
 
@@ -436,8 +436,8 @@ for the whole ingest call, exactly as `Router::route` does today. Because
   unchanged.
 - `InboundDispatch::new` takes a `&'static dyn TopicGrammar` and replaces
   `inbound_router` + `pump_source_with` for migrated connectors.
-- 054's breaking window is where `&RuntimeContext` can replace the by-value
-  context in both deserializer builders (§5.5).
+- 054 does not change `with_deserializer`; its by-value context stays until
+  a later breaking release (§5.5).
 
 ## 8. Alternatives considered
 

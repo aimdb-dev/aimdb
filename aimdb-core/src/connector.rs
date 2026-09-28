@@ -532,6 +532,22 @@ pub type MatchIngestFn = Arc<
 /// Available in both `std` and `no_std + alloc` environments.
 pub type IngestFactoryFn = Arc<dyn Fn(&AimDb) -> IngestFn + Send + Sync>;
 
+/// Like [`IngestFactoryFn`], for links set with `with_match_deserializer`.
+pub type MatchIngestFactoryFn = Arc<dyn Fn(&AimDb) -> MatchIngestFn + Send + Sync>;
+
+/// Runs a match-aware ingest where only an [`IngestFn`] fits: every message
+/// is on `topic`, with no captures and no key.
+pub(crate) fn match_as_ingest(ingest: MatchIngestFn, topic: Arc<str>) -> IngestFn {
+    static NO_SPANS: crate::Spans = [(0, 0); crate::MAX_CAPTURES];
+    Arc::new(move |ctx, payload| {
+        ingest(
+            ctx,
+            &crate::TopicMatch::new(&topic, &[], &NO_SPANS, None),
+            payload,
+        )
+    })
+}
+
 /// Topic resolver function for inbound connections (late-binding)
 ///
 /// Called once at connector startup to resolve the subscription topic.
@@ -556,6 +572,7 @@ pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// factory captures the type T at creation time, allowing type-safe
 /// deserialize+produce later without needing PhantomData or type parameters.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct InboundConnectorLink {
     /// Parsed link address (`scheme://resource`)
     pub url: LinkAddress,
@@ -574,6 +591,13 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     pub ingest_factory: IngestFactoryFn,
 
+    /// Set by `with_match_deserializer`; `ingest_factory` then passes the
+    /// URL topic as the match.
+    pub match_ingest_factory: Option<MatchIngestFactoryFn>,
+
+    /// Set by `.key(..)`: the keyed capture and the key table's capacity.
+    pub key: Option<(String, core::num::NonZeroU16)>,
+
     /// Optional dynamic topic resolver (late-binding)
     ///
     /// Called once at connector startup to determine the subscription topic.
@@ -590,6 +614,11 @@ impl Debug for InboundConnectorLink {
             .field("config", &self.config)
             .field("ingest_factory", &"<factory>")
             .field(
+                "match_ingest_factory",
+                &self.match_ingest_factory.as_ref().map(|_| "<factory>"),
+            )
+            .field("key", &self.key)
+            .field(
                 "topic_resolver",
                 &self.topic_resolver.as_ref().map(|_| "<function>"),
             )
@@ -604,6 +633,8 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             ingest_factory,
+            match_ingest_factory: None,
+            key: None,
             topic_resolver: None,
         }
     }
