@@ -7,7 +7,7 @@
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{log_debug, log_error, log_info};
-use aimdb_core::{pump_sink, pump_source, BoxFut, ExactGrammar, Payload, Source};
+use aimdb_core::{pump_sink, pump_source, BoxFut, Payload, Source};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
 use std::pin::Pin;
@@ -27,7 +27,7 @@ pub(crate) fn build<'a>(
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
     Box::pin(async move {
         // One router both subscribes (here) and routes (`pump_source`).
-        let router = db.inbound_router("mqtt", &ExactGrammar)?;
+        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
         let topics = router.subscriptions();
 
         log_info!("MQTT subscribing to {} topics", topics.len());

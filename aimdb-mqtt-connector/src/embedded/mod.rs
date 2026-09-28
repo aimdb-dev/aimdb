@@ -204,7 +204,7 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let router = db.inbound_router("mqtt", &aimdb_core::ExactGrammar)?;
+        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
         let topics = inbound_topics(&router);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
@@ -245,7 +245,7 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let router = db.inbound_router("mqtt", &aimdb_core::ExactGrammar)?;
+        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
         let topics = inbound_topics(&router);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
