@@ -1,12 +1,13 @@
 # 055 — Wildcard inbound links
 
-**Status:** 📝 Proposed — validated by a spike (§3), 2026-09-27
+**Status:** 📝 Proposed — validated by a spike (§3), 2026-09-27; matching
+moved into connectors (§3.3), 2026-09-28
 
 **Scope:** inbound links whose topic is a pattern: matching in
 `aimdb-core`'s router, the matched topic and captures passed to a
 match-aware deserializer, optional per-record key interning surfaced in
-record metadata, a grammar trait implemented by connectors, and the MQTT
-grammar in `aimdb-mqtt-connector`. `RuntimeContext` and `IngestFn` are
+record metadata, a grammar trait through which each connector matches its
+own topics, and the MQTT grammar in `aimdb-mqtt-connector`. `RuntimeContext` and `IngestFn` are
 untouched; §5.8 lists the two public structs that gain fields.
 
 **Independent of** [054](./054-zero-alloc-connector-boundary.md). This
@@ -95,7 +96,8 @@ tests. Everything below was measured on that spike, not estimated.
    the covering set (§5.7) the backends would disagree.
 2. **The grammar is a trait.** Zenoh allows `**` anywhere and hides
    verbatim `@…` chunks from wildcards at any level. A data struct with
-   tokens and a "must be last" rule cannot say that (§5.1).
+   tokens and a "must be last" rule cannot say that (§5.1). §3.3 moved
+   the matcher itself behind the trait.
 3. **Fewer checks run at `build()`.** "Capture shares a level with text"
    needs the separator, and "multi-level capture must be last" depends on
    the grammar. Both run when the connector builds (§5.3).
@@ -113,6 +115,19 @@ tests. Everything below was measured on that spike, not estimated.
    error; a literal topic with a match-aware deserializer takes the pattern
    path; the dropped counter is `AtomicU32` (thumbv7em has no 64-bit
    atomics).
+
+### 3.3 After the spike: connectors own matching
+
+The spike kept one matcher in core and asked the grammar about single
+levels. That put every protocol's rules in core: backtracking over `**`
+and hidden `@…` chunks for Zenoh, which has no connector yet, next to the
+far simpler MQTT rules. Matching now belongs to the connector (§5.1): core
+parses the `{…}` syntax, numbers the captures and routes; the grammar
+compiles each pattern into a matcher and decides covering.
+
+The trait moves from one call per wildcard level to one call per pattern
+route. The routing times in §3.1 were measured with core's matcher;
+criterion 6 measures the allocations again on the new shape.
 
 ## 4. User API
 
@@ -144,42 +159,59 @@ builder.configure::<Reading>("sensors.readings", |reg| {
 ### 5.1 The grammar is a connector-supplied trait
 
 Wildcard syntax is protocol-specific and the router is protocol-agnostic.
-Core owns one matcher; a grammar only answers questions about single levels:
+Core owns the `{…}` syntax and the capture numbering; the connector owns
+levels, wildcards and matching:
 
 ```rust
 // aimdb-core
-pub enum LevelKind { Literal, Single, Multi, Invalid(&'static str) }
+pub const MAX_CAPTURES: usize = 8;
+/// Byte range of each capture in the topic, indexed by capture number.
+pub type Spans = [(u16, u16); MAX_CAPTURES];
+
+/// A topic with its `{…}` syntax checked.
+pub struct TopicPattern<'a> { /* the topic, split into parts */ }
+pub enum PatternPart<'a> { Text(&'a str), Capture { name: &'a str, multi: bool } }
+
+impl<'a> TopicPattern<'a> {
+    pub fn parse(topic: &'a str) -> Result<Self, PatternError>;
+    pub fn as_str(&self) -> &'a str;
+    pub fn parts(&self) -> &[PatternPart<'a>];
+    pub fn has_captures(&self) -> bool;
+}
 
 pub trait TopicGrammar: Send + Sync {
-    /// `false`: every `{…}` link on this connector is an error.
-    fn supports_patterns(&self) -> bool { true }
-    fn separator(&self) -> char;
-    /// What a hand-written level is (`+` → Single, `a+` → Invalid, …).
-    fn classify(&self, level: &str) -> LevelKind;
-    /// Tokens used to render `{name}` / `{name..}` for the subscription.
-    fn single_token(&self) -> &str;
-    fn multi_token(&self) -> &str;
-    /// Zenoh `a/**/b`: true. MQTT `#`: false (last only).
-    fn multi_anywhere(&self) -> bool { false }
-    /// Whether a wildcard at level `index` may match `level`.
-    /// MQTT: not a leading `$…`. Zenoh: not a verbatim `@…` chunk.
-    fn wildcard_matches(&self, index: usize, level: &str) -> bool { true }
+    /// Compile one pattern. Captures are numbered in `parts()` order.
+    fn compile(&self, pattern: &TopicPattern<'_>)
+        -> Result<Box<dyn TopicFilter>, String>;
+    /// Whether filter `a` matches every topic filter `b` matches (§5.7).
+    fn covers(&self, a: &str, b: &str) -> bool { a == b }
+}
+
+pub trait TopicFilter: Send + Sync {
+    /// What the connector subscribes (`sensors/+/temp`).
+    fn filter(&self) -> &str;
+    /// Matches only `filter()` itself; the router compares strings.
+    fn is_literal(&self) -> bool;
+    /// Match `topic`, writing capture `i`'s byte range to `spans[i]`.
+    fn matches(&self, topic: &str, spans: &mut Spans) -> bool;
 }
 
 /// KNX, WebSocket, AimX session connectors: no wildcards.
 pub struct ExactGrammar;
 
 // aimdb-mqtt-connector
-pub struct MqttGrammar;   // '/', "+", "#", `$` hidden at level 0
+pub struct MqttGrammar;   // '/', "+", "#" last only, `$` hidden at level 0
 ```
 
 - Grammars are passed as `&'static dyn TopicGrammar` (unit structs:
-  `&MqttGrammar`). `Router` stays non-generic and the per-match dynamic
-  calls are one `separator()` at compile time and one
-  `wildcard_matches()` per wildcard level; §3.1 shows no measurable cost.
-- Features outside the trait are rejected by `classify` with a reason, e.g.
-  Zenoh's `$*` sub-chunk wildcards. Supporting them later is a trait
-  addition, not a change to the router.
+  `&MqttGrammar`). `Router` stays non-generic; each pattern route costs one
+  dynamic `matches()` call per message.
+- The router never passes a topic longer than `u16::MAX` bytes, so spans
+  fit.
+- `ExactGrammar` rejects every pattern with captures and compiles the rest
+  to string equality.
+- A second grammar needs no change to core. Zenoh (053) can build on the
+  `zenoh` crate's own key-expression inclusion for `covers`.
 
 ### 5.2 One inbound router per connector
 
@@ -244,10 +276,10 @@ Errors name the record key and URL:
 **At connector build** (`inbound_router` / `pump_source_with`, returning
 `DbResult`): everything that needs the grammar:
 
-- a capture sharing a level with text (`sensors/dev-{id}`);
-- a multi-level capture or wildcard where the grammar forbids it;
-- a level `classify` rejects (`a+` in MQTT, `$*` in Zenoh);
-- any `{…}` on a connector whose grammar has `supports_patterns() == false`;
+- whatever `TopicGrammar::compile` rejects. For MQTT: a capture sharing a
+  level with text (`sensors/dev-{id}`), a multi-level capture or `#` that
+  is not last, a wildcard that is not a whole level (`a+`);
+- any `{…}` on an `ExactGrammar` connector;
 - patterns returned by a `TopicResolverFn` (018). They go through every
   check in this section, including the `.key(..)` capture check: the router
   looks up the key's capture slot in the resolved pattern, and a missing
@@ -256,15 +288,12 @@ Errors name the record key and URL:
 
 ### 5.4 Matching
 
-Each pattern route is compiled once into levels: `Literal`, `Single` or
-`Multi`, each wildcard optionally carrying a capture slot.
+Each pattern route is compiled once into a `TopicFilter`. A filter whose
+`is_literal()` is true becomes an exact route.
 
 `Router::route` checks exact routes as today, then pattern routes in
-registration order. The matcher walks the topic in place, recording capture
-positions as byte ranges in a fixed `[(u16, u16); 8]`. A `Multi` level that
-is last takes the rest in one step; one followed by more levels (Zenoh)
-backtracks over split points. A topic matching several routes is delivered
-to each, as today.
+registration order, calling `matches()` with a `Spans` on its stack. A topic
+matching several routes is delivered to each, as today.
 
 Routes are scanned linearly. At 64 routes a pattern route costs about 60 ns
 over an exact one (§3.1). An index can come later if a benchmark asks for it.
@@ -360,12 +389,12 @@ the connector, so it is uncontended.
   it matches (`sensors/kitchen/temp` under `sensors/+/temp`; `a/+/b` under
   `a/#`). Required for backend parity (§3.1). The router still fans each
   message out to every route.
-- A wildcard covers a literal level only where `wildcard_matches` allows
-  it. `#` and `+/x` do not cover `$SYS/x`: the broker never delivers `$…`
-  topics to a leading wildcard, so dropping `$SYS/x` would silence that
-  link. `sensors/+` does cover `sensors/$x` (the rule is level 0 only). A
-  wildcard in the covered filter is covered by one at the same level,
-  because `wildcard_matches` does not depend on the wildcard kind.
+- `MqttGrammar::covers` compares level by level. A wildcard covers a
+  literal level only where it may match it: `#` and `+/x` do not cover
+  `$SYS/x`, because the broker never delivers `$…` topics to a leading
+  wildcard, so dropping `$SYS/x` would silence that link. `sensors/+`
+  does cover `sensors/$x` (the rule is level 0 only). `+` covers `+`, and
+  `#` covers `+` and `#`.
 - **Subscribe QoS.** Each filter is subscribed at the highest `qos` among
   its `links` (set by `with_qos`), default 1. A subscriber receives
   `min(publish, subscribe)` QoS, so every covered link gets at least what
@@ -434,30 +463,34 @@ for the whole ingest call, exactly as `Router::route` does today. Because
 3. **Grammar as a data struct** (separator, tokens, a `hidden` function).
    Fits MQTT but cannot express Zenoh's mid-pattern `**` or per-level hidden
    chunks (§3.2). The trait costs nothing measurable.
-4. **Change `IngestFn` to take the topic.** Clean, but breaking; 054 is the
+4. **One matcher in core, a per-level grammar trait** (the spike's shape,
+   §3.3). Core would carry every protocol's matching rules, Zenoh's
+   backtracking included, and a Zenoh connector could not reuse the
+   `zenoh` crate's own key-expression logic.
+5. **Change `IngestFn` to take the topic.** Clean, but breaking; 054 is the
    breaking window that removes the need.
-5. **Match carried in `RuntimeContext` (`ctx.inbound_match()`).** Reaches
+6. **Match carried in `RuntimeContext` (`ctx.inbound_match()`).** Reaches
    plain `with_deserializer` users, but costs one allocation per message,
    lets the match outlive the message through a cloned context, and breaks
    when 054 turns the topic into a borrow.
-6. **Records created per new topic at runtime.** Per-publisher buffers and
+7. **Records created per new topic at runtime.** Per-publisher buffers and
    AimX addresses, but it is the post-`run()` registration problem, far
    larger than this.
-7. **Positional captures only (`+` → index 0).** Indices shift when a pattern
+8. **Positional captures only (`+` → index 0).** Indices shift when a pattern
    changes; names cost nothing at runtime.
-8. **All checks at `build()`** by declaring grammars on the builder. Adds a
+9. **All checks at `build()`** by declaring grammars on the builder. Adds a
    registration step for every connector; connector-build errors are early
    enough.
-9. **Subscribing every filter as written.** Duplicates on MQTT 5 but not
-   3.1.1 (§3.1), so the backends would disagree. **Rejecting overlaps**
-   instead rules out a legitimate layout.
-10. **Delivering unkeyed messages when the key table is full.** Every
+10. **Subscribing every filter as written.** Duplicates on MQTT 5 but not
+    3.1.1 (§3.1), so the backends would disagree. **Rejecting overlaps**
+    instead rules out a legitimate layout.
+11. **Delivering unkeyed messages when the key table is full.** Every
     consumer of a keyed link would have to handle `key() == None`.
-11. **One key table per link.** Overlapping `KeyId`s on a record with two
+12. **One key table per link.** Overlapping `KeyId`s on a record with two
     keyed links (§3.2).
-12. **Reserving the key table's full capacity.** 67 KB for 1,024 keys up
+13. **Reserving the key table's full capacity.** 67 KB for 1,024 keys up
     front; lazy growth measured the same per message.
-13. **An index over pattern routes.** Not needed at the measured cost;
+14. **An index over pattern routes.** Not needed at the measured cost;
     revisit with a benchmark.
 
 ## 9. Open questions
@@ -466,22 +499,21 @@ None.
 
 ## 10. Acceptance criteria
 
-1. Matcher unit tests: the MQTT §4.7 cases; captures at first, middle and
-   last level; `{name..}` matching zero levels; a Zenoh-style test grammar
-   with `a/**/b`, a mid-pattern `{path..}` and verbatim `@` chunks;
-   `ExactGrammar` routers unchanged.
+1. Core: `TopicPattern::parse` accepts and rejects the §5.3 syntax;
+   `ExactGrammar` routers unchanged. `MqttGrammar`: the §4.7 cases;
+   captures at first, middle and last level; `{name..}` matching zero
+   levels.
 2. `build()` rejects each §5.3 build-time error with the record key;
    `inbound_router` rejects each connector-build error, including a pattern
    on an `ExactGrammar` connector, an invalid resolver-returned pattern, and
    a resolver-returned pattern without the keyed capture (the error names
    the record and the resolved topic).
-3. Covering-set unit tests: `sensors/+/temp` covers `sensors/kitchen/temp`;
-   `a/#` covers `a` and `a/+/b`; `a/**/b` covers `a/*/b`; unrelated filters
-   are all kept. Hidden levels: `#` and `+/x` do not cover `$SYS/x`;
-   `$SYS/#` covers `$SYS/x`; `#` covers `+/x`; `sensors/+` covers
-   `sensors/$x`; with the Zenoh-style grammar, `a/*` does not cover `a/@x`
-   and `a/**` does not cover `a/@x/y`. `subscriptions()` groups each
-   filter's link config.
+3. `MqttGrammar::covers`: `sensors/+/temp` covers `sensors/kitchen/temp`;
+   `a/#` covers `a` and `a/+/b`; unrelated filters do not cover. Hidden
+   levels: `#` and `+/x` do not cover `$SYS/x`; `$SYS/#` covers `$SYS/x`;
+   `#` covers `+/x`; `sensors/+` covers `sensors/$x`. Core, with a stub
+   grammar: `subscriptions()` drops covered filters, keeps unrelated ones,
+   and groups each filter's link config.
 4. Parity test, both backends against one broker: a pattern link beside a
    covered exact link subscribes only the covering filter; each record
    receives the message once; capture and key reach the deserializer. With
