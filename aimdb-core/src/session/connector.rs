@@ -28,7 +28,7 @@ use core::pin::Pin;
 use crate::builder::AimDb;
 use crate::connector::ConnectorBuilder;
 use crate::session::{
-    pump_client, run_client, serve, ClientConfig, Dialer, Dispatch, EnvelopeCodec, Listener,
+    pump_client_with, run_client, serve, ClientConfig, Dialer, Dispatch, EnvelopeCodec, Listener,
     OneShot, SessionConfig,
 };
 use crate::{DbError, DbResult};
@@ -103,7 +103,8 @@ where
             );
             // One pump future per route; each holds a `ClientHandle` clone, so the
             // engine stays alive as long as any mirror runs. `handle` drops here.
-            let mut futures = pump_client(db, &self.scheme, &handle);
+            let router = db.inbound_router(&self.scheme, &crate::ExactGrammar)?;
+            let mut futures = pump_client_with(db, &self.scheme, router, &handle);
             futures.push(engine_fut);
             Ok(futures)
         })

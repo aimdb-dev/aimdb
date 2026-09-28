@@ -27,7 +27,7 @@ use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
     SubUpdate, TransportError,
 };
-use crate::router::RouterBuilder;
+use crate::router::{Router, RouterBuilder};
 use crate::AimDb;
 
 /// Capacity of a subscription's client-side event sink. Bounded (was
@@ -857,6 +857,18 @@ where
 /// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
 /// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
 pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFut<'static, ()>> {
+    let router = RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build();
+    pump_client_with(db, scheme, router, handle)
+}
+
+/// Like [`pump_client`], mirroring inbound through `router`, typically from
+/// [`AimDb::inbound_router`].
+pub fn pump_client_with(
+    db: &AimDb,
+    scheme: &str,
+    router: Router,
+    handle: &ClientHandle,
+) -> Vec<BoxFut<'static, ()>> {
     // The runtime context for context-aware (de)serializers.
     let ctx = db.runtime_ctx();
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
@@ -897,8 +909,8 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
     // --- inbound: remote events -> local producer (via the Router) ---------
     // The Router applies each route's deserializer and produces the value; one
     // subscription per unique remote topic feeds it.
-    let router = Arc::new(RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build());
-    for id in router.resource_ids() {
+    let router = Arc::new(router);
+    for id in router.subscriptions() {
         pumps.push(Box::pin(inbound_pump(
             handle.clone(),
             router.clone(),

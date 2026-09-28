@@ -24,7 +24,7 @@ use std::{
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{pump_sink, router::RouterBuilder, ConnectorBuilder, Dispatch};
+use aimdb_core::{pump_sink, ConnectorBuilder, Dispatch, ExactGrammar};
 use axum::Router as AxumRouter;
 
 use aimdb_core::topic_matches;
@@ -277,15 +277,13 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
     {
         Box::pin(async move {
             // ── Inbound routes ──────────────────────────────────────
-            let inbound_routes = db.collect_inbound_routes("ws");
+            let router = Arc::new(db.inbound_router("ws", &ExactGrammar)?);
 
             #[cfg(feature = "tracing")]
             tracing::info!(
                 "WS connector: {} inbound routes collected",
-                inbound_routes.len()
+                router.route_count()
             );
-
-            let router = Arc::new(RouterBuilder::from_routes(inbound_routes).build());
 
             // ── Late-join snapshot cache (only when enabled) ──────
             let snapshot_map: Option<SnapshotCache> =
