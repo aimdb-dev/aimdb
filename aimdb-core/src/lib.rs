@@ -162,7 +162,7 @@ pub use profiling::{
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
-pub use connector::{IngestFactoryFn, IngestFn};
+pub use connector::{IngestFactoryFn, IngestFn, MatchIngestFn};
 pub use connector::{
     SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,
     SourceFactoryFn,
@@ -173,8 +173,8 @@ pub use router::{Route, Router, RouterBuilder};
 
 // Topic grammar for connectors with wildcard subscriptions
 pub use topic_pattern::{
-    ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicPattern,
-    MAX_CAPTURES,
+    ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicMatch,
+    TopicPattern, MAX_CAPTURES,
 };
 
 // Keys assigned to capture values of keyed inbound links

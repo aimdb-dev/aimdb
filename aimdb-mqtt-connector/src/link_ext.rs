@@ -28,8 +28,8 @@ use core::fmt::Debug;
 pub trait MqttLinkExt: Sized {
     /// Sets the MQTT Quality of Service level (0, 1, or 2).
     ///
-    /// Outbound: the publish QoS. Inbound: the subscribe QoS. Defaults to
-    /// QoS 1 when unset (the connectors' own default).
+    /// Outbound: the publish QoS, defaulting to 1. Inbound: not applied yet;
+    /// both backends subscribe at QoS 1.
     fn with_qos(self, qos: u8) -> Self;
 }
 

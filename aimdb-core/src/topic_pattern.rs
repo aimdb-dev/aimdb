@@ -4,6 +4,8 @@
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use core::fmt;
 
+use crate::inbound_key::KeyId;
+
 /// Most captures one pattern may name.
 pub const MAX_CAPTURES: usize = 8;
 
@@ -108,6 +110,47 @@ impl<'a> TopicPattern<'a> {
         self.parts
             .iter()
             .any(|p| matches!(p, PatternPart::Capture { .. }))
+    }
+}
+
+/// The topic a pattern route matched, borrowed for one ingest call.
+#[derive(Debug, Clone, Copy)]
+pub struct TopicMatch<'a> {
+    topic: &'a str,
+    names: &'a [Box<str>],
+    spans: &'a Spans,
+    key: Option<KeyId>,
+}
+
+impl<'a> TopicMatch<'a> {
+    pub(crate) fn new(
+        topic: &'a str,
+        names: &'a [Box<str>],
+        spans: &'a Spans,
+        key: Option<KeyId>,
+    ) -> Self {
+        Self {
+            topic,
+            names,
+            spans,
+            key,
+        }
+    }
+
+    pub fn topic(&self) -> &'a str {
+        self.topic
+    }
+
+    /// The value of capture `name`.
+    pub fn get(&self, name: &str) -> Option<&'a str> {
+        let i = self.names.iter().position(|n| &**n == name)?;
+        let &(start, end) = self.spans.get(i)?;
+        self.topic.get(usize::from(start)..usize::from(end))
+    }
+
+    /// `Some` iff the link is keyed.
+    pub fn key(&self) -> Option<KeyId> {
+        self.key
     }
 }
 

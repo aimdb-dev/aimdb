@@ -11,9 +11,13 @@
 //! - DDS: Routes topics to records
 //! - Shared Memory: Routes segment names to records
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
-use crate::connector::IngestFn;
+use crate::connector::{IngestFn, MatchIngestFn};
+use crate::inbound_key::{KeyId, KeyTable};
+use crate::topic_pattern::{
+    ExactGrammar, Spans, TopicFilter, TopicGrammar, TopicMatch, MAX_CAPTURES,
+};
 
 /// A single routing entry
 ///
@@ -62,13 +66,86 @@ pub struct Route {
 /// - **Shmem**: `segment_name` (e.g., "temperature_buffer")
 pub struct Router {
     /// List of all registered routes
-    routes: Vec<Route>,
+    routes: Vec<CompiledRoute>,
+    /// Decides covering in [`subscriptions`](Self::subscriptions).
+    grammar: &'static dyn TopicGrammar,
+}
+
+/// A route as the router runs it. An exact route is one whose filter matches
+/// only itself.
+pub(crate) struct CompiledRoute {
+    filter: Arc<str>,
+    /// `None`: compare `filter` as a string.
+    matcher: Option<Box<dyn TopicFilter>>,
+    /// Capture names by number.
+    names: Box<[Box<str>]>,
+    /// Key table and the capture number whose value is keyed.
+    key: Option<(Arc<KeyTable>, usize)>,
+    ingest: MatchIngestFn,
+}
+
+impl CompiledRoute {
+    /// A route comparing `resource_id` as a string.
+    pub(crate) fn exact(resource_id: Arc<str>, ingest: IngestFn) -> Self {
+        Self {
+            filter: resource_id,
+            matcher: None,
+            names: Box::new([]),
+            key: None,
+            ingest: Arc::new(move |ctx, _m, payload| ingest(ctx, payload)),
+        }
+    }
+
+    /// A route matching through `filter`.
+    #[allow(dead_code)]
+    pub(crate) fn pattern(
+        filter: Box<dyn TopicFilter>,
+        names: Box<[Box<str>]>,
+        key: Option<(Arc<KeyTable>, usize)>,
+        ingest: MatchIngestFn,
+    ) -> Self {
+        Self {
+            filter: filter.filter().into(),
+            matcher: (!filter.is_literal()).then_some(filter),
+            names,
+            key,
+            ingest,
+        }
+    }
+
+    fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
+        match &self.matcher {
+            None => *self.filter == *topic,
+            Some(m) => topic.len() <= usize::from(u16::MAX) && m.matches(topic, spans),
+        }
+    }
+
+    /// The message's key; `None` when the key table is full.
+    fn key(&self, topic: &str, spans: &Spans) -> Option<Option<KeyId>> {
+        let Some((table, capture)) = &self.key else {
+            return Some(None);
+        };
+        let &(start, end) = spans.get(*capture)?;
+        let value = topic.get(usize::from(start)..usize::from(end))?;
+        table.key(value).map(Some)
+    }
 }
 
 impl Router {
     /// Create a new router with the given routes
     pub fn new(routes: Vec<Route>) -> Self {
-        Self { routes }
+        Self {
+            routes: routes
+                .into_iter()
+                .map(|r| CompiledRoute::exact(r.resource_id, r.ingest))
+                .collect(),
+            grammar: &ExactGrammar,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn compiled(grammar: &'static dyn TopicGrammar, routes: Vec<CompiledRoute>) -> Self {
+        Self { routes, grammar }
     }
 
     /// Route a message to the appropriate record(s)
@@ -101,10 +178,16 @@ impl Router {
 
         // Linear search through all routes
         // Note: Multiple routes may match the same resource_id (different types)
+        let mut spans: Spans = [(0, 0); MAX_CAPTURES];
         for route in &self.routes {
-            if route.resource_id.as_ref() == resource_id {
+            if route.matches(resource_id, &mut spans) {
                 matched = true;
-                match (route.ingest)(ctx, payload) {
+                let Some(key) = route.key(resource_id, &spans) else {
+                    log_debug!("Key table full, dropped message on '{}'", resource_id);
+                    continue;
+                };
+                let m = TopicMatch::new(resource_id, &route.names, &spans, key);
+                match (route.ingest)(ctx, &m, payload) {
                     Ok(()) => {
                         routed = true;
 
@@ -149,13 +232,30 @@ impl Router {
     /// Useful for subscribing at the protocol level (e.g., MQTT SUBSCRIBE).
     /// Returns unique resource IDs (deduplicated even if multiple routes per resource).
     pub fn resource_ids(&self) -> Vec<Arc<str>> {
-        let mut ids: Vec<Arc<str>> = self.routes.iter().map(|r| r.resource_id.clone()).collect();
+        let mut ids: Vec<Arc<str>> = self.routes.iter().map(|r| r.filter.clone()).collect();
 
         // Deduplicate by converting to strings for comparison
         ids.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
         ids.dedup_by(|a, b| a.as_ref() == b.as_ref());
 
         ids
+    }
+
+    /// Filters to subscribe: [`resource_ids`](Self::resource_ids) without
+    /// the filters another one covers.
+    pub fn subscriptions(&self) -> Vec<Arc<str>> {
+        let ids = self.resource_ids();
+        let g = self.grammar;
+        ids.iter()
+            .enumerate()
+            .filter(|&(i, a)| {
+                // Of two filters covering each other, the first one stays.
+                !ids.iter()
+                    .enumerate()
+                    .any(|(j, b)| j != i && g.covers(b, a) && (j < i || !g.covers(a, b)))
+            })
+            .map(|(_, a)| a.clone())
+            .collect()
     }
 
     /// Get the number of routes in this router
@@ -375,5 +475,242 @@ mod tests {
 
         // Ingest failures are logged, not propagated.
         router.route("err/resource", b"dummy", &test_ctx()).unwrap();
+    }
+
+    // ---- pattern routes ---------------------------------------------------
+
+    use crate::topic_pattern::{PatternPart, TopicPattern};
+    use core::num::NonZeroU16;
+    use std::sync::Mutex;
+
+    /// `/`-separated levels; `+` and `{name}` match one level.
+    struct Plus;
+
+    struct PlusFilter {
+        filter: String,
+        /// Per level: `None` for a wildcard.
+        levels: Vec<Option<String>>,
+        /// Per level: capture number.
+        captures: Vec<Option<usize>>,
+    }
+
+    impl TopicGrammar for Plus {
+        fn compile(&self, pattern: &TopicPattern<'_>) -> Result<Box<dyn TopicFilter>, String> {
+            let mut filter = String::new();
+            let mut captures = Vec::new();
+            for part in pattern.parts() {
+                match part {
+                    PatternPart::Text(t) => filter.push_str(t),
+                    PatternPart::Capture { .. } => {
+                        filter.push('+');
+                        captures.push(filter.split('/').count() - 1);
+                    }
+                }
+            }
+            let levels: Vec<Option<String>> = filter
+                .split('/')
+                .map(|l| (l != "+").then(|| l.to_string()))
+                .collect();
+            let captures = (0..levels.len())
+                .map(|i| captures.iter().position(|&c| c == i))
+                .collect();
+            Ok(Box::new(PlusFilter {
+                filter,
+                levels,
+                captures,
+            }))
+        }
+
+        fn covers(&self, a: &str, b: &str) -> bool {
+            a.split('/').count() == b.split('/').count()
+                && a.split('/')
+                    .zip(b.split('/'))
+                    .all(|(x, y)| x == "+" || x == y)
+        }
+    }
+
+    impl TopicFilter for PlusFilter {
+        fn filter(&self) -> &str {
+            &self.filter
+        }
+        fn is_literal(&self) -> bool {
+            self.levels.iter().all(Option::is_some)
+        }
+        fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
+            if topic.split('/').count() != self.levels.len() {
+                return false;
+            }
+            let mut start = 0;
+            for (i, level) in topic.split('/').enumerate() {
+                match &self.levels[i] {
+                    Some(lit) if lit != level => return false,
+                    _ => {}
+                }
+                if let Some(c) = self.captures[i] {
+                    spans[c] = (start as u16, (start + level.len()) as u16);
+                }
+                start += level.len() + 1;
+            }
+            true
+        }
+    }
+
+    type Seen = Arc<Mutex<Vec<(String, Vec<Option<String>>, Option<usize>)>>>;
+
+    /// Records the topic, the named captures and the key index.
+    fn recording(seen: &Seen, names: &'static [&'static str]) -> MatchIngestFn {
+        let seen = seen.clone();
+        Arc::new(move |_ctx, m, _payload| {
+            let caps = names.iter().map(|n| m.get(n).map(String::from)).collect();
+            seen.lock()
+                .unwrap()
+                .push((m.topic().to_string(), caps, m.key().map(|k| k.index())));
+            Ok(())
+        })
+    }
+
+    fn pattern_route(
+        topic: &str,
+        ingest: MatchIngestFn,
+        key: Option<(Arc<KeyTable>, usize)>,
+    ) -> CompiledRoute {
+        let pattern = TopicPattern::parse(topic).unwrap();
+        let names = pattern
+            .parts()
+            .iter()
+            .filter_map(|p| match p {
+                PatternPart::Capture { name, .. } => Some(Box::from(*name)),
+                PatternPart::Text(_) => None,
+            })
+            .collect();
+        CompiledRoute::pattern(Plus.compile(&pattern).unwrap(), names, key, ingest)
+    }
+
+    fn exact_route(topic: &str, ingest: IngestFn) -> CompiledRoute {
+        CompiledRoute::exact(Arc::from(topic), ingest)
+    }
+
+    #[test]
+    fn pattern_route_receives_topic_and_captures() {
+        let seen: Seen = Default::default();
+        let router = Router::compiled(
+            &Plus,
+            vec![pattern_route(
+                "{site}/+/{dev}",
+                recording(&seen, &["site", "dev", "nope"]),
+                None,
+            )],
+        );
+        let ctx = test_ctx();
+        router.route("vienna/x/k1", b"", &ctx).unwrap();
+        router.route("vienna/k1", b"", &ctx).unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(
+                "vienna/x/k1".to_string(),
+                vec![Some("vienna".into()), Some("k1".into()), None],
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn exact_and_pattern_routes_both_receive_a_message() {
+        let exact = Arc::new(AtomicUsize::new(0));
+        let seen: Seen = Default::default();
+        let router = Router::compiled(
+            &Plus,
+            vec![
+                exact_route("s/kitchen/t", counting_ingest(exact.clone())),
+                pattern_route("s/{d}/t", recording(&seen, &["d"]), None),
+                pattern_route("s/kitchen/t", recording(&seen, &[]), None),
+            ],
+        );
+        router.route("s/kitchen/t", b"", &test_ctx()).unwrap();
+
+        assert_eq!(exact.load(Ordering::SeqCst), 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        // A literal pattern route still receives the topic.
+        assert_eq!(seen[1].0, "s/kitchen/t");
+    }
+
+    #[test]
+    fn keyed_route_assigns_keys_and_drops_when_full() {
+        let seen: Seen = Default::default();
+        let table = Arc::new(KeyTable::new(NonZeroU16::new(2).unwrap()));
+        let router = Router::compiled(
+            &Plus,
+            vec![pattern_route(
+                "s/{d}/t",
+                recording(&seen, &["d"]),
+                Some((table.clone(), 0)),
+            )],
+        );
+        let ctx = test_ctx();
+        for topic in ["s/a/t", "s/b/t", "s/a/t", "s/c/t"] {
+            router.route(topic, b"", &ctx).unwrap();
+        }
+
+        let keys: Vec<_> = seen.lock().unwrap().iter().map(|s| s.2).collect();
+        assert_eq!(keys, [Some(0), Some(1), Some(0)]);
+        assert_eq!(table.dropped(), 1);
+    }
+
+    #[test]
+    fn overlong_topics_skip_pattern_routes() {
+        let seen: Seen = Default::default();
+        let router = Router::compiled(
+            &Plus,
+            vec![pattern_route("{x}", recording(&seen, &[]), None)],
+        );
+        let topic = "x".repeat(usize::from(u16::MAX) + 1);
+        router.route(&topic, b"", &test_ctx()).unwrap();
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    fn subscriptions(router: &Router) -> Vec<String> {
+        router
+            .subscriptions()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn subscriptions_drop_covered_filters() {
+        let noop = || counting_ingest(Arc::new(AtomicUsize::new(0)));
+        let seen: Seen = Default::default();
+        let router = Router::compiled(
+            &Plus,
+            vec![
+                exact_route("s/kitchen/t", noop()),
+                exact_route("other/x", noop()),
+                exact_route("s/+/t", noop()),
+                pattern_route("s/{d}/t", recording(&seen, &[]), None),
+            ],
+        );
+        assert_eq!(subscriptions(&router), ["other/x", "s/+/t"]);
+    }
+
+    #[test]
+    fn plain_router_subscribes_each_id_once() {
+        let noop = || counting_ingest(Arc::new(AtomicUsize::new(0)));
+        let router = Router::new(vec![
+            Route {
+                resource_id: Arc::from("a"),
+                ingest: noop(),
+            },
+            Route {
+                resource_id: Arc::from("a"),
+                ingest: noop(),
+            },
+            Route {
+                resource_id: Arc::from("b"),
+                ingest: noop(),
+            },
+        ]);
+        assert_eq!(subscriptions(&router), ["a", "b"]);
     }
 }

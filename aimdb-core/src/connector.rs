@@ -515,6 +515,13 @@ impl ConnectorLink {
 /// captured) for context-aware deserializers.
 pub type IngestFn = Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<(), String> + Send + Sync>;
 
+/// Fused ingest callback of a pattern route: also receives the match.
+pub type MatchIngestFn = Arc<
+    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<(), String>
+        + Send
+        + Sync,
+>;
+
 /// Type alias for ingest factory callback (alloc feature)
 ///
 /// Takes the live [`AimDb`] and returns the fused [`IngestFn`]. This allows
