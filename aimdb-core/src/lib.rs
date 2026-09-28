@@ -94,6 +94,7 @@ pub mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
 pub mod signal;
+pub mod topic_pattern;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -166,6 +167,12 @@ pub use connector::{
 
 // Router exports for connector implementations
 pub use router::{Route, Router, RouterBuilder};
+
+// Topic grammar for connectors with wildcard subscriptions
+pub use topic_pattern::{
+    ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicPattern,
+    MAX_CAPTURES,
+};
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};
