@@ -19,7 +19,7 @@
 
 use std::pin::Pin;
 
-use aimdb_core::session::{aimx::AimxCodec, pump_client_with, run_client, ClientConfig};
+use aimdb_core::session::{aimx::AimxCodec, pump_client, run_client, ClientConfig};
 use aimdb_core::{ConnectorBuilder, ExactGrammar};
 
 use crate::transport::WsDialer;
@@ -172,7 +172,7 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
                 db.runtime_ops(),
             );
             let router = db.inbound_router("ws-client", &ExactGrammar)?;
-            let mut futures = pump_client_with(db, "ws-client", router, &handle);
+            let mut futures = pump_client(db, "ws-client", router, &handle);
             futures.push(engine_fut);
             Ok(futures)
         })

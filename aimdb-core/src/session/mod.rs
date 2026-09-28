@@ -42,7 +42,7 @@ mod topic_match;
 pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 
 #[cfg(feature = "connector-session")]
-pub use client::{pump_client, pump_client_with, run_client, ClientConfig, ClientHandle};
+pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]

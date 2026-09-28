@@ -27,7 +27,7 @@ use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
     SubUpdate, TransportError,
 };
-use crate::router::{Router, RouterBuilder};
+use crate::router::Router;
 use crate::AimDb;
 
 /// Capacity of a subscription's client-side event sink. Bounded (was
@@ -843,7 +843,7 @@ where
 /// For the given connector `scheme` (e.g. `"aimx"`):
 /// - **outbound** routes (`db.collect_outbound_routes`) stream local record
 ///   updates to the remote via [`ClientHandle::write`];
-/// - **inbound** routes (`db.collect_inbound_routes`) subscribe to the remote and
+/// - **inbound** routes (`router`, from [`AimDb::inbound_router`]) subscribe to the remote and
 ///   produce each update into the local record through the producer/arbiter path
 ///   — single-writer-per-key stays intact (a mirrored-in record is produced
 ///   through its inbound producer, never a direct co-writer). Mirroring is
@@ -856,14 +856,7 @@ where
 ///
 /// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
 /// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
-pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFut<'static, ()>> {
-    let router = RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build();
-    pump_client_with(db, scheme, router, handle)
-}
-
-/// Like [`pump_client`], mirroring inbound through `router`, typically from
-/// [`AimDb::inbound_router`].
-pub fn pump_client_with(
+pub fn pump_client(
     db: &AimDb,
     scheme: &str,
     router: Router,
@@ -1571,7 +1564,7 @@ mod tests {
                 Ok(())
             });
         let routes = alloc::vec![(String::from("tele"), ingest)];
-        let router = Arc::new(RouterBuilder::from_routes(routes).build());
+        let router = Arc::new(crate::router::RouterBuilder::from_routes(routes).build());
         let ctx =
             crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         let (handle, cmd_rx, _prune_rx) = test_handle();
