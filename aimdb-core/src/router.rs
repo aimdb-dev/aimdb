@@ -59,7 +59,7 @@ pub(crate) struct CompiledRoute {
 
 impl CompiledRoute {
     /// A route comparing `topic` as a string.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "connector-session"))]
     pub(crate) fn exact(topic: &str, ingest: IngestFn) -> Self {
         use crate::topic_pattern::{ExactGrammar, TopicPattern};
         let pattern = TopicPattern::parse(topic).expect("an exact topic");
