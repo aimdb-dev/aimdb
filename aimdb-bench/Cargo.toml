@@ -154,3 +154,5 @@ critical-section = { version = "1.1", features = ["std"] }
 defmt = { workspace = true }
 embassy-time-driver = "0.2.2"
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+# `MqttGrammar` for the pattern rows of b0_alloc_connector (no backend).
+aimdb-mqtt-connector = { path = "../aimdb-mqtt-connector", default-features = false }

@@ -1,6 +1,6 @@
 # 055 — Wildcard inbound links
 
-**Status:** 📝 Proposed — validated by a spike (§3), 2026-09-27; matching
+**Status:** ✅ Implemented — validated by a spike (§3), 2026-09-27; matching
 moved into connectors (§3.3), 2026-09-28
 
 **Scope:** inbound links whose topic is a pattern: matching in
@@ -505,7 +505,7 @@ None.
    `inbound_route_keyed_known` (0) and `inbound_route_keyed_new` (1).
    Existing rows unchanged.
 7. `weather-station-gamma` and the embedded MQTT demo build for
-   `thumbv7em-none-eabihf` with no behaviour change.
+   `thumbv8m.main-none-eabihf` with no behaviour change.
 
 ## 11. References
 

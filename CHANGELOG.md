@@ -29,6 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Design 055: wildcard inbound links
+
+- **One inbound link can feed many topics into one record.**
+  `link_from("mqtt://sensors/{device}/temp")` matches every device;
+  `with_match_deserializer(|ctx, m, bytes| …)` sees the topic and its captures
+  (`m.get("device")`), and `.key("device", 1024)` turns a capture into a small
+  `KeyId` from a bounded table per record, reported in record metadata
+  (`inbound_keys`). Routing a pattern, and a known key, allocates nothing.
+  ([aimdb-core](aimdb-core/CHANGELOG.md))
+- **MQTT understands topic filters.** `MqttGrammar` implements MQTT 3.1.1
+  §4.7; both backends subscribe only filters no other filter covers, so the
+  MQTT 3.1.1 and MQTT 5 backends receive an overlapping topic once each, and a
+  hand-written `+`/`#` topic now matches.
+  ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
+
+### Changed (breaking) — one inbound path
+
+Every connector builds its router with `AimDb::inbound_router(scheme,
+grammar)`; `collect_inbound_routes`, `RouterBuilder`, `Route` and the public
+`Router::new` are gone, `IngestFn` receives the `TopicMatch`, and `pump_source`
+and `pump_client` take the router. KNX, WebSocket, TCP, UDS and serial use
+`ExactGrammar`: a `{…}` link on them fails the build. The user-facing link API
+is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
+
 ## [2.0.0] - 2026-09-18
 
 ### Added

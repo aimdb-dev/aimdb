@@ -3,7 +3,9 @@
 //! Baseline for design 054. Measures what AimDB's connector interfaces cost
 //! per message, independent of any real transport:
 //!
-//! - **Inbound:** `Router::route` alone, and the real `pump_source` driven by
+//! - **Inbound:** `Router::route` alone — for an exact topic, a pattern
+//!   (`{device}`, MQTT grammar), and a keyed pattern with a known and a new
+//!   key — and the real `pump_source` driven by
 //!   the smallest possible `Source` (it clones a pre-built topic `String` and
 //!   payload `Arc` — the least any `Source` can do, since the trait returns
 //!   owned values).
@@ -36,6 +38,7 @@ use aimdb_core::connector::{
 use aimdb_core::session::{pump_source, Payload, Source};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{AimDb, AimDbBuilder, BoxFut, DbResult, ExactGrammar, RuntimeContext, StringKey};
+use aimdb_mqtt_connector::MqttGrammar;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
 #[global_allocator]
@@ -46,11 +49,16 @@ const WARMUP_ITERS: usize = 100;
 const MEASURE_ITERS: usize = 2_000;
 const DECOY_ROUTES: usize = 63;
 const SCRATCH_CAPACITY: usize = 64;
+/// Room for a new key on every warm-up and measured message.
+const KEY_CAPACITY: u16 = 4096;
 
 /// Allocations per message on `main` when this bench was added. Update
 /// together with `data/baselines/b0_alloc_connector.json`.
 const EXPECTED: &[(&str, u64)] = &[
     ("inbound_route", 0),
+    ("inbound_route_pattern", 0),
+    ("inbound_route_keyed_known", 0),
+    ("inbound_route_keyed_new", 1),
     ("inbound_pump_source_minimal", 2),
     ("outbound_scratch_static_topic", 2),
     ("outbound_scratch_dynamic_topic", 3),
@@ -138,8 +146,20 @@ async fn build_db(configure: impl FnOnce(&mut AimDbBuilder)) -> AimDb {
 
 // --- Inbound ----------------------------------------------------------------
 
-/// One linked record plus `DECOY_ROUTES` others, so routing scans a realistic
-/// table.
+/// `DECOY_ROUTES` exact links, so routing scans a realistic table.
+fn add_decoys(b: &mut AimDbBuilder) {
+    for i in 0..DECOY_ROUTES {
+        let topic = format!("bench://in/decoy/{i}");
+        b.configure::<Reading>(StringKey::intern(format!("in.decoy{i}")), |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_from(&topic)
+                .with_deserializer(|_ctx, _bytes| Ok(reading(0)))
+                .finish();
+        });
+    }
+}
+
+/// One linked record plus the decoys.
 async fn inbound_db() -> AimDb {
     build_db(|b| {
         b.configure::<Reading>("in.target", |reg| {
@@ -148,17 +168,61 @@ async fn inbound_db() -> AimDb {
                 .with_deserializer(|_ctx, bytes| Ok(reading(bytes[0] as usize)))
                 .finish();
         });
-        for i in 0..DECOY_ROUTES {
-            let topic = format!("bench://in/decoy/{i}");
-            b.configure::<Reading>(StringKey::intern(format!("in.decoy{i}")), |reg| {
-                reg.buffer(BufferCfg::SingleLatest)
-                    .link_from(&topic)
-                    .with_deserializer(|_ctx, _bytes| Ok(reading(0)))
-                    .finish();
-            });
-        }
+        add_decoys(b);
     })
     .await
+}
+
+/// One record on `in/{device}/target`, keyed or not, plus the decoys.
+async fn pattern_db(keyed: bool) -> AimDb {
+    build_db(|b| {
+        b.configure::<Reading>("in.pattern", move |reg| {
+            let link = reg
+                .buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_from("bench://in/{device}/target");
+            let link = if keyed {
+                link.key("device", KEY_CAPACITY)
+            } else {
+                link
+            };
+            link.with_match_deserializer(|_ctx, m, bytes| {
+                Ok(reading(
+                    bytes[0] as usize + m.key().map_or(0, |k| k.index()),
+                ))
+            })
+            .finish();
+        });
+        add_decoys(b);
+    })
+    .await
+}
+
+/// Routes `warmup` then `measured`, counting only the second.
+async fn measure_pattern_route(keyed: bool, warmup: &[String], measured: &[String]) -> (u64, u64) {
+    let db = pattern_db(keyed).await;
+    let ctx = db.runtime_ctx();
+    let router = db.inbound_router(SCHEME, &MqttGrammar).unwrap();
+    let payload = [1u8; 8];
+    for topic in warmup {
+        router.route(topic, &payload, &ctx).unwrap();
+    }
+    reset();
+    for topic in measured {
+        router
+            .route(black_box(topic), black_box(&payload), &ctx)
+            .unwrap();
+    }
+    snapshot()
+}
+
+/// `n` copies of one topic, or `n` topics each naming a new device.
+fn pattern_topics(n: usize, first_device: usize, distinct: bool) -> Vec<String> {
+    (0..n)
+        .map(|i| {
+            let device = if distinct { first_device + i } else { 0 };
+            format!("in/dev{device}/target")
+        })
+        .collect()
 }
 
 async fn measure_route() -> (u64, u64) {
@@ -318,6 +382,36 @@ fn main() {
     let measured: Vec<(&str, &str, (u64, u64))> = runtime.block_on(async {
         vec![
             ("inbound_route", "SpmcRing", measure_route().await),
+            (
+                "inbound_route_pattern",
+                "SpmcRing",
+                measure_pattern_route(
+                    false,
+                    &pattern_topics(WARMUP_ITERS, 0, false),
+                    &pattern_topics(MEASURE_ITERS, 0, false),
+                )
+                .await,
+            ),
+            (
+                "inbound_route_keyed_known",
+                "SpmcRing",
+                measure_pattern_route(
+                    true,
+                    &pattern_topics(WARMUP_ITERS, 0, false),
+                    &pattern_topics(MEASURE_ITERS, 0, false),
+                )
+                .await,
+            ),
+            (
+                "inbound_route_keyed_new",
+                "SpmcRing",
+                measure_pattern_route(
+                    true,
+                    &pattern_topics(WARMUP_ITERS, 0, true),
+                    &pattern_topics(MEASURE_ITERS, WARMUP_ITERS, true),
+                )
+                .await,
+            ),
             (
                 "inbound_pump_source_minimal",
                 "SpmcRing",

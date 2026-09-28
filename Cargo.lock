@@ -65,6 +65,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
+ "aimdb-mqtt-connector",
  "aimdb-tokio-adapter",
  "criterion",
  "critical-section",
