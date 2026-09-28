@@ -33,10 +33,9 @@ use aimdb_core::connector::{
     ConnectorBuilder, SerializeError, SerializedPayload, SerializedReader, SerializedValueInto,
     TopicProvider,
 };
-use aimdb_core::router::RouterBuilder;
 use aimdb_core::session::{pump_source, Payload, Source};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
-use aimdb_core::{AimDb, AimDbBuilder, BoxFut, DbResult, RuntimeContext, StringKey};
+use aimdb_core::{AimDb, AimDbBuilder, BoxFut, DbResult, ExactGrammar, RuntimeContext, StringKey};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
 #[global_allocator]
@@ -165,7 +164,7 @@ async fn inbound_db() -> AimDb {
 async fn measure_route() -> (u64, u64) {
     let db = inbound_db().await;
     let ctx = db.runtime_ctx();
-    let router = RouterBuilder::from_routes(db.collect_inbound_routes(SCHEME)).build();
+    let router = db.inbound_router(SCHEME, &ExactGrammar).unwrap();
     let payload = [1u8; 8];
     for _ in 0..WARMUP_ITERS {
         router.route("in/target", &payload, &ctx).unwrap();
@@ -207,7 +206,8 @@ async fn pump_run(db: &AimDb, messages: usize) -> (u64, u64) {
         remaining: messages,
     };
     reset();
-    for fut in pump_source(db, SCHEME, source) {
+    let router = db.inbound_router(SCHEME, &ExactGrammar).unwrap();
+    for fut in pump_source(db, router, source) {
         fut.await;
     }
     snapshot()

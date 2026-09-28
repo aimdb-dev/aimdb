@@ -119,11 +119,14 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
     let inbound_config = &record.inbound_connectors()[0].config;
     assert!(inbound_config.contains(&("qos".to_string(), "0".to_string())));
 
-    let inbound = db.collect_inbound_routes("mqtt");
-    assert_eq!(inbound.len(), 1);
-    assert_eq!(inbound[0].0, "commands/codec");
+    let inbound = db
+        .inbound_router("mqtt", &aimdb_core::ExactGrammar)
+        .expect("inbound routes");
+    assert_eq!(inbound.subscriptions(), [Arc::from("commands/codec")]);
     let encoded = link_codecs::Postcard::<64>
         .encode(&Reading { value: 17.5 })
         .expect("Postcard encode must succeed");
-    inbound[0].1(&db.runtime_ctx(), &encoded).expect("Postcard ingest must succeed");
+    inbound
+        .route("commands/codec", &encoded, &db.runtime_ctx())
+        .expect("Postcard ingest must succeed");
 }

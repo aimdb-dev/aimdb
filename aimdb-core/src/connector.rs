@@ -511,12 +511,10 @@ impl ConnectorLink {
 ///, so the only failure is the user
 /// deserializer's — reported as the same `String` the deserializer API uses.
 ///
-/// The [`RuntimeContext`](crate::RuntimeContext) is threaded per call (not
-/// captured) for context-aware deserializers.
-pub type IngestFn = Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<(), String> + Send + Sync>;
-
-/// Fused ingest callback of a pattern route: also receives the match.
-pub type MatchIngestFn = Arc<
+/// The [`RuntimeContext`](crate::RuntimeContext) and the
+/// [`TopicMatch`](crate::TopicMatch) the message arrived on are threaded per
+/// call (not captured).
+pub type IngestFn = Arc<
     dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<(), String>
         + Send
         + Sync,
@@ -531,27 +529,6 @@ pub type MatchIngestFn = Arc<
 ///
 /// Available in both `std` and `no_std + alloc` environments.
 pub type IngestFactoryFn = Arc<dyn Fn(&AimDb) -> IngestFn + Send + Sync>;
-
-/// Like [`IngestFactoryFn`], for links set with `with_match_deserializer`.
-pub type MatchIngestFactoryFn = Arc<dyn Fn(&AimDb) -> MatchIngestFn + Send + Sync>;
-
-/// Runs a plain ingest where a [`MatchIngestFn`] is expected.
-pub(crate) fn ignore_match(ingest: IngestFn) -> MatchIngestFn {
-    Arc::new(move |ctx, _m, payload| ingest(ctx, payload))
-}
-
-/// Runs a match-aware ingest where only an [`IngestFn`] fits: every message
-/// is on `topic`, with no captures and no key.
-pub(crate) fn match_as_ingest(ingest: MatchIngestFn, topic: Arc<str>) -> IngestFn {
-    static NO_SPANS: crate::Spans = [(0, 0); crate::MAX_CAPTURES];
-    Arc::new(move |ctx, payload| {
-        ingest(
-            ctx,
-            &crate::TopicMatch::new(&topic, &[], &NO_SPANS, None),
-            payload,
-        )
-    })
-}
 
 /// Topic resolver function for inbound connections (late-binding)
 ///
@@ -596,10 +573,6 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     pub ingest_factory: IngestFactoryFn,
 
-    /// Set by `with_match_deserializer`; `ingest_factory` then passes the
-    /// URL topic as the match.
-    pub match_ingest_factory: Option<MatchIngestFactoryFn>,
-
     /// Set by `.key(..)`: the keyed capture and the key table's capacity.
     pub key: Option<(String, core::num::NonZeroU16)>,
 
@@ -618,10 +591,6 @@ impl Debug for InboundConnectorLink {
             .field("url", &self.url)
             .field("config", &self.config)
             .field("ingest_factory", &"<factory>")
-            .field(
-                "match_ingest_factory",
-                &self.match_ingest_factory.as_ref().map(|_| "<factory>"),
-            )
             .field("key", &self.key)
             .field(
                 "topic_resolver",
@@ -638,7 +607,6 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             ingest_factory,
-            match_ingest_factory: None,
             key: None,
             topic_resolver: None,
         }
@@ -765,7 +733,9 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 /// # Example
 ///
 /// Illustrative sketch of a connector author's `build()` (not compiled: the
-/// client types are fictional — see `aimdb-mqtt-connector` for a real one):
+/// client types and `MqttGrammar`, the connector's
+/// [`TopicGrammar`](crate::TopicGrammar), are the connector's own — see
+/// `aimdb-mqtt-connector` for a real one):
 ///
 /// ```rust,ignore
 /// pub struct MqttConnectorBuilder {
@@ -778,8 +748,8 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///         db: &'a AimDb,
 ///     ) -> Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>> {
 ///         Box::pin(async move {
-///             let routes = db.collect_inbound_routes(self.scheme());
-///             let router = RouterBuilder::from_routes(routes).build();
+///             // Wildcard rules are the connector's; `&ExactGrammar` if it has none.
+///             let router = db.inbound_router(self.scheme(), &MqttGrammar)?;
 ///             let connector = MqttConnector::new(&self.broker_url, router).await?;
 ///             Ok(connector.futures())
 ///         })
@@ -826,7 +796,7 @@ pub trait ConnectorBuilder: Send + Sync {
     /// Whether registering a second connector under this scheme is an error.
     ///
     /// Say `true` when [`build`](Self::build) claims every route for its
-    /// scheme — [`collect_inbound_routes`](crate::AimDb::collect_inbound_routes),
+    /// scheme — [`inbound_router`](crate::AimDb::inbound_router),
     /// [`collect_outbound_routes`](crate::AimDb::collect_outbound_routes),
     /// and `crate::session`'s `pump_source`, `pump_sink` and `pump_client`
     /// (left unlinked: that module is behind `connector-session`, and this
@@ -1064,7 +1034,7 @@ mod tests {
 
     /// Dummy ingest factory for link-construction tests (never invoked).
     fn dummy_ingest_factory() -> super::IngestFactoryFn {
-        Arc::new(|_db| Arc::new(|_ctx: &crate::RuntimeContext, _bytes: &[u8]| Ok(())))
+        Arc::new(|_db| Arc::new(|_ctx, _m, _bytes| Ok(())))
     }
 
     #[test]

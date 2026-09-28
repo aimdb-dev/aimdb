@@ -607,25 +607,22 @@ mod tests {
             };
             assert_eq!(replacement_bytes, json_bytes);
 
-            let inbound = db.collect_inbound_routes("test");
-            assert_eq!(inbound.len(), 2);
-            let json_ingest = inbound
-                .iter()
-                .find(|(topic, _)| topic == "json-in")
-                .map(|(_, ingest)| ingest)
-                .expect("JSON ingest route");
-            json_ingest(&db.runtime_ctx(), &json_bytes).expect("JSON ingest");
+            let inbound = db
+                .inbound_router("test", &aimdb_core::ExactGrammar)
+                .expect("inbound routes");
+            assert_eq!(inbound.route_count(), 2);
+            let ctx = db.runtime_ctx();
+            inbound
+                .route("json-in", &json_bytes, &ctx)
+                .expect("JSON ingest");
             assert_eq!(
                 json_in.lock().expect("JSON capture lock").as_ref(),
                 Some(&reading)
             );
 
-            let postcard_ingest = inbound
-                .iter()
-                .find(|(topic, _)| topic == "postcard-in")
-                .map(|(_, ingest)| ingest)
-                .expect("Postcard ingest route");
-            postcard_ingest(&db.runtime_ctx(), &scratch[..len]).expect("Postcard ingest");
+            inbound
+                .route("postcard-in", &scratch[..len], &ctx)
+                .expect("Postcard ingest");
             assert_eq!(
                 postcard_in.lock().expect("Postcard capture lock").as_ref(),
                 Some(&reading)

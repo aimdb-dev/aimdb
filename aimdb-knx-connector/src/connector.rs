@@ -16,7 +16,7 @@ use core::net::SocketAddr;
 use core::pin::Pin;
 
 use aimdb_core::connector::{ConnectorBuilder, ConnectorUrl};
-use aimdb_core::session::{pump_sink, pump_source_with, Payload};
+use aimdb_core::session::{pump_sink, pump_source, Payload};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{log_info, AimDb, DbError, DbResult, RuntimeOps};
 
@@ -178,7 +178,7 @@ where
             ));
 
             let mut futures: Vec<BoxFuture> = vec![task];
-            futures.extend(pump_source_with(
+            futures.extend(pump_source(
                 db,
                 db.inbound_router("knx", &aimdb_core::ExactGrammar)?,
                 KnxSource::<N> {

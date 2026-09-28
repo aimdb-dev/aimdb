@@ -140,9 +140,9 @@ pub use remote::topic_leaf;
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    is_wildcard, pattern_contains, pump_sink, pump_source, pump_source_with, topic_matches,
-    AuthError, BoxFut, BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound,
-    Listener, Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
+    is_wildcard, pattern_contains, pump_sink, pump_source, topic_matches, AuthError, BoxFut,
+    BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener,
+    Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
     TransportError, TransportResult,
 };
 
@@ -160,14 +160,14 @@ pub use profiling::{
 pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
-pub use connector::{IngestFactoryFn, IngestFn, MatchIngestFactoryFn, MatchIngestFn};
+pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{
     SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,
     SourceFactoryFn,
 };
 
 // Router exports for connector implementations
-pub use router::{Route, Router, RouterBuilder};
+pub use router::Router;
 
 // Topic grammar for connectors with wildcard subscriptions
 pub use topic_pattern::{

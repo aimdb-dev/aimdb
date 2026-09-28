@@ -1058,28 +1058,10 @@ where
 /// Fused ingest factory: resolves the typed producer once at route-collection
 /// time; per message the returned closure runs deserialize + produce with no
 /// erasure crossing.
-fn plain_ingest_factory<T>(
-    record_key: String,
-    deser: TypedContextDeserializerFn<T>,
-) -> crate::connector::IngestFactoryFn
-where
-    T: Send + Sync + 'static + Debug + Clone,
-{
-    Arc::new(move |db: &AimDb| {
-        let producer = inbound_producer::<T>(db, &record_key);
-        let deser = deser.clone();
-        Arc::new(move |ctx: &crate::RuntimeContext, payload: &[u8]| {
-            producer.produce(deser(ctx.clone(), payload)?);
-            Ok(())
-        }) as crate::connector::IngestFn
-    })
-}
-
-/// Like [`plain_ingest_factory`], for `with_match_deserializer`.
-fn match_ingest_factory<T>(
+fn ingest_factory<T>(
     record_key: String,
     deser: TypedMatchDeserializerFn<T>,
-) -> crate::connector::MatchIngestFactoryFn
+) -> crate::connector::IngestFactoryFn
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -1091,7 +1073,7 @@ where
                 producer.produce(deser(ctx, m, payload)?);
                 Ok(())
             },
-        ) as crate::connector::MatchIngestFn
+        ) as crate::connector::IngestFn
     })
 }
 
@@ -1237,20 +1219,12 @@ where
         let url = LinkAddress::parse(&self.url).map_err(|_| "Invalid connector URL")?;
         let record_key = self.registrar.record_key.clone();
 
-        let (ingest_factory, match_ingest_factory) = match (
+        let deser: TypedMatchDeserializerFn<T> = match (
             self.context_deserializer.take(),
             self.match_deserializer.take(),
         ) {
-            (Some(deser), None) => (plain_ingest_factory(record_key, deser), None),
-            (None, Some(deser)) => {
-                let factory = match_ingest_factory(record_key, deser);
-                let topic: Arc<str> = url.resource_id().into();
-                let inner = factory.clone();
-                let plain: crate::connector::IngestFactoryFn = Arc::new(move |db: &AimDb| {
-                    crate::connector::match_as_ingest(inner(db), topic.clone())
-                });
-                (plain, Some(factory))
-            }
+            (Some(deser), None) => Arc::new(move |ctx, _m, bytes| deser(ctx.clone(), bytes)),
+            (None, Some(deser)) => deser,
             (Some(_), Some(_)) => {
                 return Err(
                     "Set either .with_deserializer() or .with_match_deserializer(), not both"
@@ -1305,9 +1279,8 @@ where
             ));
         }
 
-        let mut link = InboundConnectorLink::new(url, ingest_factory);
+        let mut link = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
         link.config = core::mem::take(&mut self.config);
-        link.match_ingest_factory = match_ingest_factory;
         link.key = key;
         link.topic_resolver = self.topic_resolver.take();
         Ok(link)
@@ -1521,7 +1494,6 @@ mod tests {
                 .finish();
         });
         assert!(errors.is_empty(), "{errors:?}");
-        assert!(links[0].match_ingest_factory.is_some());
         let (capture, capacity) = links[0].key.clone().unwrap();
         assert_eq!((capture.as_str(), capacity.get()), ("device", 16));
     }
@@ -2018,22 +1990,17 @@ mod tests {
         }
     }
 
+    /// Routes `payload` on `topic` through the `mqtt` inbound router.
+    fn route(db: &crate::AimDb, topic: &str, payload: &[u8]) {
+        let router = db.inbound_router("mqtt", &Plus).expect("routes compile");
+        router.route(topic, payload, &db.runtime_ctx()).unwrap();
+    }
+
     /// End-to-end inbound path: bytes → fused ingest → typed buffer push,
     /// with no `Box<dyn Any>` in between.
     #[tokio::test]
     async fn ingest_roundtrip_produces_value() {
-        let last = Arc::new(AtomicI32::new(-1));
-        let count = Arc::new(AtomicUsize::new(0));
-        let (buf_last, buf_count) = (last.clone(), count.clone());
-
-        let mut builder = crate::AimDbBuilder::new()
-            .runtime(Arc::new(MockRuntime))
-            .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
-            reg.buffer_raw(Box::new(RecordingBuffer {
-                last: buf_last,
-                count: buf_count,
-            }));
+        let (db, last, count) = inbound_db(|reg| {
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
                     if bytes.is_empty() {
@@ -2044,117 +2011,32 @@ mod tests {
                     })
                 })
                 .finish();
-        });
-        let (db, _runner) = builder.build().await.expect("build must succeed");
+        })
+        .await;
 
-        let routes = db.collect_inbound_routes("mqtt");
-        assert_eq!(routes.len(), 1);
-        let (topic, ingest) = &routes[0];
-        assert_eq!(topic, "cmd/in");
-
-        let ctx = db.runtime_ctx();
-        ingest(&ctx, &[1, 2, 3]).expect("ingest must succeed");
+        route(&db, "cmd/in", &[1, 2, 3]);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(last.load(Ordering::SeqCst), 3);
 
-        // Bad bytes: the deserializer error propagates, nothing is produced.
-        let err = ingest(&ctx, &[]).expect_err("empty payload must fail");
-        assert_eq!(err, "empty payload");
+        // Bad bytes: the deserializer fails, nothing is produced.
+        route(&db, "cmd/in", &[]);
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
-    /// Raw/context mutual exclusion is behavior now (the kind enum is gone):
-    /// the variant set last wins inside the fused ingest closure.
+    /// The deserializer set last wins, whichever way its context is typed.
     #[tokio::test]
-    async fn context_deserializer_set_last_wins() {
-        let last = Arc::new(AtomicI32::new(-1));
-        let count = Arc::new(AtomicUsize::new(0));
-        let (buf_last, buf_count) = (last.clone(), count.clone());
-
-        let mut builder = crate::AimDbBuilder::new()
-            .runtime(Arc::new(MockRuntime))
-            .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
-            reg.buffer_raw(Box::new(RecordingBuffer {
-                last: buf_last,
-                count: buf_count,
-            }));
+    async fn deserializer_set_last_wins() {
+        let (db, last, _) = inbound_db(|reg| {
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
                 .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
                     Ok(TestRecord { value: 99 })
                 })
                 .finish();
-        });
-        let (db, _runner) = builder.build().await.expect("build must succeed");
-
-        let routes = db.collect_inbound_routes("mqtt");
-        let (_, ingest) = &routes[0];
-        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
+        })
+        .await;
+        route(&db, "cmd/in", b"x");
         assert_eq!(last.load(Ordering::SeqCst), 99);
-    }
-
-    /// And the reverse: raw set last wins over a prior context deserializer.
-    #[tokio::test]
-    async fn raw_deserializer_set_last_wins() {
-        let last = Arc::new(AtomicI32::new(-1));
-        let count = Arc::new(AtomicUsize::new(0));
-        let (buf_last, buf_count) = (last.clone(), count.clone());
-
-        let mut builder = crate::AimDbBuilder::new()
-            .runtime(Arc::new(MockRuntime))
-            .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
-            reg.buffer_raw(Box::new(RecordingBuffer {
-                last: buf_last,
-                count: buf_count,
-            }));
-            reg.link_from("mqtt://cmd/in")
-                .with_deserializer(|_ctx: crate::RuntimeContext, _bytes: &[u8]| {
-                    Ok(TestRecord { value: 0 })
-                })
-                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 7 }))
-                .finish();
-        });
-        let (db, _runner) = builder.build().await.expect("build must succeed");
-
-        let routes = db.collect_inbound_routes("mqtt");
-        let (_, ingest) = &routes[0];
-        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
-        assert_eq!(last.load(Ordering::SeqCst), 7);
-    }
-
-    /// The pre-pattern route API skips `{…}` links and gives a literal-topic
-    /// match link its topic.
-    #[tokio::test]
-    async fn collect_inbound_routes_skips_patterns_and_passes_literal_topics() {
-        let last = Arc::new(AtomicI32::new(-1));
-        let count = Arc::new(AtomicUsize::new(0));
-        let (buf_last, buf_count) = (last.clone(), count.clone());
-
-        let mut builder = crate::AimDbBuilder::new()
-            .runtime(Arc::new(MockRuntime))
-            .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
-            reg.buffer_raw(Box::new(RecordingBuffer {
-                last: buf_last,
-                count: buf_count,
-            }));
-            reg.link_from("mqtt://s/{d}/t")
-                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
-                .finish();
-            reg.link_from("mqtt://cmd/in")
-                .with_match_deserializer(match_deser)
-                .finish();
-        });
-        let (db, _runner) = builder.build().await.expect("build must succeed");
-
-        let routes = db.collect_inbound_routes("mqtt");
-        assert_eq!(routes.len(), 1);
-        let (topic, ingest) = &routes[0];
-        assert_eq!(topic, "cmd/in");
-        ingest(&db.runtime_ctx(), b"x").expect("ingest must succeed");
-        assert_eq!(last.load(Ordering::SeqCst), "cmd/in".len() as i32);
     }
 
     // ====================================================================
@@ -2294,7 +2176,7 @@ mod tests {
 
     #[cfg(feature = "connector-session")]
     #[tokio::test]
-    async fn pump_source_with_routes_through_the_given_router() {
+    async fn pump_source_routes_through_the_given_router() {
         struct Once(Option<(String, crate::Payload)>);
         impl crate::Source for Once {
             fn next(&mut self) -> crate::BoxFut<'_, Option<(String, crate::Payload)>> {
@@ -2312,7 +2194,7 @@ mod tests {
         .await;
         let router = db.inbound_router("mqtt", &Plus).unwrap();
         let source = Once(Some(("temp/a".into(), Arc::from(&b"x"[..]))));
-        for pump in crate::pump_source_with(&db, router, source) {
+        for pump in crate::pump_source(&db, router, source) {
             pump.await;
         }
         assert_eq!(last.load(Ordering::SeqCst), 0);

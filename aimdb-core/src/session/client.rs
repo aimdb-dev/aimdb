@@ -1558,13 +1558,12 @@ mod tests {
     async fn a_mirror_gap_still_routes_and_keeps_mirroring() {
         let seen: Arc<spin::Mutex<Vec<Vec<u8>>>> = Arc::new(spin::Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let ingest: crate::connector::IngestFn =
-            Arc::new(move |_ctx: &crate::RuntimeContext, bytes: &[u8]| {
-                recorder.lock().push(bytes.to_vec());
-                Ok(())
-            });
-        let routes = alloc::vec![(String::from("tele"), ingest)];
-        let router = Arc::new(crate::router::RouterBuilder::from_routes(routes).build());
+        let ingest: crate::connector::IngestFn = Arc::new(move |_ctx, _m, bytes: &[u8]| {
+            recorder.lock().push(bytes.to_vec());
+            Ok(())
+        });
+        let route = crate::router::CompiledRoute::exact("tele", ingest);
+        let router = Arc::new(Router::new(&crate::ExactGrammar, alloc::vec![route]));
         let ctx =
             crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         let (handle, cmd_rx, _prune_rx) = test_handle();

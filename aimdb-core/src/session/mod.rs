@@ -54,7 +54,7 @@ pub use io::{
     OneShotListener, StreamDialer, StreamListener,
 };
 #[cfg(feature = "connector-session")]
-pub use pump::{pump_sink, pump_source, pump_source_with};
+pub use pump::{pump_sink, pump_source};
 #[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
 

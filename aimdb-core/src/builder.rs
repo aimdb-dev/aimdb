@@ -1179,69 +1179,6 @@ impl AimDb {
         self.inner.set_record_from_json(record_name, json_value)
     }
 
-    /// Collects inbound connector routes for automatic router construction (std only)
-    ///
-    /// Iterates all records, filters their inbound_connectors by scheme,
-    /// and returns routes with fused ingest callbacks (deserialize + produce
-    /// in one typed closure — no `Box<dyn Any>` per message).
-    ///
-    /// # Arguments
-    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
-    ///
-    /// # Returns
-    /// Vector of tuples: (topic, ingest)
-    ///
-    /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
-    /// otherwise the static topic from the URL is used. Links whose topic has
-    /// `{…}` captures are skipped with a warning.
-    pub fn collect_inbound_routes(
-        &self,
-        scheme: &str,
-    ) -> Vec<(String, crate::connector::IngestFn)> {
-        let mut routes = Vec::new();
-
-        for entry in &self.inner.storages {
-            let inbound_links = entry.record.inbound_connectors();
-
-            for link in inbound_links {
-                // Filter by scheme
-                if link.url.scheme() != scheme {
-                    continue;
-                }
-
-                // Resolve topic: dynamic (from resolver) or static (from URL)
-                let topic = link.resolve_topic();
-
-                if crate::TopicPattern::parse(&topic).is_ok_and(|p| p.has_captures()) {
-                    log_warn!(
-                        "Skipping inbound link '{}': this connector does not support topic patterns",
-                        topic
-                    );
-                    continue;
-                }
-
-                // Create the fused ingest callback using the stored factory
-                let ingest = match &link.match_ingest_factory {
-                    Some(factory) => {
-                        crate::connector::match_as_ingest(factory(self), topic.as_str().into())
-                    }
-                    None => link.create_ingest(self),
-                };
-                routes.push((topic, ingest));
-            }
-        }
-
-        if !routes.is_empty() {
-            log_debug!(
-                "Collected {} inbound routes for scheme '{}'",
-                routes.len(),
-                scheme
-            );
-        }
-
-        routes
-    }
-
     /// The inbound router for `scheme`: every link compiled against the
     /// connector's `grammar`, keyed links sharing their record's key table.
     ///
@@ -1275,7 +1212,7 @@ impl AimDb {
         if !errors.is_empty() {
             return Err(DbError::InvalidConfiguration { errors });
         }
-        Ok(crate::Router::compiled(grammar, routes))
+        Ok(crate::Router::new(grammar, routes))
     }
 
     fn inbound_route(
@@ -1300,12 +1237,11 @@ impl AimDb {
             _ => None,
         };
 
-        let ingest = match &link.match_ingest_factory {
-            Some(factory) => factory(self),
-            None => crate::connector::ignore_match(link.create_ingest(self)),
-        };
         Ok(crate::router::CompiledRoute::pattern(
-            filter, names, key, ingest,
+            filter,
+            names,
+            key,
+            link.create_ingest(self),
         ))
     }
 
@@ -1322,7 +1258,7 @@ impl AimDb {
 
     /// Collects outbound routes for a specific protocol scheme
     ///
-    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
+    /// Mirrors [`inbound_router`](Self::inbound_router). Iterates all records,
     /// filters their outbound_connectors by scheme, and returns
     /// [`OutboundRoute`]s carrying fused serialized sources (subscribe →
     /// recv → resolve topic → serialize, all typed inside — no

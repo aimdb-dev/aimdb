@@ -23,7 +23,6 @@ pub mod tls;
 extern crate alloc;
 
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::router::RouterBuilder;
 use aimdb_core::session::{pump_sink, pump_source, Payload};
 use aimdb_core::transport::{ConnectorConfig, PublishError};
 use alloc::boxed::Box;
@@ -205,7 +204,8 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let topics = inbound_topics(db);
+        let router = db.inbound_router("mqtt", &aimdb_core::ExactGrammar)?;
+        let topics = inbound_topics(&router);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
@@ -222,7 +222,7 @@ where
             Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
-        Ok(collect_pumps(db, actions, events, manager_tasks))
+        Ok(collect_pumps(db, router, actions, events, manager_tasks))
     })
 }
 
@@ -245,7 +245,8 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let topics = inbound_topics(db);
+        let router = db.inbound_router("mqtt", &aimdb_core::ExactGrammar)?;
+        let topics = inbound_topics(&router);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
@@ -267,16 +268,14 @@ where
             Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
-        Ok(collect_pumps(db, actions, events, manager_tasks))
+        Ok(collect_pumps(db, router, actions, events, manager_tasks))
     })
 }
 
 /// The inbound topics the session must subscribe on every connection.
-fn inbound_topics(db: &aimdb_core::builder::AimDb) -> Vec<String> {
-    let inbound_routes = db.collect_inbound_routes("mqtt");
-    let topics: Vec<String> = RouterBuilder::from_routes(inbound_routes)
-        .build()
-        .resource_ids()
+fn inbound_topics(router: &aimdb_core::Router) -> Vec<String> {
+    let topics: Vec<String> = router
+        .subscriptions()
         .iter()
         .map(|t| t.to_string())
         .collect();
@@ -291,12 +290,13 @@ fn inbound_topics(db: &aimdb_core::builder::AimDb) -> Vec<String> {
 /// join them.
 fn collect_pumps(
     db: &aimdb_core::builder::AimDb,
+    router: aimdb_core::Router,
     actions: Arc<ActionChannel>,
     events: Arc<EventChannel>,
     manager_tasks: Vec<EmbassyBoxFuture>,
 ) -> Vec<EmbassyBoxFuture> {
     let mut futures = pump_sink(db, "mqtt", Arc::new(MqttSink { actions }));
-    futures.extend(pump_source(db, "mqtt", MqttSource { events }));
+    futures.extend(pump_source(db, router, MqttSource { events }));
     futures.extend(manager_tasks);
     futures
 }
