@@ -8,7 +8,8 @@
 //!
 //! ```rust,ignore
 //! let mut f = pump_sink(db, "redis", self.sink().await?);          // outbound
-//! f.extend(pump_source(db, "redis", self.subscription().await?));  // inbound
+//! let router = db.inbound_router("redis", &ExactGrammar)?;
+//! f.extend(pump_source(db, router, self.subscription().await?));   // inbound
 //! Ok(f)
 //! ```
 //!
@@ -21,7 +22,7 @@ use alloc::vec::Vec;
 
 use super::Source;
 use crate::builder::{AimDb, BoxFuture};
-use crate::router::RouterBuilder;
+use crate::router::Router;
 use crate::transport::{Connector, ConnectorConfig};
 
 /// Outbound pump: one publisher future per outbound route on `scheme`.
@@ -126,21 +127,17 @@ pub fn pump_sink(db: &AimDb, scheme: &str, sink: Arc<dyn Connector>) -> Vec<BoxF
     futures
 }
 
-/// Inbound pump: a single multiplexed reader future for `scheme`.
+/// Inbound pump: a single multiplexed reader future.
 ///
 /// Drives one [`Source`] (never one task per topic), fanning each
-/// `(topic, payload)` out to the matching producers via a [`Router`] built from
-/// [`collect_inbound_routes`](AimDb::collect_inbound_routes).
+/// `(topic, payload)` out to the matching producers via `router`, from
+/// [`AimDb::inbound_router`], whose subscriptions the connector made.
 ///
 /// Backpressure: [`Router::route`] drops + logs on a full producer buffer rather
 /// than blocking, so one slow record never stalls the shared source. Route errors
 /// are non-fatal.
-///
-/// [`Router`]: crate::router::Router
-/// [`Router::route`]: crate::router::Router::route
-pub fn pump_source(db: &AimDb, scheme: &str, mut src: impl Source + 'static) -> Vec<BoxFuture> {
-    let routes = db.collect_inbound_routes(scheme);
-    let router = Arc::new(RouterBuilder::from_routes(routes).build());
+pub fn pump_source(db: &AimDb, router: Router, mut src: impl Source + 'static) -> Vec<BoxFuture> {
+    let router = Arc::new(router);
     let ctx = db.runtime_ctx();
 
     vec![Box::pin(async move {

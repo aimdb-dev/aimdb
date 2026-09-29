@@ -111,6 +111,10 @@ extern crate alloc;
 // One `MqttConnector` over the `Native` and `Embedded` protocol backends.
 pub mod connector;
 
+// MQTT topic filters for inbound links (works on every feature leg).
+pub mod grammar;
+pub use grammar::MqttGrammar;
+
 // MQTT knobs over core's generic link builders (works on every feature leg).
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};

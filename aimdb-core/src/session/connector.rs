@@ -103,7 +103,8 @@ where
             );
             // One pump future per route; each holds a `ClientHandle` clone, so the
             // engine stays alive as long as any mirror runs. `handle` drops here.
-            let mut futures = pump_client(db, &self.scheme, &handle);
+            let router = db.inbound_router(&self.scheme, &crate::ExactGrammar)?;
+            let mut futures = pump_client(db, &self.scheme, router, &handle);
             futures.push(engine_fut);
             Ok(futures)
         })

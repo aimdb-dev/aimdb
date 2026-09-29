@@ -511,9 +511,14 @@ impl ConnectorLink {
 ///, so the only failure is the user
 /// deserializer's — reported as the same `String` the deserializer API uses.
 ///
-/// The [`RuntimeContext`](crate::RuntimeContext) is threaded per call (not
-/// captured) for context-aware deserializers.
-pub type IngestFn = Arc<dyn Fn(&crate::RuntimeContext, &[u8]) -> Result<(), String> + Send + Sync>;
+/// The [`RuntimeContext`](crate::RuntimeContext) and the
+/// [`TopicMatch`](crate::TopicMatch) the message arrived on are threaded per
+/// call (not captured).
+pub type IngestFn = Arc<
+    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 /// Type alias for ingest factory callback (alloc feature)
 ///
@@ -549,6 +554,7 @@ pub type TopicResolverFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 /// factory captures the type T at creation time, allowing type-safe
 /// deserialize+produce later without needing PhantomData or type parameters.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct InboundConnectorLink {
     /// Parsed link address (`scheme://resource`)
     pub url: LinkAddress,
@@ -567,6 +573,9 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     pub ingest_factory: IngestFactoryFn,
 
+    /// Set by `.key(..)`: the keyed capture and the key table's capacity.
+    pub key: Option<(String, core::num::NonZeroU16)>,
+
     /// Optional dynamic topic resolver (late-binding)
     ///
     /// Called once at connector startup to determine the subscription topic.
@@ -582,6 +591,7 @@ impl Debug for InboundConnectorLink {
             .field("url", &self.url)
             .field("config", &self.config)
             .field("ingest_factory", &"<factory>")
+            .field("key", &self.key)
             .field(
                 "topic_resolver",
                 &self.topic_resolver.as_ref().map(|_| "<function>"),
@@ -597,6 +607,7 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             ingest_factory,
+            key: None,
             topic_resolver: None,
         }
     }
@@ -722,7 +733,9 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 /// # Example
 ///
 /// Illustrative sketch of a connector author's `build()` (not compiled: the
-/// client types are fictional — see `aimdb-mqtt-connector` for a real one):
+/// client types and `MqttGrammar`, the connector's
+/// [`TopicGrammar`](crate::TopicGrammar), are the connector's own — see
+/// `aimdb-mqtt-connector` for a real one):
 ///
 /// ```rust,ignore
 /// pub struct MqttConnectorBuilder {
@@ -735,8 +748,8 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///         db: &'a AimDb,
 ///     ) -> Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>> {
 ///         Box::pin(async move {
-///             let routes = db.collect_inbound_routes(self.scheme());
-///             let router = RouterBuilder::from_routes(routes).build();
+///             // Wildcard rules are the connector's; `&ExactGrammar` if it has none.
+///             let router = db.inbound_router(self.scheme(), &MqttGrammar)?;
 ///             let connector = MqttConnector::new(&self.broker_url, router).await?;
 ///             Ok(connector.futures())
 ///         })
@@ -783,7 +796,7 @@ pub trait ConnectorBuilder: Send + Sync {
     /// Whether registering a second connector under this scheme is an error.
     ///
     /// Say `true` when [`build`](Self::build) claims every route for its
-    /// scheme — [`collect_inbound_routes`](crate::AimDb::collect_inbound_routes),
+    /// scheme — [`inbound_router`](crate::AimDb::inbound_router),
     /// [`collect_outbound_routes`](crate::AimDb::collect_outbound_routes),
     /// and `crate::session`'s `pump_source`, `pump_sink` and `pump_client`
     /// (left unlinked: that module is behind `connector-session`, and this
@@ -1021,7 +1034,7 @@ mod tests {
 
     /// Dummy ingest factory for link-construction tests (never invoked).
     fn dummy_ingest_factory() -> super::IngestFactoryFn {
-        Arc::new(|_db| Arc::new(|_ctx: &crate::RuntimeContext, _bytes: &[u8]| Ok(())))
+        Arc::new(|_db| Arc::new(|_ctx, _m, _bytes| Ok(())))
     }
 
     #[test]

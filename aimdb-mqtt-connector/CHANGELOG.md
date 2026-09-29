@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`MqttGrammar`**: MQTT 3.1.1 §4.7 topic filters for inbound links. `+` and
+  `{name}` match one level, `#` and `{name..}` the rest (last only, including
+  the parent level); a leading wildcard does not match a `$…` topic.
+
+### Changed
+
+- **Both backends route through `inbound_router("mqtt", &MqttGrammar)`** and
+  subscribe `subscriptions()`: a filter another one covers is not subscribed,
+  so the MQTT 3.1.1 (`Native`) and MQTT 5 (`Embedded`) backends each receive an
+  overlapping topic once. A hand-written `+`/`#` topic now matches; it used to
+  subscribe and never deliver.
+- **The `with_qos` doc no longer claims an inbound subscribe QoS.** Inbound
+  subscriptions stay at QoS 1, as before.
+
 ## [0.7.0] - 2026-09-18
 
 ### Changed (breaking)

@@ -7,7 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Topic patterns on inbound links (design 055).** `{name}` captures one
+  level, `{name..}` the rest; the syntax is checked at `build()`, and the
+  connector's `TopicGrammar` compiles each pattern into a `TopicFilter` when it
+  builds. `ExactGrammar` is the grammar for connectors without wildcards.
+- **`InboundConnectorBuilder::with_match_deserializer`** passes a `TopicMatch`
+  (`topic()`, `get(name)`, `key()`) borrowed from the router's stack, and a
+  borrowed `&RuntimeContext`, so no reference count changes per message.
+- **`.key(name, capacity)`** interns a capture into a `KeyId` from one table
+  per record, shared by all its keyed links. The table grows as values arrive;
+  when full, the message is dropped and counted. `AimDb::inbound_key_name`
+  resolves a key; `RecordMetadata::inbound_keys` (`InboundKeysInfo`) reports
+  captures, capacity, assigned and dropped.
+- **`AimDb::inbound_router(scheme, grammar)`** compiles a scheme's links,
+  including patterns a `TopicResolverFn` returns, and reports every link it
+  cannot compile at once. `Router::subscriptions()` lists the filters to
+  subscribe, without those another filter covers.
+
 ### Changed (breaking, API)
+
+- **One inbound path.** Removed `AimDb::collect_inbound_routes`,
+  `RouterBuilder`, `Route` and the public `Router::new`; a `Router` comes from
+  `inbound_router`. `IngestFn` takes the `TopicMatch`, and
+  `InboundConnectorLink` has one `ingest_factory` of that type.
+  `pump_source(db, router, src)` and `pump_client(db, scheme, router, handle)`
+  take the router, so a connector subscribes and routes with the same one.
+- **`InboundConnectorLink` gains `key`, `RecordMetadata` gains
+  `inbound_keys`; both are now `#[non_exhaustive]`.** The serde form of
+  `RecordMetadata` stays backward compatible.
+- **Outbound links reject `{…}` topics** at `build()`: a filter cannot be
+  published to.
+- **`{` and `}` in topics are pattern syntax** on every connector, with no
+  escape: a topic containing a literal brace can no longer be linked.
 
 - **`ConnectorConfig` gains `record_index: Option<usize>`**, the id of the
   record an outbound publish comes from — its registration index, the same

@@ -180,7 +180,7 @@ where
             let mut futures: Vec<BoxFuture> = vec![task];
             futures.extend(pump_source(
                 db,
-                "knx",
+                db.inbound_router("knx", &aimdb_core::ExactGrammar)?,
                 KnxSource::<N> {
                     telegrams: &channels.telegrams,
                 },

@@ -51,7 +51,7 @@ mod query;
 
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
-pub use metadata::RecordMetadata;
+pub use metadata::{InboundKeysInfo, RecordMetadata};
 pub use protocol::{
     version_compatible, ws_url_with_version, ErrorObject, Event, HelloMessage, Request, Response,
     WelcomeMessage, PROTOCOL_VERSION, VERSION_PARAM,

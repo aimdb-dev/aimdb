@@ -85,6 +85,7 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
+mod inbound_key;
 #[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
@@ -94,6 +95,7 @@ pub mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
 pub mod signal;
+pub mod topic_pattern;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -165,7 +167,16 @@ pub use connector::{
 };
 
 // Router exports for connector implementations
-pub use router::{Route, Router, RouterBuilder};
+pub use router::Router;
+
+// Topic grammar for connectors with wildcard subscriptions
+pub use topic_pattern::{
+    ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicMatch,
+    TopicPattern, MAX_CAPTURES,
+};
+
+// Keys assigned to capture values of keyed inbound links
+pub use inbound_key::KeyId;
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};

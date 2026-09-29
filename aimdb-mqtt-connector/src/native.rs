@@ -5,7 +5,6 @@
 //! adapters that core's pumps drive.
 
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::router::{Router, RouterBuilder};
 use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{log_debug, log_error, log_info};
 use aimdb_core::{pump_sink, pump_source, BoxFut, Payload, Source};
@@ -27,14 +26,11 @@ pub(crate) fn build<'a>(
     keep_alive_secs: u16,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
     Box::pin(async move {
-        // Build a router from the inbound routes purely to drive the MQTT
-        // subscriptions + channel-capacity sizing in `build_internal`. The
-        // routing `Router` that fans incoming frames out to producers is
-        // (re)built by `pump_source` from the same `collect_inbound_routes`.
-        let inbound_routes = db.collect_inbound_routes("mqtt");
-        let router = RouterBuilder::from_routes(inbound_routes).build();
+        // One router both subscribes (here) and routes (`pump_source`).
+        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
+        let topics = router.subscriptions();
 
-        log_info!("MQTT subscribing to {} topics", router.resource_ids().len());
+        log_info!("MQTT subscribing to {} topics", topics.len());
 
         // Connect, subscribe, and hand back the raw event loop.
         let (client, event_loop) = MqttConnectorImpl::build_internal(
@@ -42,7 +38,7 @@ pub(crate) fn build<'a>(
             client_id,
             credentials,
             keep_alive_secs,
-            router,
+            &topics,
         )
         .await
         .map_err(|e| {
@@ -54,7 +50,7 @@ pub(crate) fn build<'a>(
         // Inbound: one multiplexed reader future fanning publishes out to producers.
         futures.extend(pump_source(
             db,
-            "mqtt",
+            router,
             MqttEventLoopSource {
                 event_loop,
                 broker_key: broker_url.to_string(),
@@ -73,8 +69,8 @@ pub(crate) fn build<'a>(
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
-    /// Connect to the broker and subscribe to every topic in `router`, sizing
-    /// the send channel from the route count.
+    /// Connect to the broker and subscribe to `topics`, sizing the send
+    /// channel from their count.
     ///
     /// Returns the shared client (for the outbound `pump_sink`) plus the raw
     /// event loop (for [`MqttEventLoopSource`] and the inbound `pump_source`).
@@ -84,7 +80,7 @@ impl MqttConnectorImpl {
         client_id: Option<&str>,
         credentials: Option<&(String, String)>,
         keep_alive_secs: u16,
-        router: Router,
+        topics: &[Arc<str>],
     ) -> Result<(Arc<AsyncClient>, EventLoop), String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
@@ -151,9 +147,7 @@ impl MqttConnectorImpl {
             return Err(no_tls_backend());
         }
 
-        // Wrap router early so we can count topics for capacity calculation
-        let router_arc = Arc::new(router);
-        let topic_count = router_arc.resource_ids().len();
+        let topic_count = topics.len();
 
         // Dynamic channel capacity: scales with topic count.
         //
@@ -177,11 +171,9 @@ impl MqttConnectorImpl {
         let (client, event_loop) = AsyncClient::new(mqtt_opts, channel_capacity);
         let client_arc = Arc::new(client);
 
-        let topics = router_arc.resource_ids();
-
         log_info!("Subscribing to {} MQTT topics...", topics.len());
 
-        for topic in &topics {
+        for topic in topics {
             log_debug!("Subscribing to MQTT topic: {}", topic);
 
             client_arc
@@ -346,31 +338,26 @@ fn no_tls_backend() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::router::RouterBuilder;
 
     #[tokio::test]
     async fn test_connector_creation_with_router() {
-        let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, None, 60, router)
-                .await;
+            MqttConnectorImpl::build_internal("mqtt://localhost:1883", None, None, 60, &[]).await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_connector_with_port() {
-        let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, None, 60, router)
+            MqttConnectorImpl::build_internal("mqtt://broker.local:9999", None, None, 60, &[])
                 .await;
         assert!(connector.is_ok());
     }
 
     #[tokio::test]
     async fn test_invalid_url() {
-        let router = RouterBuilder::new().build();
         let connector =
-            MqttConnectorImpl::build_internal("not-a-valid-url", None, None, 60, router).await;
+            MqttConnectorImpl::build_internal("not-a-valid-url", None, None, 60, &[]).await;
         assert!(connector.is_err());
     }
 
@@ -378,13 +365,12 @@ mod tests {
     async fn test_connector_mqtts_url_with_credentials() {
         // mqtts:// with URL-embedded credentials must parse and build; the TLS
         // handshake itself only happens once the event loop is polled.
-        let router = RouterBuilder::new().build();
         let connector = MqttConnectorImpl::build_internal(
             "mqtts://hub-sub:secret@broker.example.com:8883",
             None,
             None,
             60,
-            router,
+            &[],
         )
         .await;
 
@@ -410,13 +396,12 @@ mod tests {
     /// The plain scheme is unaffected by which backend, if any, is selected.
     #[tokio::test]
     async fn test_connector_mqtt_url_needs_no_tls_backend() {
-        let router = RouterBuilder::new().build();
         let connector = MqttConnectorImpl::build_internal(
             "mqtt://broker.example.com:1883",
             None,
             None,
             60,
-            router,
+            &[],
         )
         .await;
         assert!(connector.is_ok());

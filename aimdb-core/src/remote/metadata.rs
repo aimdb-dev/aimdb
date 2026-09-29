@@ -8,7 +8,6 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-#[cfg(feature = "observability")]
 use alloc::vec::Vec;
 use core::any::TypeId;
 use serde::{Deserialize, Serialize};
@@ -34,6 +33,7 @@ use crate::record_id::{RecordId, RecordKey};
 /// server whose clients need that distinction must be built with
 /// `observability` on; without it the honest client answer is "unknown".
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RecordMetadata {
     /// Unique record identifier (index in the storage)
     pub record_id: u32,
@@ -85,6 +85,10 @@ pub struct RecordMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity: Option<String>,
 
+    /// The record's key table, when it has keyed inbound links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_keys: Option<InboundKeysInfo>,
+
     // ===== Buffer metrics (feature-gated) =====
     /// Total items pushed to the buffer (metrics feature only).
     ///
@@ -123,6 +127,20 @@ pub struct RecordMetadata {
     #[cfg(feature = "observability")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signal_stats: Option<Vec<crate::profiling::SignalStatsInfo>>,
+}
+
+/// A record's key table. Key names are not listed; `inbound_key_name`
+/// resolves one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct InboundKeysInfo {
+    /// The keyed capture of each keyed link.
+    pub captures: Vec<String>,
+    pub capacity: u16,
+    pub assigned: usize,
+    /// Messages turned away because the table was full, once per matching
+    /// keyed link.
+    pub dropped: u32,
 }
 
 impl RecordMetadata {
@@ -169,6 +187,7 @@ impl RecordMetadata {
             outbound_connector_count,
             schema_type: None,
             entity,
+            inbound_keys: None,
             #[cfg(feature = "observability")]
             produced_count: None,
             #[cfg(feature = "observability")]
@@ -281,5 +300,39 @@ mod tests {
         assert!(json.contains("\"buffer_type\":\"single_latest\""));
         assert!(json.contains("\"writable\":true"));
         assert!(json.contains("\"outbound_connector_count\":2"));
+        assert!(!json.contains("inbound_keys"));
+    }
+
+    #[test]
+    fn inbound_keys_are_optional_on_the_wire() {
+        let mut metadata = RecordMetadata::new(
+            RecordId::new(0),
+            StringKey::new("sensors.readings"),
+            TypeId::of::<i32>(),
+            "i32".to_string(),
+            RecordOrigin::Passive,
+            "spmc_ring".to_string(),
+            Some(256),
+            0,
+            0,
+            false,
+            0,
+        );
+
+        // An older server's reply has no `inbound_keys`.
+        let json = serde_json::to_string(&metadata).unwrap();
+        let old: RecordMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(old.inbound_keys, None);
+
+        let keys = InboundKeysInfo {
+            captures: alloc::vec!["device".to_string()],
+            capacity: 1024,
+            assigned: 3,
+            dropped: 1,
+        };
+        metadata.inbound_keys = Some(keys.clone());
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: RecordMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.inbound_keys, Some(keys));
     }
 }

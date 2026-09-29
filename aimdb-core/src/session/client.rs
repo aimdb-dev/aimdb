@@ -27,7 +27,7 @@ use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
     SubUpdate, TransportError,
 };
-use crate::router::RouterBuilder;
+use crate::router::Router;
 use crate::AimDb;
 
 /// Capacity of a subscription's client-side event sink. Bounded (was
@@ -843,7 +843,7 @@ where
 /// For the given connector `scheme` (e.g. `"aimx"`):
 /// - **outbound** routes (`db.collect_outbound_routes`) stream local record
 ///   updates to the remote via [`ClientHandle::write`];
-/// - **inbound** routes (`db.collect_inbound_routes`) subscribe to the remote and
+/// - **inbound** routes (`router`, from [`AimDb::inbound_router`]) subscribe to the remote and
 ///   produce each update into the local record through the producer/arbiter path
 ///   — single-writer-per-key stays intact (a mirrored-in record is produced
 ///   through its inbound producer, never a direct co-writer). Mirroring is
@@ -856,7 +856,12 @@ where
 ///
 /// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
 /// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
-pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFut<'static, ()>> {
+pub fn pump_client(
+    db: &AimDb,
+    scheme: &str,
+    router: Router,
+    handle: &ClientHandle,
+) -> Vec<BoxFut<'static, ()>> {
     // The runtime context for context-aware (de)serializers.
     let ctx = db.runtime_ctx();
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
@@ -897,8 +902,8 @@ pub fn pump_client(db: &AimDb, scheme: &str, handle: &ClientHandle) -> Vec<BoxFu
     // --- inbound: remote events -> local producer (via the Router) ---------
     // The Router applies each route's deserializer and produces the value; one
     // subscription per unique remote topic feeds it.
-    let router = Arc::new(RouterBuilder::from_routes(db.collect_inbound_routes(scheme)).build());
-    for id in router.resource_ids() {
+    let router = Arc::new(router);
+    for id in router.subscriptions() {
         pumps.push(Box::pin(inbound_pump(
             handle.clone(),
             router.clone(),
@@ -1553,13 +1558,12 @@ mod tests {
     async fn a_mirror_gap_still_routes_and_keeps_mirroring() {
         let seen: Arc<spin::Mutex<Vec<Vec<u8>>>> = Arc::new(spin::Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let ingest: crate::connector::IngestFn =
-            Arc::new(move |_ctx: &crate::RuntimeContext, bytes: &[u8]| {
-                recorder.lock().push(bytes.to_vec());
-                Ok(())
-            });
-        let routes = alloc::vec![(String::from("tele"), ingest)];
-        let router = Arc::new(RouterBuilder::from_routes(routes).build());
+        let ingest: crate::connector::IngestFn = Arc::new(move |_ctx, _m, bytes: &[u8]| {
+            recorder.lock().push(bytes.to_vec());
+            Ok(())
+        });
+        let route = crate::router::CompiledRoute::exact("tele", ingest);
+        let router = Arc::new(Router::new(&crate::ExactGrammar, alloc::vec![route]));
         let ctx =
             crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         let (handle, cmd_rx, _prune_rx) = test_handle();

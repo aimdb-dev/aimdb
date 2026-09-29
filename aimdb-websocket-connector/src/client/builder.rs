@@ -9,7 +9,7 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WsClientConnectorBuilder::build(&db)
-//!        ├─ db.collect_inbound_routes("ws-client")  → Router
+//!        ├─ db.inbound_router("ws-client", &ExactGrammar) → Router
 //!        ├─ db.collect_outbound_routes("ws-client") → outbound futures
 //!        ├─ connect to remote WebSocket server
 //!        ├─ build connector_future (read + write + keepalive + reconnect)
@@ -20,7 +20,7 @@
 use std::pin::Pin;
 
 use aimdb_core::session::{aimx::AimxCodec, pump_client, run_client, ClientConfig};
-use aimdb_core::ConnectorBuilder;
+use aimdb_core::{ConnectorBuilder, ExactGrammar};
 
 use crate::transport::WsDialer;
 
@@ -171,7 +171,8 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
                 config,
                 db.runtime_ops(),
             );
-            let mut futures = pump_client(db, "ws-client", &handle);
+            let router = db.inbound_router("ws-client", &ExactGrammar)?;
+            let mut futures = pump_client(db, "ws-client", router, &handle);
             futures.push(engine_fut);
             Ok(futures)
         })
