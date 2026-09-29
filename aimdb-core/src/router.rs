@@ -136,8 +136,9 @@ impl Router {
 
         // Linear search through all routes
         // Note: Multiple routes may match the same resource_id (different types)
-        let mut spans: Spans = [(0, 0); MAX_CAPTURES];
         for route in &self.routes {
+            // Fresh per route: a failed match may leave partial spans.
+            let mut spans: Spans = [(0, 0); MAX_CAPTURES];
             if route.matches(resource_id, &mut spans) {
                 matched = true;
                 let Some(key) = route.key(resource_id, &spans) else {

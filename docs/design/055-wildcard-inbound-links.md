@@ -373,7 +373,10 @@ the connector, so it is uncontended.
 - **Covering set.** A filter is left out when another matches every topic
   it matches (`sensors/kitchen/temp` under `sensors/+/temp`; `a/+/b` under
   `a/#`). Required for backend parity (§3.1). The router still fans each
-  message out to every route.
+  message out to every route. Filters that overlap only partly (`r/+/c`
+  and `r/b/+`) both stay, so the embedded backend (MQTT 5) receives such a
+  message once per filter and the native one (MQTT 3.1.1) once: a known
+  difference.
 - `MqttGrammar::covers` compares level by level. A wildcard covers a
   literal level only where it may match it: `#` and `+/x` do not cover
   `$SYS/x`, because the broker never delivers `$…` topics to a leading

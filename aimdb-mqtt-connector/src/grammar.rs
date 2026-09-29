@@ -51,6 +51,11 @@ impl TopicGrammar for MqttGrammar {
                 }
                 PatternPart::Capture { multi, .. } => {
                     if let Some(level) = raw.last_mut() {
+                        if level.capture.is_some() {
+                            return Err(format!(
+                                "'{topic}': a capture must be a whole level, not part of one"
+                            ));
+                        }
                         level.capture = Some((captures, *multi));
                     }
                     captures += 1;
@@ -230,6 +235,8 @@ mod tests {
         for (topic, needle) in [
             ("sensors/dev-{id}", "capture must be a whole level"),
             ("a/{x}y", "capture must be a whole level"),
+            ("a/{x}{y}", "capture must be a whole level"),
+            ("a/{x}{y..}", "capture must be a whole level"),
             ("a/{rest..}/b", "must be the last level"),
             ("a/#/b", "must be the last level"),
             ("sport/tennis#", "wildcard must be a whole level"),
