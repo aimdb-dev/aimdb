@@ -9,7 +9,7 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WsClientConnectorBuilder::build(&db)
-//!        ├─ db.collect_inbound_routes("ws-client")  → Router
+//!        ├─ db.inbound_router("ws-client", &ExactGrammar) → Router
 //!        ├─ db.collect_outbound_routes("ws-client") → outbound futures
 //!        ├─ connect to remote WebSocket server
 //!        ├─ build connector_future (read + write + keepalive + reconnect)
