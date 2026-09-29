@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RecordMetadata` stays backward compatible.
 - **Outbound links reject `{…}` topics** at `build()`: a filter cannot be
   published to.
+- **`{` and `}` in topics are pattern syntax** on every connector, with no
+  escape: a topic containing a literal brace can no longer be linked.
 
 - **`ConnectorConfig` gains `record_index: Option<usize>`**, the id of the
   record an outbound publish comes from — its registration index, the same

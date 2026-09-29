@@ -905,11 +905,11 @@ where
         let url_string = url.to_string();
         let scheme = url.scheme().to_string();
 
-        if crate::TopicPattern::parse(url.resource_id()).is_ok_and(|p| p.has_captures()) {
+        if url.resource_id().contains(['{', '}']) {
             self.registrar.rec.push_config_error(ConfigError::new(
                 record_key,
                 Some(self.url),
-                "Outbound links cannot use topic patterns",
+                "Outbound topics cannot contain '{' or '}'",
             ));
             return self.registrar;
         }
@@ -1146,7 +1146,9 @@ where
 
     /// Assigns each value of capture `name` a [`KeyId`](crate::KeyId), up to
     /// `capacity` values per record. Messages with a value beyond that are
-    /// dropped.
+    /// dropped. A value keeps its key even if its payload fails to
+    /// deserialize, and keys are never freed, so anyone who can publish under
+    /// the pattern can fill the table.
     pub fn key(mut self, name: &str, capacity: u16) -> Self {
         self.key = Some((name.to_string(), capacity));
         self
@@ -1587,7 +1589,7 @@ mod tests {
 
         assert!(rec.outbound_connectors().is_empty());
         let errors = drain_errors(&mut rec);
-        assert!(errors[0].message.contains("cannot use topic patterns"));
+        assert!(errors[0].message.contains("cannot contain '{' or '}'"));
     }
 
     // ====================================================================

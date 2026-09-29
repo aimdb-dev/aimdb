@@ -21,7 +21,8 @@ fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
     m.lock()
 }
 
-/// A capture value's key, assigned the first time the value is seen.
+/// A capture value's key, assigned the first time the value is seen. Only
+/// meaningful for the record whose link produced it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct KeyId(NonZeroU16);
 
