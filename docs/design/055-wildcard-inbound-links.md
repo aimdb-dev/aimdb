@@ -332,7 +332,8 @@ pub struct KeyId(NonZeroU16);   // Option<KeyId> is 2 bytes; .index() is 0-based
 - A new value costs one allocation (its name); a known value costs none.
 - A `{name..}` capture can be a key; its value is the whole remainder.
 - **When the table is full**, the message is dropped and the table's
-  `dropped` counter (`AtomicU32`) increases. A message that reaches the
+  `dropped` counter (`AtomicU32`) increases, once per matching keyed
+  link. A message that reaches the
   deserializer of a keyed link always has `m.key() == Some(_)`.
 - Keys are never reused while the process runs.
 - `db.inbound_key_name("sensors.readings", key) -> Option<Arc<str>>`

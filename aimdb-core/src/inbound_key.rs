@@ -93,7 +93,8 @@ impl KeyTable {
         lock(&self.keys).names.len()
     }
 
-    /// Messages turned away because the table was full.
+    /// Messages turned away because the table was full, once per matching
+    /// keyed link.
     #[cfg(any(test, feature = "remote"))]
     pub(crate) fn dropped(&self) -> u32 {
         self.dropped.load(Ordering::Relaxed)

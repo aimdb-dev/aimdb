@@ -138,7 +138,8 @@ pub struct InboundKeysInfo {
     pub captures: Vec<String>,
     pub capacity: u16,
     pub assigned: usize,
-    /// Messages turned away because the table was full.
+    /// Messages turned away because the table was full, once per matching
+    /// keyed link.
     pub dropped: u32,
 }
 
