@@ -420,13 +420,24 @@ route N pump ──serialize in place──▶ record ring N ─┘   (sole owne
     skipped and counted.
   - Records queued during an outage stay in their rings and are sent after
     reconnecting, as actions are today.
-- **Synchronisation.** No lock. Each record ring has exactly one producer
-  (its route's pump) and one consumer (the session loop), so head and tail
-  are atomics. The pump parks on the ring's single waker when it is full;
-  `commit` raises one signal the session loop waits on. Neither
-  `ClientStateNoQueue` nor the write ring is shared: the session loop owns
-  the state and is the write ring's only writer, `write_out` its only
-  reader.
+- **Synchronisation.** No lock in the per-message path.
+  - Each record ring has exactly one producer (its route's pump) and one
+    consumer (the session loop). The ring is split into a producer half,
+    owned by the `RoutePublisher`, and a consumer half, owned by the
+    session loop, so the type system enforces it. Head and tail are
+    atomics.
+  - The write ring has one writer (the session loop) and one reader
+    (`write_out`), which run in the same task under one `select3`.
+  - `ClientStateNoQueue` and the list of record rings belong to the session
+    loop alone. The list is fixed before the loop starts; a reconnect starts
+    a new loop only after the old one has ended.
+  - Wakers are the only shared state left: each ring wakes its own pump when
+    space is released, and every ring's `commit` wakes the session loop.
+    Those are atomic waker slots, not locks held while data is copied.
+  - Atomics: the rings need atomic read-modify-write (`swap`,
+    `fetch_add`), which `thumbv7em`, `thumbv8m.main` and std targets have.
+    On targets without it (`thumbv6m`), the rings and wakers fall back to
+    `portable-atomic` or a critical section.
 - **Session loop.** Where `perform` runs today, when `action_ready` holds
   the loop takes the oldest committed record from the rings in round-robin
   order, checks the write ring has room for its encoded size
@@ -446,6 +457,45 @@ route N pump ──serialize in place──▶ record ring N ─┘   (sole owne
   write ring keeps a reserve for control packets (PUBACK, PINGREQ), so a
   stalled socket full of publishes cannot block an acknowledgement. PINGREQ
   stays lossy, as today.
+- **Implementation: `bbqueue` 0.7.** Both ring kinds are `bbqueue`
+  queues (single-producer single-consumer bip buffers with grants, Miri
+  tested):
+  - *Record rings* use the framed interface with a `u16` length header.
+    `poll_ready` calls `FramedProducer::grant(slot_len)` and stores the
+    returned `FramedGrantW` in the publisher; `buffers` lends regions of
+    it; `commit` calls `FramedGrantW::commit(used)`, which writes the header
+    and returns the unused tail to the ring. The session loop's
+    `FramedConsumer::read` yields one record; if the write ring has no room
+    yet it calls `keep()` (the record stays queued), otherwise it encodes
+    and calls `release()`. Records are limited to 64 KiB.
+  - *Write ring* uses the stream interface. The session loop takes
+    `grant_exact(frame_len + control_reserve)` and commits only
+    `frame_len`, which keeps the reserve free without any accounting of its
+    own; `write_out` takes `read()` grants and releases them after
+    `write_all`.
+  - Storage is `BoxedSlice` (feature `alloc`): each ring is allocated once
+    at build, sized from its `RouteSpec`. Queues are held as
+    `ArcBBQueue`, so the halves carry no lifetimes; taking a grant clones
+    the `Arc` (a counter increment, no allocation).
+  - Coordination is `AtomicCoord` (lock-free) where the target has atomic
+    pointers; `CsCoord` or the `portable-atomic` features otherwise.
+  - Notifier: `bbqueue`'s async support is an `AsyncNotifier` with `async
+    fn`s backed by `maitake-sync`, which does not fit `poll_ready`. AimDB
+    implements the public `Notifier` trait instead, with two atomic waker
+    slots per ring: `wake_one_producer` wakes the route's pump,
+    `wake_one_consumer` wakes the session loop. `poll_ready` registers its
+    waker, then tries `grant`, and returns `Pending` on
+    `InsufficientSize`; the session loop does the same for `read`.
+  - Dependency: `bbqueue = { version = "0.7", default-features = false,
+    features = ["alloc"] }`, which leaves out `maitake-sync` and
+    `critical-section`.
+  - Record layout inside a frame: `[topic_len: u16][topic][payload]`. The
+    publisher lends the payload region at a fixed offset after the route's
+    topic capacity, so a route with a `TopicWriter` leaves up to
+    `topic_capacity` unused bytes per queued record. If that matters, the
+    reader can serialize the payload first and write the topic after it
+    (`[payload_len][topic_len][payload][topic]`), at the cost of a less
+    direct `OutboundBuffers` contract.
 - **Sizes and oversize routes.** A route's record ring holds at least two
   slots, so the pump can fill the next record while the loop encodes the
   previous one. For an owned serializer (`payload_capacity: None`), the slot
@@ -607,10 +657,19 @@ The Zenoh connector (053) is not implemented yet; it is written against
   default maximum payload for owned-serializer routes, the write ring size
   and its control reserve. Per-route rings cost more RAM than one shared
   ring; measure with the demo applications' route counts.
-- **Ring implementation.** The record rings need a single-producer,
-  single-consumer bip buffer with grants and runtime-chosen sizes. Check
-  whether `bbqueue` fits (`no_std`, waker integration, storage sized at
-  build rather than by const generic) before writing one.
+- **`bbqueue` stability.** 0.6 (January 2026) was a rewrite and 0.7
+  followed in March; the author plans a few more minor breaking changes
+  before 1.0. Pin to `0.7` and budget for one upgrade. The pieces used here
+  (framed and stream grants, `BoxedSlice`, `AtomicCoord`, the `Notifier`
+  trait) are the core of the crate, not experimental features.
+- **Write ring across reconnects.** `bbqueue` has no public `reset`. Either
+  the session drains the write ring through its consumer when a connection
+  ends, or each connection allocates a fresh write ring (one allocation per
+  reconnect, not per message). Draining is preferred on embedded.
+- **Inbound chunk channel.** The embedded `read_into` side
+  (`Channel<Chunk, 1>` into `PacketReader`) could use a stream `bbqueue`
+  too, reading socket bytes straight into a grant. Out of scope here;
+  noted for a follow-up.
 - **Other connectors' own copies.** KNX, WebSocket and the AimX session were
   not measured at connector level; §5's per-connector rows will show them.
 
@@ -625,5 +684,8 @@ The Zenoh connector (053) is not implemented yet; it is written against
 - [055 — Wildcard inbound links](./055-wildcard-inbound-links.md)
   (grammar, keys, `TopicMatch`, §7 relation to this design)
 - `aimdb-bench/benches/b0_alloc_connector.rs`
+- [`bbqueue`](https://github.com/jamesmunns/bbqueue) 0.7, and the
+  [lock-free ring buffer design](https://ferrous-systems.com/blog/lock-free-ring-buffer/)
+  it is based on
 - `aimdb-mqtt-connector/src/embedded/session_loop.rs` (`client_loop`,
   `drain_packets`, `perform`, `encode`, `write_out`)
