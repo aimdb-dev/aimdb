@@ -1,8 +1,10 @@
 # 054 — Zero-allocation connector boundary
 
 **Status:** 📝 Proposed — revised 2026-10-02: no backward compatibility
-(adapters, `Source` and `TopicProvider` removed; one migration), embedded
-MQTT outbound reworked so the session loop stays the only encoder (§4.6).
+(adapters, `Source` and `TopicProvider` removed; one migration); publishers
+lend the buffers the reader serializes into (§4.2, §4.4); embedded MQTT
+outbound uses one lock-free record ring per route and keeps the session loop
+as the only encoder (§4.6).
 Previous revision 2026-09-30, after 055 landed.
 
 **Scope:** the per-message path between `aimdb-core` and connectors, in both
@@ -189,23 +191,35 @@ impl InboundDispatch {
   loop; for native MQTT it is the task polling `rumqttc`'s event loop. A
   slow user deserializer delays keep-alive and ack handling in both (§8).
 
-### 4.2 Outbound: poll-based reader
+### 4.2 Outbound: the publisher lends the buffers
 
-`SerializedReader` has one method, in poll form, over the buffer reader's
-existing `poll_recv` (037). Topic and payload are both written into storage
-the pump owns:
+The serialized topic and payload are written straight into storage the
+publisher owns. For the embedded MQTT backend that storage is a slot in the
+route's record ring (§4.6), so the bytes are never copied between
+serialization and encoding. For other connectors it is a per-route scratch
+the publisher allocates once, which replaces the pump's scratch of today.
 
 ```rust
-pub struct OutboundScratch {
-    pub payload: Vec<u8>,   // allocated once per route (exists today)
-    pub topic: String,      // new; capacity fixed once per route, never grown
+/// Where the reader writes one message. Borrowed from the publisher.
+pub struct OutboundBuffers<'a> {
+    pub topic: TopicBuf<'a>,    // capacity = the route's topic capacity (§4.3)
+    pub payload: &'a mut [u8],  // capacity = the route's payload capacity
 }
 
+/// What the reader wrote.
 pub struct OutboundFrame {
-    /// `true`: `scratch.topic` holds the destination (a `TopicWriter` wrote
-    /// it). `false`: use the link's default topic.
-    pub written_topic: bool,
-    pub payload: SerializedPayload,
+    /// `Some(len)`: a `TopicWriter` wrote `len` bytes into `buffers.topic`.
+    /// `None`: use the route's default topic.
+    pub topic: Option<usize>,
+    pub payload: CommittedPayload,
+}
+
+pub enum CommittedPayload {
+    /// `len` bytes written into `buffers.payload` (`with_serializer_into`).
+    InPlace(usize),
+    /// An owned serializer's bytes (`with_serializer`, A6). The publisher
+    /// moves or copies them as its transport needs.
+    Owned(Vec<u8>),
 }
 
 pub trait SerializedReader: Send {
@@ -213,18 +227,20 @@ pub trait SerializedReader: Send {
         &mut self,
         cx: &mut Context<'_>,
         ctx: &RuntimeContext,
-        scratch: &mut OutboundScratch,
+        buffers: OutboundBuffers<'_>,
     ) -> Poll<DbResult<OutboundFrame>>;
 }
 ```
 
-- Removes A3. `SerializedPayload::Owned` stays for owned serializers (A6,
-  §2 non-goals).
-- The scratch topic is a `String` so the pump borrows it as `&str` without
-  re-validating.
-- The async `recv` / `recv_into` pair and `RecvSerializedIntoFuture` are
-  removed. The only implementors are in this repository (the fused reader
-  in `typed_api.rs` and the bench).
+- Removes A3. The reader runs the topic writer and the serializer only when
+  a value is ready, so it writes into `buffers` at most once per `Ready`.
+- `CommittedPayload::Owned` keeps owned serializers working (A6, §2
+  non-goals). It is also the cheaper path for transports whose client takes
+  an owned payload: the native MQTT publisher moves the `Vec` into
+  `rumqttc` instead of copying it (§4.6).
+- The async `recv` / `recv_into` pair, `RecvSerializedIntoFuture` and
+  `SerializedPayload` are removed. The only implementors are in this
+  repository (the fused reader in `typed_api.rs` and the bench).
 
 ### 4.3 Outbound: topics are written, not returned
 
@@ -236,14 +252,16 @@ pub trait TopicWriter<T>: Send + Sync {
     fn write_topic(&self, value: &T, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow>;
 }
 
-// TopicBuf implements core::fmt::Write over the route's topic scratch and
-// refuses any write past its fixed capacity.
+// TopicBuf implements core::fmt::Write over a byte slice the publisher lends
+// (§4.2) and refuses any write past its end. Only `&str` goes in, so the
+// bytes are valid UTF-8 by construction.
 // usage: write!(out, "sensors/{}/{}", v.site, v.id)?; Ok(true)
 ```
 
 - `.with_topic_writer(capacity, writer)` on the outbound builder replaces
-  `.with_topic_provider(provider)`; capacity is the topic scratch size for
-  that route. This is the one user-facing break in this design.
+  `.with_topic_provider(provider)`; capacity is the topic space the publisher
+  reserves per message on that route. This is the one user-facing break in
+  this design.
 - An overflow skips the message and increments a per-link counter; the topic
   is never truncated.
 - Closures implement `TopicWriter` through a blanket impl, so a one-line
@@ -256,19 +274,33 @@ pub trait TopicWriter<T>: Send + Sync {
 (A4). It is replaced by a publisher created once per route:
 
 ```rust
+/// Everything a publisher needs to know about its route, fixed at build.
+pub struct RouteSpec<'a> {
+    pub default_topic: &'a str,
+    pub config: &'a ConnectorConfig,  // qos, retain, … from the link URL
+    pub topic_capacity: usize,        // 0 without a TopicWriter
+    /// `Some(n)`: into-slice serializer with an n-byte scratch.
+    /// `None`: owned serializer; the publisher picks its own limit.
+    pub payload_capacity: Option<usize>,
+}
+
 pub trait Connector: Send + Sync {
-    /// Called once per outbound route when the pump starts.
-    fn route_publisher(&self, config: &ConnectorConfig) -> Box<dyn RoutePublisher>;
+    /// Called once per outbound route while the connector builds its pumps,
+    /// before its transport tasks start.
+    fn route_publisher(&self, route: &RouteSpec<'_>)
+        -> Result<Box<dyn RoutePublisher>, PublishError>;
 }
 
 pub trait RoutePublisher: Send {
-    /// Ready to accept one message (e.g. queue space). Also drives any
-    /// hand-over still in progress from the previous `start_send`.
+    /// Ready to accept one message: storage for it is reserved. Also drives
+    /// any hand-over still in progress from the previous `commit`.
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), PublishError>>;
-    /// Hand one message over. Synchronous; the publisher copies what it
-    /// needs into storage it owns.
-    fn start_send(&mut self, dest: &str, payload: &[u8]) -> Result<(), PublishError>;
-    /// Complete every hand-over started so far. Default: `Ready(Ok(()))`.
+    /// The storage reserved by the last successful `poll_ready`. Calling it
+    /// again before `commit` returns the same storage.
+    fn buffers(&mut self) -> OutboundBuffers<'_>;
+    /// The message written into `buffers` is complete. Synchronous.
+    fn commit(&mut self, frame: OutboundFrame) -> Result<(), PublishError>;
+    /// Complete every hand-over committed so far. Default: `Ready(Ok(()))`.
     fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), PublishError>> {
         let _ = cx;
         Poll::Ready(Ok(()))
@@ -276,21 +308,24 @@ pub trait RoutePublisher: Send {
 }
 ```
 
-- This is the `futures::Sink` shape: backpressure through `poll_ready`, a
-  synchronous hand-over, no future per message. `&mut self` per route means
-  no locks inside the trait; a publisher that feeds shared connector state
-  (§4.6) owns that synchronisation.
-- `start_send` borrows `dest` and `payload` from the pump's scratch; the
-  publisher decides how to keep them (a pre-allocated ring, a client queue).
-- Configuration (`qos`, `retain`, …) is parsed once in `route_publisher`,
-  not per message as the MQTT sinks do today. An invalid configuration is
-  reported there, once, instead of failing every message.
+- This is the `futures::Sink` shape with the buffer lent out instead of
+  passed in (the grant pattern of `bbqueue`): backpressure through
+  `poll_ready`, a synchronous hand-over, no future per message, no copy into
+  the publisher.
+- A reservation is held while the reader waits for the next value. That is
+  why it belongs to one route: a publisher must not reserve in storage other
+  routes share (§4.6 gives each route its own ring).
+- `route_publisher` parses configuration (`qos`, `retain`, …) once, not per
+  message as the MQTT sinks do today, and rejects a route it cannot serve
+  (invalid configuration, a message that can never fit) before anything
+  runs. It returns a `Result` for that reason.
 - **Errors never end a route.** A publisher that completes a hand-over
   asynchronously reports its failure from the next `poll_ready` or
   `poll_flush`, i.e. one message late, and clears it once reported. The
-  publisher logs the failed destination itself (it still owns the copy);
-  the pump logs that the route saw an error and continues, as `pump_sink`
-  does today.
+  publisher logs the failed destination itself; the pump logs that the route
+  saw an error and continues, as `pump_sink` does today. A message that does
+  not fit (topic overflow, an owned payload larger than the publisher's
+  limit) is skipped and counted, and the reservation is reused.
 - **Shutdown.** When the reader ends (buffer closed), the pump awaits
   `poll_flush` once before dropping the publisher, so the last message is
   not silently abandoned.
@@ -308,18 +343,21 @@ loop {
         log_warn!("route '{}': earlier publish failed: {:?}", default_topic, e);
         continue;
     }
-    let frame = match poll_fn(|cx| reader.poll_recv_into(cx, &ctx, &mut scratch)).await {
+    // Serialize straight into the publisher's reserved storage.
+    let frame = match poll_fn(|cx| reader.poll_recv_into(cx, &ctx, publisher.buffers())).await {
         Ok(frame) => frame,
-        Err(DbError::BufferLagged { .. }) => continue,
+        Err(DbError::BufferLagged { .. }) => continue, // reservation kept
         Err(_) => break,
     };
-    let dest = if frame.written_topic { scratch.topic.as_str() } else { &default_topic };
-    if let Err(e) = publisher.start_send(dest, payload_of(&frame, &scratch)) {
-        log_error!("route '{}': publish to '{}' failed: {:?}", default_topic, dest, e);
+    if let Err(e) = publisher.commit(frame) {
+        log_error!("route '{}': publish failed: {:?}", default_topic, e);
     }
 }
 let _ = poll_fn(|cx| publisher.poll_flush(cx)).await;
 ```
+
+The pump no longer owns any per-route buffer; `RouteSpec` carries the sizes
+the old pump scratch was built from.
 
 ### 4.5 Values with heap data (guidance)
 
@@ -353,50 +391,73 @@ let action_ready = connected
     && !outbound.is_full();
 ```
 
-So route publishers do not encode packets. The hand-over is split across two
-pre-allocated rings, and the session loop stays the only encoder:
+So route publishers do not encode packets. Each route serializes into its
+own record ring; the session loop stays the only encoder and writes into
+one write ring:
 
 ```text
-RoutePublisher × N ──copy──▶ record ring ──▶ session loop ──encode──▶ write ring ──▶ write_out ──▶ socket
-  (qos, retain, topic,        (per connector,   (sole owner of           (per connection,
-   payload)                    survives          ClientStateNoQueue,      bip buffer)
-                               reconnects)       same gate as today)
+route 1 pump ──serialize in place──▶ record ring 1 ─┐
+route 2 pump ──serialize in place──▶ record ring 2 ─┼─▶ session loop ──encode (1 copy)──▶ write ring ──▶ write_out ──▶ socket
+route N pump ──serialize in place──▶ record ring N ─┘   (sole owner of                    (per connection,
+               (one producer each, lock-free,            ClientStateNoQueue,               bip buffer)
+                survives reconnects)                     same gate as today)
 ```
 
-- **Record ring** (replaces `ActionChannel`). One per connector, a byte ring
-  of variable-length records `{qos, retain, topic_len, payload_len, topic,
-  payload}`, allocated at build. `start_send` copies one record in;
-  `poll_ready` = room for this route's largest record (header + topic
-  capacity + payload scratch capacity, known at `route_publisher` time).
-  Publishers waiting for room register in a multi-waker; the session loop
-  waits on a signal raised by `start_send`. The ring lives as long as the
-  connector, so records queued during an outage are sent after reconnecting,
-  as actions are today.
-- **Session loop.** Where `perform` runs today, the loop peeks the next
-  record when `action_ready` holds and the write ring has room for its
-  encoded size (`MqttLenWriter`), calls `state.publish_packet(topic,
-  payload, qos, retain)`, encodes the packet straight into the write ring
-  (`MqttBufWriter` over the reserved slot), calls `state.publish_update`,
-  then releases the record. Packet ids, the one-in-flight rule and the
-  connect/subscribe ordering are untouched.
+- **Record rings** (replace `ActionChannel`). One per route, created in
+  `route_publisher` while the connector builds its pumps, so the session
+  loop starts with a fixed list of ring consumers. Each ring is a
+  single-producer, single-consumer bip buffer of variable-length records
+  `{topic_len, payload_len, topic, payload}`; `qos`, `retain` and the
+  default topic are stored once per ring, not per record.
+  - `poll_ready` reserves one contiguous slot of `topic_capacity +
+    payload_capacity` (plus a small record header) and waits if the ring has
+    no room.
+  - `buffers` lends the slot's topic and payload regions; the serializer
+    and `TopicWriter` write directly into them.
+  - `commit` writes the record header with the real lengths and releases the
+    unused tail of the slot. `CommittedPayload::Owned` is copied into the
+    slot (A6 keeps its copy); an owned payload larger than the slot is
+    skipped and counted.
+  - Records queued during an outage stay in their rings and are sent after
+    reconnecting, as actions are today.
+- **Synchronisation.** No lock. Each record ring has exactly one producer
+  (its route's pump) and one consumer (the session loop), so head and tail
+  are atomics. The pump parks on the ring's single waker when it is full;
+  `commit` raises one signal the session loop waits on. Neither
+  `ClientStateNoQueue` nor the write ring is shared: the session loop owns
+  the state and is the write ring's only writer, `write_out` its only
+  reader.
+- **Session loop.** Where `perform` runs today, when `action_ready` holds
+  the loop takes the oldest committed record from the rings in round-robin
+  order, checks the write ring has room for its encoded size
+  (`MqttLenWriter`), calls `state.publish_packet(topic, payload, qos,
+  retain)` with slices borrowed from the record ring, encodes the packet
+  straight into the write ring (`MqttBufWriter` over the reserved slot),
+  calls `state.publish_update`, then releases the record. Round-robin keeps
+  one busy route from starving the others; packet ids, the one-in-flight
+  rule and the connect/subscribe ordering are untouched.
 - **Write ring** (replaces `Channel<Vec<u8>, 4>` and `encode`'s `Vec`). One
   per connection, cleared on reconnect so no bytes from an old session
   reach a new socket. All packets go through it (CONNECT, SUBSCRIBE,
   PUBLISH, PUBACK, PINGREQ). `MqttBufWriter` needs a contiguous slice, so
-  the ring is a bip buffer: a frame that does not fit before the end skips
-  to the start. `write_out` writes contiguous slices to the socket and
-  releases them.
+  it is a bip buffer as well. `write_out` writes contiguous slices to the
+  socket and releases them.
 - **Control packets.** The session loop encodes a PUBLISH only when the
   write ring keeps a reserve for control packets (PUBACK, PINGREQ), so a
   stalled socket full of publishes cannot block an acknowledgement. PINGREQ
   stays lossy, as today.
-- **Oversize frames.** `route_publisher` rejects a route whose largest
-  record cannot fit in the record ring, or whose encoded frame cannot fit in
-  the write ring minus the control reserve.
+- **Sizes and oversize routes.** A route's record ring holds at least two
+  slots, so the pump can fill the next record while the loop encodes the
+  previous one. For an owned serializer (`payload_capacity: None`), the slot
+  uses the connector's maximum payload, a builder option. `route_publisher`
+  rejects a route whose encoded frame cannot fit in the write ring minus the
+  control reserve.
 
-Cost: two copies of topic and payload per message (into the record, then
-into the frame), zero allocations. This is the price of keeping the state
-machine single-owner; it also gives std users an allocation-free MQTT path
+Cost per message: zero allocations and one copy of topic and payload (record
+ring into the encoded frame), in addition to the network stack's own copy
+into its TX buffer, which TLS needs anyway to encrypt. The remaining copy is
+the price of keeping packet encoding inside the session loop (§7,
+alternative 8). This also gives std users an allocation-free MQTT path
 through `TokioTcpDialer` (052).
 
 #### Native backend (`rumqttc`)
@@ -404,14 +465,16 @@ through `TokioTcpDialer` (052).
 - *Inbound.* `dispatch(&publish.topic, &publish.payload)` in the event-loop
   task; `MqttEventLoopSource` is removed. This removes both the topic clone
   and the `Arc` payload copy.
-- *Outbound.* `AsyncClient` takes owned `String` and payload, so the two
-  copies stay (G2). Two options for the publisher, to be settled when the
-  native backend migrates:
-  1. `start_send` builds the `AsyncClient::publish` future and stores it in
+- *Outbound.* `AsyncClient` takes an owned `String` and payload (G2). The
+  publisher lends a per-route topic and payload scratch from `buffers`;
+  `commit` builds the owned topic and copies the in-place payload, or moves a
+  `CommittedPayload::Owned` `Vec` straight in without copying. Two options
+  for the hand-over, to be settled when the native backend migrates:
+  1. `commit` builds the `AsyncClient::publish` future and stores it in
      a per-route `tokio_util::sync::ReusableBoxFuture` (037's Tokio
      technique); `poll_ready` / `poll_flush` drive it. Keeps backpressure,
      removes the box, reports errors one message late (§4.4).
-  2. `start_send` calls the synchronous `AsyncClient::try_publish`. No
+  2. `commit` calls the synchronous `AsyncClient::try_publish`. No
      stored future, errors attributed immediately, but no readiness signal:
      a full request channel drops the message and counts it.
 
@@ -439,8 +502,9 @@ this design:
 The bench asserts exact values, so every change updates `EXPECTED` and the
 baseline together. A connector-level row per MQTT backend (loopback broker
 for native, the existing loopback harness for embedded) records G2; the
-embedded rows target 0 in both directions, the native outbound row records
-the two copies plus whatever `rumqttc` adds.
+embedded rows target 0 allocations in both directions and record the one
+outbound copy (§4.6); the native outbound row records the owned topic, the
+payload copy and whatever `rumqttc` adds.
 
 **Gate.** A CI job runs `cargo bench -p aimdb-bench --bench
 b0_alloc_connector` (host only, a few seconds) and fails on any assertion.
@@ -453,7 +517,7 @@ deterministic and do not need a quiet runner.
 | Who | Change |
 |---|---|
 | Application code | `.with_topic_provider(p)` → `.with_topic_writer(capacity, w)`. Nothing else. |
-| Connector authors | `inbound_router` + `pump_source` / `router.route` → `InboundDispatch`; `Connector::publish` → `route_publisher` + `RoutePublisher`. No adapters. |
+| Connector authors | `inbound_router` + `pump_source` / `router.route` → `InboundDispatch`; `Connector::publish` → `route_publisher(&RouteSpec)` + `RoutePublisher` (`poll_ready`, `buffers`, `commit`, `poll_flush`); the publisher owns the per-route buffers the pump used to own. No adapters. |
 | Custom `SerializedReader` implementors | `recv` / `recv_into` → `poll_recv_into` (none known outside this repository) |
 
 Without adapters, changing the core traits breaks every connector at once,
@@ -462,7 +526,7 @@ so the work lands as one change (a feature branch merged once):
 | Crate | Inbound | Outbound |
 |---|---|---|
 | `aimdb-core` | `InboundDispatch`; remove `Source`, `pump_source`, public `inbound_router`; AimX session client (TCP, UDS, serial) moves from `router.route` | poll `SerializedReader`, `TopicWriter`, `RoutePublisher`, new pump; remove `Connector::publish`, `TopicProvider` |
-| `aimdb-mqtt-connector` embedded | `dispatch` in `drain_packets` | record ring + write ring (§4.6) |
+| `aimdb-mqtt-connector` embedded | `dispatch` in `drain_packets` | per-route record rings + write ring (§4.6) |
 | `aimdb-mqtt-connector` native | `dispatch` in event-loop task | `ReusableBoxFuture` publisher |
 | `aimdb-knx-connector` | `Source` → `dispatch` | `RoutePublisher` |
 | `aimdb-websocket-connector` | rename (`router.route` → `dispatch`), client and server | server `RoutePublisher` |
@@ -496,23 +560,41 @@ The Zenoh connector (053) is not implemented yet; it is written against
    clients expose messages. Push (`dispatch`) fits them directly.
 4. **Keep `Connector::publish` and pool its futures.** Futures of different
    connectors have different sizes; pooling adds unsafe layout handling for
-   no gain over `poll_ready`/`start_send`.
+   no gain over `poll_ready`/`commit`.
 5. **Embedded: keep the action channel, with fixed-size `heapless` topic and
    payload.** Removes the action allocations but not the encode `Vec`, and
    sizes every slot for the largest route. The record ring (§4.6) holds
    variable-length records instead.
 6. **Embedded: route publishers encode PUBLISH into the write ring
-   (previous revision of this design).** One copy instead of two, but
-   publishers would need the session's client state: whether it is
-   connected and subscribed, whether the single in-flight slot is free, and
-   the next packet id. Frames encoded during an outage would reach a new
-   socket ahead of CONNECT. Sharing the state across tasks needs a lock, and
-   resetting the ring on reconnect loses queued messages. Keeping the session
-   loop as the only encoder avoids all of it for one extra memcpy.
+   (first revision of this design).** Publishers would need the session's
+   client state: whether it is connected and subscribed, whether the single
+   in-flight slot is free, and the next packet id. Frames encoded during an
+   outage would reach a new socket ahead of CONNECT. Sharing the state
+   across tasks needs a lock, and resetting the ring on reconnect loses
+   queued messages. It has the same single copy as §4.6, so it gains nothing
+   for its problems.
 7. **Keep compatibility adapters (`BoxedPublisher`, poll `Source`,
    `TopicProvider` adapter) for a staged migration.** Allows one PR per
    connector, but keeps two mechanisms per direction and their bench rows.
    Every connector is in this repository, so one migration is cheaper.
+8. **Embedded: zero AimDB copies by hand-encoding PUBLISH in the record
+   ring.** Lay each record out as a frame with gaps (fixed header and topic
+   length in front, a hole for the packet id), let the session loop patch
+   only the packet id, and have `write_out` send straight from the record
+   rings. Removes the last copy, but AimDB would encode PUBLISH outside
+   `mountain-mqtt`'s codec and must stay byte-identical to it (MQTT 5
+   properties included), `write_out` would interleave N record rings and the
+   control ring through a descriptor queue, and records would stay reserved
+   until the socket write completes, so rings grow. The copy it saves is one
+   memcpy of topic and payload, small next to the network stack's own copy
+   and TLS encryption. Revisit only if the STM32H5 rig shows the copy
+   matters.
+9. **Publisher takes borrowed bytes (`start_send(&str, &[u8])`, second
+   revision of this design).** Simpler trait, but the pump serializes into
+   its own scratch and every publisher copies from it, so the embedded
+   backend pays two copies. With one shared record ring for all routes it
+   also needs a lock among the route pumps. Lending the buffers (§4.4) and
+   one ring per route remove both.
 
 ## 8. Open questions
 
@@ -521,8 +603,14 @@ The Zenoh connector (053) is not implemented yet; it is written against
   Native: it delays polling `rumqttc`'s event loop. Measure on the STM32H5
   rig (037's B3) and with the native loopback row; decide whether to
   document a deserializer budget.
-- **Ring sizing (embedded).** Defaults for the record ring and the write
-  ring, and the size of the write ring's control reserve.
+- **Ring sizing (embedded).** Slots per record ring (at least two), the
+  default maximum payload for owned-serializer routes, the write ring size
+  and its control reserve. Per-route rings cost more RAM than one shared
+  ring; measure with the demo applications' route counts.
+- **Ring implementation.** The record rings need a single-producer,
+  single-consumer bip buffer with grants and runtime-chosen sizes. Check
+  whether `bbqueue` fits (`no_std`, waker integration, storage sized at
+  build rather than by const generic) before writing one.
 - **Other connectors' own copies.** KNX, WebSocket and the AimX session were
   not measured at connector level; §5's per-connector rows will show them.
 
