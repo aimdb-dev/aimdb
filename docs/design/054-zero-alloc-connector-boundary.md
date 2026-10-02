@@ -329,8 +329,42 @@ pub trait RoutePublisher: Send {
 - **Shutdown.** When the reader ends (buffer closed), the pump awaits
   `poll_flush` once before dropping the publisher, so the last message is
   not silently abandoned.
-- There is no adapter for the old `publish`. Every in-tree connector
-  implements `RoutePublisher` directly (§6).
+- There is no adapter for the old `publish`.
+
+**Connectors that copy anyway: `SendBytes`.** Most transports copy the
+message into their own client or socket buffer, so lending them storage
+buys nothing. Core provides a `ScratchPublisher` that owns a per-route topic
+and payload scratch (sized from the `RouteSpec`), implements
+`RoutePublisher`, and on `commit` calls a much smaller trait:
+
+```rust
+pub trait SendBytes: Send {
+    /// Transport readiness, e.g. client queue space. Default: always ready.
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), PublishError>> {
+        let _ = cx;
+        Poll::Ready(Ok(()))
+    }
+    /// Send one message, copying what the transport needs.
+    fn send(&mut self, topic: &str, payload: &[u8]) -> Result<(), PublishError>;
+    /// Send an owned serializer's payload (A6). Default: borrow and `send`.
+    /// Override when the transport takes ownership (native MQTT moves it in).
+    fn send_owned(&mut self, topic: &str, payload: Vec<u8>) -> Result<(), PublishError> {
+        self.send(topic, &payload)
+    }
+    fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), PublishError>> {
+        let _ = cx;
+        Poll::Ready(Ok(()))
+    }
+}
+
+// connector: Ok(Box::new(ScratchPublisher::new(route, MyTransport { .. })))
+```
+
+Native MQTT, KNX, WebSocket and the AimX session client implement
+`SendBytes`: today's `publish` body without the boxed future. Only the
+embedded MQTT backend implements `RoutePublisher` directly, because only
+there does lending remove a copy. This is the normal path for copying
+transports, not a compatibility adapter.
 
 With 4.2–4.4 the pump's per-message loop is:
 
@@ -516,15 +550,15 @@ through `TokioTcpDialer` (052).
   task; `MqttEventLoopSource` is removed. This removes both the topic clone
   and the `Arc` payload copy.
 - *Outbound.* `AsyncClient` takes an owned `String` and payload (G2). The
-  publisher lends a per-route topic and payload scratch from `buffers`;
-  `commit` builds the owned topic and copies the in-place payload, or moves a
-  `CommittedPayload::Owned` `Vec` straight in without copying. Two options
-  for the hand-over, to be settled when the native backend migrates:
-  1. `commit` builds the `AsyncClient::publish` future and stores it in
+  backend implements `SendBytes` behind `ScratchPublisher`: `send` builds
+  the owned topic and copies the payload, `send_owned` moves an owned
+  serializer's `Vec` straight in without copying. Two options for the
+  hand-over, to be settled when the native backend migrates:
+  1. `send` builds the `AsyncClient::publish` future and stores it in
      a per-route `tokio_util::sync::ReusableBoxFuture` (037's Tokio
      technique); `poll_ready` / `poll_flush` drive it. Keeps backpressure,
      removes the box, reports errors one message late (§4.4).
-  2. `commit` calls the synchronous `AsyncClient::try_publish`. No
+  2. `send` calls the synchronous `AsyncClient::try_publish`. No
      stored future, errors attributed immediately, but no readiness signal:
      a full request channel drops the message and counts it.
 
@@ -575,11 +609,11 @@ so the work lands as one change (a feature branch merged once):
 
 | Crate | Inbound | Outbound |
 |---|---|---|
-| `aimdb-core` | `InboundDispatch`; remove `Source`, `pump_source`, public `inbound_router`; AimX session client (TCP, UDS, serial) moves from `router.route` | poll `SerializedReader`, `TopicWriter`, `RoutePublisher`, new pump; remove `Connector::publish`, `TopicProvider` |
+| `aimdb-core` | `InboundDispatch`; remove `Source`, `pump_source`, public `inbound_router`; AimX session client (TCP, UDS, serial) moves from `router.route` | poll `SerializedReader`, `TopicWriter`, `RoutePublisher`, `SendBytes` + `ScratchPublisher`, new pump; AimX session client implements `SendBytes`; remove `Connector::publish`, `TopicProvider` |
 | `aimdb-mqtt-connector` embedded | `dispatch` in `drain_packets` | per-route record rings + write ring (§4.6) |
-| `aimdb-mqtt-connector` native | `dispatch` in event-loop task | `ReusableBoxFuture` publisher |
-| `aimdb-knx-connector` | `Source` → `dispatch` | `RoutePublisher` |
-| `aimdb-websocket-connector` | rename (`router.route` → `dispatch`), client and server | server `RoutePublisher` |
+| `aimdb-mqtt-connector` native | `dispatch` in event-loop task | `SendBytes` with a `ReusableBoxFuture` |
+| `aimdb-knx-connector` | `Source` → `dispatch` | `SendBytes` |
+| `aimdb-websocket-connector` | rename (`router.route` → `dispatch`), client and server | server `SendBytes` |
 | `aimdb-embassy-adapter` | `send_wrapper.rs` wrappers for `Source` / `Connector` removed or reduced to `RoutePublisher` | — |
 | tests, bench | codec tests that build a router to ingest (`aimdb-data-contracts/src/link_codec.rs`, `aimdb-mqtt-connector/tests/link_ext_tests.rs`) → `InboundDispatch` (`route_count`, `subscriptions`, `dispatch`) | `topic_provider_tests.rs` (mqtt, knx), websocket e2e → `TopicWriter`; bench rewritten (§5) |
 
@@ -588,7 +622,24 @@ so the work lands as one change (a feature branch merged once):
 1. On main, independently: the CI gate for today's bench, and the native
    MQTT topic move (`publish.topic` instead of `.clone()`).
 2. On the feature branch: core interfaces and pump, bench rewritten.
-3. MQTT embedded (§4.6), then native.
+3. MQTT embedded (§4.6), in two steps, each tested on its own with the
+   loopback harness:
+   1. *Write ring.* Replace `encode`'s `Vec` and `Channel<Vec<u8>, 4>` with
+      the stream `bbqueue` write ring, draining on reconnect. The
+      `ActionChannel` stays; the embedded publisher is temporarily a
+      `SendBytes` that copies into an action. Touches `perform`,
+      `drain_packets`, `queue` and `write_out` only, and removes the
+      per-packet allocation.
+   2. *Record rings.* Replace the `ActionChannel` with per-route framed
+      rings, the custom `Notifier` and round-robin, and switch the embedded
+      publisher to `RoutePublisher` with lent buffers.
+
+   Step 2 is where the session loop's complexity grows. If it turns out
+   not to be worth it, stop after step 1: the core interfaces do not
+   change, and the embedded backend keeps one action allocation per
+   message until a later change (or uses a shared record ring with one
+   extra copy, alternative 9).
+   Then native MQTT.
 4. KNX, WebSocket, Embassy adapter, data contracts, tests.
 5. Merge once the gate and every connector's tests pass.
 
