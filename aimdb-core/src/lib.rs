@@ -85,6 +85,7 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
+mod inbound_dispatch;
 mod inbound_key;
 #[cfg(feature = "observability")]
 pub mod profiling;
@@ -167,6 +168,7 @@ pub use connector::{
 };
 
 // Router exports for connector implementations
+pub use inbound_dispatch::InboundDispatch;
 pub use router::Router;
 
 // Topic grammar for connectors with wildcard subscriptions

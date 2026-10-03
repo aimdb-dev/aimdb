@@ -2135,7 +2135,7 @@ mod tests {
         }
     }
 
-    fn config_errors(result: crate::DbResult<crate::Router>) -> Vec<crate::ConfigError> {
+    fn config_errors<T>(result: crate::DbResult<T>) -> Vec<crate::ConfigError> {
         match result {
             Err(crate::DbError::InvalidConfiguration { errors }) => errors,
             Err(e) => panic!("unexpected error {e:?}"),
@@ -2174,6 +2174,97 @@ mod tests {
         assert!(errors[0]
             .message
             .contains("does not support topic patterns"));
+    }
+
+    // ====================================================================
+    // InboundDispatch: the same cases through the connector entry point
+    // ====================================================================
+
+    #[tokio::test]
+    async fn inbound_dispatch_routes_patterns_with_shared_keys() {
+        let (db, last, count) = inbound_db(|reg| {
+            reg.link_from("mqtt://temp/{d}")
+                .key("d", 2)
+                .with_match_deserializer(key_deser)
+                .finish();
+            reg.link_from("mqtt://hum/{id}")
+                .key("id", 2)
+                .with_match_deserializer(key_deser)
+                .finish();
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 100 }))
+                .finish();
+        })
+        .await;
+
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        let subscriptions: Vec<String> = inbound
+            .subscriptions()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(subscriptions, ["cmd/in", "hum/+", "temp/+"]);
+        assert_eq!(inbound.route_count(), 3);
+
+        let dispatch = |topic: &str| {
+            inbound.dispatch(topic, b"");
+            last.load(Ordering::SeqCst)
+        };
+        assert_eq!(dispatch("temp/a"), 0);
+        assert_eq!(dispatch("hum/b"), 1);
+        assert_eq!(dispatch("hum/a"), 0, "one key table per record");
+        assert_eq!(dispatch("cmd/in"), 100);
+        let produced = count.load(Ordering::SeqCst);
+        dispatch("temp/c");
+        assert_eq!(count.load(Ordering::SeqCst), produced, "full table drops");
+    }
+
+    #[tokio::test]
+    async fn inbound_dispatch_rejects_links_it_cannot_compile() {
+        let (db, _, _) = inbound_db(|reg| {
+            reg.link_from("mqtt://r/one")
+                .with_topic_resolver(|| Some("r/{d".into()))
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .finish();
+            reg.link_from("mqtt://k/{d}")
+                .key("d", 4)
+                .with_topic_resolver(|| Some("k/{x}".into()))
+                .with_match_deserializer(key_deser)
+                .finish();
+        })
+        .await;
+
+        let errors = config_errors(crate::InboundDispatch::new(&db, "mqtt", &Plus));
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|e| e.record_key == "rec.in"));
+        assert!(errors[0].message.contains("unbalanced '{' in 'r/{d'"));
+        assert!(errors[1]
+            .message
+            .contains("key 'd' is not a capture of 'k/{x}'"));
+    }
+
+    #[tokio::test]
+    async fn inbound_dispatch_clones_share_records() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<crate::InboundDispatch>();
+
+        let (db, last, count) = inbound_db(|reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx, bytes: &[u8]| {
+                    Ok(TestRecord {
+                        value: bytes.len() as i32,
+                    })
+                })
+                .finish();
+        })
+        .await;
+
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        let clone = inbound.clone();
+        drop(inbound);
+        clone.dispatch("cmd/in", b"abcd");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last.load(Ordering::SeqCst), 4);
     }
 
     #[cfg(feature = "connector-session")]
