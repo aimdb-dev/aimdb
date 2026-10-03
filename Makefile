@@ -745,7 +745,7 @@ publish:
 
 ## Benchmark gates
 # Runs the counting-allocator connector bench, which asserts its EXPECTED
-# allocations per message and fails on any difference (design 054 §5).
+# allocations per message and fails on any difference.
 # Deterministic, so it gates CI without a quiet runner.
 bench-gate:
 	@printf "$(GREEN)Checking connector allocation counts...$(NC)\n"
