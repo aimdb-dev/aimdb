@@ -269,8 +269,8 @@ impl Source for MqttEventLoopSource {
             loop {
                 match self.event_loop.poll().await {
                     Ok(Event::Incoming(Packet::Publish(publish))) => {
-                        let topic = publish.topic.clone();
                         let payload: Payload = Arc::from(publish.payload.as_ref());
+                        let topic = publish.topic;
 
                         log_debug!(
                             "Received MQTT message on topic '{}' ({} bytes)",
