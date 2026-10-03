@@ -247,6 +247,133 @@ pub trait TopicProvider<T>: Send + Sync {
     fn topic(&self, value: &T) -> Option<String>;
 }
 
+// ============================================================================
+// TopicWriter - Destinations written into bounded storage
+// ============================================================================
+
+/// Writes an outbound link's destination for each value (outbound only).
+///
+/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundConnectorBuilder::with_topic_fn)
+/// takes one directly. A writer type goes to
+/// [`with_topic_writer`](crate::typed_api::OutboundConnectorBuilder::with_topic_writer).
+///
+/// # Example
+///
+/// ```rust
+/// use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
+/// use core::fmt::Write;
+/// # #[derive(Clone, Debug)] struct Temperature { sensor_id: u32 }
+///
+/// struct SensorTopic;
+///
+/// impl TopicWriter<Temperature> for SensorTopic {
+///     fn write_topic(&self, value: &Temperature, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+///         write!(out, "sensors/temp/{}", value.sensor_id)?;
+///         Ok(true)
+///     }
+/// }
+/// ```
+pub trait TopicWriter<T>: Send + Sync {
+    /// Write the destination for `value` into `out`.
+    ///
+    /// `Ok(true)` publishes to what was written, `Ok(false)` to the static
+    /// topic from the `link_to()` URL. A value whose topic does not fit is
+    /// skipped, whatever this returns; the topic is never truncated.
+    fn write_topic(&self, value: &T, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow>;
+}
+
+impl<T, F> TopicWriter<T> for F
+where
+    F: Fn(&T, &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> + Send + Sync,
+{
+    fn write_topic(&self, value: &T, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+        self(value, out)
+    }
+}
+
+/// A topic did not fit in its link's topic capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicOverflow;
+
+impl From<core::fmt::Error> for TopicOverflow {
+    fn from(_: core::fmt::Error) -> Self {
+        TopicOverflow
+    }
+}
+
+/// Bounded topic storage handed to a [`TopicWriter`].
+///
+/// A write that does not fit is refused whole, so the contents are always
+/// valid UTF-8. After the first refused write every later write is refused
+/// too.
+pub struct TopicBuf<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+    overflowed: bool,
+}
+
+impl<'a> TopicBuf<'a> {
+    /// An empty topic over `buf`; its capacity is `buf.len()`.
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            len: 0,
+            overflowed: false,
+        }
+    }
+
+    /// Append `s`, or refuse it whole if it does not fit.
+    pub fn push_str(&mut self, s: &str) -> Result<(), TopicOverflow> {
+        let end = self.len + s.len();
+        match self.buf.get_mut(self.len..end) {
+            Some(dst) if !self.overflowed => {
+                dst.copy_from_slice(s.as_bytes());
+                self.len = end;
+                Ok(())
+            }
+            _ => {
+                self.overflowed = true;
+                Err(TopicOverflow)
+            }
+        }
+    }
+
+    /// Bytes written so far.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether nothing has been written.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The most bytes this topic can hold.
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// The topic written so far.
+    pub fn as_str(&self) -> &str {
+        // Only whole `&str`s are ever copied in, so this cannot fail.
+        self.buf
+            .get(..self.len)
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether a write was refused.
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+}
+
+impl core::fmt::Write for TopicBuf<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.push_str(s).map_err(|_| core::fmt::Error)
+    }
+}
+
 /// Address of a record link: `scheme://resource` (e.g. `mqtt://sensors/temp`).
 ///
 /// A link address names a topic/resource on a connector's already-configured
@@ -993,6 +1120,53 @@ mod tests {
             celsius: 20.0,
         };
         assert_eq!(provider.topic(&temp_without_id), None);
+    }
+
+    // ========================================================================
+    // TopicBuf Tests
+    // ========================================================================
+
+    #[test]
+    fn topic_buf_accepts_an_exact_fit() {
+        let mut storage = [0u8; 6];
+        let mut out = super::TopicBuf::new(&mut storage);
+        assert!(out.is_empty());
+        out.push_str("ab/").unwrap();
+        out.push_str("cde").unwrap();
+        assert_eq!((out.as_str(), out.len(), out.capacity()), ("ab/cde", 6, 6));
+        assert!(!out.overflowed());
+    }
+
+    #[test]
+    fn topic_buf_refuses_an_overflowing_write_whole() {
+        let mut storage = [0u8; 6];
+        let mut out = super::TopicBuf::new(&mut storage);
+        out.push_str("ab/").unwrap();
+        // "cdé" is 4 bytes: one over, and it ends in a two-byte character.
+        assert_eq!(out.push_str("cdé"), Err(super::TopicOverflow));
+        assert_eq!(out.as_str(), "ab/");
+        assert!(out.overflowed());
+        // Latched: a write that would fit is refused too.
+        assert!(out.push_str("x").is_err());
+        assert_eq!(out.as_str(), "ab/");
+    }
+
+    #[test]
+    fn topic_buf_overflow_propagates_through_write() {
+        use core::fmt::Write as _;
+        fn writer(v: u32, out: &mut super::TopicBuf<'_>) -> Result<bool, super::TopicOverflow> {
+            write!(out, "t/{v}")?;
+            Ok(true)
+        }
+        let mut storage = [0u8; 4];
+        assert_eq!(
+            writer(12, &mut super::TopicBuf::new(&mut storage)),
+            Ok(true)
+        );
+        assert_eq!(
+            writer(123, &mut super::TopicBuf::new(&mut storage)),
+            Err(super::TopicOverflow)
+        );
     }
 
     // ========================================================================
