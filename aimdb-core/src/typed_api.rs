@@ -308,6 +308,30 @@ type FusedSerializeIntoFn<T> = Arc<
         + Sync,
 >;
 
+/// How an outbound link picks each value's destination. Setting one replaces
+/// the other.
+enum TopicSelector<T> {
+    None,
+    Provider(Arc<dyn crate::connector::TopicProvider<T>>),
+    Writer {
+        capacity: usize,
+        writer: Arc<dyn crate::connector::TopicWriter<T>>,
+    },
+}
+
+impl<T> Clone for TopicSelector<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Provider(p) => Self::Provider(p.clone()),
+            Self::Writer { capacity, writer } => Self::Writer {
+                capacity: *capacity,
+                writer: writer.clone(),
+            },
+        }
+    }
+}
+
 /// The [`SerializedSource`](crate::connector::SerializedSource) built by
 /// `OutboundConnectorBuilder::finish()` — holds the typed consumer,
 /// serializer, and optional topic provider, so every per-message step stays
@@ -316,7 +340,7 @@ struct FusedSource<T: Send + Sync + 'static + Debug + Clone> {
     consumer: Consumer<T>,
     serialize: FusedSerializeFn<T>,
     serialize_into: Option<(usize, FusedSerializeIntoFn<T>)>,
-    topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
+    topic: TopicSelector<T>,
 }
 
 impl<T> crate::connector::SerializedSource for FusedSource<T>
@@ -328,6 +352,10 @@ where
     }
 
     fn subscribe(&self) -> Box<dyn crate::connector::SerializedReader> {
+        let topic_capacity = match &self.topic {
+            TopicSelector::Writer { capacity, .. } => *capacity,
+            _ => 0,
+        };
         Box::new(FusedReader {
             inner: self.consumer.subscribe(),
             serialize: self.serialize.clone(),
@@ -336,6 +364,7 @@ where
                 .as_ref()
                 .map(|(_, serialize_into)| serialize_into.clone()),
             topic: self.topic.clone(),
+            topic_buf: alloc::vec![0; topic_capacity].into_boxed_slice(),
         })
     }
 }
@@ -350,7 +379,36 @@ struct FusedReader<T: Clone + Send + 'static> {
     inner: crate::buffer::Reader<T>,
     serialize: FusedSerializeFn<T>,
     serialize_into: Option<FusedSerializeIntoFn<T>>,
-    topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
+    topic: TopicSelector<T>,
+    /// Storage a [`TopicWriter`](crate::connector::TopicWriter) writes into;
+    /// empty without one.
+    topic_buf: Box<[u8]>,
+}
+
+impl<T: Clone + Send + 'static> FusedReader<T> {
+    /// The value's destination (`None`: the route's default), or `Err` when
+    /// its written topic overflowed and the value must be skipped.
+    fn resolve_dest(&mut self, value: &T) -> Result<Option<String>, ()> {
+        match &self.topic {
+            TopicSelector::None => Ok(None),
+            TopicSelector::Provider(p) => Ok(p.topic(value)),
+            TopicSelector::Writer { writer, .. } => {
+                let mut out = crate::connector::TopicBuf::new(&mut self.topic_buf);
+                match writer.write_topic(value, &mut out) {
+                    Ok(true) if !out.overflowed() => Ok(Some(out.as_str().to_string())),
+                    Ok(false) if !out.overflowed() => Ok(None),
+                    _ => {
+                        log_warn!(
+                            "outbound link: topic for {} does not fit in {} bytes, value skipped",
+                            core::any::type_name::<T>(),
+                            out.capacity()
+                        );
+                        Err(())
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedReader<T> {
@@ -364,7 +422,9 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
                 // pump skip the gap and keep going; anything else ends it.
                 let value = self.inner.recv().await?;
                 // Resolve the destination while the typed value is in hand.
-                let dest = self.topic.as_ref().and_then(|p| p.topic(&value));
+                let Ok(dest) = self.resolve_dest(&value) else {
+                    continue;
+                };
                 match (self.serialize)(ctx, &value) {
                     Ok(payload) => return Ok(crate::connector::SerializedValue { dest, payload }),
                     Err(_e) => {
@@ -391,7 +451,9 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
         Box::pin(async move {
             loop {
                 let value = self.inner.recv().await?;
-                let dest = self.topic.as_ref().and_then(|p| p.topic(&value));
+                let Ok(dest) = self.resolve_dest(&value) else {
+                    continue;
+                };
 
                 let Some(serialize_into) = &self.serialize_into else {
                     match (self.serialize)(ctx, &value) {
@@ -742,7 +804,7 @@ where
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
-            topic_provider: None,
+            topic: TopicSelector::None,
         }
     }
 
@@ -776,7 +838,7 @@ pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + C
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
-    topic_provider: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
+    topic: TopicSelector<T>,
 }
 
 impl<'r, 'a, T> OutboundConnectorBuilder<'r, 'a, T>
@@ -872,8 +934,47 @@ where
         P: crate::connector::TopicProvider<T> + 'static,
     {
         // Stays typed: fused into the link's SerializedSource at finish().
-        self.topic_provider = Some(Arc::new(provider));
+        self.topic = TopicSelector::Provider(Arc::new(provider));
         self
+    }
+
+    /// Sets a [`TopicWriter`](crate::connector::TopicWriter) that writes each
+    /// value's destination.
+    ///
+    /// `capacity` is the longest topic the writer produces, in bytes. A value
+    /// whose topic does not fit is skipped and logged. For a closure, use
+    /// [`with_topic_fn`](Self::with_topic_fn).
+    pub fn with_topic_writer<W>(mut self, capacity: usize, writer: W) -> Self
+    where
+        W: crate::connector::TopicWriter<T> + 'static,
+    {
+        self.topic = TopicSelector::Writer {
+            capacity,
+            writer: Arc::new(writer),
+        };
+        self
+    }
+
+    /// Sets a closure that writes each value's destination; see
+    /// [`with_topic_writer`](Self::with_topic_writer).
+    ///
+    /// ```rust,ignore
+    /// .with_topic_fn(32, |v, out| {
+    ///     write!(out, "sensors/{}/{}", v.site, v.id)?;
+    ///     Ok(true)
+    /// })
+    /// ```
+    pub fn with_topic_fn<F>(self, capacity: usize, f: F) -> Self
+    where
+        F: Fn(
+                &T,
+                &mut crate::connector::TopicBuf<'_>,
+            ) -> Result<bool, crate::connector::TopicOverflow>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.with_topic_writer(capacity, f)
     }
 
     /// Finalizes the connector registration
@@ -987,7 +1088,7 @@ where
         )]
         let source_factory: crate::connector::SourceFactoryFn = {
             let record_key = self.registrar.record_key.clone();
-            let topic_provider = self.topic_provider;
+            let topic = self.topic;
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
@@ -1013,7 +1114,7 @@ where
                     consumer,
                     serialize: serialize.clone(),
                     serialize_into: serialize_into.clone(),
-                    topic: topic_provider.clone(),
+                    topic: topic.clone(),
                 }) as Box<dyn crate::connector::SerializedSource>
             })
         };
@@ -2338,13 +2439,18 @@ mod tests {
     fn fused_reader(
         script: Vec<Result<TestRecord, crate::DbError>>,
         serialize: FusedSerializeFn<TestRecord>,
-        topic: Option<Arc<dyn TopicProvider<TestRecord>>>,
+        topic: TopicSelector<TestRecord>,
     ) -> FusedReader<TestRecord> {
+        let topic_capacity = match &topic {
+            TopicSelector::Writer { capacity, .. } => *capacity,
+            _ => 0,
+        };
         FusedReader {
             inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
             serialize,
             serialize_into: None,
             topic,
+            topic_buf: alloc::vec![0; topic_capacity].into_boxed_slice(),
         }
     }
 
@@ -2357,7 +2463,8 @@ mod tests {
             inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
             serialize,
             serialize_into: Some(serialize_into),
-            topic: None,
+            topic: TopicSelector::None,
+            topic_buf: Box::default(),
         }
     }
 
@@ -2376,7 +2483,7 @@ mod tests {
                 Ok(TestRecord { value: 2 }),
             ],
             Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            None,
+            TopicSelector::None,
         );
         let ctx = test_ctx();
 
@@ -2407,7 +2514,7 @@ mod tests {
                     Ok(r.value.to_le_bytes().to_vec())
                 }
             }),
-            None,
+            TopicSelector::None,
         );
 
         // One recv: the failing value is skipped, the next good one returned.
@@ -2538,7 +2645,7 @@ mod tests {
         let mut reader = fused_reader(
             vec![Ok(TestRecord { value: 5 }), Ok(TestRecord { value: 0 })],
             Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            Some(Arc::new(PositiveTopic)),
+            TopicSelector::Provider(Arc::new(PositiveTopic)),
         );
         let ctx = test_ctx();
 
@@ -2547,6 +2654,111 @@ mod tests {
 
         let second = reader.recv(&ctx).await.expect("value");
         assert_eq!(second.dest, None); // falls back to the route default
+    }
+
+    fn writer(
+        capacity: usize,
+        f: impl Fn(&TestRecord, &mut crate::TopicBuf<'_>) -> Result<bool, crate::TopicOverflow>
+            + Send
+            + Sync
+            + 'static,
+    ) -> TopicSelector<TestRecord> {
+        TopicSelector::Writer {
+            capacity,
+            writer: Arc::new(f),
+        }
+    }
+
+    /// The same case with a written topic; `Ok(false)` uses the default.
+    #[tokio::test]
+    async fn fused_reader_resolves_written_topic() {
+        use core::fmt::Write as _;
+        let mut reader = fused_reader(
+            vec![Ok(TestRecord { value: 5 }), Ok(TestRecord { value: 0 })],
+            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
+            writer(8, |v, out| {
+                if v.value <= 0 {
+                    return Ok(false);
+                }
+                write!(out, "dyn/{}", v.value)?;
+                Ok(true)
+            }),
+        );
+        let ctx = test_ctx();
+
+        let first = reader.recv(&ctx).await.expect("value");
+        assert_eq!(first.dest.as_deref(), Some("dyn/5"));
+
+        let second = reader.recv(&ctx).await.expect("value");
+        assert_eq!(second.dest, None);
+    }
+
+    /// A topic that overflows skips its value, even when the writer ignores
+    /// the error and returns `Ok(true)`.
+    #[tokio::test]
+    async fn fused_reader_skips_overflowing_topics() {
+        use core::fmt::Write as _;
+        let mut reader = fused_reader(
+            vec![
+                Ok(TestRecord { value: 123_456 }),
+                Ok(TestRecord { value: 1_234_567 }),
+                Ok(TestRecord { value: 7 }),
+            ],
+            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
+            writer(6, |v, out| {
+                if v.value == 1_234_567 {
+                    let _ = write!(out, "t/{}", v.value);
+                    return Ok(true);
+                }
+                write!(out, "t/{}", v.value)?;
+                Ok(true)
+            }),
+        );
+        let ctx = test_ctx();
+
+        // "t/123456" (8 bytes) and "t/1234567" (9 bytes) do not fit in 6.
+        let msg = reader.recv(&ctx).await.expect("value");
+        assert_eq!(msg.dest.as_deref(), Some("t/7"));
+        assert_eq!(msg.payload, 7i32.to_le_bytes().to_vec());
+    }
+
+    /// `with_topic_fn` infers an unannotated closure's argument types, which
+    /// a generic `W: TopicWriter<T>` bound cannot.
+    #[tokio::test]
+    async fn with_topic_fn_infers_and_writes_the_topic() {
+        use core::fmt::Write as _;
+        struct CannedBuffer;
+        impl crate::buffer::DynBuffer<TestRecord> for CannedBuffer {
+            fn push(&self, _value: TestRecord) {}
+            fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+                Box::new(ScriptedReader {
+                    script: vec![Ok(TestRecord { value: 5 })],
+                })
+            }
+            fn as_any(&self) -> &dyn core::any::Any {
+                self
+            }
+        }
+
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.out", |reg| {
+            reg.buffer_raw(Box::new(CannedBuffer));
+            reg.link_to("mqtt://tele/out")
+                .with_topic_fn(16, |v, out| {
+                    write!(out, "dyn/{}", v.value)?;
+                    Ok(true)
+                })
+                .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let routes = db.collect_outbound_routes("mqtt");
+        let mut reader = routes[0].source.subscribe();
+        let msg = reader.recv(&db.runtime_ctx()).await.expect("value");
+        assert_eq!(msg.dest.as_deref(), Some("dyn/5"));
     }
 
     /// End-to-end outbound path: registrar → build → collect → subscribe →
