@@ -10,8 +10,7 @@
 //! wrong stalls a route for good: a reader that returned a value keeps no
 //! waker, so nothing would set its bit again.
 //!
-//! `futures_util`'s `SelectAll` does the same job but allocates per message
-//! (design 054 §7).
+//! `futures_util`'s `SelectAll` does the same job but allocates per message.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -98,9 +97,11 @@ pub(crate) struct ReadyRoutes {
 /// One round-robin pass: every route at most once, starting after the
 /// cursor.
 ///
-/// The bound is what ends a call. A Tokio reader whose task has spent its
-/// budget returns `Pending` and wakes its own waker, setting its bit again
-/// while it is polled; a scan that went back for set bits would never stop.
+/// The bound is what ends a call. A reader may wake its own waker before it
+/// returns `Pending` (spurious wakes are allowed), setting its bit again
+/// while it is polled; a scan that went back for set bits could then never
+/// stop. Tokio's readers, once the task's budget is spent, defer that wake
+/// until the task yields.
 struct Pass {
     start: RouteId,
     /// The next position to scan, counted from `start` without wrapping:
