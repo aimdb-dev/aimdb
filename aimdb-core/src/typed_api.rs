@@ -160,13 +160,13 @@ where
         self.write.push(value);
     }
 
-    /// Non-blocking push. Returns the value back via [`TryProduceError::Full`]
-    /// if a bounded buffer is at capacity, or [`TryProduceError::Closed`] if
-    /// the record is shutting down. Use when the caller has a meaningful
-    /// response to backpressure.
+    /// Extension point for write handles that may reject a value.
     ///
-    /// Overwriting buffers (`SpmcRing`, `SingleLatest`, `Mailbox`) always
-    /// return `Ok(())`. Use [`produce`](Self::produce) for those.
+    /// The built-in buffers (`SpmcRing`, `SingleLatest`, `Mailbox`) overwrite
+    /// and currently always return `Ok(())`; use [`produce`](Self::produce)
+    /// for them. A future bounded, non-overwriting write handle can return the
+    /// value through [`TryProduceError::Full`], while a close-aware handle can
+    /// return it through [`TryProduceError::Closed`].
     ///
     /// # Example
     ///

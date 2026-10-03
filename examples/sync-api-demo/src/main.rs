@@ -168,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  • Pure synchronous context (no #[tokio::main])");
     println!("  • Multiple independent consumers");
     println!("  • Blocking (get), timeout (get_with_timeout), and non-blocking (try_get) reads");
-    println!("  • Blocking (set) and non-blocking (try_set) writes");
+    println!("  • Synchronous writes with set");
     println!("  • Multi-threaded producer-consumer patterns");
 
     Ok(())

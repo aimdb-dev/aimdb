@@ -52,12 +52,8 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
             inherited.set(Reading { value: 1 }),
             Err(SyncError::ForkedChild)
         );
-        let refused_try = matches!(
-            inherited.try_set(Reading { value: 2 }),
-            Err(SyncError::ForkedChild)
-        );
         // The same refusal, asked rather than provoked: `check()` has to agree
-        // with the two publishes above.
+        // with the publish above.
         let check_agrees = matches!(inherited.check(), Err(SyncError::ForkedChild));
         // Leak rather than free. The child is about to `_exit`, which reclaims
         // everything anyway, and `free` is the unsafe act here: it takes the
@@ -67,7 +63,7 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
         // the destructor, so there is nothing to lose by not running it.
         std::mem::forget(inherited);
 
-        refused && refused_try && check_agrees
+        refused && check_agrees
     });
     assert_eq!(code, 0, "the child's publishes should have been refused");
 
