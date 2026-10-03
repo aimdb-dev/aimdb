@@ -6,14 +6,19 @@ throwaway prototype (§5.1), which met every allocation target and changed
 the outbound pull into two steps (§4.2), the topic-writer builder (§4.3) and
 the embedded write ring's sizing and wake-ups (§4.7). A second round made
 the ready set part of the design (§4.2): polling every route was already
-2.7 times slower than today's task per route at 8 routes. Earlier revisions
-(per-route push pumps with `RoutePublisher`, per-route record rings) are in
-this branch's history and summarised in §7.
+2.7 times slower than today's task per route at 8 routes. A third round
+(2026-10-03, checked against the tree at `137ad2d`) made the ready set
+lock-free (§4.2), covered the session client connectors and KNX (§4.8,
+§4.9), fixed the embedded write-ring default (§4.7) and completed the
+migration list (§6). Earlier revisions (per-route push pumps with
+`RoutePublisher`, per-route record rings) are in this branch's history and
+summarised in §7.
 
 **Scope:** the per-message path between `aimdb-core` and connectors, in both
 directions, and every in-tree connector. Breaking change to the connector
-SPI and to one user-facing builder method: `with_topic_provider` is replaced
-by `with_topic_writer` and its closure form `with_topic_fn` (§4.3).
+SPI and to two user-facing APIs: `with_topic_provider` is replaced by
+`with_topic_writer` and its closure form `with_topic_fn` (§4.3), and
+`KnxConnector::new` loses its `&'static Channels` argument (§4.9).
 `link_from`, `link_to`, `with_deserializer`, `with_match_deserializer`,
 `with_serializer`, `with_serializer_into` and `Reader::recv` do not change;
 `Reader` gains `poll_recv`.
@@ -71,11 +76,15 @@ native one):
 
 **Structure today.** Every connector already owns at least one transport
 task (MQTT event loop or session loop, KNX connection task, WebSocket
-server, AimX session). Core adds one `pump_source` task per connector and
-one `pump_sink` task per outbound route; the outbound pumps all funnel into
-the same transport (one MQTT action channel, one socket). The AimX session
-client and both WebSocket builders already call `Router::route` with
-borrows instead of using `Source`.
+server, AimX session engine). Core adds one `pump_source` task per
+connector and one `pump_sink` task per outbound route; the outbound pumps
+all funnel into the same transport (one MQTT action channel, one KNX
+command channel, one socket). The session client connectors
+(`SessionClientConnector`, used by the UDS, TCP and serial clients, and the
+WebSocket client) use `pump_client` instead: one task per outbound route
+over `SerializedReader::recv` (the owned path, never `recv_into`) and one
+per inbound subscription. They and the WebSocket server already call
+`Router::route` with borrows instead of using `Source`.
 
 **Values with heap data.** Each reader receives its own clone of `T`
 (`T: Clone` delivery). A value with one `String` field costs one allocation
@@ -98,7 +107,10 @@ Nothing gates the numbers yet.
   client library's API requires, documented per backend.
 - G3. `b0_alloc_connector` runs in CI and gates the result.
 - G4. The connector SPI is two objects, one per direction, and core runs no
-  tasks of its own for a connector. No compatibility layers.
+  generic per-route or per-connector pump tasks (`pump_source`,
+  `pump_sink`). Connectors that core itself implements (the session
+  client and server connectors) own their tasks like any other connector.
+  No compatibility layers.
 
 **Non-goals**
 
@@ -111,6 +123,10 @@ Nothing gates the numbers yet.
 - Parallel sends across routes of one connector. Every in-tree transport
   serialises sends anyway (one socket, one MQTT in-flight slot); §4.6.
 - Allocations inside third-party client libraries.
+- Allocations inside the AimX session engine. `ClientHandle::write` takes
+  an owned topic and an `Arc<[u8]>` payload for its command channel; the
+  session client connectors keep that API (§4.8) and are treated like
+  `rumqttc` under G2.
 - Remote-access JSON paths (tracked by `b0_alloc_remote_json`).
 
 ## 3. Approach
@@ -249,10 +265,10 @@ places; the message is lent once the poll has returned.
 
 - If a message is already staged, its route is returned at once. A staged
   message that was never taken is neither lost nor overwritten.
-- Otherwise it takes routes from its ready set, oldest first, and polls
-  only those routes' typed readers (`poll_recv`, 037). The first value that
-  is ready is serialized (topic writer, then serializer) into the scratch
-  and staged.
+- Otherwise it takes routes from its ready set in round-robin order and
+  polls only those routes' typed readers (`poll_recv`, 037). The first
+  value that is ready is serialized (topic writer, then serializer) into
+  the scratch and staged.
 - A value is taken from its buffer only in a call that returns `Ready`.
   `poll_stage` is therefore safe as a `select` arm: a losing arm takes
   nothing.
@@ -286,37 +302,61 @@ reader is polled with a waker of its own, and only routes that woke are
 polled:
 
 ```rust
+use portable_atomic::AtomicU32;           // already a core dependency
+use futures_util::task::AtomicWaker;      // already a core dependency, no_std
+
 struct ReadySet {
-    queue: spin::Mutex<VecDeque<RouteId>>,   // capacity: every route
-    queued: Vec<AtomicBool>,                 // a route is queued at most once
-    task: AtomicWaker,                       // the transport task
+    ready: Box<[AtomicU32]>,   // one bit per route, ceil(routes / 32) words
+    task: AtomicWaker,         // the transport task
 }
 
 struct RouteWake { id: RouteId, set: Arc<ReadySet> }
 
 impl Wake for RouteWake {
     fn wake_by_ref(self: &Arc<Self>) {
-        self.set.push(self.id);   // no-op if already queued
+        self.set.ready[self.id / 32].fetch_or(1 << (self.id % 32), Release);
         self.set.task.wake();
     }
     fn wake(self: Arc<Self>) { self.wake_by_ref() }
 }
+
+// OutboundRoutes also keeps `cursor: RouteId` (plain field, `&mut self`)
+// and `open: Box<[u32]>` (bitmap of routes that are not closed).
 ```
 
+- **Lock-free, so a waker may fire from any context.** A route's waker is
+  called by whoever produces into its record. On Embassy that can be a
+  task on an `InterruptExecutor` (049) that preempts the transport task. A
+  lock held by the transport task while the waker runs would deadlock a
+  single core, which rules out the spin-locked FIFO the prototype used
+  (§7, alternative 11). `fetch_or` and `AtomicWaker` take no lock.
 - The route wakers are built once, in `OutboundRoutes::new`; polling a
-  route uses `Context::from_waker(&route_waker)`. Every route starts queued,
+  route uses `Context::from_waker(&route_waker)`. Every bit starts set,
   since no reader has registered a waker yet.
-- `poll_stage` registers the task's waker before it looks at the queue, so
-  a route that wakes after the queue reads empty still wakes the task.
-- A route that staged a value goes to the back of the queue: it may hold
-  more, and its waker will not fire again for values already in its buffer.
-  A route that returns `Pending` leaves the queue until its waker fires; a
-  closed route leaves it for good, and `Ready(None)` follows the last one.
-- Oldest-first order is the fairness rule (§4.6).
-- Nothing allocates per message: the queue has room for every route and a
-  route is queued at most once, the lock is a spin lock (`no_std`), and
-  cloning a route waker is a reference-count increment. Measured: 0
-  allocations, parked or not (§5).
+- `poll_stage` registers the task's waker before it reads the bitmap, so a
+  route that wakes after the bitmap reads empty still wakes the task.
+- **Clear, then poll.** `poll_stage` clears a route's bit
+  (`fetch_and(!bit, Acquire)`) before polling its reader. A wake that lands
+  during the poll sets the bit again, which costs at most one spurious
+  re-poll and never loses a wake-up.
+- **Round-robin.** The scan starts at the route after `cursor`, wraps once,
+  and skips words that are zero. A route that staged a value has its bit
+  set again (it may hold more, and its waker will not fire again for values
+  already in its buffer), and `cursor` moves to it, so every other ready
+  route is served before it is served again. A route that returns `Pending`
+  stays clear until its waker fires; a closed route is removed from `open`
+  for good, and `Ready(None)` follows the last one.
+- Round-robin over ready routes is the fairness rule (§4.6).
+- Cost per wake-up: one `poll_recv` per route that woke, plus a scan of
+  `ceil(routes / 32)` words (8 at 256 routes).
+- Nothing allocates per message: the bitmap is allocated once, and cloning
+  a route waker is a reference-count increment.
+
+The prototype measured a spin-locked FIFO (one `VecDeque` of route ids and
+a queued flag per route), not this bitmap. Both poll only routes that woke,
+so §5.1's flat 590–630 ns is expected to hold; the
+`outbound_next_round_robin` and `outbound_next_parked` gates (§5) and the
+informational 1/8/64/256-route bench confirm it during step 2 of §6.
 
 **Where it is built.** In the connector's `build()`, not when its transport
 task starts. Per-route configuration (§4.4) and frame sizes (§4.7) are then
@@ -327,10 +367,21 @@ task first polls instead of missing it.
 **Naming.** `aimdb_core::Outbound` already names the session envelope, so
 the pulled message is `OutboundMessage`.
 
-`SerializedReader`, `SerializedPayload`, `RecvSerializedIntoFuture` and
-`pump_sink` are removed. The typed reader, topic writer and serializer stay
-inside core as the per-route state of `OutboundRoutes`, behind a
-crate-private poll-shaped trait, so nothing is boxed or stored per message.
+**Thread-safety.** `OutboundRoutes: Send` (moved into a connector's
+`Send` task; `&mut self` everywhere, so not `Sync`). `InboundDispatch:
+Send + Sync + Clone`. Both hold only `Send` readers and `Send + Sync`
+(de)serializers, as today's pumps do.
+
+Removed from the public API: `pump_sink`, `SerializedReader`,
+`SerializedSource`, `SerializedValue`, `SerializedValueInto`,
+`SerializedPayload`, `RecvSerializedFuture` and `RecvSerializedIntoFuture`.
+`AimDb::collect_outbound_routes` and `OutboundRoute` become crate-private;
+their callers outside core (the embedded MQTT `warn_unsupported_qos`, and
+the tests listed in §6) read `OutboundRoutes::routes()` instead. The typed
+reader, topic writer and serializer stay inside core as the per-route state
+of `OutboundRoutes`, behind a crate-private poll-shaped trait built by the
+link's existing source factory (`SourceFactoryFn`, also crate-private), so
+nothing is boxed or stored per message.
 
 ### 4.3 Outbound: topics are written, not returned
 
@@ -397,8 +448,16 @@ while let Some(msg) = outbound.next().await {
 - The `.await` is concrete code in the connector's own task: no boxed
   future, no stored future, errors attributed to the message that caused
   them.
-- Configuration is parsed once per route at build; an invalid link (for
-  MQTT, a `qos` above 2) fails the build instead of every publish.
+- Configuration is parsed once per route at build; an invalid link fails
+  the build instead of every publish. For MQTT that is a `qos` that is not
+  0, 1 or 2, or a `retain` that is not `true` or `false`. Today a value
+  that does not parse silently falls back to the default (QoS 1, no
+  retain); after this change it is a build error, on both backends. The
+  embedded backend keeps its once-per-route warning for `qos=2`, which it
+  sends at QoS 1, now emitted from the same parse.
+- `transport.rs` keeps `ConnectorConfig` (now `RouteInfo::config`, built by
+  `ConnectorConfig::from_query` as today) and `PublishError` (KNX's
+  `GroupWrite::try_new` returns it); only the `Connector` trait goes.
 - A connector that must send while also reading (one socket, one task)
   puts `poll_stage` in its `select`, gated by its own readiness, takes the
   message with `take_staged` after the `select` returns, and disarms the arm
@@ -408,9 +467,10 @@ while let Some(msg) = outbound.next().await {
   buffer has closed (the database is dropped). The connector flushes its
   transport as it sees fit.
 
-Removed from the SPI: `Connector::publish`, `Source`, `pump_source`,
-`pump_sink`, `SerializedReader` and `TopicProvider`. The `Vec<BoxFuture>`
-connectors return today shrinks to their own transport tasks.
+Removed from the SPI: `Connector`, `Source`, `pump_source`, `pump_sink`,
+the `Serialized*` types (§4.2) and `TopicProvider`. `pump_client` stays,
+rewritten (§4.8). The `Vec<BoxFuture>` connectors return today shrinks to
+their own transport tasks.
 
 ### 4.5 Values with heap data (guidance)
 
@@ -449,11 +509,20 @@ Document this next to the buffer types; no API change.
   underneath for every in-tree transport; the per-route pumps only hid it.
   A future transport with genuinely parallel sends spawns its own workers
   from its loop.
-- **Fairness.** Oldest-first over routes that woke (§4.2); a busy route
-  goes to the back after each message, so it cannot starve the others.
-  Measured: three routes with three values each are pulled 0, 1, 2, 0, 1,
-  2, …; with 200 values queued on one route and one on another, the second
-  is served first or second. Priorities are not in scope.
+- **Fairness.** Round-robin over routes that woke (§4.2); after each
+  message from a busy route every other ready route is served once before
+  it, so it cannot starve the others. Measured on the prototype's FIFO, and
+  required of the bitmap by the same tests: three routes with three values
+  each are pulled 0, 1, 2, 0, 1, 2, …; with 200 values queued on one route
+  and one on another, the second is served first or second. Priorities are
+  not in scope.
+- **Embedded MQTT: outbound PUBLISH size is bounded.** Today `encode`
+  allocates each packet at its exact length, so any size goes out. With the
+  write ring (§4.7) a PUBLISH frame is at most `capacity / 2 −
+  CONTROL_RESERVE`: 1,984 bytes at the 4,096-byte default. A route whose
+  declared capacities exceed that fails the build; an owned-serializer
+  payload over it is skipped, logged at warn level and counted by the
+  connector. The ring size is a connector setting (§4.7).
 - **Ingest and serialization run on the transport task.** Inbound
   deserialization already did for `pump_source`'s connectors; outbound
   serialization now does too. A slow user (de)serializer delays the
@@ -558,12 +627,24 @@ let action_arm = poll_fn(|cx| {
   `payload_capacity`, from `RouteInfo`) plus `CONTROL_RESERVE` must fit in
   `capacity / 2`. A route that does not is rejected when the connector
   builds; an owned payload over the same bound is skipped and counted.
-- **Sizes.** The prototype used a 2,048-byte ring and a 64-byte reserve,
-  which caps a PUBLISH at 960 bytes (§8).
+- **Sizes.** Default ring 4,096 bytes, the same as the existing
+  `BUFFER_SIZE` the inbound side uses, and a 64-byte reserve: a PUBLISH of
+  up to 1,984 bytes. The prototype used 2,048 bytes (960-byte cap);
+  allocation counts do not depend on the size. The embedded builder gets
+  `with_write_buffer(bytes)` to change it, checked at build against
+  `2 × (max_frame + CONTROL_RESERVE)` of every route. The ring is
+  allocated once per connector and reused across reconnects.
 - `bbqueue = { version = "0.7", default-features = false, features =
-  ["alloc"] }`; `AtomicCoord` where the target has atomic pointers. On
-  `thumbv6m` the critical-section coordination (`CsCoord`) is needed
-  instead; not yet built (§8).
+  ["alloc"] }`, with `AtomicCoord`. Every embedded target this repository
+  builds (`thumbv7em`, `thumbv8m.main`) has atomic CAS; `thumbv6m` is not
+  a supported target (`aimdb-core` needs `alloc::sync::Arc`, which needs
+  CAS).
+- *Files.* Besides `session_loop.rs`, the embedded backend's `mod.rs`
+  (`MqttSink`, `MqttSource`, `AimdbMqttEvent`, `AimdbMqttAction`, the
+  channel types and `CHANNEL_SIZE`), `manager.rs` (the channel aliases),
+  `session.rs` and `tls.rs` (both pass `events` and `actions` into
+  `run_session`; they pass `&InboundDispatch` and `&mut OutboundRoutes`
+  instead).
 
 Cost per message: zero allocations and one copy of topic and payload
 (scratch into the encoded frame), besides the network stack's own copy into
