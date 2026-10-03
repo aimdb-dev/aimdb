@@ -333,9 +333,19 @@ impl Wake for RouteWake {
 - The route wakers are built once, in `OutboundRoutes::new`; polling a
   route uses `Context::from_waker(&route_waker)`. Every bit starts set,
   since no reader has registered a waker yet.
-- `poll_stage` registers the task's waker before it reads the bitmap, so a
+- **One loop, owned by the ready set.** `ReadyRoutes::poll_ready(cx,
+  poll_route)` runs the whole scan below. `poll_stage` passes a closure that
+  polls route `id`'s reader with the context it is handed and reports
+  `Pending`, `Staged`, `Skipped` (skip or lag) or `Closed`. The orderings
+  in this list are then kept in one tested function instead of by every
+  caller; getting one wrong stalls a route for good, since a reader that
+  returned a value keeps no waker. A skip or lag polls the same route
+  again, since moving on would leave it with a clear bit and no waker.
+- `poll_ready` registers the task's waker before it reads the bitmap, so a
   route that wakes after the bitmap reads empty still wakes the task.
-- **Clear, then poll.** `poll_stage` clears a route's bit
+  Every wake takes the stored waker out, so registering after the scan
+  would lose such a wake-up, not just risk a stale waker.
+- **Clear, then poll.** `poll_ready` clears a route's bit
   (`fetch_and(!bit, Acquire)`) before polling its reader. A wake that lands
   during the poll sets the bit again, which costs at most one spurious
   re-poll and never loses a wake-up.
@@ -990,6 +1000,18 @@ The Zenoh connector (053) is not implemented yet; it is written against
     `KnxConnector::new` unchanged, but brings back the per-route task and
     the queue between the record buffers and the transport that this
     design removes everywhere else (§4.9).
+13. **`futures-util`'s `SelectAll` or `FuturesUnordered` as the ready
+    set.** Both give each child its own waker and queue the ones that woke,
+    which is what §4.2 needs. But `SelectAll` puts a stream back after
+    every item, and each insertion allocates a task node: one allocation
+    per message (10,000 for 10,000 items with futures-util 0.3.33), which
+    the `outbound_next_*` rows (§5) forbid. `FuturesUnordered` alone holds
+    futures that finish once, so a route would be re-inserted after every
+    value too. Its queue can also be seen half-updated by a task that
+    preempted a producer mid-insertion; it then wakes itself and returns
+    `Pending`, which on one core starves that producer if the transport
+    task outranks it. And routes read different value types into one
+    scratch buffer passed in at poll time, which a `Stream` cannot take.
 
 ## 8. Open questions
 
