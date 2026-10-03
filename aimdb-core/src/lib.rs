@@ -87,6 +87,8 @@ pub mod extensions;
 pub mod graph;
 mod inbound_dispatch;
 mod inbound_key;
+#[allow(dead_code, reason = "OutboundRoutes uses it from the next commit on")]
+mod outbound;
 #[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
