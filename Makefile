@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -56,6 +56,7 @@ help:
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
+	@printf "    bench-gate           Assert connector allocation counts (b0_alloc_connector)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -741,6 +742,14 @@ publish:
 	done
 	@printf "$(GREEN)✓ All $(words $(PUBLISH_ORDER)) crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
+
+## Benchmark gates
+# Runs the counting-allocator connector bench, which asserts its EXPECTED
+# allocations per message and fails on any difference (design 054 §5).
+# Deterministic, so it gates CI without a quiet runner.
+bench-gate:
+	@printf "$(GREEN)Checking connector allocation counts...$(NC)\n"
+	cargo bench --package aimdb-bench --bench b0_alloc_connector
 
 ## Drift guards
 # The README quickstart is compiled as examples/readme-quickstart; this target

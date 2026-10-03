@@ -68,6 +68,23 @@ jobs:
     - name: Prove no library crate installs a process-global
       run: make check-no-globals
 
+  # Connector allocation counts (design 054 §5)
+  bench-gate:
+    name: Bench Gate
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v2
+      with:
+        rustflags: ""
+
+    - name: Assert connector allocations per message
+      run: make bench-gate
+
   # Embedded target testing
   embedded-targets:
     name: Embedded Cross-compilation
@@ -149,7 +166,7 @@ jobs:
   comprehensive-check:
     name: Comprehensive Development Check
     runs-on: ubuntu-latest
-    needs: [format-and-lint, makefile-build, embedded-targets]
+    needs: [format-and-lint, makefile-build, embedded-targets, bench-gate]
     steps:
     - uses: actions/checkout@v7
       with:
