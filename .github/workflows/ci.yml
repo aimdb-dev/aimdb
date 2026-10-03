@@ -68,7 +68,7 @@ jobs:
     - name: Prove no library crate installs a process-global
       run: make check-no-globals
 
-  # Connector allocation counts (design 054 §5)
+  # Connector allocation counts
   bench-gate:
     name: Bench Gate
     runs-on: ubuntu-latest
