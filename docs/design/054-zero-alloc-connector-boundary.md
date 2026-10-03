@@ -1,8 +1,8 @@
 # 054 — Zero-allocation connector boundary
 
-**Status:** 📝 Proposed — pull model: each connector's own task drives both
-directions; core runs no per-route tasks. Revised 2026-10-03 after a
-throwaway prototype (§5.1), which met every allocation target and changed
+**Status:** 📝 Proposed, ready for implementation — pull model: each
+connector's own task drives both directions; core runs no per-route tasks.
+Revised 2026-10-03 after a throwaway prototype (§5.1), which met every allocation target and changed
 the outbound pull into two steps (§4.2), the topic-writer builder (§4.3) and
 the embedded write ring's sizing and wake-ups (§4.7). A second round made
 the ready set part of the design (§4.2): polling every route was already
@@ -20,7 +20,7 @@ SPI and to two user-facing APIs: `with_topic_provider` is replaced by
 `with_topic_writer` and its closure form `with_topic_fn` (§4.3), and
 `KnxConnector::new` loses its `&'static Channels` argument (§4.9).
 `link_from`, `link_to`, `with_deserializer`, `with_match_deserializer`,
-`with_serializer`, `with_serializer_into` and `Reader::recv` do not change;
+`with_topic_resolver`, `with_serializer`, `with_serializer_into` and `Reader::recv` do not change;
 `Reader` gains `poll_recv`.
 
 **Compatibility:** none kept. No adapters for the old traits; all in-tree
@@ -668,6 +668,87 @@ through `TokioTcpDialer` (052).
   (2,406 B) to 11 (557 B); what remains is the owned topic and payload and
   `rumqttc`'s own.
 
+### 4.8 Session client connectors (`pump_client`)
+
+`SessionClientConnector` (the UDS, TCP and serial clients) and the
+WebSocket client both call `pump_client`. It stays public, with a new
+signature:
+
+```rust
+pub fn pump_client(
+    db: &AimDb,
+    scheme: &str,
+    inbound: InboundDispatch,
+    handle: &ClientHandle,
+) -> DbResult<Vec<BoxFut<'static, ()>>>;   // fallible: OutboundRoutes::new
+```
+
+- *Outbound.* One task, replacing one per route:
+
+  ```rust
+  while let Some(msg) = outbound.next().await {
+      let payload: Payload = match msg.payload {
+          OutboundPayload::Borrowed(b) => Payload::from(b),
+          OutboundPayload::Owned(v) => Payload::from(v),
+      };
+      if handle.write(msg.topic, payload).is_err() {
+          break; // engine stopped: every handle is gone
+      }
+  }
+  ```
+
+  `ClientHandle::write` is synchronous: it enqueues onto the engine's
+  bounded command queue (`max_offline_queue`) with `force_send`, which
+  displaces the oldest queued command when the queue is full. That is
+  today's behaviour and does not change; like `rumqttc`'s request channel
+  (§4.6), the engine's queue, not the record buffer, decides what survives
+  an outage. The owned topic `String` and the `Arc<[u8]>` payload stay
+  (non-goal, §2). The path moves from `recv` (owned serializer every time)
+  to the scratch path, so `with_serializer_into` links no longer allocate a
+  `Vec` first.
+- *Inbound.* One task per subscription stays: each `ClientHandle::subscribe`
+  stream is its own channel, and merging them is out of scope. Each task
+  calls `inbound.dispatch(id, &update.data)` where it calls `router.route`
+  today. These are the connector's own tasks (G4).
+- *Callers.* `SessionClientConnector::build` and the WebSocket client's
+  `build` change one line each (`InboundDispatch::new` and `?` on
+  `pump_client`). The UDS, TCP and serial crates do not change.
+- The session *server* side (`SessionServerConnector`, `serve`,
+  `AimxDispatch`) does not use links and does not change.
+
+### 4.9 KNX connector
+
+Today the connection task talks to core through two `'static` channels
+the application supplies (`Channels<N>`: telegrams in, `GroupWrite`
+commands out), drained and filled by `pump_source` and one `pump_sink` per
+route. With both pumps gone, nothing is left on the other end of either
+channel, so both go:
+
+- `Channels`, `TelegramChannel`, `CommandChannel` and `DEFAULT_QUEUE` are
+  removed, as is the `N` parameter of `KnxConnector`.
+  `KnxConnector::new(binder, delay, gateway_url)` drops its `channels`
+  argument; the two examples drop their `static KNX_CHANNELS`. This is the
+  second user-facing break (Scope).
+- *Inbound.* `TelegramSink::try_send(String, Payload) -> bool` becomes
+  `deliver(&self, topic: &str, payload: &[u8])`, implemented over
+  `InboundDispatch`. `NeutralIo::forward` formats the group address into a
+  stack buffer (`core::fmt::Write` over `[u8; 16]`; the longest address,
+  `31/7/255`, is 8 bytes) instead of `addr.to_string()`. The `Vec<u8>` the
+  tunnel engine hands to `forward` is the engine's own and stays (§8).
+- *Outbound.* `CommandSource` is removed. `drive_connection` takes `&mut
+  OutboundRoutes`, and `cmd_arm` becomes a `poll_fn` over `poll_stage`,
+  armed only while connected, with `Ready(None)` latched as in §4.7.
+  After the `select`, `take_staged` → `GroupWrite::try_new(msg.topic,
+  payload)` → `engine.handle_command`. An invalid group address or an
+  oversize payload is logged, counted by the connector and skipped, as
+  `KnxSink::publish` rejects it today. The arm-order swap that keeps
+  inbound traffic from starving commands stays.
+- *Behaviour.* Commands produced while the tunnel is connecting or backing
+  off wait in their record buffers (§4.6) instead of the 32-deep command
+  channel.
+- *Tests.* The task-count tests expect one future (the connection task)
+  with or without outbound routes.
+
 ## 5. Measurement and gate
 
 `b0_alloc_connector` is rewritten against the new interfaces. Targets, and
@@ -701,19 +782,32 @@ baseline together. It compares the rounded per-message figure: a one-off
 allocation can land in a 2,000-message window (one was seen in the
 prototype) without being a per-message cost.
 
-A connector-level row per MQTT backend records G2: the embedded rows target
-0 allocations in both directions and record the one outbound copy; the
-native outbound row records the owned topic, the payload copy and whatever
-`rumqttc` adds. The prototype measured these over loopback TCP with an echo
-broker on its own thread, counting only allocations made on the database
-thread (a counting allocator with a thread-local filter). Allocation counts
-do not depend on socket options; latency does (§5.1).
+**Connector-level rows (G2).** A new integration test,
+`aimdb-mqtt-connector/tests/alloc_round_trip.rs`, runs §5.1's round trip
+(produce → PUBLISH QoS 1 → echo → dispatch → `recv`) over loopback TCP
+against the echo broker in `tests/common`. It counts only allocations made
+on the database thread (a counting global allocator with a thread-local
+filter) over 300 round trips after 100 of warm-up. It runs under the
+existing `_test-backend-parity` feature, which builds both backends, from a
+new `make test` line beside `backend_parity`, so CI's `make test` gates it.
 
-**Gate.** A CI job runs `cargo bench -p aimdb-bench --bench
-b0_alloc_connector` (host only, a few seconds) and fails on any assertion.
-It lands first, against today's interfaces (§6 step 1), and is a required
-check from then on. It is the counting-allocator bench, so its results are
-deterministic and do not need a quiet runner.
+| Row | Asserted |
+|---|---|
+| embedded, allocations per round trip | 0 |
+| native, allocations per round trip | ≤ 11 (the prototype's figure; `rumqttc`'s share can only be bounded) |
+
+The test also prints bytes per round trip and the embedded backend's live
+heap, and records the one outbound copy (scratch into frame) in a comment
+beside the embedded row. Allocation counts do not depend on socket
+options; latency does (§5.1), so latency is printed, not asserted.
+
+**Gate.** A Makefile target `bench-gate` runs `cargo bench -p aimdb-bench
+--bench b0_alloc_connector` (host only, a few seconds) and fails on any
+assertion. A `bench-gate` job in `.github/workflows/ci.yml` runs it and is
+added to `comprehensive-check`'s `needs`. It lands first, against today's
+interfaces (§6 step 1), and is a required check from then on. It is the
+counting-allocator bench, so its results are deterministic and do not need
+a quiet runner. The informational timing bench is not part of the job.
 
 ### 5.1 Prototype
 
@@ -782,36 +876,42 @@ the new paths.
 
 | Who | Change |
 |---|---|
-| Application code | `.with_topic_provider(p)` → `.with_topic_writer(capacity, w)` for a writer type, or `.with_topic_fn(capacity, closure)`. Choose `capacity` as the longest topic the writer produces. Nothing else. |
-| Connector authors | Build `InboundDispatch` and `OutboundRoutes` in `build()` and move them into the transport task; call `dispatch` on receive; pull with `next`, or `poll_stage` + `take_staged` in a `select`, when the transport can send; stop on `None`. `Source`, `pump_source`, `pump_sink`, `Connector::publish` are gone. |
+| Application code | `.with_topic_provider(p)` → `.with_topic_writer(capacity, w)` for a writer type, or `.with_topic_fn(capacity, closure)`. Choose `capacity` as the longest topic the writer produces. KNX: `KnxConnector::new(binder, delay, url)` without the `Channels` argument, and drop the `static` that held it. An MQTT `qos`/`retain` value that does not parse now fails the build (§4.4). |
+| Connector authors | Build `InboundDispatch` and `OutboundRoutes` in `build()` and move them into the transport task; call `dispatch` on receive; pull with `next`, or `poll_stage` + `take_staged` in a `select`, when the transport can send; stop on `None`. `Source`, `pump_source`, `pump_sink`, `Connector`, the `Serialized*` types and `collect_outbound_routes` are gone; session clients call the new `pump_client` (§4.8). |
 
 Without adapters the core change breaks every connector at once, so the
 work lands as one change (a feature branch merged once):
 
 | Crate | Inbound | Outbound |
 |---|---|---|
-| `aimdb-core` | `InboundDispatch`; remove `Source`, `pump_source`, public `inbound_router`; AimX session client moves from `router.route` | `OutboundRoutes`, `TopicWriter`, `with_topic_writer`/`with_topic_fn`, `Reader::poll_recv`; remove `pump_sink`, `Connector::publish`, `SerializedReader`, `TopicProvider`; AimX session client pulls in its session task |
-| `aimdb-mqtt-connector` embedded | `dispatch` in `drain_packets` | action arm pulls from `OutboundRoutes`; `bbqueue` write ring |
-| `aimdb-mqtt-connector` native | `dispatch` in event-loop task | publish loop task over `AsyncClient` |
-| `aimdb-knx-connector` | `Source` → `dispatch` | pull in its connection task |
-| `aimdb-websocket-connector` | rename (`router.route` → `dispatch`), client and server | server: broadcast loop pulls (`record_index` from `RouteInfo.config`) |
-| `aimdb-embassy-adapter` | `send_wrapper.rs` wrappers for `Source` / `Connector` removed | — |
-| tests, bench | codec tests that build a router (`aimdb-data-contracts/src/link_codec.rs`, `aimdb-mqtt-connector/tests/link_ext_tests.rs`) → `InboundDispatch` | `topic_provider_tests.rs` (mqtt, knx), websocket `e2e.rs` and `decouple_record_keys_topics.rs` → `TopicWriter`; KNX task-count tests drop the per-route publisher; bench rewritten (§5) |
+| `aimdb-core` | `InboundDispatch` (`router.rs`, `builder.rs`); remove `Source`, `pump_source` (`session/pump.rs`, `session/mod.rs`), public `inbound_router`; `Router` crate-private | `OutboundRoutes`, `RouteInfo`, `OutboundMessage`, `OutboundPayload`, `RouteStats`, ready set (§4.2); `TopicWriter`, `TopicBuf`, `TopicOverflow`, `with_topic_writer`/`with_topic_fn` (`typed_api.rs`, `connector.rs`); `Reader::poll_recv` (`buffer/reader.rs`); remove `pump_sink`, `Connector` (`transport.rs`), the `Serialized*` types, `TopicProvider`; `collect_outbound_routes`/`OutboundRoute` crate-private |
+| `aimdb-core` session client | `pump_client` and `inbound_pump` take `InboundDispatch` (`session/client.rs`) | `pump_client` outbound becomes one task over `OutboundRoutes` (§4.8); `SessionClientConnector::build` (`session/connector.rs`) |
+| `aimdb-mqtt-connector` embedded | `dispatch` in `drain_packets`; remove `MqttSource`, `AimdbMqttEvent`, `EventChannel`, `Received::Event` | action arm pulls from `OutboundRoutes`; `bbqueue` write ring; `with_write_buffer`; remove `MqttSink`, `AimdbMqttAction::Publish`, `ActionChannel`, `CHANNEL_SIZE`; `warn_unsupported_qos` reads `RouteInfo`. Files: `session_loop.rs`, `mod.rs`, `manager.rs`, `session.rs`, `tls.rs` (§4.7) |
+| `aimdb-mqtt-connector` native | `dispatch` in the event-loop task; remove `MqttEventLoopSource` | publish loop task over `AsyncClient`; remove `MqttSink`; `qos`/`retain` parsed at build (`native.rs`) |
+| `aimdb-knx-connector` | `TelegramSink::deliver` over `InboundDispatch`; remove `KnxSource`, `TelegramChannel` | `cmd_arm` pulls via `poll_stage`; remove `KnxSink`, `CommandSource`, `CommandChannel`, `Channels`, `DEFAULT_QUEUE`, `N` (`connector.rs`, `client.rs`, `lib.rs`; §4.9) |
+| `aimdb-websocket-connector` | server: `WsDispatch` holds `InboundDispatch` (`dispatch.rs`, `builder.rs`); client: through `pump_client` | server: one broadcast loop pulls (`record_index` from `RouteInfo.config`), replacing `WsBusSink` (`server/connector.rs`); client: through `pump_client` (`client/builder.rs`) |
+| `aimdb-uds-connector`, `aimdb-tcp-connector`, `aimdb-serial-connector` | — (via `SessionClientConnector`) | — |
+| `aimdb-embassy-adapter` | remove `EmbassySourceRaw`, `EmbassySource` (`connectors.rs`) | remove `EmbassySinkRaw`, `EmbassySink` (`connectors.rs`); update the module docs in `connectors.rs` and `send_wrapper.rs` that name the pumps |
+| examples | — | `tokio-knx-connector-demo`, `embassy-knx-connector-demo`: drop `Channels` |
+| tests | `aimdb-data-contracts/src/link_codec.rs` (inbound half), `aimdb-mqtt-connector/tests/link_ext_tests.rs`, core's `typed_api.rs` router tests (`pump_source_routes_through_the_given_router` is removed) → `InboundDispatch` | `link_codec.rs` outbound half and `link_ext_tests.rs` → `OutboundRoutes::routes()` and `next`; `aimdb-mqtt-connector/tests/session_loop.rs` (`warn_unsupported_qos` test) → `RouteInfo`; `topic_provider_tests.rs` (mqtt, knx), websocket `e2e.rs` and `decouple_record_keys_topics.rs` → `TopicWriter`; core's `fused_reader_*` tests in `typed_api.rs` → the same cases against `OutboundRoutes` (buffer errors, serializer skips, scratch and owned fallback, invalid length, written topic); KNX task-count tests expect one future; `aimdb-client/tests/pump_client.rs` → new `pump_client` signature; new `alloc_round_trip.rs` (§5) |
+| bench, docs | — | `b0_alloc_connector` rewritten and baseline replaced (§5); `aimdb-bench/README.md`; `CHANGELOG.md` entries in core, mqtt, knx, websocket, embassy-adapter |
 
 **Order:**
 
-1. On main, independently: the CI gate for today's bench, and the native
-   MQTT topic move (`publish.topic` instead of `.clone()`).
-2. On the feature branch: `InboundDispatch`, `OutboundRoutes`,
-   `TopicWriter`; bench rewritten.
+1. On main, independently: the `bench-gate` job for today's bench (§5),
+   and the native MQTT topic move (`publish.topic` instead of `.clone()`).
+2. On the feature branch: `Reader::poll_recv`, `InboundDispatch`,
+   `OutboundRoutes` with the ready set, `TopicWriter`; bench rewritten.
+   Confirm the round-robin, parked and 1/8/64/256-route numbers (§4.2)
+   before any connector moves.
 3. MQTT embedded in two steps, each tested with the loopback harness:
    1. the `bbqueue` write ring, replacing `encode`'s `Vec` and the
       `Vec` channel (touches `perform`, `drain_packets`, `queue`,
-      `write_out`);
+      `queue_lossy`, `write_out`);
    2. the action arm pulls from `OutboundRoutes`; `ActionChannel` and
       `MqttSink` removed.
-4. MQTT native, KNX, WebSocket, AimX session client, Embassy adapter,
-   tests.
+4. MQTT native, KNX, WebSocket, `pump_client`, Embassy adapter, examples,
+   tests; `alloc_round_trip.rs`.
 5. Merge once the gate and every connector's tests pass.
 
 The prototype supports landing it as one change. While `with_topic_provider`
@@ -879,28 +979,40 @@ The Zenoh connector (053) is not implemented yet; it is written against
     but about 120 ns per idle route per message: 1,273 ns at 8 routes and
     32,230 ns at 256, where today's task per route stays near 470 ns. The
     ready set stays flat at 590–630 ns (§5.1).
+11. **Ready set as a spin-locked FIFO (the prototype).** A `spin::Mutex`
+    around a `VecDeque` of route ids, with a queued flag per route. Strict
+    oldest-first order, and what §5.1 measured. But route wakers run in the
+    producer's context, and on Embassy that can be an `InterruptExecutor`
+    (049) preempting the transport task while it holds the lock, which
+    deadlocks a single core. The bitmap (§4.2) takes no lock and gives
+    round-robin order instead, which meets the same fairness tests.
+12. **Keep KNX's `Channels` with a core-side pump into them.** Keeps
+    `KnxConnector::new` unchanged, but brings back the per-route task and
+    the queue between the record buffers and the transport that this
+    design removes everywhere else (§4.9).
 
 ## 8. Open questions
+
+None of these blocks implementation. Each is a measurement or a follow-up;
+§6 can proceed with the decisions above.
 
 - **(De)serialization latency on the transport task.** Embedded: a slow
   user serializer or deserializer delays keep-alive and ack handling in the
   session loop. Native: it delays polling `rumqttc`'s event loop or the
-  publish loop. Measure on the STM32H5 rig (037's B3) and with the native
-  loopback row; decide whether to document a budget.
-- **Ready set on an MCU.** The ready set (§4.2) keeps the host cost flat,
-  about 140 ns above a task per route. Its spin lock and waker hops have not
-  been measured on the STM32H5 rig, nor on Embassy's buffers.
+  publish loop. Measure on the STM32H5 rig (037's B3) and with
+  `alloc_round_trip.rs`'s printed latency; decide whether to document a
+  budget. Measurement, after merge.
+- **Ready set on an MCU.** The bitmap (§4.2) is confirmed on the host by
+  §6 step 2. Its atomics and waker hops have not been measured on the
+  STM32H5 rig, nor on Embassy's buffers. Measurement, after merge.
 - **Outage semantics per buffer type.** Confirmed for the Tokio buffers
-  (§4.6). Still to confirm for the Embassy buffers, with the loopback
-  harness.
-- **Write ring sizing (embedded).** 2,048 bytes and a 64-byte reserve
-  worked in the prototype and cap a PUBLISH at 960 bytes (§4.7). Decide the
-  default, and whether a connector can set its own size.
-- **`thumbv6m`.** Needs bbqueue's critical-section coordination (`CsCoord`)
-  for the write ring; not built yet. `thumbv7em` builds.
-- **Other connectors' own copies.** KNX, the WebSocket client and the AimX
-  session were not prototyped or measured at connector level; §5's
-  per-connector rows will show them.
+  (§4.6). Confirm for the Embassy buffers with the loopback harness in §6
+  step 3; a difference is documented on the link builder, not designed
+  around.
+- **Other connectors' own copies.** KNX's tunnel engine hands `forward` an
+  owned `Vec<u8>` per telegram, and the AimX session engine takes owned
+  topics and payloads (§4.8). Both are outside G1; a follow-up can make
+  either borrow.
 - **Inbound chunk channel (embedded).** The `read_into` side (`Channel<Chunk,
   1>` into `PacketReader`) could read socket bytes straight into a `bbqueue`
   grant. Out of scope; noted for a follow-up.
@@ -909,11 +1021,16 @@ The Zenoh connector (053) is not implemented yet; it is written against
   directions, every exchange then waits on the Nagle and delayed-ACK
   interaction, about 40 ms per round trip (§5.1). Track separately.
 
+Resolved in the 2026-10-03 revision: write-ring sizing (4,096-byte default,
+`with_write_buffer`; §4.7) and `thumbv6m` (not a supported target; §4.7).
+
 ## 9. References
 
 - [037 — Zero-allocation consume path](./037-zero-alloc-consume-path.md)
 - [045 — Per-link codec selection](./045-per-link-codec-selection.md)
   (`with_serializer_into` scratch path)
+- [049 — Real-time cadence](./049-real-time-cadence.md)
+  (`InterruptExecutor` producers, §4.2)
 - [052 — Runtime-neutral connectors](./052-runtime-neutral-connectors.md)
   (`pump_source`, `pump_sink`, `StreamDialer`)
 - [053 — Zenoh connector](./053-zenoh-connector.md)
