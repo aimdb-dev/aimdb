@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `with_qos` doc no longer claims an inbound subscribe QoS.** Inbound
   subscriptions stay at QoS 1, as before.
 
+### Fixed
+
+- **An oversized retained message no longer reconnects the `Embedded` backend
+  forever.** The session receives packets of up to 3,328 bytes (its 3,584-byte
+  buffer minus one read), but its MQTT 5 CONNECT did not say so. A broker
+  could send a larger packet, which ends the session, and a retained one is
+  replayed after every SUBSCRIBE, so the client reconnected once per
+  reconnection delay. CONNECT now advertises `Maximum Packet Size` 3,328, and
+  the broker withholds anything larger instead of sending it.
+
 ## [0.7.0] - 2026-09-18
 
 ### Changed (breaking)

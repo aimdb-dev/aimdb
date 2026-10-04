@@ -277,3 +277,75 @@ async fn two_connectors_in_one_process_keep_their_own_client_ids() {
     ids.sort();
     assert_eq!(ids, vec!["first-node", "second-node"]);
 }
+
+/// Connects a client subscribed to `sensors/temperature` against a broker that
+/// pushes `payload_len` bytes after every SUBACK, as it would a retained
+/// message, and returns what the broker saw after `wait` plus the length the
+/// record last received.
+async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option<u64>) {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::MqttConnector;
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let connector = MqttConnector::new(format!("mqtt://127.0.0.1:{port}"))
+        .transport(TokioNet::tcp())
+        .with_client_id("max-packet-size");
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("temperature", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://sensors/temperature")
+            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
+            .finish();
+    });
+    let (db, runner) = builder.build().await.expect("build db");
+    let mut reader = db.subscribe::<u64>("temperature").expect("subscribe");
+
+    let payload = vec![b'x'; payload_len];
+    let broker = fake_broker(
+        listener,
+        seen.clone(),
+        0,
+        Some(("sensors/temperature", payload.as_slice())),
+    );
+    let mut received = None;
+    let observe = async {
+        loop {
+            received = Some(reader.recv().await.expect("record open"));
+        }
+    };
+    tokio::select! {
+        _ = runner.run() => panic!("the session loop returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = observe => unreachable!(),
+        _ = tokio::time::sleep(wait) => {}
+    }
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
+    (seen, received)
+}
+
+/// The CONNECT advertises the largest packet the session always receives, so
+/// a broker withholds a larger retained message instead of sending one that
+/// would end every session it is replayed into.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retained_message_over_the_maximum_packet_size_is_withheld() {
+    let wait = Duration::from_secs(3);
+
+    let (seen, received) = with_retained_push(3000, wait).await;
+    assert_eq!(seen.max_packet_sizes, [3328]);
+    assert_eq!((seen.connects, seen.withheld), (1, 0));
+    assert_eq!(received, Some(3000), "a message within the limit arrives");
+
+    let (seen, received) = with_retained_push(4000, wait).await;
+    assert_eq!(seen.max_packet_sizes, [3328]);
+    assert_eq!(seen.connects, 1, "no reconnect loop");
+    assert_eq!(seen.withheld, 1);
+    assert_eq!(received, None);
+}
