@@ -13,6 +13,7 @@ pub(crate) mod session;
 // replace the polled loop.
 pub(crate) mod packet_reader;
 pub(crate) mod session_loop;
+pub(crate) mod write_ring;
 
 // TLS transport + SNTP time source.
 #[cfg(feature = "embassy-tls")]
