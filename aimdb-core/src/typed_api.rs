@@ -297,6 +297,9 @@ type FusedSerializeFn<T> = Arc<
         + Sync,
 >;
 
+/// Builds a link's `Consumer<T>` from the live database, once per route.
+type ConsumerFactoryFn<T> = Arc<dyn Fn(&AimDb) -> Consumer<T> + Send + Sync>;
+
 /// Optional allocation-free serializer captured beside [`FusedSerializeFn`].
 ///
 /// The callback writes into one pump-owned bounded scratch buffer. Returning
@@ -521,6 +524,90 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
                     }
                 }
             }
+        })
+    }
+}
+
+/// One outbound link's per-route state inside
+/// [`OutboundRoutes`](crate::OutboundRoutes): reader, topic writer and
+/// serializers, all typed.
+struct TypedRoute<T: Clone + Send + 'static> {
+    reader: crate::buffer::Reader<T>,
+    writer: Option<Arc<dyn crate::connector::TopicWriter<T>>>,
+    serialize: FusedSerializeFn<T>,
+    serialize_into: Option<FusedSerializeIntoFn<T>>,
+}
+
+impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
+    fn poll_route(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+        ctx: &crate::RuntimeContext,
+        topic: &mut [u8],
+        payload: &mut [u8],
+    ) -> core::task::Poll<crate::outbound::RouteOutcome> {
+        use crate::outbound::{RouteOutcome, StagedPayload};
+        use core::task::Poll;
+
+        let value = match self.reader.poll_recv(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(value)) => value,
+            Poll::Ready(Err(crate::DbError::BufferLagged { lag_count, .. })) => {
+                return Poll::Ready(RouteOutcome::Lagged(lag_count));
+            }
+            Poll::Ready(Err(_)) => return Poll::Ready(RouteOutcome::Closed),
+        };
+
+        let topic_len = match &self.writer {
+            None => None,
+            Some(writer) => {
+                let mut out = crate::connector::TopicBuf::new(topic);
+                match writer.write_topic(&value, &mut out) {
+                    Ok(true) if !out.overflowed() => Some(out.len()),
+                    Ok(false) if !out.overflowed() => None,
+                    _ => return Poll::Ready(RouteOutcome::TopicOverflow),
+                }
+            }
+        };
+
+        let owned = |value: &T| match (self.serialize)(ctx, value) {
+            Ok(bytes) => Some(StagedPayload::Owned(bytes)),
+            Err(_e) => {
+                log_error!(
+                    "outbound link: failed to serialize {}: {:?}",
+                    core::any::type_name::<T>(),
+                    _e
+                );
+                None
+            }
+        };
+        let staged = match &self.serialize_into {
+            None => owned(&value),
+            Some(serialize_into) => match serialize_into(ctx, &value, payload) {
+                Ok(len) if len <= payload.len() => Some(StagedPayload::Scratch(len)),
+                Ok(_len) => {
+                    log_error!(
+                        "outbound link: serializer for {} returned invalid length {} for {}-byte scratch",
+                        core::any::type_name::<T>(),
+                        _len,
+                        payload.len()
+                    );
+                    None
+                }
+                Err(crate::connector::SerializeError::BufferTooSmall) => owned(&value),
+                Err(_e) => {
+                    log_error!(
+                        "outbound link: failed to serialize {} into scratch: {:?}",
+                        core::any::type_name::<T>(),
+                        _e
+                    );
+                    None
+                }
+            },
+        };
+        Poll::Ready(match staged {
+            Some(payload) => RouteOutcome::Staged { topic_len, payload },
+            None => RouteOutcome::SerializeFailed,
         })
     }
 }
@@ -1070,25 +1157,19 @@ where
             self.registrar.last_stage = Some((StageKind::Link, 0));
         }
 
-        // Fused source factory that captures type T and record key.
+        // Resolves the record and builds a `Consumer<T>` bound to its buffer
+        // handle, once per route (not per message) — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures`.
         //
-        // Resolves the record at route-collection time (not per-message) and
-        // constructs a `Consumer<T>` bound to a pre-resolved buffer handle —
-        // same pattern as the build-time path in
-        // `TypedRecord::collect_consumer_futures`. The serializer
-        // and topic provider ride along typed, so the readers handed to the
-        // pumps yield destination + payload with no erasure crossing.
-        //
-        // The factory runs during build() after every record is registered and
-        // validated (including the linked-records-need-a-buffer check), so
-        // failures here are aimdb bugs, not user mistakes.
+        // The factories run during build() after every record is registered
+        // and validated (including the linked-records-need-a-buffer check),
+        // so failures here are aimdb bugs, not user mistakes.
         #[allow(
             clippy::panic,
             reason = "the factory returns no Result and these lookups were validated at build() time"
         )]
-        let source_factory: crate::connector::SourceFactoryFn = {
+        let make_consumer: ConsumerFactoryFn<T> = {
             let record_key = self.registrar.record_key.clone();
-            let topic = self.topic;
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
@@ -1110,8 +1191,23 @@ where
                 let mut consumer = Consumer::<T>::new(buffer);
                 #[cfg(feature = "observability")]
                 consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                consumer
+            })
+        };
+
+        // Fused source for the pumps: the serializer and topic selector ride
+        // along typed, so its readers yield destination + payload with no
+        // erasure crossing.
+        let source_factory: crate::connector::SourceFactoryFn = {
+            let make_consumer = make_consumer.clone();
+            let (serialize, serialize_into, topic) = (
+                serialize.clone(),
+                serialize_into.clone(),
+                self.topic.clone(),
+            );
+            Arc::new(move |db: &AimDb| {
                 Box::new(FusedSource {
-                    consumer,
+                    consumer: make_consumer(db),
                     serialize: serialize.clone(),
                     serialize_into: serialize_into.clone(),
                     topic: topic.clone(),
@@ -1119,8 +1215,31 @@ where
             })
         };
 
+        // The same parts for `OutboundRoutes`, subscribed when it is built.
+        let route_factory: crate::outbound::RouteFactoryFn = {
+            let topic = self.topic;
+            Arc::new(move |db: &AimDb| {
+                let (writer, topic_capacity) = match &topic {
+                    TopicSelector::Writer { capacity, writer } => (Some(writer.clone()), *capacity),
+                    _ => (None, 0),
+                };
+                crate::outbound::RouteParts {
+                    route: Box::new(TypedRoute {
+                        reader: make_consumer(db).subscribe(),
+                        writer,
+                        serialize: serialize.clone(),
+                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
+                    }),
+                    topic_capacity,
+                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
+                    topic_provider: matches!(topic, TopicSelector::Provider(_)),
+                }
+            })
+        };
+
         let mut link = ConnectorLink::new(url, source_factory);
         link.config = self.config;
+        link.route_factory = Some(route_factory);
 
         // Store the connector link - sources will be created later in build()
         // after connectors are actually built

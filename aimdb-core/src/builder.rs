@@ -1256,6 +1256,25 @@ impl AimDb {
             .name(key)
     }
 
+    /// Every outbound link of `scheme`, with its record's index and key.
+    pub(crate) fn outbound_links<'a>(
+        &'a self,
+        scheme: &'a str,
+    ) -> impl Iterator<Item = (usize, &'a str, &'a crate::connector::ConnectorLink)> + 'a {
+        self.inner
+            .storages
+            .iter()
+            .enumerate()
+            .flat_map(move |(i, entry)| {
+                entry
+                    .record
+                    .outbound_connectors()
+                    .iter()
+                    .filter(move |link| link.url.scheme() == scheme)
+                    .map(move |link| (i, entry.key.as_str(), link))
+            })
+    }
+
     /// Collects outbound routes for a specific protocol scheme
     ///
     /// Mirrors [`inbound_router`](Self::inbound_router). Iterates all records,

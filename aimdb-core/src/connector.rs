@@ -595,6 +595,9 @@ pub struct ConnectorLink {
     ///
     /// Available in both `std` and `no_std + alloc` environments.
     pub source_factory: SourceFactoryFn,
+
+    /// Builds the link's route for `OutboundRoutes`; set by `link_to`.
+    pub(crate) route_factory: Option<crate::outbound::RouteFactoryFn>,
 }
 
 impl Debug for ConnectorLink {
@@ -614,6 +617,7 @@ impl ConnectorLink {
             url,
             config: Vec::new(),
             source_factory,
+            route_factory: None,
         }
     }
 
