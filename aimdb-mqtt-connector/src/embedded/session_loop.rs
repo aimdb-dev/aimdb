@@ -17,7 +17,7 @@ use core::task::Poll;
 use core::time::Duration;
 
 use aimdb_core::session::{ByteRead, ByteWrite, Delay};
-use aimdb_core::RuntimeOps;
+use aimdb_core::{InboundDispatch, RuntimeOps};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -30,12 +30,10 @@ use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::packets::connect::Connect;
 use mountain_mqtt::packets::packet_generic::PacketGeneric;
 
-use crate::embedded::manager::{now_ms, Error, FromApplicationMessage, Settings};
+use crate::embedded::manager::{now_ms, Error, Settings};
 use crate::embedded::packet_reader::PacketReader;
 use crate::embedded::write_ring::{encoded_len, WriteRing, CONTROL_RESERVE};
-use crate::embedded::{
-    ActionChannel, AimdbMqttAction, AimdbMqttEvent, EventChannel, BUFFER_SIZE, MAX_PROPERTIES,
-};
+use crate::embedded::{ActionChannel, AimdbMqttAction, BUFFER_SIZE, MAX_PROPERTIES};
 
 /// Bytes lifted off the socket at a time, and the size of one `inbound` slot.
 const RX_CHUNK: usize = 256;
@@ -46,9 +44,8 @@ const RX_CHUNK: usize = 256;
 /// packets go into the connector's write ring instead.
 const PACKET_BUFFER_SIZE: usize = BUFFER_SIZE - 2 * RX_CHUNK;
 
-/// Ring space waited for before each received packet is parsed: enough for
-/// the PUBACK a QoS 1 publish needs (6 bytes; mountain-mqtt adds no
-/// properties).
+/// Ring space waited for before a QoS 1 publish is parsed: enough for its
+/// PUBACK (6 bytes; mountain-mqtt adds no properties).
 const PUBACK_ROOM: usize = 16;
 
 /// The largest packet the reader takes whatever arrives before it: the
@@ -63,8 +60,9 @@ type Chunk = heapless::Vec<u8, RX_CHUNK>;
 
 /// Drive one MQTT session over a split stream until an error ends it.
 ///
-/// Connects, subscribes `subscribe_topics`, then dispatches actions and
-/// forwards events. Returns only on failure — the caller reconnects.
+/// Connects, subscribes `subscribe_topics`, then performs actions and
+/// dispatches every inbound publish into its records through `dispatch`.
+/// Returns only on failure — the caller reconnects.
 ///
 /// `ring` is the connector's, reused across sessions; whatever an old session
 /// left in it is discarded first, so nothing reaches the new socket ahead of
@@ -79,7 +77,7 @@ pub(crate) async fn run_session<R, W, D>(
     tx: W,
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
-    events: &EventChannel,
+    dispatch: &InboundDispatch,
     actions: &ActionChannel,
     ring: &WriteRing,
     settings: &Settings,
@@ -99,7 +97,7 @@ where
         ring,
         connection_settings,
         subscribe_topics,
-        events,
+        dispatch,
         actions,
         settings,
         delay,
@@ -148,7 +146,7 @@ async fn client_loop<D: Delay>(
     ring: &WriteRing,
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
-    events: &EventChannel,
+    dispatch: &InboundDispatch,
     actions: &ActionChannel,
     settings: &Settings,
     delay: &D,
@@ -285,7 +283,7 @@ async fn client_loop<D: Delay>(
                     &mut reader,
                     &mut state,
                     ring,
-                    events,
+                    dispatch,
                     runtime,
                     &mut last_ack_ms,
                     &mut connected,
@@ -307,13 +305,14 @@ async fn client_loop<D: Delay>(
     }
 }
 
-/// Parse and dispatch every whole packet the reader now holds.
+/// Parse every whole packet the reader now holds, dispatching publishes into
+/// their records.
 #[allow(clippy::too_many_arguments)]
 async fn drain_packets<const N: usize>(
     reader: &mut PacketReader<N>,
     state: &mut ClientStateNoQueue,
     ring: &WriteRing,
-    events: &EventChannel,
+    dispatch: &InboundDispatch,
     runtime: &dyn RuntimeOps,
     last_ack_ms: &mut u64,
     connected: &mut bool,
@@ -322,12 +321,13 @@ async fn drain_packets<const N: usize>(
         // A burst of QoS 1 publishes needs a PUBACK each, so room for one is
         // waited for here, before parsing: the parsed packet is too large to
         // hold across an await in the session future.
-        ring.wait_room(PUBACK_ROOM).await;
+        if reader.head_needs_ack() {
+            ring.wait_room(PUBACK_ROOM).await;
+        }
 
-        // The packet borrows the reader's buffer, so everything that outlives
-        // it — the application event — is made owned inside this scope.
-        // `consume` can then take `&mut`.
-        let received = {
+        // The packet borrows the reader's buffer, so it is handled entirely
+        // inside this scope; `consume` can then take `&mut`.
+        {
             let packet: PacketGeneric<'_, MAX_PROPERTIES, 0, 0> =
                 reader.parse(total).map_err(client_error)?;
 
@@ -346,8 +346,8 @@ async fn drain_packets<const N: usize>(
             }
 
             let event = state.receive(packet).map_err(client_error)?;
-            Received::of(event)?
-        };
+            deliver(event, dispatch)?;
+        }
         reader.consume(total);
 
         // Every packet the state accepted proves the broker is alive.
@@ -358,58 +358,53 @@ async fn drain_packets<const N: usize>(
         if !*connected && matches!(state, ClientStateNoQueue::Connected(_)) {
             *connected = true;
         }
-
-        if let Received::Event(event) = received {
-            events.send(event).await;
-        }
     }
     Ok(())
 }
 
-/// What a received packet leaves for the loop to do, owned so the reader's
-/// buffer can be compacted first.
-enum Received {
-    /// An acknowledgement: liveness only, nothing to forward.
-    Ack,
-    /// A message for `pump_source` to route.
-    Event(AimdbMqttEvent),
-}
+/// Hand a received publish to its records; everything else only proves
+/// liveness.
+///
+/// The PUBACK for a QoS 1 publish is already queued, so a record buffer that
+/// is full drops a message the broker considers delivered.
+fn deliver(
+    event: ClientStateReceiveEvent<'_, '_, MAX_PROPERTIES>,
+    dispatch: &InboundDispatch,
+) -> Result<(), Error> {
+    match event {
+        ClientStateReceiveEvent::Ack => {}
 
-impl Received {
-    fn of(event: ClientStateReceiveEvent<'_, '_, MAX_PROPERTIES>) -> Result<Self, Error> {
-        Ok(match event {
-            ClientStateReceiveEvent::Ack => Self::Ack,
-
-            ClientStateReceiveEvent::Publish { publish }
-            | ClientStateReceiveEvent::PublishAndPuback { publish, .. } => {
-                if publish.topic_name().is_empty() {
-                    return Err(Error::Client(
-                        ClientError::EmptyTopicNameWithAliasesDisabled,
-                    ));
-                }
-                let message = publish.into();
-                let event = AimdbMqttEvent::from_application_message(&message)
-                    .map_err(|e| Error::Client(ClientError::EventHandler(e)))?;
-                Self::Event(event)
+        ClientStateReceiveEvent::Publish { publish }
+        | ClientStateReceiveEvent::PublishAndPuback { publish, .. } => {
+            if publish.topic_name().is_empty() {
+                return Err(Error::Client(
+                    ClientError::EmptyTopicNameWithAliasesDisabled,
+                ));
             }
+            #[cfg(feature = "defmt")]
+            defmt::debug!(
+                "Received message on topic '{}', {} bytes",
+                publish.topic_name(),
+                publish.payload().len()
+            );
+            dispatch.dispatch(publish.topic_name(), publish.payload());
+        }
 
-            // Liveness, and nothing else. The broker is telling us a
-            // subscription was granted below the QoS asked for, that a publish
-            // matched no subscriber, or that an unsubscribe named a
-            // subscription it did not hold. AimDB has nowhere to deliver any of
-            // that: `pump_source` owns the channel an application would have
-            // read it from, and a record has no connection-state callback.
-            ClientStateReceiveEvent::SubscriptionGrantedBelowMaximumQos { .. }
-            | ClientStateReceiveEvent::PublishedMessageHadNoMatchingSubscribers
-            | ClientStateReceiveEvent::NoSubscriptionExisted => Self::Ack,
+        // Liveness, and nothing else. The broker is telling us a subscription
+        // was granted below the QoS asked for, that a publish matched no
+        // subscriber, or that an unsubscribe named a subscription it did not
+        // hold. A record has no connection-state callback to deliver it to.
+        ClientStateReceiveEvent::SubscriptionGrantedBelowMaximumQos { .. }
+        | ClientStateReceiveEvent::PublishedMessageHadNoMatchingSubscribers
+        | ClientStateReceiveEvent::NoSubscriptionExisted => {}
 
-            ClientStateReceiveEvent::Disconnect { disconnect } => {
-                return Err(Error::Client(ClientError::Disconnected(
-                    *disconnect.reason_code(),
-                )))
-            }
-        })
+        ClientStateReceiveEvent::Disconnect { disconnect } => {
+            return Err(Error::Client(ClientError::Disconnected(
+                *disconnect.reason_code(),
+            )))
+        }
     }
+    Ok(())
 }
 
 /// Turn one queued action into a packet on the wire.
@@ -559,12 +554,18 @@ mod tests {
     /// absorb codegen drift, but not loose enough to fit another buffer.
     #[test]
     fn the_session_future_has_not_outgrown_the_loop_it_replaced() {
-        let events = EventChannel::new();
         let actions = ActionChannel::new();
         let settings = Settings::default();
         let connection_settings = ConnectionSettings::unauthenticated("size-probe");
         let runtime = aimdb_core::executor::test_support::NoopRuntimeOps;
         let ring = WriteRing::new(64);
+        let (db, _runner) = futures::executor::block_on(
+            aimdb_core::AimDbBuilder::new()
+                .runtime(alloc::sync::Arc::new(runtime))
+                .build(),
+        )
+        .expect("empty database");
+        let dispatch = InboundDispatch::new(&db, "mqtt", &crate::MqttGrammar).expect("no links");
 
         // Built, never polled: `size_of_val` on the future is the whole point.
         let session = run_session(
@@ -572,7 +573,7 @@ mod tests {
             NullWrite,
             &connection_settings,
             &[],
-            &events,
+            &dispatch,
             &actions,
             &ring,
             &settings,

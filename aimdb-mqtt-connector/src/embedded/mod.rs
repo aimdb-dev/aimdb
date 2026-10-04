@@ -1,8 +1,9 @@
 //! The `mountain-mqtt` backend: broker session plus the data-plane bridges.
 //!
-//! Outbound publishes and inbound routing ride core's [`pump_sink`] /
-//! [`pump_source`] directly — the session channels are `Sync`, so nothing
-//! force-`Send` stands between them and the runner.
+//! Outbound publishes ride core's [`pump_sink`] — the action channel is
+//! `Sync`, so nothing force-`Send` stands between it and the runner. Inbound
+//! publishes are dispatched into their records by the session loop itself,
+//! through an [`InboundDispatch`](aimdb_core::InboundDispatch).
 //!
 //! See the crate docs for a usage example.
 
@@ -24,7 +25,7 @@ pub mod tls;
 extern crate alloc;
 
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::session::{pump_sink, pump_source, Payload};
+use aimdb_core::session::pump_sink;
 use aimdb_core::transport::{ConnectorConfig, PublishError};
 use alloc::boxed::Box;
 use alloc::format;
@@ -47,7 +48,7 @@ pub use crate::embedded::tls::TlsOptions;
 #[cfg(feature = "embedded-tls")]
 use crate::embedded::tls::{host_ip_literal, READ_BUF_MIN, WRITE_BUF_MIN};
 
-/// Maximum number of pending MQTT actions and events
+/// Maximum number of pending MQTT actions
 pub(crate) const CHANNEL_SIZE: usize = 32;
 
 /// Buffer size for MQTT packets (4KB)
@@ -61,15 +62,13 @@ pub(crate) const MAX_PROPERTIES: usize = 32;
 /// The runner's collected future type.
 type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-/// What a transport's setup hands back: the two channel ends the pumps ride,
-/// plus the tasks that serve them.
-type ManagerSetup = (Arc<ActionChannel>, Arc<EventChannel>, Vec<EmbassyBoxFuture>);
+/// What a transport's setup hands back: the action channel `pump_sink` rides,
+/// plus the tasks that serve it.
+type ManagerSetup = (Arc<ActionChannel>, Vec<EmbassyBoxFuture>);
 
 /// Outbound publishes and subscriptions: pumps to broker session.
 pub(crate) type ActionChannel =
     crate::embedded::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
-/// Inbound messages: broker session to pumps.
-pub(crate) type EventChannel = crate::embedded::manager::EventChannel<AimdbMqttEvent, CHANNEL_SIZE>;
 
 /// What the pumps ask the session to put on the wire.
 ///
@@ -91,42 +90,10 @@ pub enum AimdbMqttAction {
     },
 }
 
-/// What the session hands back for `pump_source` to route.
-#[derive(Clone)]
-pub enum AimdbMqttEvent {
-    /// A message was received from a subscribed topic
-    MessageReceived {
-        /// The topic the message was received on
-        topic: String,
-        /// The message payload, built once from the wire bytes.
-        payload: Payload,
-    },
-}
-
-impl crate::embedded::manager::FromApplicationMessage<MAX_PROPERTIES> for AimdbMqttEvent {
-    fn from_application_message(
-        message: &mountain_mqtt::packets::publish::ApplicationMessage<MAX_PROPERTIES>,
-    ) -> Result<Self, mountain_mqtt::client::EventHandlerError> {
-        #[cfg(feature = "defmt")]
-        defmt::debug!(
-            "Received message on topic '{}', {} bytes",
-            message.topic_name,
-            message.payload.len()
-        );
-
-        Ok(Self::MessageReceived {
-            topic: message.topic_name.to_string(),
-            // Straight to `Payload` — one allocation and one copy, where a
-            // `Vec` here would be converted again on the way out.
-            payload: Payload::from(message.payload),
-        })
-    }
-}
-
 // ===========================================================================
-// Data-plane bridges — core's pumps drive these directly. The channels are
-// `Sync` (their mutex is `CriticalSectionRawMutex`), so no force-`Send`
-// wrapper stands between them and the runner.
+// Data-plane bridge — `pump_sink` drives it directly. The action channel is
+// `Sync` (its mutex is `CriticalSectionRawMutex`), so no force-`Send` wrapper
+// stands between it and the runner.
 // ===========================================================================
 
 /// Turns a `pump_sink` publish into an `AimdbMqttAction::Publish` on the
@@ -167,20 +134,6 @@ impl aimdb_core::transport::Connector for MqttSink {
     }
 }
 
-/// Drains the session's event channel as `(topic, payload)` for `pump_source`.
-struct MqttSource {
-    events: Arc<EventChannel>,
-}
-
-impl aimdb_core::session::Source for MqttSource {
-    fn next(&mut self) -> aimdb_core::BoxFut<'_, Option<(String, Payload)>> {
-        Box::pin(async move {
-            let AimdbMqttEvent::MessageReceived { topic, payload } = self.events.receive().await;
-            Some((topic, payload))
-        })
-    }
-}
-
 /// Force-`Send + Sync` slot for the TLS materials: [`TlsOptions`] holds
 /// `&'static mut` exclusive resources, so it is neither `Sync` nor takeable
 /// through the `&self` that [`ConnectorBuilder::build`] receives.
@@ -205,8 +158,8 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
-        let topics = inbound_topics(&router);
+        let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let topics = inbound_topics(&inbound);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
@@ -215,15 +168,16 @@ where
         let connection_settings =
             static_connection_settings(client_id, credentials, broker.credentials.as_ref());
 
-        let (actions, events, manager_tasks) = setup_manager(
+        let (actions, manager_tasks) = setup_manager(
             &broker,
             connection_settings,
             dialer.clone(),
             topics,
+            inbound,
             Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
-        Ok(collect_pumps(db, router, actions, events, manager_tasks))
+        Ok(collect_pumps(db, actions, manager_tasks))
     })
 }
 
@@ -246,8 +200,8 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
-        let topics = inbound_topics(&router);
+        let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let topics = inbound_topics(&inbound);
         warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
@@ -260,22 +214,23 @@ where
         let connection_settings =
             static_connection_settings(client_id, credentials, broker.credentials.as_ref());
 
-        let (actions, events, manager_tasks) = setup_tls_manager(
+        let (actions, manager_tasks) = setup_tls_manager(
             &broker,
             options,
             connection_settings,
             backend.dialer.clone(),
             topics,
+            inbound,
             Settings::from_keep_alive_secs(keep_alive_secs),
             db.runtime_ops(),
         )?;
-        Ok(collect_pumps(db, router, actions, events, manager_tasks))
+        Ok(collect_pumps(db, actions, manager_tasks))
     })
 }
 
 /// The inbound topics the session must subscribe on every connection.
-fn inbound_topics(router: &aimdb_core::Router) -> Vec<String> {
-    let topics: Vec<String> = router
+fn inbound_topics(inbound: &aimdb_core::InboundDispatch) -> Vec<String> {
+    let topics: Vec<String> = inbound
         .subscriptions()
         .iter()
         .map(|t| t.to_string())
@@ -287,17 +242,14 @@ fn inbound_topics(router: &aimdb_core::Router) -> Vec<String> {
     topics
 }
 
-/// Outbound publishes and inbound routing ride core's pumps; the session tasks
-/// join them.
+/// Outbound publishes ride core's `pump_sink`; the session tasks, which also
+/// dispatch inbound publishes, join them.
 fn collect_pumps(
     db: &aimdb_core::builder::AimDb,
-    router: aimdb_core::Router,
     actions: Arc<ActionChannel>,
-    events: Arc<EventChannel>,
     manager_tasks: Vec<EmbassyBoxFuture>,
 ) -> Vec<EmbassyBoxFuture> {
     let mut futures = pump_sink(db, "mqtt", Arc::new(MqttSink { actions }));
-    futures.extend(pump_source(db, router, MqttSource { events }));
     futures.extend(manager_tasks);
     futures
 }
@@ -391,6 +343,7 @@ fn setup_manager<D>(
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
     topics: Vec<String>,
+    inbound: aimdb_core::InboundDispatch,
     settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> Result<ManagerSetup, aimdb_core::DbError>
@@ -403,7 +356,6 @@ where
         + 'static,
 {
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
-    let events: Arc<EventChannel> = Arc::new(EventChannel::new());
 
     // The dialer is both the transport and the clock the session runs on.
     let host = broker.host.clone();
@@ -415,7 +367,6 @@ where
     let manager_task: EmbassyBoxFuture = Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
             let actions = actions.clone();
-            let events = events.clone();
             async move {
                 #[cfg(feature = "defmt")]
                 defmt::info!("MQTT background task starting");
@@ -427,7 +378,7 @@ where
                     topics,
                     connection_settings,
                     settings,
-                    events,
+                    inbound,
                     actions,
                     runtime,
                 )
@@ -436,18 +387,20 @@ where
         })
     });
 
-    Ok((actions, events, alloc::vec![manager_task]))
+    Ok((actions, alloc::vec![manager_task]))
 }
 
 /// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source task.
 /// Synchronous — no `.await` — so the caller's `build` future stays `Send`.
 #[cfg(feature = "embedded-tls")]
+#[allow(clippy::too_many_arguments)]
 fn setup_tls_manager<D>(
     broker: &BrokerUrl,
     options: TlsOptions,
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
     topics: Vec<String>,
+    inbound: aimdb_core::InboundDispatch,
     settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> Result<ManagerSetup, aimdb_core::DbError>
@@ -487,7 +440,6 @@ where
     }
 
     let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
-    let events: Arc<EventChannel> = Arc::new(EventChannel::new());
 
     let host = broker.host.clone();
     let port = broker.port;
@@ -502,7 +454,6 @@ where
     let mut tasks: Vec<EmbassyBoxFuture> = alloc::vec![Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
             let actions = actions.clone();
-            let events = events.clone();
             async move {
                 #[cfg(feature = "defmt")]
                 defmt::info!("MQTT-TLS background task starting");
@@ -517,7 +468,7 @@ where
                         topics,
                         connection_settings,
                         settings,
-                        events,
+                        inbound,
                         actions,
                         delay,
                         runtime,
@@ -539,7 +490,7 @@ where
         }));
     }
 
-    Ok((actions, events, tasks))
+    Ok((actions, tasks))
 }
 
 /// Map a QoS level to mountain-mqtt's `QualityOfService`.

@@ -39,6 +39,11 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 pub struct Native;
 
 /// The `mountain-mqtt` backend over a caller-supplied transport.
+///
+/// Inbound publishes are delivered into their records by the session task
+/// itself. At QoS 1 the PUBACK is sent before delivery, so it means the
+/// message reached AimDB, not that every record kept it: a record whose
+/// buffer is full drops it, and the broker does not resend.
 #[cfg(feature = "embedded")]
 pub struct Embedded<D> {
     pub(crate) dialer: D,
