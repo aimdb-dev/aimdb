@@ -53,6 +53,13 @@ and `pump_client` take the router. KNX, WebSocket, TCP, UDS and serial use
 `ExactGrammar`: a `{…}` link on them fails the build. The user-facing link API
 is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
 
+### Fixed
+
+- **The embedded MQTT backend advertises the largest packet it receives**
+  (`Maximum Packet Size` 3,328 in CONNECT), so an oversized retained message is
+  withheld by the broker instead of reconnecting the client forever.
+  ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
+
 ## [2.0.0] - 2026-09-18
 
 ### Added
