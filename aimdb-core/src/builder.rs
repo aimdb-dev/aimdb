@@ -1256,6 +1256,32 @@ impl AimDb {
             .name(key)
     }
 
+    /// Every outbound link of `scheme`, with its record's index and key.
+    pub(crate) fn outbound_links<'a>(
+        &'a self,
+        scheme: &'a str,
+    ) -> impl Iterator<Item = (usize, &'a str, &'a crate::connector::ConnectorLink)> + 'a {
+        self.inner
+            .storages
+            .iter()
+            .enumerate()
+            .flat_map(move |(i, entry)| {
+                // i and RecordId must match: connectors get i as `record_index`
+                debug_assert_eq!(
+                    self.inner.by_key.get(&entry.key).map(|id| id.index()),
+                    Some(i),
+                    "record storage order diverges from RecordId for key {}",
+                    entry.key.as_str()
+                );
+                entry
+                    .record
+                    .outbound_connectors()
+                    .iter()
+                    .filter(move |link| link.url.scheme() == scheme)
+                    .map(move |link| (i, entry.key.as_str(), link))
+            })
+    }
+
     /// Collects outbound routes for a specific protocol scheme
     ///
     /// Mirrors [`inbound_router`](Self::inbound_router). Iterates all records,
@@ -1271,36 +1297,21 @@ impl AimDb {
     /// # Arguments
     /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
     pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
-        let mut routes = Vec::new();
-
-        for (i, entry) in self.inner.storages.iter().enumerate() {
-            // i and RecordId must match
-            debug_assert_eq!(
-                self.inner.by_key.get(&entry.key).map(|id| id.index()),
-                Some(i),
-                "record storage order diverges from RecordId for key {}",
-                entry.key.as_str()
-            );
-            let outbound_links = entry.record.outbound_connectors();
-
-            for link in outbound_links {
-                // Filter by scheme
-                if link.url.scheme() != scheme {
-                    continue;
-                }
-
+        let routes: Vec<OutboundRoute> = self
+            .outbound_links(scheme)
+            .map(|(i, _, link)| {
                 // config must carry the record index
                 let mut config = link.config.clone();
                 config.push(("record_index".to_string(), i.to_string()));
 
                 // Create the fused source using the stored factory
-                routes.push(OutboundRoute {
+                OutboundRoute {
                     topic: link.url.resource_id().to_string(),
                     source: link.create_source(self),
                     config,
-                });
-            }
-        }
+                }
+            })
+            .collect();
 
         if !routes.is_empty() {
             log_debug!(

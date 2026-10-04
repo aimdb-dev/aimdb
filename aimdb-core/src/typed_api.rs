@@ -297,6 +297,9 @@ type FusedSerializeFn<T> = Arc<
         + Sync,
 >;
 
+/// Builds a link's `Consumer<T>` from the live database, once per route.
+type ConsumerFactoryFn<T> = Arc<dyn Fn(&AimDb) -> Consumer<T> + Send + Sync>;
+
 /// Optional allocation-free serializer captured beside [`FusedSerializeFn`].
 ///
 /// The callback writes into one pump-owned bounded scratch buffer. Returning
@@ -385,6 +388,55 @@ struct FusedReader<T: Clone + Send + 'static> {
     topic_buf: Box<[u8]>,
 }
 
+/// Runs `writer` for `value` into `out`. `Ok(true)`: publish to what `out`
+/// holds; `Ok(false)`: to the link's default topic; `Err`: the topic did not
+/// fit and the value is skipped, whatever the writer returned.
+///
+/// Shared by [`FusedReader`] and [`TypedRoute`].
+fn write_topic<T, W: crate::connector::TopicWriter<T> + ?Sized>(
+    writer: &W,
+    value: &T,
+    out: &mut crate::connector::TopicBuf<'_>,
+) -> Result<bool, crate::connector::TopicOverflow> {
+    match writer.write_topic(value, out) {
+        Ok(written) if !out.overflowed() => Ok(written),
+        _ => Err(crate::connector::TopicOverflow),
+    }
+}
+
+/// Serializes one outbound value: into `scratch` through
+/// `with_serializer_into` when the link has one, else (or when the value does
+/// not fit) through the owned serializer.
+///
+/// Shared by [`FusedReader`] and [`TypedRoute`].
+fn serialize_outbound<T>(
+    serialize: &FusedSerializeFn<T>,
+    serialize_into: Option<&FusedSerializeIntoFn<T>>,
+    ctx: &crate::RuntimeContext,
+    value: &T,
+    scratch: &mut [u8],
+) -> Result<crate::outbound::StagedPayload, crate::outbound::SerializeFailure> {
+    use crate::connector::SerializeError;
+    use crate::outbound::{SerializeFailure, StagedPayload};
+
+    let Some(serialize_into) = serialize_into else {
+        return serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Owned);
+    };
+    match serialize_into(ctx, value, scratch) {
+        Ok(len) if len <= scratch.len() => Ok(StagedPayload::Scratch(len)),
+        Ok(len) => Err(SerializeFailure::InvalidLength {
+            len,
+            capacity: scratch.len(),
+        }),
+        Err(SerializeError::BufferTooSmall) => serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Fallback),
+        Err(e) => Err(SerializeFailure::Into(e)),
+    }
+}
+
 impl<T: Clone + Send + 'static> FusedReader<T> {
     /// The value's destination (`None`: the route's default), or `Err` when
     /// its written topic overflowed and the value must be skipped.
@@ -394,10 +446,10 @@ impl<T: Clone + Send + 'static> FusedReader<T> {
             TopicSelector::Provider(p) => Ok(p.topic(value)),
             TopicSelector::Writer { writer, .. } => {
                 let mut out = crate::connector::TopicBuf::new(&mut self.topic_buf);
-                match writer.write_topic(value, &mut out) {
-                    Ok(true) if !out.overflowed() => Ok(Some(out.as_str().to_string())),
-                    Ok(false) if !out.overflowed() => Ok(None),
-                    _ => {
+                match write_topic(&**writer, value, &mut out) {
+                    Ok(true) => Ok(Some(out.as_str().to_string())),
+                    Ok(false) => Ok(None),
+                    Err(_) => {
                         log_warn!(
                             "outbound link: topic for {} does not fit in {} bytes, value skipped",
                             core::any::type_name::<T>(),
@@ -448,79 +500,91 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
         ctx: &'a crate::RuntimeContext,
         scratch: &'a mut [u8],
     ) -> crate::connector::RecvSerializedIntoFuture<'a> {
+        use crate::connector::SerializedPayload;
+        use crate::outbound::StagedPayload;
+
         Box::pin(async move {
             loop {
                 let value = self.inner.recv().await?;
                 let Ok(dest) = self.resolve_dest(&value) else {
                     continue;
                 };
-
-                let Some(serialize_into) = &self.serialize_into else {
-                    match (self.serialize)(ctx, &value) {
-                        Ok(payload) => {
-                            return Ok(crate::connector::SerializedValueInto {
-                                dest,
-                                payload: crate::connector::SerializedPayload::Owned(payload),
-                            });
-                        }
-                        Err(_e) => {
-                            log_error!(
-                                "outbound link: failed to serialize {} (dest {:?}): {:?}",
-                                core::any::type_name::<T>(),
-                                dest,
-                                _e
-                            );
-                            continue;
-                        }
-                    }
-                };
-
-                match serialize_into(ctx, &value, scratch) {
-                    Ok(len) => {
-                        if scratch.get(..len).is_none() {
-                            log_error!(
-                                "outbound link: serializer for {} returned invalid length {} for {}-byte scratch buffer",
-                                core::any::type_name::<T>(),
-                                len,
-                                scratch.len()
-                            );
-                            continue;
-                        }
-                        return Ok(crate::connector::SerializedValueInto {
-                            dest,
-                            payload: crate::connector::SerializedPayload::Scratch { len },
-                        });
-                    }
-                    Err(crate::connector::SerializeError::BufferTooSmall) => {
-                        match (self.serialize)(ctx, &value) {
-                            Ok(payload) => {
-                                return Ok(crate::connector::SerializedValueInto {
-                                    dest,
-                                    payload: crate::connector::SerializedPayload::Owned(payload),
-                                });
-                            }
-                            Err(_e) => {
-                                log_error!(
-                                    "outbound link: fallback serialization failed for {} (dest {:?}): {:?}",
-                                    core::any::type_name::<T>(),
-                                    dest,
-                                    _e
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_e) => {
+                let payload = match serialize_outbound(
+                    &self.serialize,
+                    self.serialize_into.as_ref(),
+                    ctx,
+                    &value,
+                    scratch,
+                ) {
+                    Ok(StagedPayload::Scratch(len)) => SerializedPayload::Scratch { len },
+                    Ok(StagedPayload::Owned(bytes)) => SerializedPayload::Owned(bytes),
+                    Err(_failure) => {
                         log_error!(
-                            "outbound link: failed to serialize {} into scratch buffer (dest {:?}): {:?}",
+                            "outbound link: {} (dest {:?}): {}, value skipped",
                             core::any::type_name::<T>(),
                             dest,
-                            _e
+                            _failure
                         );
                         continue;
                     }
+                };
+                return Ok(crate::connector::SerializedValueInto { dest, payload });
+            }
+        })
+    }
+}
+
+/// One outbound link's per-route state inside
+/// [`OutboundRoutes`](crate::OutboundRoutes): reader, topic writer and
+/// serializers, all typed.
+struct TypedRoute<T: Clone + Send + 'static> {
+    reader: crate::buffer::Reader<T>,
+    writer: Option<Arc<dyn crate::connector::TopicWriter<T>>>,
+    serialize: FusedSerializeFn<T>,
+    serialize_into: Option<FusedSerializeIntoFn<T>>,
+}
+
+impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
+    fn poll_route(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+        ctx: &crate::RuntimeContext,
+        topic: &mut [u8],
+        payload: &mut [u8],
+    ) -> core::task::Poll<crate::outbound::RouteOutcome> {
+        use crate::outbound::RouteOutcome;
+        use core::task::Poll;
+
+        let value = match self.reader.poll_recv(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(value)) => value,
+            Poll::Ready(Err(crate::DbError::BufferLagged { lag_count, .. })) => {
+                return Poll::Ready(RouteOutcome::Lagged(lag_count));
+            }
+            Poll::Ready(Err(e)) => return Poll::Ready(RouteOutcome::Closed(e)),
+        };
+
+        let topic_len = match &self.writer {
+            None => None,
+            Some(writer) => {
+                let mut out = crate::connector::TopicBuf::new(topic);
+                match write_topic(&**writer, &value, &mut out) {
+                    Ok(written) => written.then_some(out.len()),
+                    Err(_) => return Poll::Ready(RouteOutcome::TopicOverflow),
                 }
             }
+        };
+
+        let serialized = serialize_outbound(
+            &self.serialize,
+            self.serialize_into.as_ref(),
+            ctx,
+            &value,
+            payload,
+        );
+        Poll::Ready(match serialized {
+            Ok(payload) => RouteOutcome::Staged { topic_len, payload },
+            Err(failure) => RouteOutcome::SerializeFailed(failure),
         })
     }
 }
@@ -1070,38 +1134,32 @@ where
             self.registrar.last_stage = Some((StageKind::Link, 0));
         }
 
-        // Fused source factory that captures type T and record key.
+        // Resolves the record and builds a `Consumer<T>` bound to its buffer
+        // handle, once per route (not per message) — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures`.
         //
-        // Resolves the record at route-collection time (not per-message) and
-        // constructs a `Consumer<T>` bound to a pre-resolved buffer handle —
-        // same pattern as the build-time path in
-        // `TypedRecord::collect_consumer_futures`. The serializer
-        // and topic provider ride along typed, so the readers handed to the
-        // pumps yield destination + payload with no erasure crossing.
-        //
-        // The factory runs during build() after every record is registered and
-        // validated (including the linked-records-need-a-buffer check), so
-        // failures here are aimdb bugs, not user mistakes.
+        // The factories run during build() after every record is registered
+        // and validated (including the linked-records-need-a-buffer check),
+        // so failures here are aimdb bugs, not user mistakes.
         #[allow(
             clippy::panic,
             reason = "the factory returns no Result and these lookups were validated at build() time"
         )]
-        let source_factory: crate::connector::SourceFactoryFn = {
+        let make_consumer: ConsumerFactoryFn<T> = {
             let record_key = self.registrar.record_key.clone();
-            let topic = self.topic;
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
                     .get_typed_record_by_key::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
-                            "source factory: record '{record_key}' lookup failed ({e:?}) — \
+                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
                              this is a bug in aimdb-core"
                         )
                     });
                 let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
                     panic!(
-                        "source factory: record '{record_key}' has no buffer despite \
+                        "outbound link: record '{record_key}' has no buffer despite \
                          build()-time validation — this is a bug in aimdb-core"
                     )
                 });
@@ -1110,8 +1168,23 @@ where
                 let mut consumer = Consumer::<T>::new(buffer);
                 #[cfg(feature = "observability")]
                 consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                consumer
+            })
+        };
+
+        // Fused source for the pumps: the serializer and topic selector ride
+        // along typed, so its readers yield destination + payload with no
+        // erasure crossing.
+        let source_factory: crate::connector::SourceFactoryFn = {
+            let make_consumer = make_consumer.clone();
+            let (serialize, serialize_into, topic) = (
+                serialize.clone(),
+                serialize_into.clone(),
+                self.topic.clone(),
+            );
+            Arc::new(move |db: &AimDb| {
                 Box::new(FusedSource {
-                    consumer,
+                    consumer: make_consumer(db),
                     serialize: serialize.clone(),
                     serialize_into: serialize_into.clone(),
                     topic: topic.clone(),
@@ -1119,8 +1192,31 @@ where
             })
         };
 
+        // The same parts for `OutboundRoutes`, subscribed when it is built.
+        let route_factory: crate::outbound::RouteFactoryFn = {
+            let topic = self.topic;
+            Arc::new(move |db: &AimDb| {
+                let (writer, topic_capacity) = match &topic {
+                    TopicSelector::Writer { capacity, writer } => (Some(writer.clone()), *capacity),
+                    _ => (None, 0),
+                };
+                crate::outbound::RouteParts {
+                    route: Box::new(TypedRoute {
+                        reader: make_consumer(db).subscribe(),
+                        writer,
+                        serialize: serialize.clone(),
+                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
+                    }),
+                    topic_capacity,
+                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
+                    topic_provider: matches!(topic, TopicSelector::Provider(_)),
+                }
+            })
+        };
+
         let mut link = ConnectorLink::new(url, source_factory);
         link.config = self.config;
+        link.route_factory = Some(route_factory);
 
         // Store the connector link - sources will be created later in build()
         // after connectors are actually built

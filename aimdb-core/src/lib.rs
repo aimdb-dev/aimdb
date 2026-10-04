@@ -87,10 +87,6 @@ pub mod extensions;
 pub mod graph;
 mod inbound_dispatch;
 mod inbound_key;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "OutboundRoutes uses it from the next commit on")
-)]
 mod outbound;
 #[cfg(feature = "observability")]
 pub mod profiling;
@@ -174,6 +170,9 @@ pub use connector::{TopicBuf, TopicOverflow, TopicProvider, TopicWriter};
 
 // Router exports for connector implementations
 pub use inbound_dispatch::InboundDispatch;
+pub use outbound::{
+    OutboundMessage, OutboundPayload, OutboundRoutes, RouteId, RouteInfo, RouteStats,
+};
 pub use router::Router;
 
 // Topic grammar for connectors with wildcard subscriptions
