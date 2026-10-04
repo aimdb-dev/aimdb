@@ -10,6 +10,18 @@
 //! wrong stalls a route for good: a reader that returned a value keeps no
 //! waker, so nothing would set its bit again.
 //!
+//! The transport task must not outrank its producers: run it at the same or
+//! a lower priority than every task or interrupt that writes its routes'
+//! records. `poll_ready` registers the task with an `AtomicWaker`, and a
+//! registration that finds a wake still in progress wakes the task again
+//! instead of waiting. A transport that preempted that wake is then polled
+//! again and again, and on one core the producer never gets to finish it.
+//!
+//! A buffer may keep a route's waker after its reader is gone (embassy-sync's
+//! `PubSubChannel` does). The producer's next write then drops the last
+//! clone, which frees this set and wakes the finished task from the
+//! producer's context.
+//!
 //! `futures_util`'s `SelectAll` does the same job but allocates per message.
 
 use alloc::boxed::Box;
@@ -23,6 +35,10 @@ use portable_atomic::AtomicU32;
 
 use super::RouteId;
 
+/// Skips in a row one route may take before [`ReadyRoutes::poll_ready`]
+/// moves on.
+const SKIP_BUDGET: usize = 32;
+
 /// What polling one route's reader did, as reported to
 /// [`ReadyRoutes::poll_ready`].
 pub(crate) enum Polled {
@@ -33,7 +49,7 @@ pub(crate) enum Polled {
     Staged,
     /// A value was taken but not staged (topic overflow, serializer error),
     /// or the reader lagged. The reader kept no waker, so the route is
-    /// polled again at once.
+    /// polled again at once, up to [`SKIP_BUDGET`] times in a row.
     Skipped,
     /// The reader's buffer is closed; the route is never polled again.
     Closed,
@@ -154,7 +170,9 @@ impl ReadyRoutes {
     /// task's waker wakes the task without marking its route.
     ///
     /// - `Ready(Some(id))`: route `id` staged a value. Every other route that
-    ///   is ready is served before `id` is served again.
+    ///   is ready is served before `id` is served again. A route that keeps
+    ///   skipping is polled at most [`SKIP_BUDGET`] times in a row, then
+    ///   again in a later pass.
     /// - `Ready(None)`: every route is closed, or there were none. Final.
     /// - `Pending`: no woken route had a value. The task is woken when one
     ///   does.
@@ -173,6 +191,7 @@ impl ReadyRoutes {
         let mut pass = self.pass();
         while let Some(id) = self.take_next(&mut pass) {
             let mut route_cx = Context::from_waker(&self.wakers[id]);
+            let mut skips = 0;
             loop {
                 match poll_route(id, &mut route_cx) {
                     Polled::Pending => break,
@@ -183,8 +202,17 @@ impl ReadyRoutes {
                         return Poll::Ready(Some(id));
                     }
                     // Moving on would leave the route with a clear bit and a
-                    // reader that kept no waker.
-                    Polled::Skipped => {}
+                    // reader that kept no waker, so it is polled again. After
+                    // `SKIP_BUDGET` skips in a row its own waker sets its bit
+                    // and wakes the task instead: a producer that keeps up
+                    // with the skips cannot hold the call.
+                    Polled::Skipped => {
+                        skips += 1;
+                        if skips == SKIP_BUDGET {
+                            route_cx.waker().wake_by_ref();
+                            break;
+                        }
+                    }
                     Polled::Closed => {
                         self.close(id);
                         break;
@@ -518,6 +546,54 @@ mod tests {
         sim.write(1, 4);
         assert_eq!(sim.drain(), [1]);
         assert_eq!(sim.sent, [(1, 3), (1, 4)]);
+    }
+
+    #[test]
+    fn a_route_that_keeps_skipping_does_not_hold_the_call() {
+        // Route 0's values all fail to stage, and a producer that preempts
+        // the transport refills it as fast as they are skipped. Route 1 has
+        // a value waiting.
+        let mut ready = ReadyRoutes::new(2);
+        let task = Arc::new(Count::default());
+        let waker = Waker::from(task.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut skips = 0;
+        let polled = ready.poll_ready(&mut cx, |id, _| match id {
+            0 => {
+                skips += 1;
+                assert!(skips <= SKIP_BUDGET, "one call skipped {skips} times");
+                Polled::Skipped
+            }
+            _ => Polled::Staged,
+        });
+        assert_eq!(polled, Poll::Ready(Some(1)));
+        assert_eq!(skips, SKIP_BUDGET);
+
+        // Route 0 is marked and the task woken, so the next call polls it.
+        assert!(task.0.load(Ordering::Relaxed) > 0);
+        let mut polled_again = false;
+        let _ = ready.poll_ready(&mut cx, |id, _| {
+            polled_again |= id == 0;
+            Polled::Pending
+        });
+        assert!(polled_again);
+    }
+
+    #[test]
+    fn a_pass_starting_at_bit_31_takes_that_route_once() {
+        // The wrap-around part of a pass stops below `start`. When `start` is
+        // the top bit of a word, only that word's mask keeps the scan from
+        // taking `start` again after its reader woke itself.
+        let mut sim = Sim::new(64);
+        assert!(sim.drain().is_empty());
+        sim.ready.cursor = 30;
+        sim.write(31, 1);
+        let before = sim.polls()[31];
+
+        sim.budget_spent = true;
+        assert!(sim.poll().is_pending());
+        assert_eq!(sim.polls()[31] - before, 1);
+        assert_eq!(sim.drain(), [31]);
     }
 
     #[test]
