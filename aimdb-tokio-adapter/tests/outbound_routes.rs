@@ -297,6 +297,30 @@ async fn a_staged_value_that_was_not_taken_is_returned_again() {
 }
 
 #[tokio::test]
+async fn poll_next_pulls_in_a_spawned_task() {
+    let db = db(vec![spmc(0, 16), spmc(1, 16)]).await;
+    let mut o = OutboundRoutes::new(&db, "test").unwrap();
+    produce(&db, 0, 1);
+    produce(&db, 1, 2);
+    produce(&db, 0, 3);
+    // Moved into a spawned task, as a connector's transport task holds it.
+    let got = tokio::spawn(async move {
+        let mut got = Vec::new();
+        while got.len() < 3 {
+            let next = poll_fn(|cx| {
+                o.poll_next(cx)
+                    .map(|m| m.map(|m| (m.route.id, value(m.payload.as_slice()))))
+            });
+            got.push(next.await.expect("routes still open"));
+        }
+        got
+    })
+    .await
+    .unwrap();
+    assert_eq!(got, [(0, 1), (1, 2), (0, 3)]);
+}
+
+#[tokio::test]
 async fn values_survive_a_select_that_loses_every_third_poll() {
     let db = db(vec![spmc(0, 512)]).await;
     let mut o = OutboundRoutes::new(&db, "test").unwrap();

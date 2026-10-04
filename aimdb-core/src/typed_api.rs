@@ -388,6 +388,55 @@ struct FusedReader<T: Clone + Send + 'static> {
     topic_buf: Box<[u8]>,
 }
 
+/// Runs `writer` for `value` into `out`. `Ok(true)`: publish to what `out`
+/// holds; `Ok(false)`: to the link's default topic; `Err`: the topic did not
+/// fit and the value is skipped, whatever the writer returned.
+///
+/// Shared by [`FusedReader`] and [`TypedRoute`].
+fn write_topic<T, W: crate::connector::TopicWriter<T> + ?Sized>(
+    writer: &W,
+    value: &T,
+    out: &mut crate::connector::TopicBuf<'_>,
+) -> Result<bool, crate::connector::TopicOverflow> {
+    match writer.write_topic(value, out) {
+        Ok(written) if !out.overflowed() => Ok(written),
+        _ => Err(crate::connector::TopicOverflow),
+    }
+}
+
+/// Serializes one outbound value: into `scratch` through
+/// `with_serializer_into` when the link has one, else (or when the value does
+/// not fit) through the owned serializer.
+///
+/// Shared by [`FusedReader`] and [`TypedRoute`].
+fn serialize_outbound<T>(
+    serialize: &FusedSerializeFn<T>,
+    serialize_into: Option<&FusedSerializeIntoFn<T>>,
+    ctx: &crate::RuntimeContext,
+    value: &T,
+    scratch: &mut [u8],
+) -> Result<crate::outbound::StagedPayload, crate::outbound::SerializeFailure> {
+    use crate::connector::SerializeError;
+    use crate::outbound::{SerializeFailure, StagedPayload};
+
+    let Some(serialize_into) = serialize_into else {
+        return serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Owned);
+    };
+    match serialize_into(ctx, value, scratch) {
+        Ok(len) if len <= scratch.len() => Ok(StagedPayload::Scratch(len)),
+        Ok(len) => Err(SerializeFailure::InvalidLength {
+            len,
+            capacity: scratch.len(),
+        }),
+        Err(SerializeError::BufferTooSmall) => serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Fallback),
+        Err(e) => Err(SerializeFailure::Into(e)),
+    }
+}
+
 impl<T: Clone + Send + 'static> FusedReader<T> {
     /// The value's destination (`None`: the route's default), or `Err` when
     /// its written topic overflowed and the value must be skipped.
@@ -397,10 +446,10 @@ impl<T: Clone + Send + 'static> FusedReader<T> {
             TopicSelector::Provider(p) => Ok(p.topic(value)),
             TopicSelector::Writer { writer, .. } => {
                 let mut out = crate::connector::TopicBuf::new(&mut self.topic_buf);
-                match writer.write_topic(value, &mut out) {
-                    Ok(true) if !out.overflowed() => Ok(Some(out.as_str().to_string())),
-                    Ok(false) if !out.overflowed() => Ok(None),
-                    _ => {
+                match write_topic(&**writer, value, &mut out) {
+                    Ok(true) => Ok(Some(out.as_str().to_string())),
+                    Ok(false) => Ok(None),
+                    Err(_) => {
                         log_warn!(
                             "outbound link: topic for {} does not fit in {} bytes, value skipped",
                             core::any::type_name::<T>(),
@@ -451,78 +500,35 @@ impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedRead
         ctx: &'a crate::RuntimeContext,
         scratch: &'a mut [u8],
     ) -> crate::connector::RecvSerializedIntoFuture<'a> {
+        use crate::connector::SerializedPayload;
+        use crate::outbound::StagedPayload;
+
         Box::pin(async move {
             loop {
                 let value = self.inner.recv().await?;
                 let Ok(dest) = self.resolve_dest(&value) else {
                     continue;
                 };
-
-                let Some(serialize_into) = &self.serialize_into else {
-                    match (self.serialize)(ctx, &value) {
-                        Ok(payload) => {
-                            return Ok(crate::connector::SerializedValueInto {
-                                dest,
-                                payload: crate::connector::SerializedPayload::Owned(payload),
-                            });
-                        }
-                        Err(_e) => {
-                            log_error!(
-                                "outbound link: failed to serialize {} (dest {:?}): {:?}",
-                                core::any::type_name::<T>(),
-                                dest,
-                                _e
-                            );
-                            continue;
-                        }
-                    }
-                };
-
-                match serialize_into(ctx, &value, scratch) {
-                    Ok(len) => {
-                        if scratch.get(..len).is_none() {
-                            log_error!(
-                                "outbound link: serializer for {} returned invalid length {} for {}-byte scratch buffer",
-                                core::any::type_name::<T>(),
-                                len,
-                                scratch.len()
-                            );
-                            continue;
-                        }
-                        return Ok(crate::connector::SerializedValueInto {
-                            dest,
-                            payload: crate::connector::SerializedPayload::Scratch { len },
-                        });
-                    }
-                    Err(crate::connector::SerializeError::BufferTooSmall) => {
-                        match (self.serialize)(ctx, &value) {
-                            Ok(payload) => {
-                                return Ok(crate::connector::SerializedValueInto {
-                                    dest,
-                                    payload: crate::connector::SerializedPayload::Owned(payload),
-                                });
-                            }
-                            Err(_e) => {
-                                log_error!(
-                                    "outbound link: fallback serialization failed for {} (dest {:?}): {:?}",
-                                    core::any::type_name::<T>(),
-                                    dest,
-                                    _e
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_e) => {
+                let payload = match serialize_outbound(
+                    &self.serialize,
+                    self.serialize_into.as_ref(),
+                    ctx,
+                    &value,
+                    scratch,
+                ) {
+                    Ok(StagedPayload::Scratch(len)) => SerializedPayload::Scratch { len },
+                    Ok(StagedPayload::Owned(bytes)) => SerializedPayload::Owned(bytes),
+                    Err(_failure) => {
                         log_error!(
-                            "outbound link: failed to serialize {} into scratch buffer (dest {:?}): {:?}",
+                            "outbound link: {} (dest {:?}): {}, value skipped",
                             core::any::type_name::<T>(),
                             dest,
-                            _e
+                            _failure
                         );
                         continue;
                     }
-                }
+                };
+                return Ok(crate::connector::SerializedValueInto { dest, payload });
             }
         })
     }
@@ -546,7 +552,7 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
         topic: &mut [u8],
         payload: &mut [u8],
     ) -> core::task::Poll<crate::outbound::RouteOutcome> {
-        use crate::outbound::{RouteOutcome, StagedPayload};
+        use crate::outbound::RouteOutcome;
         use core::task::Poll;
 
         let value = match self.reader.poll_recv(cx) {
@@ -555,59 +561,30 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
             Poll::Ready(Err(crate::DbError::BufferLagged { lag_count, .. })) => {
                 return Poll::Ready(RouteOutcome::Lagged(lag_count));
             }
-            Poll::Ready(Err(_)) => return Poll::Ready(RouteOutcome::Closed),
+            Poll::Ready(Err(e)) => return Poll::Ready(RouteOutcome::Closed(e)),
         };
 
         let topic_len = match &self.writer {
             None => None,
             Some(writer) => {
                 let mut out = crate::connector::TopicBuf::new(topic);
-                match writer.write_topic(&value, &mut out) {
-                    Ok(true) if !out.overflowed() => Some(out.len()),
-                    Ok(false) if !out.overflowed() => None,
-                    _ => return Poll::Ready(RouteOutcome::TopicOverflow),
+                match write_topic(&**writer, &value, &mut out) {
+                    Ok(written) => written.then_some(out.len()),
+                    Err(_) => return Poll::Ready(RouteOutcome::TopicOverflow),
                 }
             }
         };
 
-        let owned = |value: &T| match (self.serialize)(ctx, value) {
-            Ok(bytes) => Some(StagedPayload::Owned(bytes)),
-            Err(_e) => {
-                log_error!(
-                    "outbound link: failed to serialize {}: {:?}",
-                    core::any::type_name::<T>(),
-                    _e
-                );
-                None
-            }
-        };
-        let staged = match &self.serialize_into {
-            None => owned(&value),
-            Some(serialize_into) => match serialize_into(ctx, &value, payload) {
-                Ok(len) if len <= payload.len() => Some(StagedPayload::Scratch(len)),
-                Ok(_len) => {
-                    log_error!(
-                        "outbound link: serializer for {} returned invalid length {} for {}-byte scratch",
-                        core::any::type_name::<T>(),
-                        _len,
-                        payload.len()
-                    );
-                    None
-                }
-                Err(crate::connector::SerializeError::BufferTooSmall) => owned(&value),
-                Err(_e) => {
-                    log_error!(
-                        "outbound link: failed to serialize {} into scratch: {:?}",
-                        core::any::type_name::<T>(),
-                        _e
-                    );
-                    None
-                }
-            },
-        };
-        Poll::Ready(match staged {
-            Some(payload) => RouteOutcome::Staged { topic_len, payload },
-            None => RouteOutcome::SerializeFailed,
+        let serialized = serialize_outbound(
+            &self.serialize,
+            self.serialize_into.as_ref(),
+            ctx,
+            &value,
+            payload,
+        );
+        Poll::Ready(match serialized {
+            Ok(payload) => RouteOutcome::Staged { topic_len, payload },
+            Err(failure) => RouteOutcome::SerializeFailed(failure),
         })
     }
 }
@@ -1176,13 +1153,13 @@ where
                     .get_typed_record_by_key::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
-                            "source factory: record '{record_key}' lookup failed ({e:?}) — \
+                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
                              this is a bug in aimdb-core"
                         )
                     });
                 let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
                     panic!(
-                        "source factory: record '{record_key}' has no buffer despite \
+                        "outbound link: record '{record_key}' has no buffer despite \
                          build()-time validation — this is a bug in aimdb-core"
                     )
                 });

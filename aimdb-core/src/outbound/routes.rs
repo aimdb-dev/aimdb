@@ -10,6 +10,7 @@ use core::task::{Context, Poll};
 
 use super::ready::{Polled, ReadyRoutes};
 use super::RouteId;
+use crate::connector::SerializeError;
 use crate::transport::ConnectorConfig;
 use crate::{AimDb, ConfigError, DbError, DbResult, RuntimeContext};
 
@@ -93,10 +94,10 @@ pub(crate) enum RouteOutcome {
     Lagged(u64),
     /// A value was taken; its topic did not fit.
     TopicOverflow,
-    /// A value was taken; serializing it failed (already logged).
-    SerializeFailed,
+    /// A value was taken; serializing it failed.
+    SerializeFailed(SerializeFailure),
     /// The buffer is gone.
-    Closed,
+    Closed(DbError),
 }
 
 /// Where a staged payload is.
@@ -104,6 +105,37 @@ pub(crate) enum StagedPayload {
     /// The first `len` bytes of the payload scratch.
     Scratch(usize),
     Owned(Vec<u8>),
+}
+
+/// Why a value that was taken could not be serialized. The caller logs it
+/// with its route.
+pub(crate) enum SerializeFailure {
+    /// The owned serializer (`with_serializer`) failed.
+    Owned(SerializeError),
+    /// `with_serializer_into` failed.
+    Into(SerializeError),
+    /// The value did not fit `with_serializer_into`'s scratch, and the owned
+    /// serializer it fell back to failed.
+    Fallback(SerializeError),
+    /// `with_serializer_into` reported more bytes than its scratch holds.
+    InvalidLength { len: usize, capacity: usize },
+}
+
+impl core::fmt::Display for SerializeFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Owned(e) => write!(f, "serializer failed: {e:?}"),
+            Self::Into(e) => write!(f, "serializer failed into scratch: {e:?}"),
+            Self::Fallback(e) => write!(
+                f,
+                "value did not fit the scratch and the owned fallback failed: {e:?}"
+            ),
+            Self::InvalidLength { len, capacity } => write!(
+                f,
+                "serializer returned invalid length {len} for {capacity}-byte scratch"
+            ),
+        }
+    }
 }
 
 /// A route's typed reader, topic writer and serializers, polled through one
@@ -155,6 +187,12 @@ pub struct OutboundRoutes {
     ctx: RuntimeContext,
 }
 
+// Moved into the connector's `Send` transport task (design 054 §4.2).
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<OutboundRoutes>();
+};
+
 impl OutboundRoutes {
     /// Subscribes every outbound link of `scheme` and allocates the scratch
     /// once: the largest topic capacity plus the largest payload capacity.
@@ -183,12 +221,12 @@ impl OutboundRoutes {
                 ));
                 continue;
             }
-            let mut query = link.config.clone();
-            query.push(("record_index".to_string(), record_index.to_string()));
+            let mut config = ConnectorConfig::from_query(&link.config);
+            config.record_index = Some(record_index);
             routes.push(RouteInfo {
                 id: routes.len(),
                 default_topic: Arc::from(link.url.resource_id()),
-                config: ConnectorConfig::from_query(&query),
+                config,
                 topic_capacity: parts.topic_capacity,
                 payload_capacity: parts.payload_capacity,
             });
@@ -282,12 +320,17 @@ impl OutboundRoutes {
                     );
                     Polled::Skipped
                 }
-                Poll::Ready(RouteOutcome::SerializeFailed) => {
+                Poll::Ready(RouteOutcome::SerializeFailed(_failure)) => {
                     stats.serialize_failed += 1;
+                    log_error!(
+                        "outbound route '{}': {}, value skipped",
+                        info.default_topic,
+                        _failure
+                    );
                     Polled::Skipped
                 }
-                Poll::Ready(RouteOutcome::Closed) => {
-                    log_debug!("outbound route '{}' closed", info.default_topic);
+                Poll::Ready(RouteOutcome::Closed(_e)) => {
+                    log_info!("outbound route '{}' closed: {:?}", info.default_topic, _e);
                     Polled::Closed
                 }
             }

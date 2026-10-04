@@ -4,7 +4,9 @@ mod ready;
 mod routes;
 
 pub use routes::{OutboundMessage, OutboundPayload, OutboundRoutes, RouteInfo, RouteStats};
-pub(crate) use routes::{PollRoute, RouteFactoryFn, RouteOutcome, RouteParts, StagedPayload};
+pub(crate) use routes::{
+    PollRoute, RouteFactoryFn, RouteOutcome, RouteParts, SerializeFailure, StagedPayload,
+};
 
 /// Dense route index, `0..routes().len()`. A plain `usize`, so a connector
 /// indexes its own per-route tables with it.
