@@ -47,13 +47,18 @@ impl WriteRing {
     }
 
     /// The largest PUBLISH frame the ring always has room for eventually.
+    pub(crate) fn max_publish(&self) -> usize {
+        (self.queue.capacity() / 2).saturating_sub(CONTROL_RESERVE)
+    }
+
+    /// Whether a `len`-byte frame plus `reserve` always fits eventually.
     ///
     /// A bipbuffer grants only contiguous space: once its pointers have both
     /// moved to `k`, an empty ring grants at most `max(capacity − k, k − 1)`
-    /// bytes, about half its capacity in the worst case. A frame plus its
-    /// reserve must fit in that half, or it could wait forever.
-    pub(crate) fn max_publish(&self) -> usize {
-        (self.queue.capacity() / 2).saturating_sub(CONTROL_RESERVE)
+    /// bytes, about half its capacity in the worst case. A larger grant could
+    /// wait forever, even with nothing queued.
+    pub(crate) fn fits(&self, len: usize, reserve: usize) -> bool {
+        len + reserve <= self.queue.capacity() / 2
     }
 
     /// Whether a contiguous grant of `n` bytes exists right now.
@@ -89,7 +94,8 @@ impl WriteRing {
     }
 
     /// Encode `packet` into the ring, waiting for room. `reserve` more bytes
-    /// are granted behind it and left free.
+    /// are granted behind it and left free. A packet that does not
+    /// [`fit`](Self::fits) fails with `Overflow` instead of waiting forever.
     ///
     /// Waiting cannot deadlock: [`write_out`](Self::write_out) is the ring's
     /// only consumer and a sibling arm of the session's `select3`, so parking
@@ -97,6 +103,21 @@ impl WriteRing {
     /// stops reading stops the session encoding.
     pub(crate) async fn put<P: Write>(&self, packet: &P, reserve: usize) -> Result<(), Error> {
         let len = encoded_len(packet)?;
+        if !self.fits(len, reserve) {
+            return Err(write_error(PacketWriteError::Overflow));
+        }
+        self.put_sized(packet, len, reserve).await
+    }
+
+    /// [`put`](Self::put) for a packet whose encoded length is already known
+    /// and [fits](Self::fits).
+    pub(crate) async fn put_sized<P: Write>(
+        &self,
+        packet: &P,
+        len: usize,
+        reserve: usize,
+    ) -> Result<(), Error> {
+        debug_assert!(self.fits(len, reserve));
         let producer = self.queue.stream_producer();
         let mut grant = poll_fn(|cx| match producer.grant_exact(len + reserve) {
             Ok(grant) => Poll::Ready(grant),
@@ -317,8 +338,9 @@ mod tests {
     #[test]
     fn a_puback_waits_for_room_and_goes_out_in_order() {
         let ring = WriteRing::new(256);
-        ready(ring.put(&Bytes(200, b'p'), 0));
-        ready(ring.put(&Bytes(40, b'q'), 0));
+        // Filled with `try_put`: 200 bytes is more than `put` accepts.
+        assert!(ring.try_put(&Bytes(200, b'p')).unwrap());
+        assert!(ring.try_put(&Bytes(40, b'q')).unwrap());
 
         // 16 bytes left, and nothing has been read: the PUBACK waits.
         let woken = Arc::new(Count::default());
@@ -351,8 +373,81 @@ mod tests {
     #[test]
     fn try_put_drops_rather_than_waits() {
         let ring = WriteRing::new(16);
-        ready(ring.put(&Bytes(14, b'a'), 0));
+        assert!(ring.try_put(&Bytes(14, b'a')).unwrap());
         assert!(!ring.try_put(&Bytes(4, b'p')).unwrap());
         assert_eq!(read_all(&ring).len(), 14);
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    //! A control packet larger than the ring can always grant fails instead
+    //! of parking forever; one that fits goes out from any offset.
+    use super::*;
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Waker};
+    use mountain_mqtt::packets::connect::Connect;
+
+    fn connect_with_password(password: &[u8]) -> Connect<'_, 1, 0> {
+        Connect::new(
+            60,
+            Some("user"),
+            Some(password),
+            "proof",
+            true,
+            None,
+            heapless::Vec::new(),
+        )
+    }
+
+    /// Move both pointers to `n` with nothing left queued, as a session that
+    /// sent `n` bytes and then dropped leaves the ring after `drain`.
+    fn leave_at(ring: &WriteRing, n: usize) {
+        struct Filler(usize);
+        impl Write for Filler {
+            fn write<'a, W: MqttWriter<'a>>(&self, w: &mut W) -> Result<(), PacketWriteError> {
+                w.put_slice(&alloc::vec![0u8; self.0])
+            }
+        }
+        assert!(ring.try_put(&Filler(n)).unwrap());
+        ring.drain();
+    }
+
+    fn poll<F: Future>(f: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+        f.poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    fn is_overflow(r: &Poll<Result<(), Error>>) -> bool {
+        matches!(
+            r,
+            Poll::Ready(Err(Error::Client(ClientError::PacketWrite(
+                PacketWriteError::Overflow
+            ))))
+        )
+    }
+
+    #[test]
+    fn a_connect_over_half_the_ring_fails_at_any_offset() {
+        let password = alloc::vec![b'p'; 2100];
+        let connect = connect_with_password(&password);
+        for offset in [0, DEFAULT_WRITE_BUFFER / 2] {
+            let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+            leave_at(&ring, offset);
+            let mut put = pin!(ring.put(&connect, 0));
+            assert!(is_overflow(&poll(put.as_mut())), "offset {offset}");
+        }
+    }
+
+    #[test]
+    fn a_connect_that_fits_goes_out_from_offset_2048() {
+        // Just under half the ring once the CONNECT's own fields are added.
+        let password = alloc::vec![b'p'; 2000];
+        let connect = connect_with_password(&password);
+        assert!(encoded_len(&connect).unwrap() <= DEFAULT_WRITE_BUFFER / 2);
+        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+        leave_at(&ring, DEFAULT_WRITE_BUFFER / 2);
+        let mut put = pin!(ring.put(&connect, 0));
+        assert!(matches!(poll(put.as_mut()), Poll::Ready(Ok(()))));
     }
 }

@@ -442,7 +442,7 @@ async fn perform(
             // A frame larger than the ring can always grant would wait
             // forever; skip it before the state commits to it.
             let len = encoded_len(&packet)?;
-            if len > ring.max_publish() {
+            if !ring.fits(len, CONTROL_RESERVE) {
                 #[cfg(feature = "defmt")]
                 defmt::warn!(
                     "MQTT: dropping publish to {}: {} bytes exceed the {}-byte write ring limit",
@@ -452,7 +452,7 @@ async fn perform(
                 );
                 return Ok(());
             }
-            ring.put(&packet, CONTROL_RESERVE).await?;
+            ring.put_sized(&packet, len, CONTROL_RESERVE).await?;
             state.publish_update(&packet).map_err(client_error)?;
         }
         AimdbMqttAction::Subscribe { topic, qos } => {
@@ -666,5 +666,128 @@ mod tests {
     fn a_deadline_in_the_past_still_sleeps_a_tick() {
         // Never zero: a zero-length sleep would spin the loop.
         assert_eq!(next_deadline(1_000, true, 100, 500, None), 1);
+    }
+}
+
+#[cfg(test)]
+mod proofs {
+    //! Where the embedded backend's size limits sit today: the largest
+    //! PUBLISH it sends, what it does with a larger one (skipped without an
+    //! error and without a count), and the largest packet it receives.
+    use super::*;
+    use crate::embedded::write_ring::DEFAULT_WRITE_BUFFER;
+    use alloc::vec::Vec;
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Waker};
+    use mountain_mqtt::data::reason_code::ConnectReasonCode;
+    use mountain_mqtt::packets::connack::Connack;
+
+    fn connected() -> ClientStateNoQueue {
+        let mut state = ClientStateNoQueue::new();
+        let connect: Connect<'_, 1, 0> =
+            Connect::new(60, None, None, "proof", true, None, heapless::Vec::new());
+        state.connect(&connect).unwrap();
+        let connack: Connack<'_, MAX_PROPERTIES> =
+            Connack::new(false, ConnectReasonCode::Success, heapless::Vec::new());
+        state
+            .receive(PacketGeneric::<'_, MAX_PROPERTIES, 0, 0>::Connack(connack))
+            .unwrap();
+        state
+    }
+
+    /// Payload length whose QoS 1 PUBLISH to `t` encodes to exactly `frame`.
+    fn payload_for(frame: usize) -> usize {
+        let mut probe = connected();
+        (0..frame)
+            .rev()
+            .find(|&n| {
+                let payload = alloc::vec![0u8; n];
+                let packet = probe
+                    .publish_packet("t", &payload, QualityOfService::Qos1, false)
+                    .unwrap();
+                encoded_len(&packet).unwrap() == frame
+            })
+            .unwrap()
+    }
+
+    fn publish(n: usize) -> AimdbMqttAction {
+        AimdbMqttAction::Publish {
+            topic: "t".into(),
+            payload: alloc::vec![b'x'; n],
+            qos: QualityOfService::Qos1,
+            retain: false,
+        }
+    }
+
+    fn run(
+        action: AimdbMqttAction,
+        state: &mut ClientStateNoQueue,
+        ring: &WriteRing,
+    ) -> Poll<Result<(), Error>> {
+        let f = pin!(perform(action, state, ring));
+        f.poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    #[test]
+    fn proof_a_1984_byte_publish_goes_out() {
+        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+        assert_eq!(ring.max_publish(), 1984);
+        let mut state = connected();
+        let n = payload_for(1984);
+        assert!(matches!(
+            run(publish(n), &mut state, &ring),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(!ring.has_room(DEFAULT_WRITE_BUFFER), "bytes were queued");
+        assert!(state.waiting_for_responses(), "QoS 1 publish in flight");
+    }
+
+    #[test]
+    fn proof_a_1985_byte_publish_vanishes_without_an_error() {
+        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+        let mut state = connected();
+        let n = payload_for(1985);
+        assert!(matches!(
+            run(publish(n), &mut state, &ring),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(ring.has_room(DEFAULT_WRITE_BUFFER), "nothing was queued");
+        assert!(!state.waiting_for_responses(), "nothing in flight");
+        // No counter exists to assert on: the only trace is a defmt warn.
+    }
+
+    /// A QoS 0 PUBLISH to `t` that is `total` bytes on the wire.
+    fn inbound_publish(total: usize) -> Vec<u8> {
+        let remaining = total - 3; // header byte + 2-byte varint
+        let mut bytes = alloc::vec![
+            0x30,
+            (remaining % 128) as u8 | 0x80,
+            (remaining / 128) as u8,
+            0x00,
+            0x01,
+            b't',
+            0x00,
+        ];
+        bytes.resize(total, b'x');
+        bytes
+    }
+
+    fn receive(total: usize) -> Result<usize, PacketReadError> {
+        let mut reader = PacketReader::<PACKET_BUFFER_SIZE>::new();
+        for chunk in inbound_publish(total).chunks(RX_CHUNK) {
+            reader.feed(chunk)?;
+            if let Some(n) = reader.framed_len()? {
+                return Ok(n);
+            }
+        }
+        unreachable!("the whole packet was fed")
+    }
+
+    #[test]
+    fn proof_the_receive_side_takes_3584_and_refuses_3585() {
+        assert_eq!(PACKET_BUFFER_SIZE, 3584);
+        assert_eq!(receive(3584), Ok(3584));
+        assert_eq!(receive(3585), Err(PacketReadError::PacketTooLargeForBuffer));
     }
 }
