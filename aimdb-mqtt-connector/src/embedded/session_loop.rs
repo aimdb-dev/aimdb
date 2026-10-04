@@ -46,6 +46,13 @@ const RX_CHUNK: usize = 256;
 /// rather than a fixed buffer.
 const PACKET_BUFFER_SIZE: usize = BUFFER_SIZE - 2 * RX_CHUNK;
 
+/// The largest packet the reader takes whatever arrives before it: the
+/// buffer minus one feed chunk (see [`PacketReader`]). Advertised as the
+/// CONNECT's Maximum Packet Size, so a broker never sends a larger packet —
+/// one that would end the session, and a retained one would end every
+/// session it is replayed into.
+const MAX_INBOUND_PACKET: usize = PACKET_BUFFER_SIZE - RX_CHUNK;
+
 /// One chunk of freshly read bytes, in flight from the read half to the loop.
 type Chunk = heapless::Vec<u8, RX_CHUNK>;
 
@@ -176,10 +183,13 @@ async fn client_loop<D: Delay>(
         // Topic aliases are declined: honouring them would mean storing the
         // server's topic names for the life of the connection.
         let _ = properties.push(ConnectProperty::TopicAliasMaximum(0.into()));
+        let _ = properties.push(ConnectProperty::MaximumPacketSize(
+            (MAX_INBOUND_PACKET as u32).into(),
+        ));
         // Ours, not `connection_settings.keep_alive()`: that field has no
         // setter, so it is always mountain-mqtt's own 60 s constant. The
         // cadence below is derived from the value we actually send.
-        let connect: Connect<'_, 1, 0> = Connect::new(
+        let connect: Connect<'_, 2, 0> = Connect::new(
             settings.keep_alive_secs,
             *connection_settings.username(),
             *connection_settings.password(),
@@ -662,6 +672,63 @@ mod tests {
             Some(alloc::string::String::from("TooManyProperties")),
             "one property past the cap must be refused, not quietly dropped"
         );
+    }
+
+    /// A QoS 0 PUBLISH to `t` that is exactly `total` bytes on the wire.
+    fn publish_of(total: usize) -> Vec<u8> {
+        let varint_len = if total - 2 < 128 { 1 } else { 2 };
+        let remaining = total - 1 - varint_len;
+        let mut bytes = alloc::vec![0x30u8];
+        if varint_len == 1 {
+            bytes.push(remaining as u8);
+        } else {
+            bytes.push((remaining % 128) as u8 | 0x80);
+            bytes.push((remaining / 128) as u8);
+        }
+        bytes.extend_from_slice(&[0x00, 0x01, b't', 0x00]);
+        bytes.resize(total, b'x');
+        bytes
+    }
+
+    /// Feeds a `first`-byte packet, a `second`-byte one and a trailing one in
+    /// `RX_CHUNK` reads, consuming packets as they complete, as the session
+    /// does. The trailing packet makes the read that completes `second` a full
+    /// one that also carries the head of the next packet: the worst case.
+    fn receive_after(first: usize, second: usize) -> Result<(), PacketReadError> {
+        let mut stream = publish_of(first);
+        stream.extend_from_slice(&publish_of(second));
+        stream.extend_from_slice(&publish_of(RX_CHUNK));
+        let mut reader = PacketReader::<PACKET_BUFFER_SIZE>::new();
+        let mut received = 0;
+        for chunk in stream.chunks(RX_CHUNK) {
+            reader.feed(chunk)?;
+            while let Some(total) = reader.framed_len()? {
+                reader.consume(total);
+                received += 1;
+            }
+        }
+        assert!(received >= 2);
+        Ok(())
+    }
+
+    /// The advertised Maximum Packet Size is one the reader takes wherever the
+    /// packet starts inside a read. The reader's stated limit (buffer minus
+    /// one read) is conservative by one byte; two bytes more fail at some
+    /// offset.
+    #[test]
+    fn the_advertised_maximum_packet_size_is_always_received() {
+        assert_eq!(MAX_INBOUND_PACKET, 3328);
+        let offsets = 8..8 + RX_CHUNK;
+        for first in offsets.clone() {
+            assert_eq!(
+                receive_after(first, MAX_INBOUND_PACKET),
+                Ok(()),
+                "after {first} bytes"
+            );
+        }
+        assert!(offsets
+            .map(|first| receive_after(first, MAX_INBOUND_PACKET + 2))
+            .any(|r| r == Err(PacketReadError::PacketTooLargeForBuffer)));
     }
 
     #[test]

@@ -26,6 +26,10 @@ pub struct Seen {
     pub keep_alives: Vec<u16>,
     pub subscribes: Vec<Vec<String>>,
     pub published: Vec<(String, Vec<u8>)>,
+    /// The Maximum Packet Size each MQTT 5 CONNECT advertised, when it did.
+    pub max_packet_sizes: Vec<u32>,
+    /// Pushes withheld because they exceeded the client's Maximum Packet Size.
+    pub withheld: usize,
 }
 
 impl Seen {
@@ -125,6 +129,30 @@ fn take_field(body: &[u8], i: &mut usize) -> Option<String> {
 /// the protocol name, level and flags.
 fn connect_keep_alive(body: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([*body.get(8)?, *body.get(9)?]))
+}
+
+/// The Maximum Packet Size property (0x27) of an MQTT 5 CONNECT, if present.
+/// Knows the fixed-size properties a client sends; anything else ends the
+/// scan with `None`.
+fn connect_max_packet_size(body: &[u8]) -> Option<u32> {
+    let mut i = 10;
+    let len = take_varint(body, &mut i)?;
+    let end = i + len;
+    while i < end {
+        let id = *body.get(i)?;
+        i += 1;
+        match id {
+            0x27 => {
+                let b = body.get(i..i + 4)?;
+                return Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+            }
+            0x11 => i += 4,        // session expiry interval
+            0x21 | 0x22 => i += 2, // receive maximum, topic alias maximum
+            0x17 | 0x19 => i += 1, // request problem / response information
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// The identity a CONNECT carries: client id, then the credentials its flags
@@ -261,6 +289,9 @@ where
 {
     let mut buf = Vec::new();
     let mut v5 = true;
+    // The client's Maximum Packet Size: a broker must not send it anything
+    // larger, so a push over it is withheld.
+    let mut client_max: Option<u32> = None;
 
     loop {
         let Some((first, body)) = read_packet(socket, &mut buf).await else {
@@ -279,6 +310,14 @@ where
                     }
                     if let Some(keep_alive) = connect_keep_alive(&body) {
                         seen.keep_alives.push(keep_alive);
+                    }
+                    client_max = if v5 {
+                        connect_max_packet_size(&body)
+                    } else {
+                        None
+                    };
+                    if let Some(max) = client_max {
+                        seen.max_packet_sizes.push(max);
                     }
                 }
                 let ack: &[u8] = if v5 {
@@ -299,11 +338,10 @@ where
                     return;
                 }
                 if let Some((topic, payload)) = after.push {
-                    if socket
-                        .write_all(&publish(topic, payload, v5))
-                        .await
-                        .is_err()
-                    {
+                    let packet = publish(topic, payload, v5);
+                    if client_max.is_some_and(|max| packet.len() > max as usize) {
+                        seen.lock().unwrap().withheld += 1;
+                    } else if socket.write_all(&packet).await.is_err() {
                         return;
                     }
                 }
