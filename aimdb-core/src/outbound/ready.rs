@@ -130,16 +130,11 @@ impl ReadyRoutes {
     /// `len` routes, all open and all ready: no reader has registered a waker
     /// yet.
     pub(crate) fn new(len: usize) -> Self {
-        let open: Box<[u32]> = (0..len.div_ceil(32))
-            .map(|w| {
-                let rest = len - w * 32;
-                if rest < 32 {
-                    (1 << rest) - 1
-                } else {
-                    u32::MAX
-                }
-            })
-            .collect();
+        // One bit per route, set with the same `bit()` the wakers use.
+        let mut open = alloc::vec![0u32; len.div_ceil(32)].into_boxed_slice();
+        for id in 0..len {
+            open[id / 32] |= bit(id);
+        }
         let shared = Arc::new(Shared {
             ready: open.iter().map(|&w| AtomicU32::new(w)).collect(),
             task: AtomicWaker::new(),
@@ -157,6 +152,7 @@ impl ReadyRoutes {
             wakers,
             open,
             open_count: len,
+            // The first pass starts after the cursor, at route 0.
             cursor: len.saturating_sub(1),
         }
     }
