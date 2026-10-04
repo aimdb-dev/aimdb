@@ -49,6 +49,25 @@ pub enum OutboundPayload<'a> {
     Owned(Vec<u8>),
 }
 
+impl OutboundPayload<'_> {
+    /// The bytes, whichever variant holds them.
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+
+    /// The bytes as an owned `Vec`: moved out of `Owned`, copied from
+    /// `Borrowed`.
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::Borrowed(bytes) => bytes.to_vec(),
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
 /// Values taken from one route's buffer, by outcome.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RouteStats {
@@ -312,5 +331,24 @@ impl OutboundRoutes {
     pub async fn next(&mut self) -> Option<OutboundMessage<'_>> {
         poll_fn(|cx| self.poll_stage(cx)).await?;
         self.take_staged()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_helpers_cover_both_variants() {
+        let scratch = [1u8, 2, 3];
+        assert_eq!(OutboundPayload::Borrowed(&scratch).as_slice(), [1, 2, 3]);
+        assert_eq!(OutboundPayload::Borrowed(&scratch).into_vec(), [1, 2, 3]);
+
+        let owned = alloc::vec![4u8, 5];
+        let ptr = owned.as_ptr();
+        let payload = OutboundPayload::Owned(owned);
+        assert_eq!(payload.as_slice(), [4, 5]);
+        let moved = payload.into_vec();
+        assert_eq!(moved.as_ptr(), ptr, "moved, not copied");
     }
 }

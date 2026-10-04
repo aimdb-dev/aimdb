@@ -75,11 +75,7 @@ fn produce(db: &AimDb, i: usize, v: u32) {
 /// Route, topic and payload of the next message.
 async fn pull(o: &mut OutboundRoutes) -> Option<(usize, String, Vec<u8>)> {
     let m = o.next().await?;
-    let payload = match m.payload {
-        OutboundPayload::Borrowed(b) => b.to_vec(),
-        OutboundPayload::Owned(v) => v,
-    };
-    Some((m.route.id, m.topic.to_string(), payload))
+    Some((m.route.id, m.topic.to_string(), m.payload.into_vec()))
 }
 
 /// The next message, or `None` if none comes within 100 ms.
@@ -324,8 +320,7 @@ async fn values_survive_a_select_that_loses_every_third_poll() {
             id = poll_fn(|cx| o.poll_stage(cx)) => {
                 assert_eq!(id, Some(0));
                 let m = o.take_staged().unwrap();
-                let OutboundPayload::Owned(bytes) = m.payload else { panic!("owned") };
-                got.push(value(&bytes));
+                got.push(value(m.payload.as_slice()));
             }
         }
     }
