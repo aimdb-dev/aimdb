@@ -5,25 +5,25 @@
 //! partially-read packet is ever discarded — which is what lets the TLS path
 //! share this loop.
 //!
-//! [`read_into`] and [`write_out`] know no MQTT; [`client_loop`] owns all
-//! client state and wakes only on data, an action or a deadline. Raw chunks
-//! cross the inbound channel rather than whole packets, so framing needs no
-//! second packet-sized buffer.
+//! [`read_into`] and [`WriteRing::write_out`] know no MQTT; [`client_loop`]
+//! owns all client state and wakes only on data, an action or a deadline. Raw
+//! chunks cross the inbound channel rather than whole packets, so framing
+//! needs no second packet-sized buffer. Outbound packets are encoded straight
+//! into the connector's [`WriteRing`].
 
 use core::convert::Infallible;
+use core::future::poll_fn;
+use core::task::Poll;
 use core::time::Duration;
 
 use aimdb_core::session::{ByteRead, ByteWrite, Delay};
 use aimdb_core::RuntimeOps;
-use alloc::vec::Vec;
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
 use mountain_mqtt::client::{ClientError, ConnectionSettings};
 use mountain_mqtt::client_state::{ClientState, ClientStateNoQueue, ClientStateReceiveEvent};
-use mountain_mqtt::codec::mqtt_writer::{MqttBufWriter, MqttLenWriter, MqttWriter};
-use mountain_mqtt::codec::write::Write;
 use mountain_mqtt::data::property::ConnectProperty;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
@@ -32,6 +32,7 @@ use mountain_mqtt::packets::packet_generic::PacketGeneric;
 
 use crate::embedded::manager::{now_ms, Error, FromApplicationMessage, Settings};
 use crate::embedded::packet_reader::PacketReader;
+use crate::embedded::write_ring::{encoded_len, WriteRing, CONTROL_RESERVE};
 use crate::embedded::{
     ActionChannel, AimdbMqttAction, AimdbMqttEvent, EventChannel, BUFFER_SIZE, MAX_PROPERTIES,
 };
@@ -41,10 +42,14 @@ const RX_CHUNK: usize = 256;
 
 /// The largest MQTT packet the session can receive.
 ///
-/// Reassembly, the inbound slots and the encode buffer all come out of one
-/// `BUFFER_SIZE`; outbound packets are encoded to exactly-sized `Vec<u8>`s
-/// rather than a fixed buffer.
+/// Reassembly and the inbound slots come out of one `BUFFER_SIZE`; outbound
+/// packets go into the connector's write ring instead.
 const PACKET_BUFFER_SIZE: usize = BUFFER_SIZE - 2 * RX_CHUNK;
+
+/// Ring space waited for before each received packet is parsed: enough for
+/// the PUBACK a QoS 1 publish needs (6 bytes; mountain-mqtt adds no
+/// properties).
+const PUBACK_ROOM: usize = 16;
 
 /// One chunk of freshly read bytes, in flight from the read half to the loop.
 type Chunk = heapless::Vec<u8, RX_CHUNK>;
@@ -53,6 +58,10 @@ type Chunk = heapless::Vec<u8, RX_CHUNK>;
 ///
 /// Connects, subscribes `subscribe_topics`, then dispatches actions and
 /// forwards events. Returns only on failure — the caller reconnects.
+///
+/// `ring` is the connector's, reused across sessions; whatever an old session
+/// left in it is discarded first, so nothing reaches the new socket ahead of
+/// its CONNECT.
 ///
 /// **At most once**: an action is taken off `actions` before it is performed,
 /// so the one in flight when a session ends is lost. Everything still queued
@@ -65,6 +74,7 @@ pub(crate) async fn run_session<R, W, D>(
     subscribe_topics: &[(&str, QualityOfService)],
     events: &EventChannel,
     actions: &ActionChannel,
+    ring: &WriteRing,
     settings: &Settings,
     delay: &D,
     runtime: &dyn RuntimeOps,
@@ -75,13 +85,11 @@ where
     D: Delay,
 {
     let inbound: Channel<CriticalSectionRawMutex, Chunk, 1> = Channel::new();
-    // Four slots of a pointer each: enough that a burst of small packets does
-    // not park the loop, and cheap because the bytes live on the heap.
-    let outbound: Channel<CriticalSectionRawMutex, Vec<u8>, 4> = Channel::new();
+    ring.drain();
 
     let session = client_loop(
         &inbound,
-        &outbound,
+        ring,
         connection_settings,
         subscribe_topics,
         events,
@@ -91,7 +99,7 @@ where
         runtime,
     );
 
-    match select3(read_into(rx, &inbound), write_out(tx, &outbound), session).await {
+    match select3(read_into(rx, &inbound), ring.write_out(tx), session).await {
         Either3::First(error) => error,
         Either3::Second(error) => error,
         Either3::Third(Err(error)) => error,
@@ -122,20 +130,6 @@ async fn read_into<R: ByteRead>(
     }
 }
 
-/// Drain encoded packets to the socket. Never cancelled, which is what keeps
-/// the non-cancel-safe `write_all` out of a `select` arm.
-async fn write_out<W: ByteWrite>(
-    mut tx: W,
-    outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
-) -> Error {
-    loop {
-        let packet = outbound.receive().await;
-        if tx.write_all(&packet).await.is_err() || tx.flush().await.is_err() {
-            return Error::Client(ClientError::PacketWrite(PacketWriteError::ConnectionSend));
-        }
-    }
-}
-
 fn receive_failed() -> Error {
     Error::Client(ClientError::PacketRead(PacketReadError::ConnectionReceive))
 }
@@ -144,7 +138,7 @@ fn receive_failed() -> Error {
 #[allow(clippy::too_many_arguments)]
 async fn client_loop<D: Delay>(
     inbound: &Channel<CriticalSectionRawMutex, Chunk, 1>,
-    outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
+    ring: &WriteRing,
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
     events: &EventChannel,
@@ -189,7 +183,7 @@ async fn client_loop<D: Delay>(
             properties,
         );
         state.connect(&connect).map_err(client_error)?;
-        queue(outbound, encode(&connect)?).await;
+        ring.put(&connect, 0).await?;
     }
 
     loop {
@@ -212,9 +206,16 @@ async fn client_loop<D: Delay>(
         if connected && now.saturating_sub(last_ping_ms) >= ping_interval {
             last_ping_ms = now;
             let ping = state.send_ping().map_err(client_error)?;
-            // The one packet worth dropping rather than waiting for — see
-            // `queue_lossy`.
-            queue_lossy(outbound, encode(&ping)?);
+            // The one packet worth dropping rather than waiting for. A ping
+            // carries no state — `send_ping` bumps a counter but arms no
+            // response deadline — so a dropped one costs nothing and the next
+            // deadline tries again; if the link really is gone, the liveness
+            // window closes the session. Parking on a ping would leave the
+            // loop that has to notice a dead link stuck.
+            if !ring.try_put(&ping)? {
+                #[cfg(feature = "defmt")]
+                defmt::warn!("MQTT: write ring full, ping dropped");
+            }
         }
 
         // Subscriptions go out one at a time: `ClientStateNoQueue` tracks a
@@ -222,7 +223,7 @@ async fn client_loop<D: Delay>(
         if connected && !state.waiting_for_responses() && next_topic < subscribe_topics.len() {
             let (topic, qos) = subscribe_topics[next_topic];
             let packet = state.subscribe_packet(topic, qos).map_err(client_error)?;
-            queue(outbound, encode(&packet)?).await;
+            ring.put(&packet, 0).await?;
             state.subscribe_update(&packet).map_err(client_error)?;
             next_topic += 1;
             // `continue` skips the bottom-of-loop bookkeeping, so arm the
@@ -236,18 +237,26 @@ async fn client_loop<D: Delay>(
 
         // The action arm is armed only when a publish can actually be sent:
         // connected, nothing awaiting acknowledgement (the client state holds
-        // one in-flight slot), every subscription placed, and room to queue the
-        // bytes. This
-        // is what replaces the old inline wait for a PUBACK — the ping and
-        // liveness deadlines keep running while it is parked.
-        let action_ready = connected
-            && !state.waiting_for_responses()
-            && next_topic >= subscribe_topics.len()
-            && !outbound.is_full();
+        // one in-flight slot), every subscription placed, and room in the ring
+        // for the largest PUBLISH plus its reserve. This is what replaces the
+        // old inline wait for a PUBACK — the ping and liveness deadlines keep
+        // running while it is parked. Room is checked on every poll, not once
+        // here: PUBACKs and pings can take ring space while the arm is parked.
+        let action_ready =
+            connected && !state.waiting_for_responses() && next_topic >= subscribe_topics.len();
+        let publish_room = ring.max_publish() + CONTROL_RESERVE;
         let action_arm = async {
             if !action_ready {
                 core::future::pending::<()>().await;
             }
+            poll_fn(|cx| {
+                if ring.poll_room(publish_room, cx.waker()) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
             actions.receive().await
         };
 
@@ -265,7 +274,7 @@ async fn client_loop<D: Delay>(
                 drain_packets(
                     &mut reader,
                     &mut state,
-                    outbound,
+                    ring,
                     events,
                     runtime,
                     &mut last_ack_ms,
@@ -274,7 +283,7 @@ async fn client_loop<D: Delay>(
                 .await?;
             }
             Either3::Second(action) => {
-                perform(action, &mut state, outbound).await?;
+                perform(action, &mut state, ring).await?;
             }
             // The timer fired: the top of the loop re-evaluates every deadline.
             Either3::Third(()) => {}
@@ -293,38 +302,43 @@ async fn client_loop<D: Delay>(
 async fn drain_packets<const N: usize>(
     reader: &mut PacketReader<N>,
     state: &mut ClientStateNoQueue,
-    outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
+    ring: &WriteRing,
     events: &EventChannel,
     runtime: &dyn RuntimeOps,
     last_ack_ms: &mut u64,
     connected: &mut bool,
 ) -> Result<(), Error> {
     while let Some(total) = reader.framed_len().map_err(client_error)? {
+        // A burst of QoS 1 publishes needs a PUBACK each, so room for one is
+        // waited for here, before parsing: the parsed packet is too large to
+        // hold across an await in the session future.
+        ring.wait_room(PUBACK_ROOM).await;
+
         // The packet borrows the reader's buffer, so everything that outlives
-        // it — the response bytes, the application event — is made owned inside
-        // this scope. `consume` can then take `&mut`.
-        let (response, received) = {
+        // it — the application event — is made owned inside this scope.
+        // `consume` can then take `&mut`.
+        let received = {
             let packet: PacketGeneric<'_, MAX_PROPERTIES, 0, 0> =
                 reader.parse(total).map_err(client_error)?;
 
             // Produce the PUBACK before the state update, as upstream does, so
-            // the two cannot disagree about what was acknowledged.
-            let response = match state
+            // the two cannot disagree about what was acknowledged. It borrows
+            // the client state, so it goes into the ring before
+            // `state.receive` takes `&mut`. The room was waited for above and
+            // nothing else writes the ring in between.
+            if let Some(puback) = state
                 .receive_produce_response(&packet)
                 .map_err(client_error)?
             {
-                Some(puback) => Some(encode(&puback)?),
-                None => None,
-            };
+                if !ring.try_put(&puback)? {
+                    return Err(client_error(PacketWriteError::Overflow));
+                }
+            }
 
             let event = state.receive(packet).map_err(client_error)?;
-            (response, Received::of(event)?)
+            Received::of(event)?
         };
         reader.consume(total);
-
-        if let Some(bytes) = response {
-            queue(outbound, bytes).await;
-        }
 
         // Every packet the state accepted proves the broker is alive.
         *last_ack_ms = now_ms(runtime);
@@ -395,7 +409,7 @@ impl Received {
 async fn perform(
     action: AimdbMqttAction,
     state: &mut ClientStateNoQueue,
-    outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>,
+    ring: &WriteRing,
 ) -> Result<(), Error> {
     match action {
         AimdbMqttAction::Publish {
@@ -425,7 +439,20 @@ async fn perform(
                     );
                 })
                 .map_err(client_error)?;
-            queue(outbound, encode(&packet)?).await;
+            // A frame larger than the ring can always grant would wait
+            // forever; skip it before the state commits to it.
+            let len = encoded_len(&packet)?;
+            if len > ring.max_publish() {
+                #[cfg(feature = "defmt")]
+                defmt::warn!(
+                    "MQTT: dropping publish to {}: {} bytes exceed the {}-byte write ring limit",
+                    topic.as_str(),
+                    len,
+                    ring.max_publish()
+                );
+                return Ok(());
+            }
+            ring.put(&packet, CONTROL_RESERVE).await?;
             state.publish_update(&packet).map_err(client_error)?;
         }
         AimdbMqttAction::Subscribe { topic, qos } => {
@@ -438,53 +465,11 @@ async fn perform(
                     defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
                 })
                 .map_err(client_error)?;
-            queue(outbound, encode(&packet)?).await;
+            ring.put(&packet, 0).await?;
             state.subscribe_update(&packet).map_err(client_error)?;
         }
     }
     Ok(())
-}
-
-/// Encode a packet to exactly its own length: a counting pass, then a real
-/// one, so no fixed buffer is sized for the largest packet anyone might send.
-fn encode<P: Write>(packet: &P) -> Result<Vec<u8>, Error> {
-    let mut len_writer = MqttLenWriter::new();
-    len_writer.put(packet).map_err(write_error)?;
-
-    let mut bytes = alloc::vec![0u8; len_writer.position()];
-    let mut writer = MqttBufWriter::new(&mut bytes);
-    writer.put(packet).map_err(write_error)?;
-    Ok(bytes)
-}
-
-/// Queue encoded bytes for the write half, waiting for a slot.
-///
-/// Everything the protocol obliges us to send goes through here: CONNECT,
-/// SUBSCRIBE, PUBLISH and the PUBACKs answering QoS 1 delivery. None of those
-/// can be dropped — the state machine has already committed to them, so a
-/// discarded packet leaves our state and the wire disagreeing, with nothing to
-/// resync on.
-///
-/// Waiting cannot deadlock: [`write_out`] is this channel's only consumer and
-/// is a sibling arm of the same `select`, so parking here is what lets it run.
-/// It is also the backpressure — a peer that stops reading stops us encoding.
-async fn queue(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
-    outbound.send(bytes).await;
-}
-
-/// Queue encoded bytes only if the write half is keeping up, dropping them if
-/// it is not.
-///
-/// For pings alone. A ping carries no state — `send_ping` bumps a counter but
-/// arms no response deadline — so a dropped one costs nothing and the next
-/// ping deadline tries again; if the link really is gone, the liveness window
-/// closes the session. Parking on a ping would be worse than skipping it: the
-/// loop that has to notice the link is gone would be the thing stuck.
-fn queue_lossy(outbound: &Channel<CriticalSectionRawMutex, Vec<u8>, 4>, bytes: Vec<u8>) {
-    if outbound.try_send(bytes).is_err() {
-        #[cfg(feature = "defmt")]
-        defmt::warn!("MQTT: write queue full, ping dropped");
-    }
 }
 
 /// Milliseconds to sleep before the earliest armed deadline.
@@ -509,13 +494,10 @@ fn client_error(error: impl Into<ClientError>) -> Error {
     Error::Client(error.into())
 }
 
-fn write_error(error: PacketWriteError) -> Error {
-    Error::Client(ClientError::PacketWrite(error))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     /// Halves that never do anything: enough to build the session future and
     /// measure it without polling it.
@@ -572,6 +554,7 @@ mod tests {
         let settings = Settings::default();
         let connection_settings = ConnectionSettings::unauthenticated("size-probe");
         let runtime = aimdb_core::executor::test_support::NoopRuntimeOps;
+        let ring = WriteRing::new(64);
 
         // Built, never polled: `size_of_val` on the future is the whole point.
         let session = run_session(
@@ -581,6 +564,7 @@ mod tests {
             &[],
             &events,
             &actions,
+            &ring,
             &settings,
             &NullDelay,
             &runtime,
@@ -662,6 +646,20 @@ mod tests {
             Some(alloc::string::String::from("TooManyProperties")),
             "one property past the cap must be refused, not quietly dropped"
         );
+    }
+
+    #[test]
+    fn puback_room_covers_the_puback_the_client_state_produces() {
+        use mountain_mqtt::data::packet_identifier::PacketIdentifier;
+        use mountain_mqtt::data::reason_code::PublishReasonCode;
+        use mountain_mqtt::packets::puback::Puback;
+
+        let puback: Puback<'_, MAX_PROPERTIES> = Puback::new(
+            PacketIdentifier(u16::MAX),
+            PublishReasonCode::Success,
+            heapless::Vec::new(),
+        );
+        assert!(encoded_len(&puback).unwrap() <= PUBACK_ROOM);
     }
 
     #[test]

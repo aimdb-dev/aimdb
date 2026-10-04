@@ -24,6 +24,7 @@ use embedded_tls::{
 
 use crate::embedded::manager::Settings;
 use crate::embedded::session_loop::run_session;
+use crate::embedded::write_ring::{WriteRing, DEFAULT_WRITE_BUFFER};
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 
@@ -343,6 +344,9 @@ where
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
 
+    // Allocated once and reused by every session.
+    let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+
     loop {
         // Certificate validity needs real time. Take it from the runtime when
         // it has a wall clock; otherwise wait for whatever feeds `WallClock`
@@ -410,6 +414,7 @@ where
             &subscribe_topics,
             &events,
             &actions,
+            &ring,
             &settings,
             &delay,
             runtime.as_ref(),

@@ -64,12 +64,16 @@ where
     use mountain_mqtt::data::quality_of_service::QualityOfService;
 
     use crate::embedded::session_loop::run_session;
+    use crate::embedded::write_ring::{WriteRing, DEFAULT_WRITE_BUFFER};
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
         .iter()
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
+
+    // Allocated once and reused by every session.
+    let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
 
     loop {
         let mut stream = match dialer.connect(&host, port).await {
@@ -92,6 +96,7 @@ where
             &subscribe_topics,
             &events,
             &actions,
+            &ring,
             &settings,
             &dialer,
             runtime.as_ref(),
