@@ -1,5 +1,6 @@
 //! The embedded backend's packet-size behaviour against a fake broker
-//! (`_test-tokio-broker`).
+//! (`_test-tokio-broker`). A retained message over the client's Maximum
+//! Packet Size is covered in `tokio_broker`.
 #![cfg(feature = "_test-tokio-broker")]
 
 use std::sync::{Arc, Mutex};
@@ -108,61 +109,4 @@ async fn proof_an_oversize_publish_is_dropped_silently() {
         "only the 1-byte payloads reached the broker"
     );
     assert_eq!(seen.connects, 1, "the session never errored");
-}
-
-/// Build a client subscribed to `sensors/temperature` against a broker that
-/// pushes `payload_len` bytes after every SUBACK, as it would a retained
-/// message, and count connections after `wait`.
-async fn connects_with_push(payload_len: usize, wait: Duration) -> usize {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let seen = Arc::new(Mutex::new(Seen::default()));
-
-    let connector = MqttConnector::new(format!("mqtt://127.0.0.1:{port}"))
-        .transport(TokioNet::tcp())
-        .with_client_id("proof-retained");
-    let mut builder = AimDbBuilder::new()
-        .runtime(Arc::new(TokioAdapter))
-        .with_connector(connector);
-    builder.configure::<u64>("temperature", |reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .link_from("mqtt://sensors/temperature")
-            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
-            .finish();
-    });
-    let (_db, runner) = builder.build().await.expect("build db");
-
-    let payload = vec![b'x'; payload_len];
-    let broker = fake_broker(
-        listener,
-        seen.clone(),
-        0,
-        Some(("sensors/temperature", payload.as_slice())),
-    );
-    tokio::select! {
-        _ = runner.run() => panic!("the session loop returned"),
-        _ = broker => panic!("the broker returned"),
-        _ = tokio::time::sleep(wait) => {}
-    }
-    let connects = seen.lock().unwrap().connects;
-    connects
-}
-
-/// A 3,000-byte message fits the receive buffer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_a_3000_byte_retained_message_is_received_once() {
-    assert_eq!(connects_with_push(3000, Duration::from_secs(5)).await, 1);
-}
-
-/// A 4,000-byte message ends every session it reaches, so a retained one
-/// reconnects the client forever (one cycle per 2 s reconnection delay): the
-/// CONNECT does not tell the broker the largest packet the client accepts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_a_4000_byte_retained_message_reconnects_forever() {
-    let connects = connects_with_push(4000, Duration::from_secs(5)).await;
-    eprintln!("connects in 5 s: {connects}");
-    assert!(
-        connects >= 3,
-        "expected a reconnect loop, saw {connects} connects"
-    );
 }
