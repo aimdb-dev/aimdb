@@ -187,7 +187,7 @@ pub struct OutboundRoutes {
     ctx: RuntimeContext,
 }
 
-// Moved into the connector's `Send` transport task (design 054 §4.2).
+// Moved into the connector's `Send` transport task.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<OutboundRoutes>();
