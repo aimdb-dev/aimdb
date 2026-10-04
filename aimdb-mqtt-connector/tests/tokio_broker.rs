@@ -349,3 +349,31 @@ async fn a_retained_message_over_the_maximum_packet_size_is_withheld() {
     assert_eq!(seen.withheld, 1);
     assert_eq!(received, None);
 }
+
+/// Inbound publishes are dispatched by the session task itself: with inbound
+/// links and no outbound ones, the connector contributes one future.
+#[tokio::test]
+async fn the_embedded_backend_dispatches_inbound_on_its_session_task() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::MqttConnector;
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let connector = || MqttConnector::new("mqtt://127.0.0.1:1").transport(TokioNet::tcp());
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector());
+    builder.configure::<u64>("temperature", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://sensors/temperature")
+            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
+            .finish();
+    });
+    let (db, _runner) = builder.build().await.expect("build db");
+
+    // Built, never polled: nothing dials.
+    let futures = connector().build(&db).await.expect("build connector");
+    assert_eq!(futures.len(), 1, "the session task, and no inbound pump");
+}

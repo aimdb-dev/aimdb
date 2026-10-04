@@ -53,7 +53,7 @@ pub(crate) async fn run_sessions<D>(
     topics: alloc::vec::Vec<alloc::string::String>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
     settings: crate::embedded::manager::Settings,
-    events: alloc::sync::Arc<crate::embedded::EventChannel>,
+    inbound: aimdb_core::InboundDispatch,
     actions: alloc::sync::Arc<crate::embedded::ActionChannel>,
     runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
@@ -94,7 +94,7 @@ where
             tx,
             &connection_settings,
             &subscribe_topics,
-            &events,
+            &inbound,
             &actions,
             &ring,
             &settings,

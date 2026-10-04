@@ -1,7 +1,7 @@
-//! Session cadence and the channels a session talks over.
+//! Session cadence and the channel a session takes actions from.
 //!
-//! Channels use `CriticalSectionRawMutex`, so they are `Sync` and the sink and
-//! source need no force-`Send` wrapper. Time comes from core's
+//! The channel uses `CriticalSectionRawMutex`, so it is `Sync` and the sink
+//! needs no force-`Send` wrapper. Time comes from core's
 //! [`aimdb_core::session::Delay`], so nothing here names an executor.
 
 use core::time::Duration;
@@ -9,11 +9,7 @@ use core::time::Duration;
 use aimdb_core::RuntimeOps;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use mountain_mqtt::client::{ClientError, EventHandlerError};
-use mountain_mqtt::packets::publish::ApplicationMessage;
-
-/// The event channel: broker session to `pump_source`.
-pub(crate) type EventChannel<E, const Q: usize> = Channel<CriticalSectionRawMutex, E, Q>;
+use mountain_mqtt::client::ClientError;
 
 /// The action channel: `pump_sink` to broker session.
 pub(crate) type ActionChannel<A, const Q: usize> = Channel<CriticalSectionRawMutex, A, Q>;
@@ -21,13 +17,6 @@ pub(crate) type ActionChannel<A, const Q: usize> = Channel<CriticalSectionRawMut
 /// Monotonic milliseconds. Only differences are meaningful.
 pub(crate) fn now_ms(runtime: &dyn RuntimeOps) -> u64 {
     runtime.now_nanos() / 1_000_000
-}
-
-/// Convert a received [`ApplicationMessage`] into an application event.
-pub trait FromApplicationMessage<const P: usize>: Sized {
-    /// Build the event, or reject the message.
-    fn from_application_message(message: &ApplicationMessage<P>)
-        -> Result<Self, EventHandlerError>;
 }
 
 /// Why a session ended.
