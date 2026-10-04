@@ -127,6 +127,9 @@ pub mod native;
 #[cfg(feature = "embedded")]
 pub mod embedded;
 
+#[cfg(feature = "embedded")]
+pub(crate) mod publish_opts;
+
 // SNTP wire codec — pure and feature-independent so it is unit-tested on the
 // host; only the TLS I/O task consumes it.
 #[cfg_attr(not(feature = "embassy-tls"), allow(dead_code))]

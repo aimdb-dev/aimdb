@@ -24,7 +24,7 @@ use embedded_tls::{
 
 use crate::embedded::manager::Settings;
 use crate::embedded::session_loop::run_session;
-use crate::embedded::write_ring::{WriteRing, DEFAULT_WRITE_BUFFER};
+use crate::embedded::write_ring::WriteRing;
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 
@@ -322,7 +322,9 @@ pub(crate) async fn run_tls<D>(
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
     inbound: aimdb_core::InboundDispatch,
-    actions: Arc<crate::embedded::ActionChannel>,
+    mut outbound: aimdb_core::OutboundRoutes,
+    opts: Vec<crate::publish_opts::PublishOpts>,
+    write_buffer: usize,
     delay: D,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
@@ -345,7 +347,7 @@ where
         .collect();
 
     // Allocated once and reused by every session.
-    let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+    let ring = WriteRing::new(write_buffer);
 
     loop {
         // Certificate validity needs real time. Take it from the runtime when
@@ -413,7 +415,8 @@ where
             &connection_settings,
             &subscribe_topics,
             &inbound,
-            &actions,
+            &mut outbound,
+            &opts,
             &ring,
             &settings,
             &delay,

@@ -55,9 +55,11 @@ use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
 /// A 3,000-byte publish never reaches the broker, the session never errors,
-/// and the small publishes around it keep flowing. Nothing counts the drop.
+/// and the small publishes around it keep flowing. The skip is counted as
+/// rejected in the route's `RouteStats` (asserted in the session loop's unit
+/// tests, which hold the `OutboundRoutes`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_an_oversize_publish_is_dropped_silently() {
+async fn an_oversize_publish_is_skipped_and_the_session_stays_up() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));

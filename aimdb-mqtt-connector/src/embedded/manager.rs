@@ -1,18 +1,12 @@
-//! Session cadence and the channel a session takes actions from.
+//! Session cadence and the reasons a session ends.
 //!
-//! The channel uses `CriticalSectionRawMutex`, so it is `Sync` and the sink
-//! needs no force-`Send` wrapper. Time comes from core's
+//! Time comes from core's
 //! [`aimdb_core::session::Delay`], so nothing here names an executor.
 
 use core::time::Duration;
 
 use aimdb_core::RuntimeOps;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use mountain_mqtt::client::ClientError;
-
-/// The action channel: `pump_sink` to broker session.
-pub(crate) type ActionChannel<A, const Q: usize> = Channel<CriticalSectionRawMutex, A, Q>;
 
 /// Monotonic milliseconds. Only differences are meaningful.
 pub(crate) fn now_ms(runtime: &dyn RuntimeOps) -> u64 {

@@ -17,23 +17,27 @@ use core::task::Poll;
 use core::time::Duration;
 
 use aimdb_core::session::{ByteRead, ByteWrite, Delay};
-use aimdb_core::{InboundDispatch, RuntimeOps};
+use aimdb_core::{InboundDispatch, OutboundRoutes, RouteId, RuntimeOps};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
 use mountain_mqtt::client::{ClientError, ConnectionSettings};
 use mountain_mqtt::client_state::{ClientState, ClientStateNoQueue, ClientStateReceiveEvent};
-use mountain_mqtt::data::property::ConnectProperty;
+use mountain_mqtt::data::packet_identifier::{PacketIdentifier, PublishPacketIdentifier};
+use mountain_mqtt::data::property::{ConnackProperty, ConnectProperty, Property};
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 use mountain_mqtt::error::{PacketReadError, PacketWriteError};
 use mountain_mqtt::packets::connect::Connect;
 use mountain_mqtt::packets::packet_generic::PacketGeneric;
+use mountain_mqtt::packets::publish::Publish;
+use mountain_mqtt::packets::subscribe::{Subscribe, SubscriptionRequest};
 
 use crate::embedded::manager::{now_ms, Error, Settings};
 use crate::embedded::packet_reader::PacketReader;
 use crate::embedded::write_ring::{encoded_len, WriteRing, CONTROL_RESERVE};
-use crate::embedded::{ActionChannel, AimdbMqttAction, BUFFER_SIZE, MAX_PROPERTIES};
+use crate::embedded::{BUFFER_SIZE, MAX_PROPERTIES};
+use crate::publish_opts::PublishOpts;
 
 /// Bytes lifted off the socket at a time, and the size of one `inbound` slot.
 const RX_CHUNK: usize = 256;
@@ -60,17 +64,18 @@ type Chunk = heapless::Vec<u8, RX_CHUNK>;
 
 /// Drive one MQTT session over a split stream until an error ends it.
 ///
-/// Connects, subscribes `subscribe_topics`, then performs actions and
-/// dispatches every inbound publish into its records through `dispatch`.
-/// Returns only on failure — the caller reconnects.
+/// Connects, subscribes `subscribe_topics`, then publishes what `outbound`
+/// stages and dispatches every inbound publish into its records through
+/// `dispatch`. Returns only on failure — the caller reconnects.
 ///
 /// `ring` is the connector's, reused across sessions; whatever an old session
 /// left in it is discarded first, so nothing reaches the new socket ahead of
 /// its CONNECT.
 ///
-/// **At most once**: an action is taken off `actions` before it is performed,
-/// so the one in flight when a session ends is lost. Everything still queued
-/// survives.
+/// **At most once**: a message is taken from its record buffer before it is
+/// written, so the one in flight when a session ends is lost. Everything still
+/// in the record buffers survives (what survives depends on each buffer's
+/// type).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_session<R, W, D>(
     rx: R,
@@ -78,7 +83,8 @@ pub(crate) async fn run_session<R, W, D>(
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
     dispatch: &InboundDispatch,
-    actions: &ActionChannel,
+    outbound: &mut OutboundRoutes,
+    opts: &[PublishOpts],
     ring: &WriteRing,
     settings: &Settings,
     delay: &D,
@@ -98,7 +104,8 @@ where
         connection_settings,
         subscribe_topics,
         dispatch,
-        actions,
+        outbound,
+        opts,
         settings,
         delay,
         runtime,
@@ -147,7 +154,8 @@ async fn client_loop<D: Delay>(
     connection_settings: &ConnectionSettings<'static>,
     subscribe_topics: &[(&str, QualityOfService)],
     dispatch: &InboundDispatch,
-    actions: &ActionChannel,
+    outbound: &mut OutboundRoutes,
+    opts: &[PublishOpts],
     settings: &Settings,
     delay: &D,
     runtime: &dyn RuntimeOps,
@@ -168,28 +176,17 @@ async fn client_loop<D: Delay>(
     let mut waiting_since: Option<u64> = Some(start);
     let mut connected = false;
     let mut next_topic = 0usize;
+    // The broker's Maximum Packet Size, from its CONNACK. Sending a larger
+    // packet is a protocol error that ends the session.
+    let mut broker_max: Option<usize> = None;
+    // Latched on `Ready(None)`: every route is closed, or there were none.
+    // Passing it through would resolve the arm on every iteration and the
+    // session would never yield.
+    let mut outbound_done = false;
 
     // CONNECT goes out first; its CONNACK is what flips `connected`.
     {
-        let mut properties = heapless::Vec::new();
-        // Topic aliases are declined: honouring them would mean storing the
-        // server's topic names for the life of the connection.
-        let _ = properties.push(ConnectProperty::TopicAliasMaximum(0.into()));
-        let _ = properties.push(ConnectProperty::MaximumPacketSize(
-            (MAX_INBOUND_PACKET as u32).into(),
-        ));
-        // Ours, not `connection_settings.keep_alive()`: that field has no
-        // setter, so it is always mountain-mqtt's own 60 s constant. The
-        // cadence below is derived from the value we actually send.
-        let connect: Connect<'_, 2, 0> = Connect::new(
-            settings.keep_alive_secs,
-            *connection_settings.username(),
-            *connection_settings.password(),
-            connection_settings.client_id(),
-            true,
-            None,
-            properties,
-        );
+        let connect = connect_packet(settings, connection_settings);
         state.connect(&connect).map_err(client_error)?;
         ring.put(&connect, 0).await?;
     }
@@ -243,30 +240,32 @@ async fn client_loop<D: Delay>(
 
         // --- park until something happens ----------------------------------
 
-        // The action arm is armed only when a publish can actually be sent:
+        // The publish arm is armed only when a publish can actually be sent:
         // connected, nothing awaiting acknowledgement (the client state holds
         // one in-flight slot), every subscription placed, and room in the ring
-        // for the largest PUBLISH plus its reserve. This is what replaces the
-        // old inline wait for a PUBACK — the ping and liveness deadlines keep
-        // running while it is parked. Room is checked on every poll, not once
-        // here: PUBACKs and pings can take ring space while the arm is parked.
-        let action_ready =
-            connected && !state.waiting_for_responses() && next_topic >= subscribe_topics.len();
+        // for the largest PUBLISH plus its reserve. The ping and liveness
+        // deadlines keep running while it is parked. Room is checked on every
+        // poll, not once here: PUBACKs and pings can take ring space while the
+        // arm is parked. A value leaves its record buffer only when the arm
+        // resolves, so a losing arm takes nothing.
+        let publish_ready = connected
+            && !outbound_done
+            && !state.waiting_for_responses()
+            && next_topic >= subscribe_topics.len();
         let publish_room = ring.max_publish() + CONTROL_RESERVE;
-        let action_arm = async {
-            if !action_ready {
-                core::future::pending::<()>().await;
+        let publish_arm = poll_fn(|cx| {
+            if !publish_ready || !ring.poll_room(publish_room, cx.waker()) {
+                return Poll::Pending;
             }
-            poll_fn(|cx| {
-                if ring.poll_room(publish_room, cx.waker()) {
-                    Poll::Ready(())
-                } else {
+            match outbound.poll_stage(cx) {
+                Poll::Ready(Some(id)) => Poll::Ready(id),
+                Poll::Ready(None) => {
+                    outbound_done = true;
                     Poll::Pending
                 }
-            })
-            .await;
-            actions.receive().await
-        };
+                Poll::Pending => Poll::Pending,
+            }
+        });
 
         let sleep_for = Duration::from_millis(next_deadline(
             now,
@@ -276,7 +275,7 @@ async fn client_loop<D: Delay>(
             waiting_since.map(|since| since + response_timeout),
         ));
 
-        match select3(inbound.receive(), action_arm, delay.sleep(sleep_for)).await {
+        match select3(inbound.receive(), publish_arm, delay.sleep(sleep_for)).await {
             Either3::First(chunk) => {
                 reader.feed(&chunk).map_err(client_error)?;
                 drain_packets(
@@ -287,11 +286,12 @@ async fn client_loop<D: Delay>(
                     runtime,
                     &mut last_ack_ms,
                     &mut connected,
+                    &mut broker_max,
                 )
                 .await?;
             }
-            Either3::Second(action) => {
-                perform(action, &mut state, ring).await?;
+            Either3::Second(id) => {
+                publish_staged(outbound, id, opts, &mut state, ring, broker_max).await?;
             }
             // The timer fired: the top of the loop re-evaluates every deadline.
             Either3::Third(()) => {}
@@ -316,6 +316,7 @@ async fn drain_packets<const N: usize>(
     runtime: &dyn RuntimeOps,
     last_ack_ms: &mut u64,
     connected: &mut bool,
+    broker_max: &mut Option<usize>,
 ) -> Result<(), Error> {
     while let Some(total) = reader.framed_len().map_err(client_error)? {
         // A burst of QoS 1 publishes needs a PUBACK each, so room for one is
@@ -330,6 +331,13 @@ async fn drain_packets<const N: usize>(
         {
             let packet: PacketGeneric<'_, MAX_PROPERTIES, 0, 0> =
                 reader.parse(total).map_err(client_error)?;
+
+            if let PacketGeneric::Connack(connack) = &packet {
+                *broker_max = connack.properties().iter().find_map(|p| match p {
+                    ConnackProperty::MaximumPacketSize(max) => Some(max.value() as usize),
+                    _ => None,
+                });
+            }
 
             // Produce the PUBACK before the state update, as upstream does, so
             // the two cannot disagree about what was acknowledged. It borrows
@@ -407,74 +415,127 @@ fn deliver(
     Ok(())
 }
 
-/// Turn one queued action into a packet on the wire.
+/// Publish the message `outbound` staged for route `id`.
 ///
 /// Sent before the state update, as upstream does: a state that believes a
-/// publish is in flight when it is not parks the action arm forever.
-async fn perform(
-    action: AimdbMqttAction,
+/// publish is in flight when it is not parks the publish arm forever. A frame
+/// the ring can never grant, or larger than the broker accepts, is skipped
+/// before the state commits to it, logged, and counted as rejected in the
+/// route's `RouteStats`.
+async fn publish_staged(
+    outbound: &mut OutboundRoutes,
+    id: RouteId,
+    opts: &[PublishOpts],
     state: &mut ClientStateNoQueue,
     ring: &WriteRing,
+    broker_max: Option<usize>,
 ) -> Result<(), Error> {
-    match action {
-        AimdbMqttAction::Publish {
-            topic,
-            payload,
-            qos,
-            retain,
-        } => {
-            #[cfg(feature = "defmt")]
-            defmt::debug!(
-                "Publishing {} bytes to {} (QoS={:?})",
-                payload.len(),
-                topic.as_str(),
-                qos
+    let opt = opts.get(id).copied().unwrap_or(PublishOpts {
+        qos: 1,
+        retain: false,
+    });
+    // QoS 2 is not supported by this client; build() warned once per route.
+    let qos = if opt.qos == 0 {
+        QualityOfService::Qos0
+    } else {
+        QualityOfService::Qos1
+    };
+    let rejected = {
+        let Some(msg) = outbound.take_staged() else {
+            return Ok(());
+        };
+        let packet = state
+            .publish_packet(msg.topic, msg.payload.as_slice(), qos, opt.retain)
+            .map_err(client_error)?;
+        let len = encoded_len(&packet)?;
+        let over_broker = broker_max.is_some_and(|max| len > max);
+        if !ring.fits(len, CONTROL_RESERVE) || over_broker {
+            aimdb_core::log_warn!(
+                "MQTT: skipping publish to '{}': {} bytes exceed the {} limit",
+                msg.topic,
+                len,
+                if over_broker {
+                    "broker's"
+                } else {
+                    "write ring's"
+                }
             );
-            let packet = state
-                .publish_packet(&topic, &payload, qos, retain)
-                .inspect_err(|_e| {
-                    // The action is already off the channel, so a failure here
-                    // loses this message and ends the session — say which.
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!(
-                        "MQTT: dropping publish of {} bytes to {}: {}",
-                        payload.len(),
-                        topic.as_str(),
-                        _e
-                    );
-                })
-                .map_err(client_error)?;
-            // A frame larger than the ring can always grant would wait
-            // forever; skip it before the state commits to it.
-            let len = encoded_len(&packet)?;
-            if !ring.fits(len, CONTROL_RESERVE) {
-                #[cfg(feature = "defmt")]
-                defmt::warn!(
-                    "MQTT: dropping publish to {}: {} bytes exceed the {}-byte write ring limit",
-                    topic.as_str(),
-                    len,
-                    ring.max_publish()
-                );
-                return Ok(());
-            }
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "MQTT: skipping publish to {}: {} bytes exceed the {} limit",
+                msg.topic,
+                len,
+                if over_broker {
+                    "broker's"
+                } else {
+                    "write ring's"
+                }
+            );
+            true
+        } else {
             ring.put_sized(&packet, len, CONTROL_RESERVE).await?;
             state.publish_update(&packet).map_err(client_error)?;
+            false
         }
-        AimdbMqttAction::Subscribe { topic, qos } => {
-            #[cfg(feature = "defmt")]
-            defmt::info!("Subscribing to {} (QoS={:?})", topic.as_str(), qos);
-            let packet = state
-                .subscribe_packet(&topic, qos)
-                .inspect_err(|_e| {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("MQTT: dropping subscribe to {}: {}", topic.as_str(), _e);
-                })
-                .map_err(client_error)?;
-            ring.put(&packet, 0).await?;
-            state.subscribe_update(&packet).map_err(client_error)?;
-        }
+    };
+    if rejected {
+        outbound.reject(id);
     }
     Ok(())
+}
+
+/// The CONNECT this session sends, also sized at build.
+pub(crate) fn connect_packet<'a>(
+    settings: &Settings,
+    connection_settings: &'a ConnectionSettings<'static>,
+) -> Connect<'a, 2, 0> {
+    let mut properties = heapless::Vec::new();
+    // Topic aliases are declined: honouring them would mean storing the
+    // server's topic names for the life of the connection.
+    let _ = properties.push(ConnectProperty::TopicAliasMaximum(0.into()));
+    let _ = properties.push(ConnectProperty::MaximumPacketSize(
+        (MAX_INBOUND_PACKET as u32).into(),
+    ));
+    // Ours, not `connection_settings.keep_alive()`: that field has no setter,
+    // so it is always mountain-mqtt's own 60 s constant. The cadence is
+    // derived from the value we actually send.
+    Connect::new(
+        settings.keep_alive_secs,
+        *connection_settings.username(),
+        *connection_settings.password(),
+        connection_settings.client_id(),
+        true,
+        None,
+        properties,
+    )
+}
+
+/// Bytes the SUBSCRIBE for `topic` encodes to.
+pub(crate) fn subscribe_len(topic: &str) -> Result<usize, Error> {
+    let packet: Subscribe<'_, 0, 0> = Subscribe::new(
+        PacketIdentifier(1),
+        SubscriptionRequest::new(topic, QualityOfService::Qos1),
+        heapless::Vec::new(),
+        heapless::Vec::new(),
+    );
+    encoded_len(&packet)
+}
+
+/// Bytes a QoS 1 PUBLISH with a `topic_len`-byte topic and a
+/// `payload_len`-byte payload encodes to: the largest frame a route with
+/// those capacities produces.
+pub(crate) fn publish_frame_len(topic_len: usize, payload_len: usize) -> Result<usize, Error> {
+    let topic = "x".repeat(topic_len);
+    let payload = alloc::vec![0u8; payload_len];
+    let packet: Publish<'_, 0> = Publish::new(
+        false,
+        false,
+        &topic,
+        PublishPacketIdentifier::Qos1(PacketIdentifier(1)),
+        &payload,
+        heapless::Vec::new(),
+    );
+    encoded_len(&packet)
 }
 
 /// Milliseconds to sleep before the earliest armed deadline.
@@ -554,7 +615,6 @@ mod tests {
     /// absorb codegen drift, but not loose enough to fit another buffer.
     #[test]
     fn the_session_future_has_not_outgrown_the_loop_it_replaced() {
-        let actions = ActionChannel::new();
         let settings = Settings::default();
         let connection_settings = ConnectionSettings::unauthenticated("size-probe");
         let runtime = aimdb_core::executor::test_support::NoopRuntimeOps;
@@ -566,6 +626,7 @@ mod tests {
         )
         .expect("empty database");
         let dispatch = InboundDispatch::new(&db, "mqtt", &crate::MqttGrammar).expect("no links");
+        let mut outbound = OutboundRoutes::new(&db, "mqtt").expect("no links");
 
         // Built, never polled: `size_of_val` on the future is the whole point.
         let session = run_session(
@@ -574,7 +635,8 @@ mod tests {
             &connection_settings,
             &[],
             &dispatch,
-            &actions,
+            &mut outbound,
+            &[],
             &ring,
             &settings,
             &NullDelay,
@@ -739,15 +801,14 @@ mod tests {
 
 #[cfg(test)]
 mod proofs {
-    //! Where the embedded backend's size limits sit today: the largest
-    //! PUBLISH it sends, what it does with a larger one (skipped without an
-    //! error and without a count), and the largest packet it receives.
+    //! Where the embedded backend's size limits sit: the largest PUBLISH it
+    //! sends, what it does with a larger one (skipped and counted as rejected
+    //! in the route's `RouteStats`), and the largest packet it receives.
     use super::*;
     use crate::embedded::write_ring::DEFAULT_WRITE_BUFFER;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
     use alloc::vec::Vec;
-    use core::future::Future;
-    use core::pin::pin;
-    use core::task::{Context, Waker};
     use mountain_mqtt::data::reason_code::ConnectReasonCode;
     use mountain_mqtt::packets::connack::Connack;
 
@@ -779,50 +840,123 @@ mod proofs {
             .unwrap()
     }
 
-    fn publish(n: usize) -> AimdbMqttAction {
-        AimdbMqttAction::Publish {
-            topic: "t".into(),
-            payload: alloc::vec![b'x'; n],
-            qos: QualityOfService::Qos1,
-            retain: false,
+    /// Lets `link_to("mqtt://…")` register; drives nothing.
+    struct NoTransport;
+
+    impl aimdb_core::connector::ConnectorBuilder for NoTransport {
+        #[allow(clippy::type_complexity)]
+        fn build<'a>(
+            &'a self,
+            _db: &'a aimdb_core::AimDb,
+        ) -> core::pin::Pin<
+            Box<
+                dyn core::future::Future<
+                        Output = aimdb_core::DbResult<
+                            Vec<core::pin::Pin<Box<dyn core::future::Future<Output = ()> + Send>>>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn scheme(&self) -> &str {
+            "mqtt"
         }
     }
 
-    fn run(
-        action: AimdbMqttAction,
-        state: &mut ClientStateNoQueue,
-        ring: &WriteRing,
-    ) -> Poll<Result<(), Error>> {
-        let f = pin!(perform(action, state, ring));
-        f.poll(&mut Context::from_waker(Waker::noop()))
+    /// One route to `t` whose owned serializer emits as many bytes as the
+    /// value says, with a message of `payload_len` bytes staged.
+    async fn staged(payload_len: usize) -> (aimdb_core::AimDb, OutboundRoutes, RouteId) {
+        use aimdb_core::buffer::BufferCfg;
+        use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+        let mut builder = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(NoTransport);
+        builder.configure::<usize>("blob", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_to("mqtt://t")
+                .with_serializer(|_ctx, n: &usize| Ok(alloc::vec![b'x'; *n]))
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build");
+        let mut outbound = OutboundRoutes::new(&db, "mqtt").expect("routes");
+        db.produce("blob", payload_len).expect("produce");
+        let id = poll_fn(|cx| outbound.poll_stage(cx))
+            .await
+            .expect("route open");
+        (db, outbound, id)
     }
 
-    #[test]
-    fn proof_a_1984_byte_publish_goes_out() {
+    const QOS1: [PublishOpts; 1] = [PublishOpts {
+        qos: 1,
+        retain: false,
+    }];
+
+    #[tokio::test]
+    async fn a_1984_byte_publish_goes_out() {
         let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
         assert_eq!(ring.max_publish(), 1984);
         let mut state = connected();
-        let n = payload_for(1984);
-        assert!(matches!(
-            run(publish(n), &mut state, &ring),
-            Poll::Ready(Ok(()))
-        ));
+        let (_db, mut outbound, id) = staged(payload_for(1984)).await;
+        publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, None)
+            .await
+            .unwrap();
         assert!(!ring.has_room(DEFAULT_WRITE_BUFFER), "bytes were queued");
         assert!(state.waiting_for_responses(), "QoS 1 publish in flight");
+        assert_eq!(outbound.stats(id).unwrap().rejected, 0);
+    }
+
+    #[tokio::test]
+    async fn a_1985_byte_publish_is_skipped_and_counted() {
+        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+        let mut state = connected();
+        let (_db, mut outbound, id) = staged(payload_for(1985)).await;
+        publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, None)
+            .await
+            .unwrap();
+        assert!(ring.has_room(DEFAULT_WRITE_BUFFER), "nothing was queued");
+        assert!(!state.waiting_for_responses(), "nothing in flight");
+        let stats = outbound.stats(id).unwrap();
+        assert_eq!((stats.sent, stats.rejected), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_publish_over_the_brokers_maximum_packet_size_is_skipped_and_counted() {
+        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+        let mut state = connected();
+        let (_db, mut outbound, id) = staged(payload_for(200)).await;
+        publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, Some(199))
+            .await
+            .unwrap();
+        assert!(ring.has_room(DEFAULT_WRITE_BUFFER), "nothing was queued");
+        assert_eq!(outbound.stats(id).unwrap().rejected, 1);
+
+        // At the limit it goes out.
+        let (_db, mut outbound, id) = staged(payload_for(200)).await;
+        publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, Some(200))
+            .await
+            .unwrap();
+        assert_eq!(outbound.stats(id).unwrap().rejected, 0);
+        assert!(state.waiting_for_responses());
     }
 
     #[test]
-    fn proof_a_1985_byte_publish_vanishes_without_an_error() {
-        let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
+    fn publish_frame_len_matches_what_the_client_state_encodes() {
         let mut state = connected();
-        let n = payload_for(1985);
-        assert!(matches!(
-            run(publish(n), &mut state, &ring),
-            Poll::Ready(Ok(()))
-        ));
-        assert!(ring.has_room(DEFAULT_WRITE_BUFFER), "nothing was queued");
-        assert!(!state.waiting_for_responses(), "nothing in flight");
-        // No counter exists to assert on: the only trace is a defmt warn.
+        for (topic_len, payload_len) in [(1, 0), (1, 100), (30, 1900), (200, 3000)] {
+            let topic = "t".repeat(topic_len);
+            let payload = alloc::vec![0u8; payload_len];
+            let packet = state
+                .publish_packet(&topic, &payload, QualityOfService::Qos1, true)
+                .unwrap();
+            assert_eq!(
+                publish_frame_len(topic_len, payload_len).unwrap(),
+                encoded_len(&packet).unwrap(),
+                "{topic_len}-byte topic, {payload_len}-byte payload"
+            );
+        }
     }
 
     /// A QoS 0 PUBLISH to `t` that is `total` bytes on the wire.

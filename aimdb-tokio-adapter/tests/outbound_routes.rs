@@ -496,3 +496,14 @@ async fn every_route_closes_when_the_database_is_dropped() {
         .expect("closes");
     assert!(end.is_none());
 }
+
+#[tokio::test]
+async fn a_rejected_message_is_counted_beside_sent() {
+    let db = db(vec![spmc(0, 16)]).await;
+    let mut o = OutboundRoutes::new(&db, "test").unwrap();
+    produce(&db, 0, 1);
+    let id = pull(&mut o).await.unwrap().0;
+    o.reject(id);
+    let stats = o.stats(0).unwrap();
+    assert_eq!((stats.sent, stats.rejected), (1, 1));
+}

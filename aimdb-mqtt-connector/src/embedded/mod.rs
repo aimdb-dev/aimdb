@@ -1,9 +1,9 @@
 //! The `mountain-mqtt` backend: broker session plus the data-plane bridges.
 //!
-//! Outbound publishes ride core's [`pump_sink`] — the action channel is
-//! `Sync`, so nothing force-`Send` stands between it and the runner. Inbound
-//! publishes are dispatched into their records by the session loop itself,
-//! through an [`InboundDispatch`](aimdb_core::InboundDispatch).
+//! The session task drives both directions itself: it pulls outbound messages
+//! from an [`OutboundRoutes`](aimdb_core::OutboundRoutes) when it can send,
+//! and dispatches inbound publishes into their records through an
+//! [`InboundDispatch`](aimdb_core::InboundDispatch). Core runs no pump for it.
 //!
 //! See the crate docs for a usage example.
 
@@ -25,8 +25,6 @@ pub mod tls;
 extern crate alloc;
 
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::session::pump_sink;
-use aimdb_core::transport::{ConnectorConfig, PublishError};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -39,17 +37,18 @@ use core::pin::Pin;
 use aimdb_embassy_adapter::connectors::into_box_future;
 
 use mountain_mqtt::client::ConnectionSettings;
-use mountain_mqtt::data::quality_of_service::QualityOfService;
 
 use crate::embedded::manager::Settings;
+use crate::embedded::session_loop::{connect_packet, publish_frame_len, subscribe_len};
+use crate::embedded::write_ring::{encoded_len, fits_ring, CONTROL_RESERVE};
+use crate::publish_opts::PublishOpts;
+
+pub(crate) use crate::embedded::write_ring::DEFAULT_WRITE_BUFFER;
 
 #[cfg(feature = "embedded-tls")]
 pub use crate::embedded::tls::TlsOptions;
 #[cfg(feature = "embedded-tls")]
 use crate::embedded::tls::{host_ip_literal, READ_BUF_MIN, WRITE_BUF_MIN};
-
-/// Maximum number of pending MQTT actions
-pub(crate) const CHANNEL_SIZE: usize = 32;
 
 /// Buffer size for MQTT packets (4KB)
 pub(crate) const BUFFER_SIZE: usize = 4096;
@@ -61,78 +60,6 @@ pub(crate) const MAX_PROPERTIES: usize = 32;
 
 /// The runner's collected future type.
 type EmbassyBoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-/// What a transport's setup hands back: the action channel `pump_sink` rides,
-/// plus the tasks that serve it.
-type ManagerSetup = (Arc<ActionChannel>, Vec<EmbassyBoxFuture>);
-
-/// Outbound publishes and subscriptions: pumps to broker session.
-pub(crate) type ActionChannel =
-    crate::embedded::manager::ActionChannel<AimdbMqttAction, CHANNEL_SIZE>;
-
-/// What the pumps ask the session to put on the wire.
-///
-/// The session encodes each of these itself against the MQTT client state, so
-/// an action is data rather than a call (`session_loop::perform`).
-#[derive(Clone)]
-pub enum AimdbMqttAction {
-    /// Publish a message to a topic
-    Publish {
-        topic: String,
-        payload: Vec<u8>,
-        qos: QualityOfService,
-        retain: bool,
-    },
-    /// Subscribe to a topic
-    Subscribe {
-        topic: String,
-        qos: QualityOfService,
-    },
-}
-
-// ===========================================================================
-// Data-plane bridge — `pump_sink` drives it directly. The action channel is
-// `Sync` (its mutex is `CriticalSectionRawMutex`), so no force-`Send` wrapper
-// stands between it and the runner.
-// ===========================================================================
-
-/// Turns a `pump_sink` publish into an `AimdbMqttAction::Publish` on the
-/// session's action channel.
-struct MqttSink {
-    actions: Arc<ActionChannel>,
-}
-
-impl aimdb_core::transport::Connector for MqttSink {
-    fn publish(
-        &self,
-        destination: &str,
-        config: &ConnectorConfig,
-        payload: &[u8],
-    ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
-        // `qos`/`retain` arrive via the URL query (passed through in
-        // `protocol_options`); default to QoS 1 (legacy behaviour), no retain.
-        let qos = match opt_u8(config, "qos").map(map_qos) {
-            Some(Ok(qos)) => qos,
-            Some(Err(e)) => return Box::pin(async move { Err(e) }),
-            None => QualityOfService::Qos1,
-        };
-        let retain = opt_bool(config, "retain").unwrap_or(false);
-        let topic = destination.to_string();
-        let payload = payload.to_vec();
-
-        Box::pin(async move {
-            self.actions
-                .send(AimdbMqttAction::Publish {
-                    topic,
-                    payload,
-                    qos,
-                    retain,
-                })
-                .await;
-            Ok(())
-        })
-    }
-}
 
 /// Force-`Send + Sync` slot for the TLS materials: [`TlsOptions`] holds
 /// `&'static mut` exclusive resources, so it is neither `Sync` nor takeable
@@ -148,6 +75,7 @@ pub(crate) fn build_plain<'a, D>(
     credentials: Option<&'a (String, String)>,
     keep_alive_secs: u16,
     dialer: &'a D,
+    write_buffer: usize,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
 where
     D: aimdb_core::session::StreamDialer
@@ -160,24 +88,28 @@ where
     Box::pin(async move {
         let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
         let topics = inbound_topics(&inbound);
-        warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
             return Err(build_err("mqtts:// broker URLs require .tls(...)"));
         }
         let connection_settings =
             static_connection_settings(client_id, credentials, broker.credentials.as_ref());
+        let settings = Settings::from_keep_alive_secs(keep_alive_secs);
+        let (outbound, opts) =
+            prepare_outbound(db, write_buffer, &settings, &connection_settings, &topics)?;
 
-        let (actions, manager_tasks) = setup_manager(
+        setup_manager(
             &broker,
             connection_settings,
             dialer.clone(),
             topics,
             inbound,
-            Settings::from_keep_alive_secs(keep_alive_secs),
+            outbound,
+            opts,
+            write_buffer,
+            settings,
             db.runtime_ops(),
-        )?;
-        Ok(collect_pumps(db, actions, manager_tasks))
+        )
     })
 }
 
@@ -202,7 +134,6 @@ where
     Box::pin(async move {
         let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
         let topics = inbound_topics(&inbound);
-        warn_unsupported_qos(db);
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
             return Err(build_err(".tls(...) requires an mqtts:// broker URL"));
@@ -213,18 +144,28 @@ where
             .ok_or_else(|| build_err("TLS materials already taken; build() ran twice"))?;
         let connection_settings =
             static_connection_settings(client_id, credentials, broker.credentials.as_ref());
+        let settings = Settings::from_keep_alive_secs(keep_alive_secs);
+        let (outbound, opts) = prepare_outbound(
+            db,
+            backend.write_buffer,
+            &settings,
+            &connection_settings,
+            &topics,
+        )?;
 
-        let (actions, manager_tasks) = setup_tls_manager(
+        setup_tls_manager(
             &broker,
             options,
             connection_settings,
             backend.dialer.clone(),
             topics,
             inbound,
-            Settings::from_keep_alive_secs(keep_alive_secs),
+            outbound,
+            opts,
+            backend.write_buffer,
+            settings,
             db.runtime_ops(),
-        )?;
-        Ok(collect_pumps(db, actions, manager_tasks))
+        )
     })
 }
 
@@ -242,16 +183,76 @@ fn inbound_topics(inbound: &aimdb_core::InboundDispatch) -> Vec<String> {
     topics
 }
 
-/// Outbound publishes ride core's `pump_sink`; the session tasks, which also
-/// dispatch inbound publishes, join them.
-fn collect_pumps(
+/// Build the outbound routes and parse each route's options, and check that
+/// every packet the session must be able to send fits the write ring: the
+/// largest PUBLISH of every route, the CONNECT and each SUBSCRIBE. One that
+/// does not would fail every session, and the connector would reconnect
+/// forever. Warns once per route asking for `qos=2`, which this client sends
+/// at QoS 1.
+fn prepare_outbound(
     db: &aimdb_core::builder::AimDb,
-    actions: Arc<ActionChannel>,
-    manager_tasks: Vec<EmbassyBoxFuture>,
-) -> Vec<EmbassyBoxFuture> {
-    let mut futures = pump_sink(db, "mqtt", Arc::new(MqttSink { actions }));
-    futures.extend(manager_tasks);
-    futures
+    write_buffer: usize,
+    settings: &Settings,
+    connection_settings: &ConnectionSettings<'static>,
+    topics: &[String],
+) -> Result<(aimdb_core::OutboundRoutes, Vec<PublishOpts>), aimdb_core::DbError> {
+    let outbound = aimdb_core::OutboundRoutes::new(db, "mqtt")?;
+    let size = |len: Result<usize, crate::embedded::manager::Error>| {
+        len.map_err(|_| build_err("a packet could not be sized"))
+    };
+    let mut problems: Vec<String> = Vec::new();
+    let mut opts = Vec::with_capacity(outbound.routes().len());
+
+    for route in outbound.routes() {
+        match PublishOpts::parse(route) {
+            Ok(opt) => {
+                if opt.qos == 2 {
+                    aimdb_core::log_warn!(
+                        "MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
+                        route.default_topic
+                    );
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!(
+                        "MQTT: route '{}' asks qos=2; publishing at QoS 1 (at-least-once)",
+                        &*route.default_topic
+                    );
+                }
+                opts.push(opt);
+            }
+            Err(e) => problems.push(e),
+        }
+        let topic_len = route.default_topic.len().max(route.topic_capacity);
+        let frame = size(publish_frame_len(topic_len, route.payload_capacity))?;
+        if !fits_ring(write_buffer, frame, CONTROL_RESERVE) {
+            problems.push(format!(
+                "route '{}': its largest PUBLISH is {frame} bytes, which needs a write buffer of at least {} bytes; it is {write_buffer}",
+                route.default_topic,
+                2 * (frame + CONTROL_RESERVE)
+            ));
+        }
+    }
+
+    let connect = size(encoded_len(&connect_packet(settings, connection_settings)))?;
+    if !fits_ring(write_buffer, connect, 0) {
+        problems.push(format!(
+            "the CONNECT (client id and credentials) is {connect} bytes, which needs a write buffer of at least {} bytes; it is {write_buffer}",
+            2 * connect
+        ));
+    }
+    for topic in topics {
+        let subscribe = size(subscribe_len(topic))?;
+        if !fits_ring(write_buffer, subscribe, 0) {
+            problems.push(format!(
+                "the SUBSCRIBE to '{topic}' is {subscribe} bytes, which needs a write buffer of at least {} bytes; it is {write_buffer}",
+                2 * subscribe
+            ));
+        }
+    }
+
+    if !problems.is_empty() {
+        return Err(build_err(&problems.join("; ")));
+    }
+    Ok((outbound, opts))
 }
 
 /// Parsed broker endpoint: transport + authority.
@@ -335,18 +336,21 @@ fn static_connection_settings(
     }
 }
 
-/// Set up the plain-TCP broker session loop, returning the action channel
-/// (outbound), the event channel (inbound), and the task future. Synchronous —
-/// no `.await` — so the caller's `build` future stays `Send`.
+/// Set up the plain-TCP broker session task, which drives both directions.
+/// Synchronous — no `.await` — so the caller's `build` future stays `Send`.
+#[allow(clippy::too_many_arguments)]
 fn setup_manager<D>(
     broker: &BrokerUrl,
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
     topics: Vec<String>,
     inbound: aimdb_core::InboundDispatch,
+    outbound: aimdb_core::OutboundRoutes,
+    opts: Vec<PublishOpts>,
+    write_buffer: usize,
     settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
-) -> Result<ManagerSetup, aimdb_core::DbError>
+) -> aimdb_core::DbResult<Vec<EmbassyBoxFuture>>
 where
     D: aimdb_core::session::StreamDialer
         + aimdb_core::session::Delay
@@ -355,18 +359,16 @@ where
         + Sync
         + 'static,
 {
-    let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
-
     // The dialer is both the transport and the clock the session runs on.
     let host = broker.host.clone();
     let port = broker.port;
 
     // SAFETY: every value the session holds is `Send` — `StreamDialer`
-    // guarantees `Stream: Send`, the channels are `CriticalSectionRawMutex`
-    // and the state cell is a blocking mutex. See `SendSession`.
+    // guarantees `Stream: Send`, `InboundDispatch` and `OutboundRoutes` are
+    // `Send`, and the session's channel is `CriticalSectionRawMutex`. See
+    // `SendSession`.
     let manager_task: EmbassyBoxFuture = Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
-            let actions = actions.clone();
             async move {
                 #[cfg(feature = "defmt")]
                 defmt::info!("MQTT background task starting");
@@ -379,7 +381,9 @@ where
                     connection_settings,
                     settings,
                     inbound,
-                    actions,
+                    outbound,
+                    opts,
+                    write_buffer,
                     runtime,
                 )
                 .await
@@ -387,7 +391,7 @@ where
         })
     });
 
-    Ok((actions, alloc::vec![manager_task]))
+    Ok(alloc::vec![manager_task])
 }
 
 /// Set up the TLS broker manager ([`run_tls`]) plus the SNTP time-source task.
@@ -401,9 +405,12 @@ fn setup_tls_manager<D>(
     dialer: D,
     topics: Vec<String>,
     inbound: aimdb_core::InboundDispatch,
+    outbound: aimdb_core::OutboundRoutes,
+    opts: Vec<PublishOpts>,
+    write_buffer: usize,
     settings: Settings,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
-) -> Result<ManagerSetup, aimdb_core::DbError>
+) -> aimdb_core::DbResult<Vec<EmbassyBoxFuture>>
 where
     D: aimdb_core::session::StreamDialer
         + aimdb_core::session::Delay
@@ -439,8 +446,6 @@ where
         ));
     }
 
-    let actions: Arc<ActionChannel> = Arc::new(ActionChannel::new());
-
     let host = broker.host.clone();
     let port = broker.port;
     #[cfg(feature = "embassy-tls")]
@@ -448,12 +453,11 @@ where
 
     let delay = dialer.clone();
     // SAFETY: as for the plain path — `StreamDialer` guarantees `Stream: Send`,
-    // the channels are `CriticalSectionRawMutex`, and `TlsOptions` is `Send`
-    // (its RNG carries the bound). See `session::SendSession`.
+    // `InboundDispatch` and `OutboundRoutes` are `Send`, and `TlsOptions` is
+    // `Send` (its RNG carries the bound). See `session::SendSession`.
     #[cfg_attr(not(feature = "embassy-tls"), allow(unused_mut))]
     let mut tasks: Vec<EmbassyBoxFuture> = alloc::vec![Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
-            let actions = actions.clone();
             async move {
                 #[cfg(feature = "defmt")]
                 defmt::info!("MQTT-TLS background task starting");
@@ -469,7 +473,9 @@ where
                         connection_settings,
                         settings,
                         inbound,
-                        actions,
+                        outbound,
+                        opts,
+                        write_buffer,
                         delay,
                         runtime,
                     )
@@ -490,86 +496,5 @@ where
         }));
     }
 
-    Ok((actions, tasks))
-}
-
-/// Map a QoS level to mountain-mqtt's `QualityOfService`.
-///
-/// `2` downgrades to 1 — this client implements no exactly-once handshake,
-/// where [`Native`](crate::connector::Native) honours the same route URL
-/// exactly. [`warn_unsupported_qos`] is what says so, once per route at build.
-/// Anything above 2 is rejected, as `Native` rejects it.
-fn map_qos(qos: u8) -> Result<QualityOfService, PublishError> {
-    match qos {
-        0 => Ok(QualityOfService::Qos0),
-        1 => Ok(QualityOfService::Qos1),
-        2 => Ok(QualityOfService::Qos1),
-        _ => Err(PublishError::UnsupportedQoS),
-    }
-}
-
-/// Name, at build, every outbound route asking for a QoS this backend cannot
-/// give.
-///
-/// Checked here rather than in [`map_qos`] because `map_qos` runs per publish:
-/// warning there would repeat at the route's own rate for the life of the
-/// process, and latching it to fire once would hide the message whenever the
-/// first publish beats the logger into place. The route set is fixed at build,
-/// so once per offending route — naming the route, while the caller is still
-/// reading startup output — is both quieter and more use than either.
-///
-/// Both facades fire: they are independent, and neither covers the other.
-/// `log_warn!` reaches `tracing`/`log` when this backend runs on a host,
-/// `defmt` reaches an MCU.
-fn warn_unsupported_qos(db: &aimdb_core::builder::AimDb) {
-    for route in db.collect_outbound_routes("mqtt") {
-        let asked = route
-            .config
-            .iter()
-            .find(|(k, _)| k == "qos")
-            .and_then(|(_, v)| v.parse::<u8>().ok());
-
-        if asked == Some(2) {
-            aimdb_core::log_warn!(
-                "MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
-                route.topic
-            );
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "MQTT: route '{}' asks qos=2; publishing at QoS 1 (at-least-once)",
-                route.topic.as_str()
-            );
-        }
-    }
-}
-
-/// Read a `u8` option from the per-route `protocol_options` (URL query).
-fn opt_u8(config: &ConnectorConfig, key: &str) -> Option<u8> {
-    config
-        .protocol_options
-        .iter()
-        .find(|(k, _)| k == key)
-        .and_then(|(_, v)| v.parse::<u8>().ok())
-}
-
-/// Read a `bool` option from the per-route `protocol_options` (URL query).
-fn opt_bool(config: &ConnectorConfig, key: &str) -> Option<bool> {
-    config
-        .protocol_options
-        .iter()
-        .find(|(k, _)| k == key)
-        .and_then(|(_, v)| v.parse::<bool>().ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_qos_mapping() {
-        assert!(matches!(map_qos(0), Ok(QualityOfService::Qos0)));
-        assert!(matches!(map_qos(1), Ok(QualityOfService::Qos1)));
-        assert!(matches!(map_qos(2), Ok(QualityOfService::Qos1))); // Downgrades to QoS 1
-        assert!(matches!(map_qos(99), Err(PublishError::UnsupportedQoS))); // Not a QoS level
-    }
+    Ok(tasks)
 }
