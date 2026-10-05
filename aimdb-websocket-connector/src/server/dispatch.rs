@@ -26,7 +26,7 @@ use serde_json::Value;
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions, RecordsBits},
     client_manager::ClientManager,
-    session::{QueryHandler, Router, SnapshotProvider},
+    session::{QueryHandler, SnapshotProvider},
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
@@ -37,13 +37,12 @@ pub struct WsDispatch {
     pub(crate) client_mgr: ClientManager,
     pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
     pub(crate) query_handler: Option<Arc<dyn QueryHandler>>,
-    pub(crate) router: Arc<Router>,
+    pub(crate) inbound: aimdb_core::InboundDispatch,
     /// Record `type_id` string → data-contract schema name, used to stamp
     /// `schema_type` onto the `record.list` rows core hands back.
     pub(crate) schema_by_type: Arc<HashMap<String, String>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
-    pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
 }
 
 impl Dispatch for WsDispatch {
@@ -77,11 +76,10 @@ impl Dispatch for WsDispatch {
             client_mgr: self.client_mgr.clone(),
             snapshot_provider: self.snapshot_provider.clone(),
             query_handler: self.query_handler.clone(),
-            router: self.router.clone(),
+            inbound: self.inbound.clone(),
             schema_by_type: self.schema_by_type.clone(),
             auth: self.auth.clone(),
             late_join: self.late_join,
-            runtime_ctx: self.runtime_ctx.clone(),
             info,
         })
     }
@@ -93,11 +91,10 @@ struct WsSession {
     client_mgr: ClientManager,
     snapshot_provider: Arc<dyn SnapshotProvider>,
     query_handler: Option<Arc<dyn QueryHandler>>,
-    router: Arc<Router>,
+    inbound: aimdb_core::InboundDispatch,
     schema_by_type: Arc<HashMap<String, String>>,
     auth: Arc<dyn AuthHandler>,
     late_join: bool,
-    runtime_ctx: aimdb_core::RuntimeContext,
     info: Arc<ClientInfo>,
 }
 
@@ -187,9 +184,8 @@ impl Session for WsSession {
             if !self.auth.authorize_write(&self.info, topic).await {
                 return Err(RpcError::Denied);
             }
-            self.router
-                .route(topic, &payload, &self.runtime_ctx)
-                .map_err(|_| RpcError::Internal)
+            self.inbound.dispatch(topic, &payload);
+            Ok(())
         })
     }
 }
