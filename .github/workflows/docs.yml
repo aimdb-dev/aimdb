@@ -2,9 +2,9 @@ name: Documentation
 
 on:
   push:
-    branches: [ main, feat/054-connector-boundary ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, feat/054-connector-boundary ]
+    branches: [ main ]
 
 permissions:
   contents: read
