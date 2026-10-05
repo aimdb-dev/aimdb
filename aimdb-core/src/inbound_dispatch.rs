@@ -31,6 +31,15 @@ impl InboundDispatch {
         })
     }
 
+    /// A dispatcher over an already compiled `router`, for the session tests.
+    #[cfg(all(test, feature = "connector-session"))]
+    pub(crate) fn from_parts(router: Router, ctx: RuntimeContext) -> Self {
+        Self {
+            router: Arc::new(router),
+            ctx,
+        }
+    }
+
     /// Matches `topic`, deserializes `payload` and produces into every
     /// matching record.
     ///

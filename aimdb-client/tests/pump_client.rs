@@ -133,3 +133,76 @@ async fn pump_client_mirrors_record_both_directions() {
     .await;
     assert!(mirrored_in, "server→client mirror did not reach the client");
 }
+
+/// Three outbound routes mirror through one task: all three reach the server,
+/// and the client connector contributes one outbound future beside its engine.
+#[tokio::test]
+async fn three_outbound_routes_mirror_from_one_task() {
+    use aimdb_core::connector::ConnectorBuilder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+    const KEYS: [&str; 3] = ["a", "b", "c"];
+
+    let mut policy = SecurityPolicy::read_write();
+    for key in KEYS {
+        policy.allow_write_key(key);
+    }
+    let config = AimxConfig::uds_default()
+        .socket_path(sock.to_str().unwrap())
+        .security_policy(policy);
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    for key in KEYS {
+        sb.configure::<Msg>(key, |reg| {
+            reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+        });
+    }
+    let (server_db, server_runner) = sb.build().await.expect("build server db");
+    let server_db = Arc::new(server_db);
+    tokio::spawn(server_runner.run());
+
+    let client = || {
+        UdsClient::new(&sock).with_config(ClientConfig {
+            reconnect: true,
+            reconnect_delay: 50,
+            max_reconnect_delay: 50,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: 1024,
+            sends_hello: false,
+        })
+    };
+    let mut cb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(client());
+    for key in KEYS {
+        cb.configure::<Msg>(key, move |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .with_remote_access()
+                .link_to(&format!("uds://{key}"))
+                .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
+                .finish();
+        });
+    }
+    let (client_db, client_runner) = cb.build().await.expect("build client db");
+    let client_db = Arc::new(client_db);
+
+    // Built, never polled: the engine dials only when driven.
+    let futures = client().build(&client_db).await.expect("build connector");
+    assert_eq!(futures.len(), 2, "one outbound future and the engine");
+    drop(futures);
+
+    tokio::spawn(client_runner.run());
+    for (i, key) in KEYS.iter().enumerate() {
+        let want = json!({ "v": i });
+        let mirrored = mirror_reaches(&server_db, key, &want, || {
+            client_db
+                .set_record_from_json(key, json!({ "v": i }))
+                .expect("set client record");
+        })
+        .await;
+        assert!(mirrored, "client→server mirror of '{key}' did not arrive");
+    }
+}
