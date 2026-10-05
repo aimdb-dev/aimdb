@@ -403,11 +403,10 @@ async fn every_qos1_push_is_acknowledged() {
 // The build-time QoS warning can actually see what it warns about.
 // ---------------------------------------------------------------------------
 
-/// `warn_unsupported_qos` scans `collect_outbound_routes("mqtt")` for a `qos`
-/// entry in each route's query config. That scan is the part that can silently
-/// find nothing — a scheme filter that does not match, or a config key that
-/// never lands — leaving a warning that compiles and never fires. This asserts
-/// the shape it depends on, mirroring the private function exactly.
+/// `build()` warns once per route whose `RouteInfo` carries `qos=2`. That
+/// lookup is the part that can silently find nothing — a scheme that does not
+/// match, or a config key that never lands — leaving a warning that compiles
+/// and never fires. This asserts the shape it depends on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_qos2_route_is_visible_to_the_build_time_scan() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -416,20 +415,17 @@ async fn a_qos2_route_is_visible_to_the_build_time_scan() {
     let dialer = CountingDialer::new();
     let (db, _runner) = build_db(port, dialer, Some((Duration::from_secs(60), 2))).await;
 
-    let routes = db.collect_outbound_routes("mqtt");
-    assert!(
-        !routes.is_empty(),
-        "the mqtt scheme must match, or the scan sees no routes at all"
-    );
-
+    let routes = aimdb_core::OutboundRoutes::new(&db, "mqtt").expect("routes");
     let flagged: Vec<(&str, &str)> = routes
+        .routes()
         .iter()
         .filter_map(|route| {
             route
                 .config
+                .protocol_options
                 .iter()
                 .find(|(k, _)| k == "qos")
-                .map(|(_, v)| (route.topic.as_str(), v.as_str()))
+                .map(|(_, v)| (&*route.default_topic, v.as_str()))
         })
         .collect();
 
@@ -438,4 +434,81 @@ async fn a_qos2_route_is_visible_to_the_build_time_scan() {
         vec![("sensors/uptime", "2")],
         "the scan must see the route's topic and its qos option; got {flagged:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Outbound values wait in their record buffers, not in a connector queue.
+// ---------------------------------------------------------------------------
+
+/// While the broker holds a PUBACK, the session cannot publish, and values
+/// produced meanwhile stay in their record buffer. A single-latest record
+/// keeps only the newest, so the publish after the stall carries `9`, not the
+/// nine values a connector queue would have held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_stall_a_single_latest_record_sends_only_its_newest_value() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    const ACK_DELAY: Duration = Duration::from_millis(1500);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log = Arc::new(Mutex::new(Log::default()));
+
+    let connector = MqttConnector::new(format!("mqtt://127.0.0.1:{port}"))
+        .transport(CountingDialer::new())
+        .with_client_id("outage")
+        .with_keep_alive(TEST_KEEP_ALIVE);
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    builder.configure::<u64>("uptime", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_to("mqtt://sensors/uptime")
+            .with_qos(1)
+            .with_serializer(|_ctx, value: &u64| Ok(value.to_string().into_bytes()))
+            .finish();
+    });
+    let (db, runner) = builder.build().await.expect("build db");
+    let producer = db.producer::<u64>("uptime").expect("producer");
+
+    let published = |log: &Mutex<Log>| -> Vec<String> {
+        log.lock()
+            .unwrap()
+            .publishes
+            .iter()
+            .map(|(_, p)| String::from_utf8_lossy(p).into_owned())
+            .collect()
+    };
+    let drive = async {
+        producer.produce(0);
+        while published(&log).is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // The PUBACK for `0` is held: produce the rest during the stall,
+        // spaced so that anything reading the buffer meanwhile sees each one.
+        for n in 1..=9 {
+            producer.produce(n);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        while published(&log).len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Nothing else may follow.
+        tokio::time::sleep(ACK_DELAY + Duration::from_millis(500)).await;
+    };
+
+    tokio::select! {
+        _ = runner.run() => panic!("the session loop returned"),
+        _ = serve_one(listener, log.clone(), Script::SlowPuback { delay: ACK_DELAY }) => {
+            panic!("the broker returned")
+        }
+        _ = drive => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: published {:?}", published(&log))
+        }
+    }
+
+    assert_eq!(published(&log), ["0", "9"]);
 }

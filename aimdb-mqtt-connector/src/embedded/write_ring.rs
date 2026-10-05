@@ -58,7 +58,7 @@ impl WriteRing {
     /// bytes, about half its capacity in the worst case. A larger grant could
     /// wait forever, even with nothing queued.
     pub(crate) fn fits(&self, len: usize, reserve: usize) -> bool {
-        len + reserve <= self.queue.capacity() / 2
+        fits_ring(self.queue.capacity(), len, reserve)
     }
 
     /// Whether a contiguous grant of `n` bytes exists right now.
@@ -187,6 +187,12 @@ impl WriteRing {
             self.room.wake();
         }
     }
+}
+
+/// Whether a `len`-byte frame plus `reserve` always fits eventually in a
+/// `capacity`-byte ring; see [`WriteRing::fits`].
+pub(crate) fn fits_ring(capacity: usize, len: usize, reserve: usize) -> bool {
+    len + reserve <= capacity / 2
 }
 
 /// Bytes `packet` encodes to.

@@ -72,8 +72,12 @@ impl OutboundPayload<'_> {
 /// Values taken from one route's buffer, by outcome.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RouteStats {
-    /// Staged for the connector.
+    /// Staged and handed to the connector, including any it then rejected.
     pub sent: u64,
+    /// Handed to the connector, which could not send them (for example,
+    /// larger than its transport accepts). Reported with
+    /// [`OutboundRoutes::reject`].
+    pub rejected: u64,
     /// Missed because the reader fell behind.
     pub lagged: u64,
     /// Skipped: the written topic did not fit.
@@ -358,6 +362,15 @@ impl OutboundRoutes {
         })
     }
 
+    /// Count a message from route `id` that the connector took but could not
+    /// send. The connector logs why; this keeps the count beside the route's
+    /// other outcomes.
+    pub fn reject(&mut self, id: RouteId) {
+        if let Some(stats) = self.stats.get_mut(id) {
+            stats.rejected += 1;
+        }
+    }
+
     /// [`poll_stage`](Self::poll_stage), then [`take_staged`](Self::take_staged),
     /// for hand-written `poll` code.
     pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<OutboundMessage<'_>>> {
@@ -393,5 +406,18 @@ mod tests {
         assert_eq!(payload.as_slice(), [4, 5]);
         let moved = payload.into_vec();
         assert_eq!(moved.as_ptr(), ptr, "moved, not copied");
+    }
+
+    #[tokio::test]
+    async fn reject_counts_beside_the_routes_other_outcomes() {
+        let (db, _runner) = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps))
+            .build()
+            .await
+            .expect("empty database");
+        let mut routes = OutboundRoutes::new(&db, "mqtt").unwrap();
+        // No routes: an unknown id is ignored rather than a panic.
+        routes.reject(0);
+        assert_eq!(routes.stats(0), None);
     }
 }
