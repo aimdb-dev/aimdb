@@ -4,21 +4,22 @@
 //! The clock stays `RuntimeOps::now_nanos`, a plain call; only *sleeping* goes
 //! through [`Delay`], so nothing is boxed per loop iteration.
 //!
-//! The `embassy-sync` and `embassy-futures` types below are executor-independent
-//! — neither pulls an executor, and both build on std — so they back this task
-//! on either runtime.
+//! The task dispatches inbound telegrams into their records through an
+//! [`InboundDispatch`](aimdb_core::InboundDispatch) and pulls outbound values
+//! from an [`OutboundRoutes`] while the tunnel is connected. `embassy-futures`'
+//! select is executor-independent, so the task runs on either runtime.
 
-use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::Future;
+use core::fmt::Write as _;
+use core::future::poll_fn;
 use core::net::SocketAddr;
+use core::task::Poll;
 use core::time::Duration;
 
-use aimdb_core::session::{
-    Datagram, DatagramBinder, Delay, Payload, TransportError, TransportResult,
-};
-use aimdb_core::{log_debug, log_error, log_warn, RuntimeOps};
+use aimdb_core::connector::TopicBuf;
+use aimdb_core::session::{Datagram, DatagramBinder, Delay, TransportError, TransportResult};
+use aimdb_core::{log_debug, log_error, log_warn, OutboundRoutes, RouteId, RuntimeOps};
 
 use crate::tunnel::{
     drain_actions, GroupWrite, LocalEndpoint, Millis, TunnelConfig, TunnelEngine, TunnelIo,
@@ -30,21 +31,23 @@ const BIND_RETRY: Duration = Duration::from_secs(5);
 /// Per-datagram receive buffer; a KNXnet/IP frame fits comfortably.
 const RECV_BUF: usize = 512;
 
-/// Where parsed telegrams go — an `embassy_sync` channel on either runtime.
+/// Where parsed telegrams go: an [`InboundDispatch`](aimdb_core::InboundDispatch)
+/// in the connector.
 ///
-/// Non-blocking by contract: a full sink drops rather than stalling the
-/// protocol loop.
+/// Non-blocking by contract: delivery never stalls the protocol loop.
 pub trait TelegramSink {
-    /// Enqueue one `(group-address, payload)`. `false` if it was dropped.
-    fn try_send(&self, topic: String, payload: Payload) -> bool;
+    /// Deliver one telegram for group address `topic`.
+    fn deliver(&self, topic: &str, payload: &[u8]);
 }
 
-/// Where outbound commands come from, the dual of [`TelegramSink`].
-pub trait CommandSource {
-    /// Yield the next command. Parks forever once no producer remains, so the
-    /// select arm goes quiet instead of ending the task.
-    fn recv(&mut self) -> impl Future<Output = GroupWrite> + Send + '_;
+impl TelegramSink for aimdb_core::InboundDispatch {
+    fn deliver(&self, topic: &str, payload: &[u8]) {
+        self.dispatch(topic, payload);
+    }
 }
+
+/// The longest group address, `31/7/255`, is 8 bytes.
+const GROUP_ADDRESS_LEN: usize = 16;
 
 /// The socket-side glue for [`drain_actions`], written once against
 /// [`Datagram`] instead of once per runtime.
@@ -77,8 +80,10 @@ where
 
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>) {
         log_debug!("KNX telegram: {} ({} bytes)", addr, payload.len());
-        if !self.sink.try_send(addr.to_string(), Payload::from(payload)) {
-            log_warn!("KNX inbound: dropping telegram for {} (sink full)", addr);
+        let mut storage = [0u8; GROUP_ADDRESS_LEN];
+        let mut topic = TopicBuf::new(&mut storage);
+        if write!(topic, "{addr}").is_ok() {
+            self.sink.deliver(topic.as_str(), &payload);
         }
     }
 
@@ -87,20 +92,44 @@ where
     }
 }
 
+/// Hand the value `outbound` staged for route `id` to the engine as a group
+/// write. An invalid group address or an oversize payload is logged, counted
+/// as rejected in the route's `RouteStats`, and skipped.
+fn send_staged(engine: &mut TunnelEngine, outbound: &mut OutboundRoutes, id: RouteId, now: Millis) {
+    let command = {
+        let Some(msg) = outbound.take_staged() else {
+            return;
+        };
+        GroupWrite::try_new(msg.topic, msg.payload.as_slice())
+    };
+    match command {
+        Ok(command) => {
+            let _ = engine.handle_command(command, now);
+        }
+        Err(_e) => {
+            log_warn!(
+                "KNX outbound: skipping a value for route '{}': {:?}",
+                outbound.routes()[id].default_topic,
+                _e
+            );
+            outbound.reject(id);
+        }
+    }
+}
+
 /// Drive the engine over one socket's lifetime; returns when it asks for a reset.
-async fn drive_connection<U, D, S, C>(
+async fn drive_connection<U, D, S>(
     engine: &mut TunnelEngine,
     socket: &mut U,
     gateway: SocketAddr,
     runtime: &Arc<dyn RuntimeOps>,
     delay: &D,
     sink: &S,
-    commands: &mut C,
+    outbound: &mut OutboundRoutes,
 ) where
     U: Datagram + Send,
     D: Delay,
     S: TelegramSink + Sync,
-    C: CommandSource,
 {
     // Executor-independent despite the name: `embassy-futures` has no
     // dependencies and its select is pure `core::task`.
@@ -129,9 +158,12 @@ async fn drive_connection<U, D, S, C>(
     // one — unlike the `tokio::select!` this task replaces, which picked among
     // the ready arms at random. With a fixed order, sustained inbound traffic
     // means the first arm is ready on every pass and the command arm is never
-    // reached, so outbound `GroupWrite`s stall until the channel drops them.
+    // reached, so outbound values stall in their record buffers.
     // Swapping the two contended arms each pass restores that fairness.
     let mut inbound_first = true;
+    // Latched on `Ready(None)` (every route closed, or none): passing it
+    // through would resolve the arm on every pass and the loop would spin.
+    let mut outbound_done = false;
 
     loop {
         engine.poll(now_ms());
@@ -151,34 +183,37 @@ async fn drive_connection<U, D, S, C>(
         let deadline = delay.sleep(Duration::from_millis(sleep_ms));
         let mut recv_buf = [0u8; RECV_BUF];
 
-        // Only drain commands while connected: during connect and backoff the
-        // arm stays pending, so commands queue and flush once the handshake
-        // completes — as both hand-written clients do.
+        // Only pull values while connected: during connect and backoff the
+        // arm stays pending, so values wait in their record buffers and go out
+        // once the handshake completes. A value leaves its buffer only when
+        // the arm resolves, so a losing arm takes nothing.
         let connected = engine.is_connected();
-        let cmd_arm = async {
-            if connected {
-                commands.recv().await
-            } else {
-                core::future::pending().await
+        let cmd_arm = poll_fn(|cx| {
+            if !connected || outbound_done {
+                return Poll::Pending;
             }
-        };
+            match outbound.poll_stage(cx) {
+                Poll::Ready(Some(id)) => Poll::Ready(id),
+                Poll::Ready(None) => {
+                    outbound_done = true;
+                    Poll::Pending
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        });
 
         // The deadline arm stays last in both orders: it only ever asks for a
         // `poll` the loop top would reach anyway.
         if inbound_first {
             match select3(socket.recv_from(&mut recv_buf), cmd_arm, deadline).await {
                 Either3::First(r) => apply_inbound(engine, &recv_buf, r, now_ms()),
-                Either3::Second(cmd) => {
-                    let _ = engine.handle_command(cmd, now_ms());
-                }
+                Either3::Second(id) => send_staged(engine, outbound, id, now_ms()),
                 // Woken for the engine deadline; `poll` at the loop top fires it.
                 Either3::Third(()) => {}
             }
         } else {
             match select3(cmd_arm, socket.recv_from(&mut recv_buf), deadline).await {
-                Either3::First(cmd) => {
-                    let _ = engine.handle_command(cmd, now_ms());
-                }
+                Either3::First(id) => send_staged(engine, outbound, id, now_ms()),
                 Either3::Second(r) => apply_inbound(engine, &recv_buf, r, now_ms()),
                 Either3::Third(()) => {}
             }
@@ -192,18 +227,17 @@ async fn drive_connection<U, D, S, C>(
 /// Binds a socket, advertises its real local endpoint when the stack exposes
 /// one, drives the shared [`TunnelEngine`] over that socket's lifetime, then
 /// rebinds after the engine's backoff.
-pub async fn connection_task<B, D, S, C>(
+pub async fn connection_task<B, D, S>(
     binder: B,
     gateway: SocketAddr,
     runtime: Arc<dyn RuntimeOps>,
     delay: D,
     sink: S,
-    mut commands: C,
+    mut outbound: OutboundRoutes,
 ) where
     B: DatagramBinder,
     D: Delay,
     S: TelegramSink + Sync,
-    C: CommandSource,
 {
     let now_ms = || runtime.now_nanos() / 1_000_000;
     let mut engine = TunnelEngine::new(TunnelConfig::default(), now_ms());
@@ -267,7 +301,7 @@ pub async fn connection_task<B, D, S, C>(
             &runtime,
             &delay,
             &sink,
-            &mut commands,
+            &mut outbound,
         )
         .await;
 
@@ -280,45 +314,15 @@ pub async fn connection_task<B, D, S, C>(
     }
 }
 
-/// Channel bridges over `embassy_sync`, which is executor-independent, so the
-/// same types back the task on both runtimes.
-#[cfg(feature = "connector")]
-pub mod shared_channel {
-    use super::{CommandSource, GroupWrite, Payload, TelegramSink};
-    use alloc::string::String;
-    use core::future::Future;
-    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-    use embassy_sync::channel::{Receiver, Sender};
-
-    /// Sending half of the inbound-telegram channel.
-    pub struct ChannelSink<'a, const N: usize>(
-        pub Sender<'a, CriticalSectionRawMutex, (String, Payload), N>,
-    );
-
-    impl<const N: usize> TelegramSink for ChannelSink<'_, N> {
-        fn try_send(&self, topic: String, payload: Payload) -> bool {
-            self.0.try_send((topic, payload)).is_ok()
-        }
-    }
-
-    /// Receiving half of the outbound-command channel.
-    pub struct ChannelCommands<'a, const N: usize>(
-        pub Receiver<'a, CriticalSectionRawMutex, GroupWrite, N>,
-    );
-
-    impl<const N: usize> CommandSource for ChannelCommands<'_, N> {
-        fn recv(&mut self) -> impl Future<Output = GroupWrite> + Send + '_ {
-            self.0.receive()
-        }
-    }
-}
-
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+    use aimdb_core::buffer::BufferCfg;
     use aimdb_core::session::TransportError;
+    use aimdb_core::AimDbBuilder;
     use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
-    use aimdb_tokio_adapter::TokioAdapter;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+    use core::future::Future;
     use core::pin::Pin;
     use std::net::Ipv4Addr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -326,22 +330,25 @@ mod tests {
 
     /// Collects forwarded telegrams; `Sync`, as [`TelegramSink`] requires.
     #[derive(Default)]
-    struct VecSink(Mutex<Vec<(String, Payload)>>);
+    struct VecSink(Mutex<Vec<(String, Vec<u8>)>>);
 
     impl TelegramSink for VecSink {
-        fn try_send(&self, topic: String, payload: Payload) -> bool {
-            self.0.lock().expect("sink mutex").push((topic, payload));
-            true
+        fn deliver(&self, topic: &str, payload: &[u8]) {
+            self.0
+                .lock()
+                .expect("sink mutex")
+                .push((topic.into(), payload.into()));
         }
     }
 
-    /// No outbound producer: the command arm never fires.
-    struct NoCommands;
-
-    impl CommandSource for NoCommands {
-        fn recv(&mut self) -> impl Future<Output = GroupWrite> + Send + '_ {
-            core::future::pending()
-        }
+    /// No outbound routes: the command arm never fires.
+    async fn no_outbound() -> OutboundRoutes {
+        let (db, _runner) = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .build()
+            .await
+            .expect("build db");
+        OutboundRoutes::new(&db, "knx").expect("outbound routes")
     }
 
     fn runtime() -> Arc<dyn RuntimeOps> {
@@ -354,15 +361,15 @@ mod tests {
     /// `Pin<Box<dyn Future<Output = ()> + Send + 'static>>`. Everything that
     /// declares `+ Send` on a return type does so to make this line compile for
     /// a *generic* task.
-    #[test]
-    fn unified_task_is_boxable_as_the_runners_send_future() {
+    #[tokio::test]
+    async fn unified_task_is_boxable_as_the_runners_send_future() {
         let task = connection_task(
             TokioNet::udp(Ipv4Addr::LOCALHOST),
             "127.0.0.1:3671".parse().expect("gateway addr"),
             runtime(),
             TokioDelay,
             VecSink::default(),
-            NoCommands,
+            no_outbound().await,
         );
         let _boxed: Pin<Box<dyn Future<Output = ()> + Send + 'static>> = Box::pin(task);
     }
@@ -384,7 +391,7 @@ mod tests {
             runtime(),
             TokioDelay,
             VecSink::default(),
-            NoCommands,
+            no_outbound().await,
         ));
 
         let mut buf = [0u8; 128];
@@ -430,7 +437,7 @@ mod tests {
             runtime(),
             TokioDelay,
             VecSink::default(),
-            NoCommands,
+            no_outbound().await,
         ));
 
         let mut buf = [0u8; 128];
@@ -451,39 +458,10 @@ mod tests {
         task.abort();
     }
 
-    /// The unified task on Tokio, moving real telegrams through the *same*
-    /// `embassy_sync` channel types the MCU uses: a full handshake, an inbound
-    /// telegram with its ACK, and an outbound command.
-    #[tokio::test]
-    async fn shared_embassy_channels_carry_telegrams_on_tokio() {
-        use super::shared_channel::{ChannelCommands, ChannelSink};
-        use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-        use embassy_sync::channel::Channel;
-
-        const N: usize = 8;
-        // Leaked for `'static` borrows, as a `StaticCell` gives on the MCU.
-        let inbound: &'static Channel<CriticalSectionRawMutex, (String, Payload), N> =
-            Box::leak(Box::new(Channel::new()));
-        let commands: &'static Channel<CriticalSectionRawMutex, GroupWrite, N> =
-            Box::leak(Box::new(Channel::new()));
-
-        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("bind gateway");
-        let gateway_addr = gateway.local_addr().expect("gateway addr");
-
-        let task = tokio::spawn(connection_task(
-            TokioNet::udp(Ipv4Addr::LOCALHOST),
-            gateway_addr,
-            runtime(),
-            TokioDelay,
-            ChannelSink::<N>(inbound.sender()),
-            ChannelCommands::<N>(commands.receiver()),
-        ));
-
-        let mut buf = [0u8; 1024];
-
-        // Handshake.
+    /// Answer the client's CONNECT_REQUEST with channel 7; returns the
+    /// client's address.
+    async fn accept_connect(gateway: &tokio::net::UdpSocket) -> SocketAddr {
+        let mut buf = [0u8; 128];
         let (_, client_addr) = tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
             .await
             .expect("no CONNECT_REQUEST")
@@ -498,8 +476,63 @@ mod tests {
             .send_to(&connect_response, client_addr)
             .await
             .expect("send CONNECT_RESPONSE");
+        client_addr
+    }
 
-        // Inbound telegram -> ACK on the wire, payload on the shared channel.
+    /// Wait for a TUNNELING_REQUEST and check it writes 1 to group 1/0/8.
+    async fn expect_write_to_1_0_8(gateway: &tokio::net::UdpSocket) {
+        let mut buf = [0u8; 128];
+        let (len, _) = tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+            .await
+            .expect("no TUNNELING_REQUEST")
+            .expect("recv_from");
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0420);
+        assert_eq!(&buf[16..18], &[0x08, 0x08], "cEMI destination = 1/0/8");
+        assert_eq!(buf[len - 1], 0x81, "APCI GroupValueWrite | value 1");
+    }
+
+    /// A db whose `knx` connector tunnels to `gateway`: record `in` reads group
+    /// 1/0/7 and record `out` writes group 1/0/8.
+    async fn knx_db(gateway: SocketAddr) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+        let mut builder = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(crate::KnxConnector::new(
+                TokioNet::udp(Ipv4Addr::LOCALHOST),
+                TokioDelay,
+                format!("knx://{gateway}"),
+            ));
+        builder.configure::<u8>("in", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_from("knx://1/0/7")
+                .with_deserializer(|_ctx, data: &[u8]| {
+                    data.first().copied().ok_or_else(|| String::from("empty"))
+                })
+                .finish();
+        });
+        builder.configure::<u8>("out", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_to("knx://1/0/8")
+                .with_serializer(|_ctx, v: &u8| Ok(vec![*v]))
+                .finish();
+        });
+        builder.build().await.expect("build db")
+    }
+
+    /// The connector end to end: a full handshake, an inbound telegram
+    /// dispatched into its record with its ACK, and a produced value on the
+    /// wire as a group write.
+    #[tokio::test]
+    async fn telegrams_round_trip_through_records() {
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let (db, runner) = knx_db(gateway.local_addr().expect("gateway addr")).await;
+        let mut inbound = db.subscribe::<u8>("in").expect("subscribe");
+        let task = tokio::spawn(runner.run());
+
+        let client_addr = accept_connect(&gateway).await;
+
+        // Inbound telegram -> ACK on the wire, value in the record.
         let cemi = [
             0x29, 0x00, 0xBC, 0xE0, 0x00, 0x00, 0x08, 0x07, 0x01, 0x00, 0x81,
         ];
@@ -513,6 +546,7 @@ mod tests {
             .await
             .expect("send telegram");
 
+        let mut buf = [0u8; 128];
         tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
             .await
             .expect("no TUNNELING_ACK")
@@ -520,29 +554,32 @@ mod tests {
         assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0421);
         assert_eq!(buf[8], 42, "sequence echoed");
 
-        let (topic, payload) = tokio::time::timeout(RECV_TIMEOUT, inbound.receive())
+        let value = tokio::time::timeout(RECV_TIMEOUT, inbound.recv())
             .await
-            .expect("no telegram reached the embassy-sync channel");
-        assert_eq!(topic, "1/0/7");
-        assert_eq!(&payload[..], &[0x01]);
+            .expect("no telegram reached the record")
+            .expect("recv");
+        assert_eq!(value, 0x01);
 
-        // Outbound: a command through the shared channel reaches the wire.
-        let mut data = heapless::Vec::new();
-        data.push(0x01).expect("push");
-        commands
-            .send(GroupWrite {
-                group_addr: "1/0/8".parse().expect("group address"),
-                data,
-            })
-            .await;
+        // Outbound: a produced value reaches the wire.
+        db.producer::<u8>("out").expect("producer").produce(1);
+        expect_write_to_1_0_8(&gateway).await;
 
-        let (len, _) = tokio::time::timeout(RECV_TIMEOUT, gateway.recv_from(&mut buf))
+        task.abort();
+    }
+
+    /// A value produced while the tunnel is still connecting waits in its
+    /// record buffer and goes out once the handshake completes.
+    #[tokio::test]
+    async fn a_value_produced_during_connect_is_sent_after_the_handshake() {
+        let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
-            .expect("no TUNNELING_REQUEST")
-            .expect("recv_from");
-        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0420);
-        assert_eq!(&buf[16..18], &[0x08, 0x08], "cEMI destination = 1/0/8");
-        assert_eq!(buf[len - 1], 0x81, "APCI GroupValueWrite | value 1");
+            .expect("bind gateway");
+        let (db, runner) = knx_db(gateway.local_addr().expect("gateway addr")).await;
+        db.producer::<u8>("out").expect("producer").produce(1);
+        let task = tokio::spawn(runner.run());
+
+        accept_connect(&gateway).await;
+        expect_write_to_1_0_8(&gateway).await;
 
         task.abort();
     }
@@ -652,7 +689,7 @@ mod tests {
             runtime(),
             TokioDelay,
             VecSink::default(),
-            NoCommands,
+            no_outbound().await,
         ));
 
         // Must exceed the two `BIND_RETRY` sleeps the task waits out. `RECV_TIMEOUT`
@@ -704,7 +741,7 @@ mod tests {
             runtime(),
             TokioDelay,
             VecSink::default(),
-            NoCommands,
+            no_outbound().await,
         ));
 
         // Cycle 1: the socket knows its address, so the HPAI is explicit.

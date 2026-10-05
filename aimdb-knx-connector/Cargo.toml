@@ -21,12 +21,12 @@ default = ["aimdb-core/alloc"]
 # feature here — which is what lets a third runtime (FreeRTOS/lwIP) use this
 # crate with no edit to it.
 #
-# `embassy-sync` is not an Embassy dependency in the executor sense: it is
-# no_std, no_alloc, and pulls no executor, and its `Channel` is this connector's
-# public queue type (`Channels`) on every runtime.
+# `embassy-sync` no longer backs a public type here (the connection task pulls
+# from the record buffers directly); it is dropped together with the old
+# connector SPI.
 connector = [
     "aimdb-core/alloc",
-    "aimdb-core/connector-session", # `pump_sink`/`pump_source`/`Source`/`Payload`
+    "aimdb-core/connector-session", # `DatagramBinder`/`Datagram`/`Delay`
     "embassy-sync",
 ]
 
@@ -49,10 +49,9 @@ embassy-runtime = ["connector"]
 # the **final binary** may choose one: a library enabling it would hand every
 # downstream binary a duplicate-symbol link error with no way to opt out.
 #
-# So this stays off by default and out of `connector`/`std`. This crate's own
-# tests get the impl through a dev-dependency; a std binary that instantiates a
-# `CriticalSectionRawMutex` channel and has no other impl in its graph can
-# either depend on `critical-section` with `features = ["std"]` directly (the
+# So this stays off by default and out of `connector`/`std`. A std binary that
+# instantiates a `CriticalSectionRawMutex` channel and has no other impl in its
+# graph can either depend on `critical-section` with `features = ["std"]` directly (the
 # documented way) or enable this feature. On Embassy the HAL (cortex-m /
 # embassy-rp / ...) already provides one.
 critical-section-std-impl = ["critical-section/std"]
@@ -92,9 +91,6 @@ heapless = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-# Test binaries are binaries: selecting the impl here lets `CriticalSectionRawMutex`
-# link for this crate's tests without imposing that choice on consumers.
-critical-section = { version = "1.2", features = ["std"] }
 tokio-test = "0.4"
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
