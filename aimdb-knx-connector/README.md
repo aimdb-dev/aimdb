@@ -45,7 +45,7 @@ We're working with upstream to get these changes merged. Once published, the pat
 ## Quick Start (Tokio)
 
 ```rust
-use aimdb_knx_connector::{Channels, KnxConnector};
+use aimdb_knx_connector::KnxConnector;
 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::TokioAdapter;
 use std::net::Ipv4Addr;
@@ -54,11 +54,6 @@ use std::net::Ipv4Addr;
 struct LightState {
     is_on: bool,
 }
-
-// The connector's queues. `'static` because the connection task and the pumps
-// are spawned as `'static` futures; a `StaticCell` supplies this on an MCU.
-// One pair per connector — do not share it between two `KnxConnector`s.
-static CHANNELS: Channels = Channels::new();
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,7 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TokioNet::udp(Ipv4Addr::UNSPECIFIED),
             TokioDelay,
             "knx://192.168.1.19:3671",
-            &CHANNELS,
         ))
         .configure::<LightState>(|reg| {
             reg.buffer(BufferCfg::SingleLatest)
@@ -96,14 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Quick Start (Embassy)
 
-The same constructor — only the binder and clock change, and the channels come
-from a `static` instead of being sized at runtime:
+The same constructor — only the binder and clock change:
 
 ```rust
 use aimdb_embassy_adapter::net::{EmbassyDelay, EmbassyNet};
-use aimdb_knx_connector::{Channels, KnxConnector};
-
-static CHANNELS: Channels<32> = Channels::new();
+use aimdb_knx_connector::KnxConnector;
 
 let binder = EmbassyNet::udp(stack, rx_meta, rx_buf, tx_meta, tx_buf);
 
@@ -113,12 +104,10 @@ let builder = AimDbBuilder::new()
         binder,
         EmbassyDelay,
         "knx://192.168.1.19:3671",
-        &CHANNELS,
     ));
 ```
 
-Enable `features = ["connector"], default-features = false` — no
-`critical-section-std-impl`, since the HAL already provides an impl. See
+Enable `features = ["connector"], default-features = false`. See
 `examples/embassy-knx-connector-demo/` for the full wiring.
 
 ## Group Address Format
