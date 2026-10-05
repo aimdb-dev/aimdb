@@ -6,12 +6,11 @@
 //! ([`aimdb_core::session::aimx`]) and the [`transport`](crate::transport)
 //! substrate, with `dispatch` supplying the subscribe/write/query semantics
 //! and [`client_manager`] the cross-connection fan-out bus. The outbound data
-//! plane rides `connector`'s `WsBusSink` through the core `pump_sink`.
+//! plane is one broadcast loop in `builder` pulling from `OutboundRoutes`.
 
 pub mod auth;
 pub mod builder;
 pub mod client_manager;
-pub(crate) mod connector;
 pub(crate) mod dispatch;
 pub(crate) mod http;
 pub(crate) mod registry;

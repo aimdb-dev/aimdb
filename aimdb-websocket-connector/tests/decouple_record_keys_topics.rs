@@ -1,10 +1,10 @@
-//! `AimDb::collect_outbound_routes` over the `ws` scheme.
+//! `OutboundRoutes` over the `ws` scheme.
 //! Record keys and ws topics are decoupled (#215).
 //! Grants described record keys.
 //!
-//! Connectors call this during `build()` to spawn one publisher task per
-//! configured `link_to("ws://…")`. The returned order must track record
-//! registration order, since record ids index into it.
+//! The server builds it during `build()` and pulls every configured
+//! `link_to("ws://…")` from one broadcast loop. Each route must carry its
+//! record's index, since grants are checked against it.
 //!
 //! Several behaviors tested: per-record gating, late-join snapshots,
 //! `record.list` and `record.query`, zero-grant denial, and topic-based
@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_core::connector::TopicProvider;
+use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
 use aimdb_core::remote::QueryHandlerFn;
 use aimdb_core::{builder::AimDb, remote::QueryHandlerParams};
 use tokio::time::timeout;
@@ -145,7 +145,7 @@ fn free_addr() -> SocketAddr {
 }
 
 #[tokio::test]
-async fn collect_outbound_routes_preserves_record_order() {
+async fn outbound_routes_preserve_record_order() {
     // A dummy address for server building only
     let addr = free_addr();
 
@@ -179,36 +179,51 @@ async fn collect_outbound_routes_preserves_record_order() {
     });
 
     let (server_db, _server_runner) = sb.build().await.expect("build server db");
-    let outbound_routes = server_db.collect_outbound_routes("ws");
-    assert_eq!(outbound_routes.len(), keys_topics.len());
-    let outbound_iter = outbound_routes.into_iter();
+    let outbound = aimdb_core::OutboundRoutes::new(&server_db, "ws").expect("routes");
+    assert_eq!(outbound.routes().len(), keys_topics.len());
 
-    outbound_iter
-        .into_iter()
-        .zip(keys_topics.iter())
-        .for_each(|(route, (k, t))| {
-            assert_eq!(route.topic.as_str(), *t);
+    for (route, (k, t)) in outbound.routes().iter().zip(keys_topics.iter()) {
+        assert_eq!(&*route.default_topic, *t);
+        assert_eq!(
+            route.config.record_index,
+            Some(*record_keys.get(*k).expect("key must exist")),
+            "route '{t}' must carry its record's index"
+        );
+    }
+}
 
-            let config_record_index: Vec<usize> = route
-                .config
-                .iter()
-                .filter(|(k, _v)| k.as_str() == "record_index")
-                .map(|(_k, v)| {
-                    v.parse::<usize>()
-                        .expect("failed to convert record_index to usize")
-                })
-                .collect();
+/// One broadcast loop for every outbound route: the server contributes its
+/// HTTP server and that loop, whatever the number of routes.
+#[tokio::test]
+async fn the_server_contributes_two_futures_whatever_the_route_count() {
+    use aimdb_core::connector::ConnectorBuilder;
 
-            assert_eq!(
-                config_record_index.len(),
-                1,
-                "config must have one tuple for record_index"
-            );
-            assert_eq!(
-                config_record_index[0],
-                *record_keys.get(*k).expect("key must exist")
-            );
-        });
+    for routes in [0usize, 1, 3] {
+        let addr = free_addr();
+        let mut sb = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
+        for i in 0..routes {
+            let key = aimdb_core::StringKey::intern(format!("r{i}"));
+            sb.configure::<Msg>(key, move |reg| {
+                reg.buffer(BufferCfg::SingleLatest)
+                    .with_remote_access()
+                    .link_to(&format!("ws://t{i}"))
+                    .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
+                    .finish();
+            });
+        }
+        let (db, _runner) = sb.build().await.expect("build server db");
+
+        // Built, never polled: nothing binds.
+        let futures = WebSocketConnector::new()
+            .bind(free_addr())
+            .path("/ws")
+            .build(&db)
+            .await
+            .expect("build connector");
+        assert_eq!(futures.len(), 2, "{routes} routes");
+    }
 }
 
 //----------------- Custom AuthHandler and Permissions
@@ -257,9 +272,10 @@ struct Inject {
 }
 
 struct InjectTopic;
-impl TopicProvider<Inject> for InjectTopic {
-    fn topic(&self, value: &Inject) -> Option<String> {
-        Some(value.topic.clone())
+impl TopicWriter<Inject> for InjectTopic {
+    fn write_topic(&self, value: &Inject, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+        out.push_str(&value.topic)?;
+        Ok(true)
     }
 }
 
@@ -457,8 +473,8 @@ async fn test_fixture(
         sb.configure::<Inject>(key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 64 }) // don't coalesce successive values
                 .with_remote_access()
-                .link_to("ws://_") // placeholder; provider overrides per value
-                .with_topic_provider(InjectTopic)
+                .link_to("ws://_") // placeholder; the writer sets it per value
+                .with_topic_writer(128, InjectTopic)
                 .with_serializer(|_ctx, m: &Inject| {
                     Ok(serde_json::to_vec(&m.payload).expect("serialize"))
                 })

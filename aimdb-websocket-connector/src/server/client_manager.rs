@@ -5,8 +5,8 @@
 //! registers a per-subscription channel and gets back a [`BoxStream`] of
 //! topic-tagged [`SubUpdate`]s; the engine envelopes each into an AimX `event`
 //! frame per connection (the payload bytes stay `Arc`-shared — only the small
-//! envelope is per-subscriber). The outbound record→broadcast tasks
-//! (`super::connector`) feed [`broadcast`](ClientManager::broadcast).
+//! envelope is per-subscriber). The builder's outbound broadcast loop feeds
+//! [`broadcast`](ClientManager::broadcast).
 //!
 //! Frame formatting lives in the codec; the per-connection send half is owned by
 //! `run_session`.
