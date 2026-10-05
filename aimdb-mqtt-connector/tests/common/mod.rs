@@ -716,3 +716,81 @@ impl Delay for CountingDialer {
         Delay::sleep(&self.inner, d)
     }
 }
+
+// ===========================================================================
+// The echo broker: relays a client's publish back to it when it subscribed to
+// that topic, as a real broker would.
+// ===========================================================================
+
+/// A QoS 1 PUBLISH in the protocol version the client connected with.
+fn publish_qos1_for(topic: &str, payload: &[u8], packet_id: u16, v5: bool) -> Vec<u8> {
+    if v5 {
+        return publish_qos1(topic, payload, packet_id);
+    }
+    let mut rest = Vec::new();
+    rest.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+    rest.extend_from_slice(topic.as_bytes());
+    rest.extend_from_slice(&packet_id.to_be_bytes());
+    rest.extend_from_slice(payload);
+    let mut packet = vec![0x32];
+    varint(rest.len(), &mut packet);
+    packet.extend_from_slice(&rest);
+    packet
+}
+
+/// Serve one connection: CONNACK, SUBACK (recording the topics), PUBACK every
+/// QoS 1 publish, and send a publish on a subscribed topic back at QoS 1.
+async fn serve_echo(mut socket: TcpStream) {
+    let _ = socket.set_nodelay(true);
+    let mut buf = Vec::new();
+    let mut v5 = true;
+    let mut subscribed: Vec<String> = Vec::new();
+    let mut next_id: u16 = 0;
+    loop {
+        let Some((first, body)) = read_packet(&mut socket, &mut buf).await else {
+            return;
+        };
+        let reply: Vec<u8> = match first >> 4 {
+            1 => {
+                v5 = is_v5(&body);
+                if v5 {
+                    vec![0x20, 0x03, 0x00, 0x00, 0x00]
+                } else {
+                    vec![0x20, 0x02, 0x00, 0x00]
+                }
+            }
+            8 => suback(&body, v5, &mut subscribed),
+            3 => {
+                let Some((topic, payload, packet_id)) = parse_publish(first, &body, v5) else {
+                    return;
+                };
+                let mut reply = Vec::new();
+                if let Some(id) = packet_id {
+                    reply.extend_from_slice(&[0x40, 0x02, id[0], id[1]]);
+                }
+                if subscribed.iter().any(|t| t == &topic) {
+                    next_id = next_id.wrapping_add(1).max(1);
+                    reply.extend_from_slice(&publish_qos1_for(&topic, &payload, next_id, v5));
+                }
+                reply
+            }
+            12 => vec![0xD0, 0x00],
+            14 => return,
+            // PUBACKs for the echoes, and anything else: nothing to answer.
+            _ => continue,
+        };
+        if socket.write_all(&reply).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Accept forever, serving each connection with [`serve_echo`].
+pub async fn echo_broker(listener: TcpListener) {
+    loop {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        tokio::spawn(serve_echo(socket));
+    }
+}
