@@ -104,9 +104,9 @@ where
 
     /// Set a value synchronously.
     ///
-    /// Checks that the runtime is usable, resolves the record by key, and
-    /// pushes directly into its buffer. This does not wait for buffer space;
-    /// all built-in buffers overwrite according to their configured semantics.
+    /// Checks the runtime, finds the record by key, checks its type, and writes
+    /// directly to its buffer. This method does not wait for buffer space.
+    /// Every current buffer overwrites according to its configured behavior.
     ///
     /// # Errors
     ///

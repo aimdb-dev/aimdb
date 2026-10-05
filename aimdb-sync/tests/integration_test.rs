@@ -170,9 +170,9 @@ fn test_timeout_operations() {
     handle.detach().expect("Failed to detach");
 }
 
-/// Test non-blocking operations
+/// Test an immediate consumer read.
 #[test]
-fn test_non_blocking_operations() {
+fn test_non_blocking_consumer_operation() {
     let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Try get on empty buffer (should fail)
@@ -261,7 +261,7 @@ fn check_reports_what_a_publish_would_find() {
     ));
 }
 
-/// Test error handling - runtime shutdown, non-blocking operations
+/// Test an immediate consumer read after runtime shutdown.
 #[test]
 fn test_runtime_shutdown_error_non_blocking() {
     let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
@@ -272,7 +272,7 @@ fn test_runtime_shutdown_error_non_blocking() {
     // Shut down the runtime
     handle.detach().expect("Failed to detach");
 
-    // Non-blocking reads should now fail with RuntimeShutdown too
+    // Immediate reads should now fail with RuntimeShutdown too
     let result = consumer.try_get();
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }

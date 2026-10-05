@@ -13,7 +13,7 @@
 //! 1. Building an AimDB instance with a typed record
 //! 2. Attaching the database to get a sync handle
 //! 3. Creating producers and consumers in sync context
-//! 4. Setting and getting values using blocking operations
+//! 4. Synchronous writes and blocking or immediate reads
 //! 5. Multi-threaded producer-consumer patterns
 //! 6. Clean shutdown with detach()
 
@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         println!("   Main: Setting temperature {:.1}°C", temp.celsius);
 
-        // Use blocking send
+        // Write synchronously
         if let Err(e) = producer.set(temp) {
             eprintln!("   Error setting value: {}", e);
         }

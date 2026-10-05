@@ -160,13 +160,14 @@ where
         self.write.push(value);
     }
 
-    /// Extension point for write handles that may reject a value.
+    /// Lets a write handle report that it rejected a value.
     ///
-    /// The built-in buffers (`SpmcRing`, `SingleLatest`, `Mailbox`) overwrite
-    /// and currently always return `Ok(())`; use [`produce`](Self::produce)
-    /// for them. A future bounded, non-overwriting write handle can return the
-    /// value through [`TryProduceError::Full`], while a close-aware handle can
-    /// return it through [`TryProduceError::Closed`].
+    /// All current buffers (`SpmcRing`, `SingleLatest`, `Mailbox`) overwrite
+    /// existing values when full and return `Ok(())`. Use
+    /// [`produce`](Self::produce) for them. A future buffer that refuses a
+    /// write when full can return the value through [`TryProduceError::Full`].
+    /// A buffer that detects closure can return it through
+    /// [`TryProduceError::Closed`].
     ///
     /// # Example
     ///
