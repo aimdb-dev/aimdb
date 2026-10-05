@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/054-connector-boundary ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/054-connector-boundary ]
 
 env:
   CARGO_TERM_COLOR: always
