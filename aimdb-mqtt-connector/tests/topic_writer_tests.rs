@@ -504,7 +504,7 @@ fn test_connector_topic_resolution_with_threshold_writer() {
 /// Test that verifies the inbound topic resolver is called correctly
 #[test]
 fn test_inbound_topic_resolver_simulation() {
-    // Simulate what inbound_router does for TopicResolver
+    // Simulate how inbound routes resolve a TopicResolver
     fn resolve_inbound_topic(
         default_topic: &str,
         resolver: Option<&dyn Fn() -> Option<String>>,

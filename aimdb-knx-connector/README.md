@@ -10,12 +10,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-# `std` is the host leg. `critical-section-std-impl` selects the impl the
-# connector's channels need to link — only a final binary may pick one.
-aimdb-knx-connector = { version = "0.5", features = [
-    "std",
-    "critical-section-std-impl",
-] }
+# `std` is the host leg.
+aimdb-knx-connector = { version = "0.5", features = ["std"] }
 # The host also needs the adapter's UDP socket and clock.
 aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime", "net"] }
 

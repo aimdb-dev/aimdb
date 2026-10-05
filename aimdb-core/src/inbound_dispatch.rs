@@ -7,7 +7,8 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::{AimDb, DbResult, Router, RuntimeContext, TopicGrammar};
+use crate::router::Router;
+use crate::{AimDb, DbResult, RuntimeContext, TopicGrammar};
 
 /// Every inbound link of one scheme, compiled against the connector's grammar.
 ///

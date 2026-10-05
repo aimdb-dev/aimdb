@@ -6,7 +6,7 @@
 //! `run_client` + [`WsDialer`] engine). Server→client data is pushed by
 //! *producing a record* — an "injector" record whose dynamic topic + raw
 //! serializer let a test broadcast an arbitrary `(topic, payload)` through the
-//! real `pump_sink` → bus → session path.
+//! real `OutboundRoutes` → bus → session path.
 //!
 //! The parity block at the bottom locks the AimX WS wire to the semantics the
 //! retired ws-protocol offered (subscribe ack, wildcard fan-out, late-join
@@ -879,7 +879,7 @@ async fn stalled_client_does_not_block_a_healthy_one() {
     tokio::time::sleep(Duration::from_millis(100)).await; // let the stalled sub register
 
     // Flood well past the bounded funnel (256). This also overruns the injector
-    // ring, so the outbound `pump_sink` consumer lags — it must skip the gap and
+    // ring, so the outbound route lags — it must skip the gap and
     // keep publishing (not die), while the stalled client's pump drops on overflow
     // and the healthy client keeps up.
     for i in 0..2000u32 {

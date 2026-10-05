@@ -34,19 +34,6 @@ use crate::typed_api::RecordRegistrar;
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
-/// One outbound route returned by [`AimDb::collect_outbound_routes`]
-pub struct OutboundRoute {
-    /// Default topic/destination from the URL path; used when the source
-    /// yields no per-value destination.
-    pub topic: String,
-    /// Fused wire-level source: its readers yield destination + serialized
-    /// payload directly (subscribe → recv → resolve topic → serialize, all
-    /// typed inside — no `Box<dyn Any>` per message).
-    pub source: Box<dyn crate::connector::SerializedSource>,
-    /// Configuration options from the URL query
-    pub config: Vec<(String, String)>,
-}
-
 /// One registered record: its key, concrete type, and type-erased storage.
 struct RecordEntry {
     key: StringKey,
@@ -1182,14 +1169,13 @@ impl AimDb {
     /// The inbound router for `scheme`: every link compiled against the
     /// connector's `grammar`, keyed links sharing their record's key table.
     ///
-    /// A connector subscribes [`Router::subscriptions`](crate::Router::subscriptions)
-    /// and routes with this same router. Rejects every link the grammar or
-    /// its key cannot compile, naming the record and the resolved topic.
-    pub fn inbound_router(
+    /// Rejects every link the grammar or its key cannot compile, naming the
+    /// record and the resolved topic.
+    pub(crate) fn inbound_router(
         &self,
         scheme: &str,
         grammar: &'static dyn crate::TopicGrammar,
-    ) -> DbResult<crate::Router> {
+    ) -> DbResult<crate::router::Router> {
         let mut routes = Vec::new();
         let mut errors = Vec::new();
 
@@ -1212,7 +1198,7 @@ impl AimDb {
         if !errors.is_empty() {
             return Err(DbError::InvalidConfiguration { errors });
         }
-        Ok(crate::Router::new(grammar, routes))
+        Ok(crate::router::Router::new(grammar, routes))
     }
 
     fn inbound_route(
@@ -1256,11 +1242,11 @@ impl AimDb {
             .name(key)
     }
 
-    /// Every outbound link of `scheme`, with its record's index and key.
+    /// Every outbound link of `scheme`, with its record's index.
     pub(crate) fn outbound_links<'a>(
         &'a self,
         scheme: &'a str,
-    ) -> impl Iterator<Item = (usize, &'a str, &'a crate::connector::ConnectorLink)> + 'a {
+    ) -> impl Iterator<Item = (usize, &'a crate::connector::ConnectorLink)> + 'a {
         self.inner
             .storages
             .iter()
@@ -1278,49 +1264,7 @@ impl AimDb {
                     .outbound_connectors()
                     .iter()
                     .filter(move |link| link.url.scheme() == scheme)
-                    .map(move |link| (i, entry.key.as_str(), link))
+                    .map(move |link| (i, link))
             })
-    }
-
-    /// Collects outbound routes for a specific protocol scheme
-    ///
-    /// Mirrors [`inbound_router`](Self::inbound_router). Iterates all records,
-    /// filters their outbound_connectors by scheme, and returns
-    /// [`OutboundRoute`]s carrying fused serialized sources (subscribe →
-    /// recv → resolve topic → serialize, all typed inside — no
-    /// `Box<dyn Any>` per message).
-    ///
-    /// This method is called by connectors during their `build()` phase to
-    /// collect all configured outbound routes and spawn publisher tasks
-    /// (usually via `pump_sink`).
-    ///
-    /// # Arguments
-    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
-    pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
-        let routes: Vec<OutboundRoute> = self
-            .outbound_links(scheme)
-            .map(|(i, _, link)| {
-                // config must carry the record index
-                let mut config = link.config.clone();
-                config.push(("record_index".to_string(), i.to_string()));
-
-                // Create the fused source using the stored factory
-                OutboundRoute {
-                    topic: link.url.resource_id().to_string(),
-                    source: link.create_source(self),
-                    config,
-                }
-            })
-            .collect();
-
-        if !routes.is_empty() {
-            log_debug!(
-                "Collected {} outbound routes for scheme '{}'",
-                routes.len(),
-                scheme
-            );
-        }
-
-        routes
     }
 }

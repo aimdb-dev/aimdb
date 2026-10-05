@@ -9,7 +9,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::connector::{ConnectorBuilder, SerializeError, TopicProvider};
+use aimdb_core::connector::{ConnectorBuilder, SerializeError};
 use aimdb_core::{AimDb, AimDbBuilder, DbResult, OutboundPayload, OutboundRoutes, RecordRegistrar};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
@@ -422,37 +422,7 @@ async fn wakes_from_other_threads_lose_nothing() {
 }
 
 #[tokio::test]
-async fn a_topic_provider_link_is_rejected() {
-    struct Fixed;
-    impl TopicProvider<V> for Fixed {
-        fn topic(&self, _: &V) -> Option<String> {
-            Some("x".into())
-        }
-    }
-    let db = db(vec![Box::new(|reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .link_to("test://r0")
-            .with_topic_provider(Fixed)
-            .with_serializer(le)
-            .finish();
-    })])
-    .await;
-    let Err(aimdb_core::DbError::InvalidConfiguration { errors }) =
-        OutboundRoutes::new(&db, "test")
-    else {
-        panic!("expected a configuration error");
-    };
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].record_key, "r0");
-    assert!(
-        errors[0].message.contains("with_topic_writer"),
-        "{}",
-        errors[0].message
-    );
-}
-
-#[tokio::test]
-async fn route_info_matches_collect_outbound_routes() {
+async fn route_info_carries_topic_config_and_record_index() {
     let db = db(vec![
         Box::new(|reg| {
             reg.buffer(BufferCfg::SingleLatest);
@@ -460,24 +430,24 @@ async fn route_info_matches_collect_outbound_routes() {
         spmc(1, 16),
         Box::new(|reg| {
             reg.buffer(BufferCfg::Mailbox)
-                .link_to("test://two?qos=1")
+                .link_to("test://two")
+                .with_config("qos", "1")
                 .with_serializer(le)
                 .finish();
         }),
     ])
     .await;
     let o = OutboundRoutes::new(&db, "test").unwrap();
-    let old = db.collect_outbound_routes("test");
-    assert_eq!(o.routes().len(), old.len());
-    for (info, route) in o.routes().iter().zip(&old) {
-        let config = aimdb_core::transport::ConnectorConfig::from_query(&route.config);
-        assert!(info.config.record_index.is_some());
-        assert_eq!(info.config.record_index, config.record_index);
-        assert_eq!(&*info.default_topic, route.topic);
-        assert_eq!(info.config.protocol_options, config.protocol_options);
-    }
-    assert_eq!(o.routes()[0].config.record_index, Some(1));
-    assert_eq!(o.routes()[1].config.record_index, Some(2));
+    let routes = o.routes();
+    assert_eq!(routes.len(), 2);
+    assert_eq!(&*routes[0].default_topic, "r1");
+    assert_eq!(routes[0].config.record_index, Some(1));
+    assert_eq!(&*routes[1].default_topic, "two");
+    assert_eq!(routes[1].config.record_index, Some(2));
+    assert_eq!(
+        routes[1].config.protocol_options,
+        [("qos".to_string(), "1".to_string())]
+    );
 }
 
 #[tokio::test]

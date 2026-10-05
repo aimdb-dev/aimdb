@@ -497,11 +497,8 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
         );
     }
     if has_knx {
-        optional_connector_deps.push_str(
-            "# critical-section-std-impl: the KNX channels need an impl, and only \
-the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
-        );
+        optional_connector_deps
+            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
     }
     if has_ws {
         optional_connector_deps.push_str(
@@ -1334,11 +1331,8 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
         );
     }
     if has_knx {
-        connector_deps.push_str(
-            "# critical-section-std-impl: the KNX channels need an impl, and only \
-the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
-        );
+        connector_deps
+            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
     }
     if has_ws {
         connector_deps.push_str(

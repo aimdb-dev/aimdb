@@ -16,14 +16,12 @@
 //!   enables.
 //! - `std`: `connector` plus core's `std`, knx-pico's std error impls, and the
 //!   back-compat DPT re-exports. Lifts `no_std`; adds no runtime.
-//! - `critical-section-std-impl`: **final binaries only** — selects
-//!   `critical-section`'s std impl for a host binary that needs one. An
-//!   Embassy HAL already provides one.
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
 //!
 //! `tokio-runtime` and `embassy-runtime` are deprecated aliases for `std` and
-//! `connector` respectively, kept for one release.
+//! `connector` respectively, and `critical-section-std-impl` a deprecated
+//! no-op, kept for one release.
 //!
 //! ## Production Status
 //!

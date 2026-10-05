@@ -1,8 +1,7 @@
 //! B0-Linkable — allocation gate for direct and per-link Postcard encoding.
 //!
-//! This deliberately measures the codec seam, not a complete connector. The
-//! core pump still uses a boxed `SerializedReader` future and connector adapters
-//! may copy payload ownership; issue #177 only claims that a generated-shape
+//! This deliberately measures the codec seam, not a complete connector, which
+//! may still copy the payload; issue #177 only claims that a generated-shape
 //! Postcard codec writes into caller-owned storage with zero heap allocations.
 
 use std::hint::black_box;

@@ -342,40 +342,6 @@ async fn test_knx_topic_writer_with_connector_registration() {
     assert!(builder.build().await.is_ok());
 }
 
-/// The connector pulls through `OutboundRoutes`, which rejects
-/// `with_topic_provider` links at build.
-#[tokio::test]
-async fn test_knx_rejects_a_topic_provider() {
-    use aimdb_core::connector::TopicProvider;
-
-    struct Fixed;
-    impl TopicProvider<DimmerValue> for Fixed {
-        fn topic(&self, _value: &DimmerValue) -> Option<String> {
-            Some("1/0/1".into())
-        }
-    }
-
-    let runtime = Arc::new(TokioAdapter::new().unwrap());
-    let mut builder = AimDbBuilder::new()
-        .runtime(runtime)
-        .with_connector(connector());
-    builder.configure::<DimmerValue>("knx.dimmer.living", |reg| {
-        reg.buffer(BufferCfg::SingleLatest)
-            .link_to("knx://1/0/0")
-            .with_topic_provider(Fixed)
-            .with_serializer(|_ctx, dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
-            .finish();
-    });
-
-    let Err(err) = builder.build().await else {
-        panic!("a topic provider must be rejected");
-    };
-    assert!(
-        format!("{err}").contains("with_topic_provider"),
-        "unexpected error: {err}"
-    );
-}
-
 #[tokio::test]
 async fn test_knx_topic_resolver_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());

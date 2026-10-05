@@ -8,7 +8,7 @@
 //! one wake-up of the transport. Two columns:
 //!
 //! - **task per route:** one task per route awaiting `Reader::recv`, the
-//!   shape of the per-route pumps.
+//!   shape of the per-route publishers `OutboundRoutes` replaced.
 //! - **OutboundRoutes:** one task pulling with `OutboundRoutes::next`, which
 //!   polls only the routes that woke.
 //!
