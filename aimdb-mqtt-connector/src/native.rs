@@ -1,18 +1,20 @@
 //! The `rumqttc` backend: one broker connection, QoS 0–2, platform trust roots.
 //!
 //! `rumqttc` owns its socket, TLS and reconnect, so this module contributes
-//! only the connect-and-subscribe step and the `MqttSink`/`MqttEventLoopSource`
-//! adapters that core's pumps drive.
+//! the connect-and-subscribe step and two tasks: the event loop, which
+//! dispatches inbound publishes into their records, and the publish loop,
+//! which pulls outbound messages and hands them to `rumqttc`.
 
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 use aimdb_core::{log_debug, log_error, log_info};
-use aimdb_core::{pump_sink, pump_source, BoxFut, Payload, Source};
+use aimdb_core::{InboundDispatch, OutboundRoutes};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::publish_opts::PublishOpts;
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -26,9 +28,21 @@ pub(crate) fn build<'a>(
     keep_alive_secs: u16,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
     Box::pin(async move {
-        // One router both subscribes (here) and routes (`pump_source`).
-        let router = db.inbound_router("mqtt", &crate::MqttGrammar)?;
-        let topics = router.subscriptions();
+        // One dispatcher both subscribes (here) and routes (the event loop).
+        let inbound = InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let topics = inbound.subscriptions();
+
+        // Routes are subscribed now, so nothing produced before the publish
+        // loop first runs is missed; options are parsed once, here.
+        let outbound = OutboundRoutes::new(db, "mqtt")?;
+        let opts = outbound
+            .routes()
+            .iter()
+            .map(PublishOpts::parse)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {e}"))
+            })?;
 
         log_info!("MQTT subscribing to {} topics", topics.len());
 
@@ -45,35 +59,22 @@ pub(crate) fn build<'a>(
             aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", e))
         })?;
 
-        let mut futures: Vec<BoxFuture> = Vec::new();
-
-        // Inbound: one multiplexed reader future fanning publishes out to producers.
-        futures.extend(pump_source(
-            db,
-            router,
-            MqttEventLoopSource {
-                event_loop,
-                broker_key: broker_url.to_string(),
-            },
-        ));
-
-        // Outbound: one publisher future per outbound route.
-        futures.extend(pump_sink(db, "mqtt", Arc::new(MqttSink { client })));
-
+        let futures: Vec<BoxFuture> = vec![
+            Box::pin(run_event_loop(event_loop, inbound, broker_url.to_string())),
+            Box::pin(run_publish_loop(client, outbound, opts)),
+        ];
         Ok(futures)
     })
 }
 
-/// The broker-connection setup invoked from `build`; the data-plane loops
-/// themselves are core's `pump_sink` / `pump_source`.
+/// The broker-connection setup invoked from `build`.
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
     /// Connect to the broker and subscribe to `topics`, sizing the send
     /// channel from their count.
     ///
-    /// Returns the shared client (for the outbound `pump_sink`) plus the raw
-    /// event loop (for [`MqttEventLoopSource`] and the inbound `pump_source`).
+    /// Returns the client (for the publish loop) plus the raw event loop.
     /// A `None` `client_id` generates a UUID-based one.
     async fn build_internal(
         broker_url: &str,
@@ -81,7 +82,7 @@ impl MqttConnectorImpl {
         credentials: Option<&(String, String)>,
         keep_alive_secs: u16,
         topics: &[Arc<str>],
-    ) -> Result<(Arc<AsyncClient>, EventLoop), String> {
+    ) -> Result<(AsyncClient, EventLoop), String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
 
@@ -169,14 +170,13 @@ impl MqttConnectorImpl {
 
         // Create client and event loop with dynamic capacity
         let (client, event_loop) = AsyncClient::new(mqtt_opts, channel_capacity);
-        let client_arc = Arc::new(client);
 
         log_info!("Subscribing to {} MQTT topics...", topics.len());
 
         for topic in topics {
             log_debug!("Subscribing to MQTT topic: {}", topic);
 
-            client_arc
+            client
                 .subscribe(topic.as_ref(), rumqttc::QoS::AtLeastOnce)
                 .await
                 .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
@@ -184,114 +184,74 @@ impl MqttConnectorImpl {
 
         log_info!("MQTT subscriptions complete");
 
-        Ok((client_arc, event_loop))
+        Ok((client, event_loop))
     }
 }
 
-/// Pure outbound publish adapter driven by `pump_sink`.
+/// Drive `rumqttc`'s event loop, dispatching every inbound publish into its
+/// records. Other packets (PUBACK, PINGRESP, …) only keep the protocol going;
+/// a connection error backs off 5 s before `rumqttc` reconnects. Never
+/// returns: the loop runs for the lifetime of the connector.
 ///
-/// Wraps the shared rumqttc client. `qos`/`retain` come from the route's
-/// protocol options, defaulting to **QoS 1 (`AtLeastOnce`)** and no retain.
-struct MqttSink {
-    client: Arc<AsyncClient>,
-}
-
-impl MqttSink {
-    /// Look up a protocol option by key and parse it.
-    fn opt<T: core::str::FromStr>(config: &ConnectorConfig, key: &str) -> Option<T> {
-        config
-            .protocol_options
-            .iter()
-            .find(|(k, _)| k == key)
-            .and_then(|(_, v)| v.parse().ok())
-    }
-}
-
-impl Connector for MqttSink {
-    fn publish(
-        &self,
-        destination: &str,
-        config: &ConnectorConfig,
-        payload: &[u8],
-    ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
-        // Legacy defaults: QoS 1 when no `qos` query option, no retain.
-        let qos = Self::opt::<u8>(config, "qos").unwrap_or(1);
-        let retain = Self::opt::<bool>(config, "retain").unwrap_or(false);
-
-        // Destination is already the MQTT topic (from ConnectorUrl::resource_id()).
-        let topic = destination.to_string();
-        let payload_owned = payload.to_vec();
-        let client = self.client.clone();
-
-        Box::pin(async move {
-            let qos_level = match qos {
-                0 => rumqttc::QoS::AtMostOnce,
-                1 => rumqttc::QoS::AtLeastOnce,
-                2 => rumqttc::QoS::ExactlyOnce,
-                _ => return Err(PublishError::UnsupportedQoS),
-            };
-
-            // Borrowed before `topic` is moved into `publish`, which is why this
-            // reads "Publishing" and sits above the call: the alternative was a
-            // `String` clone on every publish just to name the topic afterwards.
-            // A failed publish is reported by the `map_err` below.
-            log_debug!("Publishing to topic: {}", topic);
-
-            client
-                .publish(topic, qos_level, retain, payload_owned)
-                .await
-                .map_err(|_e| {
-                    log_error!("MQTT publish failed: {}", _e);
-
-                    PublishError::ConnectionFailed
-                })?;
-
-            Ok(())
-        })
-    }
-}
-
-/// Inbound frame source driven by `pump_source`.
-///
-/// Yields `(topic, payload)` for each incoming MQTT publish, discarding other
-/// packets and backing off 5s on a connection error. Never yields `None`: the
-/// reader runs for the lifetime of the connector.
-struct MqttEventLoopSource {
-    event_loop: EventLoop,
-    /// Only ever used to name the broker in an error line. Ungated, because the
-    /// logging facade decides its own gating.
-    broker_key: String,
-}
-
-impl Source for MqttEventLoopSource {
-    fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>> {
-        Box::pin(async move {
-            loop {
-                match self.event_loop.poll().await {
-                    Ok(Event::Incoming(Packet::Publish(publish))) => {
-                        let payload: Payload = Arc::from(publish.payload.as_ref());
-                        let topic = publish.topic;
-
-                        log_debug!(
-                            "Received MQTT message on topic '{}' ({} bytes)",
-                            topic,
-                            payload.len()
-                        );
-
-                        return Some((topic, payload));
-                    }
-                    // Non-publish packets (PUBACK/PINGRESP/…) keep driving the protocol.
-                    Ok(_) => continue,
-                    Err(_e) => {
-                        log_error!("MQTT event loop error for {}: {:?}", self.broker_key, _e);
-
-                        // Wait before reconnecting.
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
+/// `_broker_key` only names the broker in an error line; the logging facade
+/// decides whether that line exists.
+async fn run_event_loop(mut event_loop: EventLoop, inbound: InboundDispatch, _broker_key: String) {
+    loop {
+        match event_loop.poll().await {
+            Ok(Event::Incoming(Packet::Publish(publish))) => {
+                log_debug!(
+                    "Received MQTT message on topic '{}' ({} bytes)",
+                    publish.topic,
+                    publish.payload.len()
+                );
+                inbound.dispatch(&publish.topic, &publish.payload);
             }
-        })
+            Ok(_) => {}
+            Err(_e) => {
+                log_error!("MQTT event loop error for {}: {:?}", _broker_key, _e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
     }
+}
+
+/// Pull outbound messages and hand each to `rumqttc` with its route's QoS and
+/// retain flag. `publish` takes an owned topic and payload, so the topic is
+/// copied and a borrowed payload copied (an owned one is moved). It waits for
+/// room in `rumqttc`'s request channel, which is the backpressure. A failed
+/// publish is logged with its topic and counted as rejected in the route's
+/// `RouteStats`. Returns once every outbound route has closed.
+async fn run_publish_loop(
+    client: AsyncClient,
+    mut outbound: OutboundRoutes,
+    opts: Vec<PublishOpts>,
+) {
+    while let Some(msg) = outbound.next().await {
+        let id = msg.route.id;
+        let opt = opts.get(id).copied().unwrap_or(PublishOpts {
+            qos: 1,
+            retain: false,
+        });
+        let qos = match opt.qos {
+            0 => rumqttc::QoS::AtMostOnce,
+            2 => rumqttc::QoS::ExactlyOnce,
+            _ => rumqttc::QoS::AtLeastOnce,
+        };
+        let topic = msg.topic.to_string();
+        let payload = msg.payload.into_vec();
+
+        log_debug!("Publishing to topic: {}", topic);
+        if let Err(_e) = client.publish(topic, qos, opt.retain, payload).await {
+            // The topic moved into `publish`; the route's default names it.
+            log_error!(
+                "MQTT publish on route '{}' failed: {}",
+                outbound.routes()[id].default_topic,
+                _e
+            );
+            outbound.reject(id);
+        }
+    }
+    log_info!("MQTT publish loop: every outbound route has closed");
 }
 
 /// The TLS configuration for `mqtts://`, from whichever backend this build
@@ -390,6 +350,73 @@ mod tests {
                 err.contains("no TLS backend"),
                 "the error should name the missing feature, got: {err}"
             );
+        }
+    }
+
+    /// A database with `routes` outbound records on `mqtt://out/{i}`, each
+    /// link carrying `config`, built with the native connector.
+    async fn native_db(
+        routes: usize,
+        config: &'static [(&'static str, &'static str)],
+    ) -> aimdb_core::DbResult<aimdb_core::AimDb> {
+        use aimdb_core::buffer::BufferCfg;
+        use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+        let mut builder = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(crate::MqttConnector::new("mqtt://127.0.0.1:1"));
+        for i in 0..routes {
+            let key = aimdb_core::StringKey::intern(format!("out{i}"));
+            builder.configure::<u64>(key, move |reg| {
+                let mut link = reg
+                    .buffer(BufferCfg::SingleLatest)
+                    .link_to(&format!("mqtt://out/{i}"))
+                    .with_serializer(|_ctx, v: &u64| Ok(v.to_le_bytes().to_vec()));
+                for (k, v) in config {
+                    link = link.with_config(k, v);
+                }
+                link.finish();
+            });
+        }
+        builder.build().await.map(|(db, _runner)| db)
+    }
+
+    #[tokio::test]
+    async fn an_invalid_qos_or_retain_fails_the_build() {
+        for (config, expected) in [
+            (&[("qos", "3")][..], "qos must be 0, 1 or 2, got '3'"),
+            (&[("qos", "abc")][..], "qos must be 0, 1 or 2, got 'abc'"),
+            (
+                &[("retain", "yes")][..],
+                "retain must be true or false, got 'yes'",
+            ),
+        ] {
+            let Err(err) = native_db(1, config).await else {
+                panic!("{config:?} must fail the build");
+            };
+            let err = err.to_string();
+            assert!(err.contains("route 'out/0'"), "{err}");
+            assert!(err.contains(expected), "{err}");
+        }
+        // qos=2 is honoured natively, not refused.
+        assert!(native_db(1, &[("qos", "2"), ("retain", "true")])
+            .await
+            .is_ok());
+    }
+
+    /// One event loop and one publish loop, however many routes: no
+    /// per-route pump.
+    #[tokio::test]
+    async fn the_native_backend_runs_two_tasks_whatever_the_route_count() {
+        use aimdb_core::connector::ConnectorBuilder;
+
+        for routes in [0, 1, 5] {
+            let db = native_db(routes, &[]).await.expect("build");
+            let futures = crate::MqttConnector::new("mqtt://127.0.0.1:1")
+                .build(&db)
+                .await
+                .expect("build connector");
+            assert_eq!(futures.len(), 2, "{routes} routes");
         }
     }
 

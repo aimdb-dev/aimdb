@@ -127,7 +127,7 @@ pub mod native;
 #[cfg(feature = "embedded")]
 pub mod embedded;
 
-#[cfg(feature = "embedded")]
+#[cfg(any(feature = "std", feature = "embedded"))]
 pub(crate) mod publish_opts;
 
 // SNTP wire codec — pure and feature-independent so it is unit-tested on the
