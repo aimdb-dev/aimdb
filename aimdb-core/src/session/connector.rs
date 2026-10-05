@@ -101,10 +101,11 @@ where
                 self.config.clone(),
                 db.runtime_ops(),
             );
-            // One pump future per route; each holds a `ClientHandle` clone, so the
-            // engine stays alive as long as any mirror runs. `handle` drops here.
-            let router = db.inbound_router(&self.scheme, &crate::ExactGrammar)?;
-            let mut futures = pump_client(db, &self.scheme, router, &handle);
+            // One outbound future and one per inbound subscription; each holds a
+            // `ClientHandle` clone, so the engine stays alive as long as any
+            // mirror runs. `handle` drops here.
+            let inbound = crate::InboundDispatch::new(db, &self.scheme, &crate::ExactGrammar)?;
+            let mut futures = pump_client(db, &self.scheme, inbound, &handle)?;
             futures.push(engine_fut);
             Ok(futures)
         })

@@ -27,7 +27,6 @@ use super::{
     BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
     SubUpdate, TransportError,
 };
-use crate::router::Router;
 use crate::AimDb;
 
 /// Capacity of a subscription's client-side event sink. Bounded (was
@@ -841,82 +840,68 @@ where
 /// [`run_client`] engine — the connector-link half of the client capability.
 ///
 /// For the given connector `scheme` (e.g. `"aimx"`):
-/// - **outbound** routes (`db.collect_outbound_routes`) stream local record
-///   updates to the remote via [`ClientHandle::write`];
-/// - **inbound** routes (`router`, from [`AimDb::inbound_router`]) subscribe to the remote and
+/// - **outbound** routes ([`OutboundRoutes`](crate::OutboundRoutes)) stream
+///   local record updates to the remote via [`ClientHandle::write`], all from
+///   one task;
+/// - **inbound** routes (`inbound`, an [`InboundDispatch`](crate::InboundDispatch)) subscribe to the remote and
 ///   produce each update into the local record through the producer/arbiter path
 ///   — single-writer-per-key stays intact (a mirrored-in record is produced
 ///   through its inbound producer, never a direct co-writer). Mirroring is
 ///   latest-state and best-effort — a gap the server reports
 ///   ([`SubUpdate::skipped`]) is logged and stepped over, never backfilled.
 ///
-/// Returns one spawn-free pump future per route for the runner to drive
-/// (mirroring the `ConnectorBuilder::build -> Vec<BoxFuture>` spine); it drives
-/// the **same** engine as [`run_client`], never a second one.
+/// Returns spawn-free futures for the runner to drive (mirroring the
+/// `ConnectorBuilder::build -> Vec<BoxFuture>` spine): one for every outbound
+/// route together, when there are any, and one per inbound subscription. They
+/// drive the **same** engine as [`run_client`], never a second one. Fails when
+/// an outbound link cannot be served (see
+/// [`OutboundRoutes::new`](crate::OutboundRoutes::new)).
+///
+/// [`ClientHandle::write`] enqueues onto the engine's bounded command queue
+/// and displaces the oldest command when it is full, so during an outage that
+/// queue, not the record buffer, decides what survives.
 ///
 /// Reconnect caveat: inbound pumps subscribe once and are not replayed across a
 /// reconnect (see [`ClientConfig::reconnect`]); outbound mirroring is unaffected.
 pub fn pump_client(
     db: &AimDb,
     scheme: &str,
-    router: Router,
+    inbound: crate::InboundDispatch,
     handle: &ClientHandle,
-) -> Vec<BoxFut<'static, ()>> {
-    // The runtime context for context-aware (de)serializers.
-    let ctx = db.runtime_ctx();
+) -> crate::DbResult<Vec<BoxFut<'static, ()>>> {
     let mut pumps: Vec<BoxFut<'static, ()>> = Vec::new();
 
-    // --- outbound: local record updates -> remote `write` ------------------
-    for crate::OutboundRoute {
-        topic: destination,
-        source,
-        ..
-    } in db.collect_outbound_routes(scheme)
-    {
+    // --- outbound: local record updates -> remote `write`, one task --------
+    // Skips, lag and closed routes are handled and counted inside
+    // `OutboundRoutes`; `next` ends once every route has closed.
+    let mut outbound = crate::OutboundRoutes::new(db, scheme)?;
+    if !outbound.routes().is_empty() {
         let handle = handle.clone();
-        let ctx = ctx.clone();
         pumps.push(Box::pin(async move {
-            let mut reader = source.subscribe();
-            loop {
-                // The fused reader yields destination + serialized payload
-                // (serialize failures are logged and skipped inside it).
-                let msg = match reader.recv(&ctx).await {
-                    Ok(m) => m,
-                    // Lagged (ring overflow) — skip the gap, keep mirroring.
-                    Err(crate::DbError::BufferLagged { .. }) => continue,
-                    // Buffer closed — the record is gone; end this mirror.
-                    Err(_) => break,
+            while let Some(msg) = outbound.next().await {
+                let payload = match msg.payload {
+                    crate::OutboundPayload::Borrowed(bytes) => Payload::from(bytes),
+                    crate::OutboundPayload::Owned(bytes) => Payload::from(bytes),
                 };
-                // Dynamic destination (topic provider) or the static link target.
-                let dest = msg.dest.unwrap_or_else(|| destination.clone());
-                if handle
-                    .write(dest, Payload::from(msg.payload.as_slice()))
-                    .is_err()
-                {
+                if handle.write(msg.topic, payload).is_err() {
                     break; // engine stopped — all handles dropped
                 }
             }
         }));
     }
 
-    // --- inbound: remote events -> local producer (via the Router) ---------
-    // The Router applies each route's deserializer and produces the value; one
-    // subscription per unique remote topic feeds it.
-    let router = Arc::new(router);
-    for id in router.subscriptions() {
-        pumps.push(Box::pin(inbound_pump(
-            handle.clone(),
-            router.clone(),
-            id,
-            ctx.clone(),
-        )));
+    // --- inbound: remote events -> local producer --------------------------
+    // The dispatcher applies each route's deserializer and produces the
+    // value; one subscription per unique remote topic feeds it.
+    for id in inbound.subscriptions() {
+        pumps.push(Box::pin(inbound_pump(handle.clone(), inbound.clone(), id)));
     }
 
-    pumps
+    Ok(pumps)
 }
 
 /// Drive one inbound mirror: subscribe to remote topic `id` and produce every
-/// update into the local record through the [`Router`](crate::router::Router).
+/// update into the local record through the [`InboundDispatch`](crate::InboundDispatch).
 ///
 /// **Loss contract: a mirror is latest-state, best-effort.** A mirrored record
 /// answers "what is the current value", not "what was every value" — so a gap
@@ -927,12 +912,7 @@ pub fn pump_client(
 /// `AimxConnection` (`aimdb-client`), which surfaces `skipped` per update;
 /// [`ClientHandle::subscribe`] carries the same metadata for anyone riding the
 /// handle directly.
-async fn inbound_pump(
-    handle: ClientHandle,
-    router: Arc<crate::router::Router>,
-    id: Arc<str>,
-    ctx: crate::RuntimeContext,
-) {
+async fn inbound_pump(handle: ClientHandle, inbound: crate::InboundDispatch, id: Arc<str>) {
     let mut stream = match handle.subscribe(id.as_ref()) {
         Ok(s) => s,
         Err(_e) => return,
@@ -955,7 +935,7 @@ async fn inbound_pump(
                         update.skipped
                     );
                 }
-                let _ = router.route(id.as_ref(), &update.data, &ctx);
+                inbound.dispatch(id.as_ref(), &update.data);
             }
             // Server rejected the subscription — terminal, not replayed.
             Err(_e) => break,
@@ -1563,12 +1543,13 @@ mod tests {
             Ok(())
         });
         let route = crate::router::CompiledRoute::exact("tele", ingest);
-        let router = Arc::new(Router::new(&crate::ExactGrammar, alloc::vec![route]));
+        let router = crate::router::Router::new(&crate::ExactGrammar, alloc::vec![route]);
         let ctx =
             crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        let inbound = crate::InboundDispatch::from_parts(router, ctx);
         let (handle, cmd_rx, _prune_rx) = test_handle();
 
-        let pump = inbound_pump(handle, router, Arc::from("tele"), ctx);
+        let pump = inbound_pump(handle, inbound, Arc::from("tele"));
         let remote = async {
             // The pump subscribes on its first poll; take its sink and play a
             // gapped update followed by a clean one.
