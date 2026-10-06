@@ -16,14 +16,12 @@
 //!   enables.
 //! - `std`: `connector` plus core's `std`, knx-pico's std error impls, and the
 //!   back-compat DPT re-exports. Lifts `no_std`; adds no runtime.
-//! - `critical-section-std-impl`: **final binaries only** — selects
-//!   `critical-section`'s std impl, which `Channels` needs to link on a host.
-//!   An Embassy HAL already provides one.
 //! - `tracing`: Debug logging support (std)
 //! - `defmt`: Debug logging support (no_std)
 //!
 //! `tokio-runtime` and `embassy-runtime` are deprecated aliases for `std` and
-//! `connector` respectively, kept for one release.
+//! `connector` respectively, and `critical-section-std-impl` a deprecated
+//! no-op, kept for one release.
 //!
 //! ## Production Status
 //!
@@ -48,7 +46,7 @@
 //! ```no_run
 //! use aimdb_core::buffer::BufferCfg;
 //! use aimdb_core::AimDbBuilder;
-//! use aimdb_knx_connector::{Channels, KnxConnector};
+//! use aimdb_knx_connector::KnxConnector;
 //! use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 //! use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 //! use std::net::Ipv4Addr;
@@ -62,14 +60,12 @@
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = Arc::new(TokioAdapter::new()?);
 //!
-//! static CHANNELS: Channels = Channels::new();
 //! let mut builder = AimDbBuilder::new()
 //!     .runtime(runtime)
 //!     .with_connector(KnxConnector::new(
 //!         TokioNet::udp(Ipv4Addr::UNSPECIFIED),
 //!         TokioDelay,
 //!         "knx://192.168.1.19:3671",
-//!         &CHANNELS,
 //!     ));
 //! builder.configure::<LightState>("light.state", |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest)
@@ -100,14 +96,14 @@
 //! ```rust,ignore
 //! use aimdb_core::AimDbBuilder;
 //! use aimdb_embassy_adapter::EmbassyAdapter;
-//! use aimdb_knx_connector::connector::{Channels, KnxConnector};
+//! use aimdb_knx_connector::KnxConnector;
 //! use alloc::sync::Arc;
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
-//!     .with_connector(KnxConnector::new(binder, EmbassyDelay, gateway, &CHANNELS))
+//!     .with_connector(KnxConnector::new(binder, EmbassyDelay, gateway))
 //!     .configure::<SensorData>(|reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
@@ -181,4 +177,4 @@ pub mod client;
 pub mod connector;
 
 #[cfg(feature = "connector")]
-pub use connector::{Channels, KnxConnector};
+pub use connector::KnxConnector;

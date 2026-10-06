@@ -1,6 +1,6 @@
 [
   {
-    "profile": "inbound_route",
+    "profile": "inbound_dispatch",
     "buffer_type": "SpmcRing",
     "total_allocs": 0,
     "total_bytes": 0,
@@ -9,7 +9,7 @@
     "bytes_per_msg": 0.0
   },
   {
-    "profile": "inbound_route_pattern",
+    "profile": "inbound_dispatch_pattern",
     "buffer_type": "SpmcRing",
     "total_allocs": 0,
     "total_bytes": 0,
@@ -18,7 +18,7 @@
     "bytes_per_msg": 0.0
   },
   {
-    "profile": "inbound_route_keyed_known",
+    "profile": "inbound_dispatch_keyed_known",
     "buffer_type": "SpmcRing",
     "total_allocs": 0,
     "total_bytes": 0,
@@ -27,7 +27,7 @@
     "bytes_per_msg": 0.0
   },
   {
-    "profile": "inbound_route_keyed_new",
+    "profile": "inbound_dispatch_keyed_new",
     "buffer_type": "SpmcRing",
     "total_allocs": 2010,
     "total_bytes": 373456,
@@ -36,39 +36,48 @@
     "bytes_per_msg": 186.728
   },
   {
-    "profile": "inbound_pump_source_minimal",
+    "profile": "outbound_next_static_topic",
     "buffer_type": "SpmcRing",
-    "total_allocs": 4000,
-    "total_bytes": 50000,
+    "total_allocs": 1,
+    "total_bytes": 64,
     "batch_size": 2000,
-    "allocs_per_msg": 2.0,
-    "bytes_per_msg": 25.0
+    "allocs_per_msg": 0.0005,
+    "bytes_per_msg": 0.032
   },
   {
-    "profile": "outbound_scratch_static_topic",
+    "profile": "outbound_next_written_topic",
     "buffer_type": "SpmcRing",
-    "total_allocs": 4001,
-    "total_bytes": 146064,
+    "total_allocs": 0,
+    "total_bytes": 0,
     "batch_size": 2000,
-    "allocs_per_msg": 2.0005,
-    "bytes_per_msg": 73.032
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
   },
   {
-    "profile": "outbound_scratch_dynamic_topic",
+    "profile": "outbound_next_owned",
     "buffer_type": "SpmcRing",
-    "total_allocs": 6000,
-    "total_bytes": 162000,
+    "total_allocs": 2000,
+    "total_bytes": 16000,
     "batch_size": 2000,
-    "allocs_per_msg": 3.0,
-    "bytes_per_msg": 81.0
+    "allocs_per_msg": 1.0,
+    "bytes_per_msg": 8.0
   },
   {
-    "profile": "outbound_owned_static_topic",
+    "profile": "outbound_next_round_robin",
     "buffer_type": "SpmcRing",
-    "total_allocs": 6000,
-    "total_bytes": 162000,
+    "total_allocs": 1,
+    "total_bytes": 128,
     "batch_size": 2000,
-    "allocs_per_msg": 3.0,
-    "bytes_per_msg": 81.0
+    "allocs_per_msg": 0.0005,
+    "bytes_per_msg": 0.064
+  },
+  {
+    "profile": "outbound_next_parked",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
   }
 ]

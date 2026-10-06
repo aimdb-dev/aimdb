@@ -249,10 +249,14 @@ test:
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker
 	@printf "$(YELLOW)  → Testing MQTT connector (both backends, one broker, one process)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity
+	@printf "$(YELLOW)  → Testing MQTT connector (allocations per round trip, both backends)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test alloc_round_trip
 	@printf "$(YELLOW)  → Testing MQTT connector (mqtts:// against a pinned self-signed root)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker
 	@printf "$(YELLOW)  → Testing MQTT connector (event-driven session: wake cadence, partial packets, QoS 1)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test session_loop
+	@printf "$(YELLOW)  → Testing MQTT connector (embedded packet-size limits against a fake broker)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test write_ring_proofs
 	@printf "$(YELLOW)  → Testing MQTT connector (the same criteria over mqtts://)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_session
 	@printf "$(YELLOW)  → Testing MQTT connector (no_std unit tests: framing, deadlines, TLS duplex)$(NC)\n"
@@ -398,10 +402,14 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (backend parity)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (allocations per round trip)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test alloc_round_trip -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (mqtts:// host smoke)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (event-driven session criteria)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test session_loop -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embedded packet-size limits)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test write_ring_proofs -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (the same criteria over mqtts://)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_session -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (no_std unit tests)$(NC)\n"

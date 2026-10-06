@@ -13,8 +13,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{name}` match one level, `#` and `{name..}` the rest (last only, including
   the parent level); a leading wildcard does not match a `$…` topic.
 
+- **`MqttConnector::with_write_buffer(bytes)`** sizes the `Embedded` and
+  `EmbeddedTls` backends' write ring (default 4,096 bytes), allocated once and
+  reused across reconnects. An outbound PUBLISH plus a 64-byte reserve must fit
+  in half the ring. `build()` fails for a route whose largest frame, or a
+  CONNECT or SUBSCRIBE, does not fit; an owned payload over the limit at
+  runtime is skipped and counted as rejected in the route's `RouteStats`.
+
 ### Changed
 
+- **No core pumps.** Each backend's own task drives both
+  directions: it dispatches inbound publishes through an `InboundDispatch` and
+  pulls outbound messages from `OutboundRoutes`. The `Embedded` backends
+  encode packets into one `bbqueue` write ring instead of a `Vec` per packet
+  on a `Channel`, and the `Native` backend moves the topic out of `rumqttc`'s
+  `Publish` instead of cloning it. `AimdbMqttAction` and `AimdbMqttEvent` are
+  gone.
+- **At QoS 1 the PUBACK is sent before delivery**, so it means the message
+  reached AimDB, not that every record kept it: a record whose buffer is full
+  drops it, and the broker does not resend.
+- **A route's `qos` and `retain` are parsed once at `build()`**, and a bad
+  value fails the build rather than the first publish. The `Embedded` backends
+  warn once per route asking for `qos=2`, which they send at QoS 1.
+- **`bbqueue` is a new dependency of the `embedded` features.**
 - **Both backends route through `inbound_router("mqtt", &MqttGrammar)`** and
   subscribe `subscriptions()`: a filter another one covers is not subscribed,
   so the MQTT 3.1.1 (`Native`) and MQTT 5 (`Embedded`) backends each receive an
@@ -25,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed `Native` publish is logged with its topic and counted as
+  rejected** in the route's `RouteStats`.
+- **The `Native` backend masks the broker password in its error lines.** The
+  URL parse error quotes its input, password included.
 - **An oversized retained message no longer reconnects the `Embedded` backend
   forever.** The session receives packets of up to 3,328 bytes (its 3,584-byte
   buffer minus one read), but its MQTT 5 CONNECT did not say so. A broker

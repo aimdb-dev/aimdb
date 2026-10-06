@@ -28,11 +28,11 @@ pub mod buffer;
 #[cfg(not(feature = "std"))]
 mod runtime;
 
-// Force-`Send` helper for Embassy data-plane connectors (see module docs).
+// Force-`Send` helper for Embassy connectors (see module docs).
 #[cfg(not(feature = "std"))]
 pub mod send_wrapper;
 
-// Centralized Embassy connector spines (session + data-plane) — the one audited
+// Centralized Embassy connector helpers — the one audited
 // home for the single-core `unsafe` + `SendFutureWrapper`.
 #[cfg(all(not(feature = "std"), feature = "connectors"))]
 pub mod connectors;

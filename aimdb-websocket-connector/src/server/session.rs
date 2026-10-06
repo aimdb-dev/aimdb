@@ -20,7 +20,6 @@ use core::pin::Pin;
 
 pub use aimdb_core::remote::QueryRecord;
 // Re-export so the builder/dispatch can use it easily.
-pub use aimdb_core::router::Router;
 
 // ════════════════════════════════════════════════════════════════════
 // Query handler

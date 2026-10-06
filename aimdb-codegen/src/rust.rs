@@ -251,7 +251,7 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
         .filter_map(|c| match c.protocol.as_str() {
             "mqtt" => Some(quote! { use aimdb_mqtt_connector::MqttConnector; }),
             "knx" => Some(quote! {
-                use aimdb_knx_connector::{Channels, KnxConnector};
+                use aimdb_knx_connector::KnxConnector;
                 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
             }),
             "ws" => Some(quote! { use aimdb_websocket_connector::WebSocketConnector; }),
@@ -269,18 +269,13 @@ pub fn generate_main_rs(state: &ArchitectureState, binary_name: &str) -> Option<
             let default = &c.default;
             let ctor: TokenStream = match c.protocol.as_str() {
                 "mqtt" => quote! { MqttConnector::new(&#var_ident) },
-                // The adapter owns the socket and the clock; the channels are
-                // the binary's, in a block-scoped `static`.
+                // The adapter owns the socket and the clock.
                 "knx" => quote! {
-                    {
-                        static KNX_CHANNELS: Channels = Channels::new();
-                        KnxConnector::new(
-                            TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
-                            TokioDelay,
-                            &#var_ident,
-                            &KNX_CHANNELS,
-                        )
-                    }
+                    KnxConnector::new(
+                        TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
+                        TokioDelay,
+                        &#var_ident,
+                    )
                 },
                 "ws" => quote! {
                     WebSocketConnector::new()
@@ -502,11 +497,8 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
         );
     }
     if has_knx {
-        optional_connector_deps.push_str(
-            "# critical-section-std-impl: the KNX channels need an impl, and only \
-the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
-        );
+        optional_connector_deps
+            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
     }
     if has_ws {
         optional_connector_deps.push_str(
@@ -1339,11 +1331,8 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
         );
     }
     if has_knx {
-        connector_deps.push_str(
-            "# critical-section-std-impl: the KNX channels need an impl, and only \
-the binary may pick one.\n\
-aimdb-knx-connector = { version = \"0.5\", features = [\"std\", \"critical-section-std-impl\"] }\n",
-        );
+        connector_deps
+            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
     }
     if has_ws {
         connector_deps.push_str(
@@ -1411,7 +1400,7 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
         }
         if has_knx {
             v.push(quote! {
-                use aimdb_knx_connector::{Channels, KnxConnector};
+                use aimdb_knx_connector::KnxConnector;
                 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
             });
         }
@@ -1456,15 +1445,11 @@ pub fn generate_hub_main_rs(state: &ArchitectureState) -> String {
         }
         if has_knx {
             v.push(quote! {
-                .with_connector({
-                    static KNX_CHANNELS: Channels = Channels::new();
-                    KnxConnector::new(
-                        TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
-                        TokioDelay,
-                        &knx_gateway,
-                        &KNX_CHANNELS,
-                    )
-                })
+                .with_connector(KnxConnector::new(
+                    TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
+                    TokioDelay,
+                    &knx_gateway,
+                ))
             });
         }
         if has_ws {

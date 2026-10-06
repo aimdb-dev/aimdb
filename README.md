@@ -205,6 +205,13 @@ docker compose up
 
 ## Under the hood
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/aimdb-architecture-dark.svg">
+    <img src="assets/aimdb-architecture-light.svg" alt="AimDB architecture: inbound connectors push into typed records, outbound connectors pull from the same buffers, and the aimdb CLI and MCP server reach every record through one AimX server" width="900">
+  </picture>
+</p>
+
 - **The Rust type is the contract.** No IDL, no schema registry. CI cross-compiles the same contracts from Cortex-M to WASM. → [Data contracts](https://aimdb.dev/blog/data-contracts-deep-dive)
 - **Buffers decide how data moves.** SPMC Ring for streams, SingleLatest for state, Mailbox for commands. Zero allocations per message, [measured](aimdb-bench/data/baselines). → [Buffers](https://aimdb.dev/docs/getting-started)
 - **Optional persistence.** `.persist()` with a SQLite backend keeps history across restarts. → [`aimdb-persistence`](aimdb-persistence)

@@ -6,7 +6,11 @@
 //!
 //! * **source** — wall-clock interval between successive `Producer::produce()` calls.
 //! * **tap / link** — wall-clock interval from a buffer read yielding a value to
-//!   the next read (≈ the user's per-value processing time).
+//!   the next read (≈ the user's per-value processing time). A link read
+//!   through [`OutboundRoutes`](crate::OutboundRoutes) shares its connector's
+//!   transport task with the scheme's other routes, served round robin, so
+//!   its interval also includes serving the other ready routes before it is
+//!   read again.
 //!
 //! Timing uses the runtime's own clock ([`crate::executor::RuntimeOps`]), so the
 //! feature works on `no_std` targets too (it only needs heap + a clock).

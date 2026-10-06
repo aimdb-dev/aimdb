@@ -43,8 +43,8 @@ const MAX_FRAME: usize = 12 + MAX_CEMI;
 /// A wire datagram to send to the gateway — stack-allocated.
 pub type Frame = heapless::Vec<u8, MAX_FRAME>;
 
-/// Outbound GroupValueWrite command, handed to the engine by the transport's
-/// command channel (fed by the `Connector::publish` side).
+/// Outbound GroupValueWrite command, handed to the engine by the connection
+/// task for each value it pulls from an outbound route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupWrite {
     pub group_addr: GroupAddress,
@@ -79,8 +79,8 @@ pub enum Action {
     /// number of a tracked TUNNELING_REQUEST so a failed send can stop its
     /// ACK tracking (see `TunnelIo::send`); `None` for everything else.
     Send { frame: Frame, await_ack: Option<u8> },
-    /// Deliver a parsed inbound telegram toward `pump_source`
-    /// (`try_send`, drop-on-full — never stall the protocol loop).
+    /// Deliver a parsed inbound telegram into its records (synchronous;
+    /// never stalls the protocol loop).
     Telegram {
         addr: GroupAddress,
         payload: Vec<u8>,
@@ -544,8 +544,8 @@ pub(crate) trait TunnelIo {
     /// generic over this trait and its future has to be boxable as the
     /// runner's `Send` future. An impl whose socket future is `!Send` wraps it.
     fn send(&mut self, frame: &[u8]) -> impl core::future::Future<Output = bool> + Send;
-    /// Forward a parsed telegram toward `pump_source`. Non-blocking:
-    /// drop + log on a full channel rather than stalling the protocol loop.
+    /// Forward a parsed telegram into its records. Non-blocking: never
+    /// stalls the protocol loop.
     fn forward(&mut self, addr: GroupAddress, payload: Vec<u8>);
     /// An outbound telegram's ACK never arrived (log-only, see
     /// [`Action::AckTimeout`]).

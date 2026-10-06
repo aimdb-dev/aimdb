@@ -9,18 +9,17 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WsClientConnectorBuilder::build(&db)
-//!        ├─ db.inbound_router("ws-client", &ExactGrammar) → Router
-//!        ├─ db.collect_outbound_routes("ws-client") → outbound futures
+//!        ├─ InboundDispatch::new(db, "ws-client", &ExactGrammar)
 //!        ├─ connect to remote WebSocket server
 //!        ├─ build connector_future (read + write + keepalive + reconnect)
-//!        ├─ build outbound publisher futures
+//!        ├─ pump_client: one outbound future, one per inbound subscription
 //!        └─ return Vec<BoxFuture> (drained by AimDbRunner)
 //! ```
 
 use std::pin::Pin;
 
 use aimdb_core::session::{aimx::AimxCodec, pump_client, run_client, ClientConfig};
-use aimdb_core::{ConnectorBuilder, ExactGrammar};
+use aimdb_core::{ConnectorBuilder, ExactGrammar, InboundDispatch};
 
 use crate::transport::WsDialer;
 
@@ -171,8 +170,8 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
                 config,
                 db.runtime_ops(),
             );
-            let router = db.inbound_router("ws-client", &ExactGrammar)?;
-            let mut futures = pump_client(db, "ws-client", router, &handle);
+            let inbound = InboundDispatch::new(db, "ws-client", &ExactGrammar)?;
+            let mut futures = pump_client(db, "ws-client", inbound, &handle)?;
             futures.push(engine_fut);
             Ok(futures)
         })

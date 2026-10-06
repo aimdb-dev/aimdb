@@ -274,8 +274,11 @@ places; the message is lent once the poll has returned.
   nothing.
 - After a value that is skipped (topic overflow, serializer error) or a
   `BufferLagged`, the same route is polled again until it returns `Pending`
-  or a usable value. Moving on instead would leave that reader without a
-  registered waker, and its next value would not wake the task.
+  or a usable value, at most 32 times in a row. Moving on instead would
+  leave that reader without a registered waker, and its next value would
+  not wake the task. After 32 skips the route's own waker marks it for a
+  later pass and wakes the task, so a route whose values all fail cannot
+  hold the call while its producer keeps writing.
 - Skips and lag are logged and counted per route (`RouteStats`); a closed
   buffer closes the route. None of these end the other routes.
 - `Ready(None)` is final, and a connector with no outbound links gets it on
@@ -305,23 +308,24 @@ polled:
 use portable_atomic::AtomicU32;           // already a core dependency
 use futures_util::task::AtomicWaker;      // already a core dependency, no_std
 
-struct ReadySet {
+struct Shared {
     ready: Box<[AtomicU32]>,   // one bit per route, ceil(routes / 32) words
     task: AtomicWaker,         // the transport task
 }
 
-struct RouteWake { id: RouteId, set: Arc<ReadySet> }
+struct RouteWake { id: RouteId, shared: Arc<Shared> }
 
 impl Wake for RouteWake {
     fn wake_by_ref(self: &Arc<Self>) {
-        self.set.ready[self.id / 32].fetch_or(1 << (self.id % 32), Release);
-        self.set.task.wake();
+        self.shared.ready[self.id / 32].fetch_or(1 << (self.id % 32), Release);
+        self.shared.task.wake();
     }
     fn wake(self: Arc<Self>) { self.wake_by_ref() }
 }
 
-// OutboundRoutes also keeps `cursor: RouteId` (plain field, `&mut self`)
-// and `open: Box<[u32]>` (bitmap of routes that are not closed).
+// `ReadyRoutes` owns the `Arc<Shared>`, the route wakers, `cursor: RouteId`
+// (plain field, `&mut self`) and `open: Box<[u32]>` (bitmap of routes that
+// are not closed). `OutboundRoutes` holds one `ReadyRoutes`.
 ```
 
 - **Lock-free, so a waker may fire from any context.** A route's waker is
@@ -329,13 +333,35 @@ impl Wake for RouteWake {
   task on an `InterruptExecutor` (049) that preempts the transport task. A
   lock held by the transport task while the waker runs would deadlock a
   single core, which rules out the spin-locked FIFO the prototype used
-  (§7, alternative 11). `fetch_or` and `AtomicWaker` take no lock.
+  (§7, alternative 11). `fetch_or` and `AtomicWaker::wake` take no lock.
+- **The transport task does not outrank its producers.** It runs at the
+  same or a lower priority than every task or interrupt that writes its
+  routes' records. `AtomicWaker::register`, called on every poll, answers
+  a wake still in progress by waking the task again instead of waiting
+  ("we simply schedule to come back later"). A transport that preempted
+  that wake is polled again and again before the producer can finish it,
+  and on one core the producer never does. Reproduced with the transport
+  and a producer pinned to one CPU under `SCHED_FIFO`; the reverse order
+  is fine. 049's deployment already satisfies the rule: cadences run above
+  connector I/O.
 - The route wakers are built once, in `OutboundRoutes::new`; polling a
   route uses `Context::from_waker(&route_waker)`. Every bit starts set,
   since no reader has registered a waker yet.
-- `poll_stage` registers the task's waker before it reads the bitmap, so a
+- **One loop, owned by the ready set.** `ReadyRoutes::poll_ready(cx,
+  poll_route)` runs the whole scan below. `poll_stage` passes a closure that
+  polls route `id`'s reader with the context it is handed and reports
+  `Pending`, `Staged`, `Skipped` (skip or lag) or `Closed`. The orderings
+  in this list are then kept in one tested function instead of by every
+  caller; getting one wrong stalls a route for good, since a reader that
+  returned a value keeps no waker. A skip or lag polls the same route
+  again, since moving on would leave it with a clear bit and no waker, up
+  to 32 times in a row; then the route's own waker sets its bit and wakes
+  the task.
+- `poll_ready` registers the task's waker before it reads the bitmap, so a
   route that wakes after the bitmap reads empty still wakes the task.
-- **Clear, then poll.** `poll_stage` clears a route's bit
+  Every wake takes the stored waker out, so registering after the scan
+  would lose such a wake-up, not just risk a stale waker.
+- **Clear, then poll.** `poll_ready` clears a route's bit
   (`fetch_and(!bit, Acquire)`) before polling its reader. A wake that lands
   during the poll sets the bit again, which costs at most one spurious
   re-poll and never loses a wake-up.
@@ -511,11 +537,12 @@ Document this next to the buffer types; no API change.
   from its loop.
 - **Fairness.** Round-robin over routes that woke (§4.2); after each
   message from a busy route every other ready route is served once before
-  it, so it cannot starve the others. Measured on the prototype's FIFO, and
-  required of the bitmap by the same tests: three routes with three values
-  each are pulled 0, 1, 2, 0, 1, 2, …; with 200 values queued on one route
-  and one on another, the second is served first or second. Priorities are
-  not in scope.
+  it, so it cannot starve the others. A route whose values keep failing to
+  stage gives up its turn after 32 skips in a row, so it cannot either.
+  Measured on the prototype's FIFO, and required of the bitmap by the same
+  tests: three routes with three values each are pulled 0, 1, 2, 0, 1, 2,
+  …; with 200 values queued on one route and one on another, the second is
+  served first or second. Priorities are not in scope.
 - **Embedded MQTT: outbound PUBLISH size is bounded.** Today `encode`
   allocates each packet at its exact length, so any size goes out. With the
   write ring (§4.7) a PUBLISH frame is at most `capacity / 2 −
@@ -990,6 +1017,26 @@ The Zenoh connector (053) is not implemented yet; it is written against
     `KnxConnector::new` unchanged, but brings back the per-route task and
     the queue between the record buffers and the transport that this
     design removes everywhere else (§4.9).
+13. **`futures-util`'s `SelectAll` or `FuturesUnordered` as the ready
+    set.** Both give each child its own waker and queue the ones that woke,
+    which is what §4.2 needs. But `SelectAll` puts a stream back after
+    every item, and each insertion allocates a task node: one allocation
+    per message (10,000 for 10,000 items with futures-util 0.3.33), which
+    the `outbound_next_*` rows (§5) forbid. `FuturesUnordered` alone holds
+    futures that finish once, so a route would be re-inserted after every
+    value too. And routes read different value types into one scratch
+    buffer passed in at poll time, which a `Stream` cannot take. (Its
+    queue can be seen half-updated by a task that preempted a producer
+    mid-insertion, which then wakes itself; `AtomicWaker::register` does
+    the same, which is why §4.2 keeps the transport from outranking its
+    producers. It is not a reason to prefer one over the other.)
+14. **`futures-concurrency`'s `Merge` over a `Vec` of streams.** The
+    closest match: a waker per child, a readiness bitset, a parent waker,
+    and no allocation per item. But with `std` the readiness sits behind a
+    `std::sync::Mutex` that every wake takes, and the `no_std` build gives
+    every child the parent waker and polls all of them: 384 child polls
+    per item with one busy stream among 256 (futures-concurrency 7.7.1),
+    which is alternative 10. The scratch-buffer limit of 13 applies too.
 
 ## 8. Open questions
 

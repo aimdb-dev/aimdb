@@ -45,7 +45,7 @@ use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
 use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::net::{EmbassyDelay, EmbassyNet};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
-use aimdb_knx_connector::connector::{Channels, KnxConnector};
+use aimdb_knx_connector::connector::KnxConnector;
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_serial_connector::SerialServer;
 use defmt::*;
@@ -273,12 +273,11 @@ async fn main(spawner: Spawner) {
     let (serial_tx, serial_rx) = uart.split();
 
     // The adapter owns the UDP socket and the clock; the connector owns the
-    // tunnelling protocol. Buffers and channels are `'static`, as on any MCU.
+    // tunnelling protocol. Socket buffers are `'static`, as on any MCU.
     static KNX_RX_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
     static KNX_RX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
     static KNX_TX_META: StaticCell<[PacketMetadata; 8]> = StaticCell::new();
     static KNX_TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-    static KNX_CHANNELS: Channels<32> = Channels::new();
     let knx_binder = EmbassyNet::udp(
         *stack,
         KNX_RX_META.init([PacketMetadata::EMPTY; 8]),
@@ -291,12 +290,7 @@ async fn main(spawner: Spawner) {
     // remote `record.set` is refused — peers can list/get/subscribe, not write.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime.clone())
-        .with_connector(KnxConnector::new(
-            knx_binder,
-            EmbassyDelay,
-            &gateway_url,
-            &KNX_CHANNELS,
-        ))
+        .with_connector(KnxConnector::new(knx_binder, EmbassyDelay, &gateway_url))
         .with_connector(
             SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
                 .security_policy(SecurityPolicy::read_only()),

@@ -6,7 +6,7 @@
 //! `run_client` + [`WsDialer`] engine). Server→client data is pushed by
 //! *producing a record* — an "injector" record whose dynamic topic + raw
 //! serializer let a test broadcast an arbitrary `(topic, payload)` through the
-//! real `pump_sink` → bus → session path.
+//! real `OutboundRoutes` → bus → session path.
 //!
 //! The parity block at the bottom locks the AimX WS wire to the semantics the
 //! retired ws-protocol offered (subscribe ack, wildcard fan-out, late-join
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::connector::TopicProvider;
+use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
 use aimdb_core::remote::QueryHandlerFn;
 use aimdb_core::session::{aimx::AimxCodec, run_client, ClientConfig};
 use aimdb_core::{AimDb, AimDbBuilder};
@@ -51,9 +51,10 @@ struct Inject {
 }
 
 struct InjectTopic;
-impl TopicProvider<Inject> for InjectTopic {
-    fn topic(&self, v: &Inject) -> Option<String> {
-        Some(v.topic.clone())
+impl TopicWriter<Inject> for InjectTopic {
+    fn write_topic(&self, v: &Inject, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+        out.push_str(&v.topic)?;
+        Ok(true)
     }
 }
 
@@ -165,8 +166,8 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
     sb.configure::<Inject>("inject", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 1024 })
             .with_remote_access()
-            .link_to("ws://_") // overridden per-value by the topic provider
-            .with_topic_provider(InjectTopic)
+            .link_to("ws://_") // overridden per-value by the topic writer
+            .with_topic_writer(128, InjectTopic)
             .with_serializer(|_ctx, m: &Inject| {
                 Ok(serde_json::to_vec(&m.payload).expect("serialize payload"))
             })
@@ -878,7 +879,7 @@ async fn stalled_client_does_not_block_a_healthy_one() {
     tokio::time::sleep(Duration::from_millis(100)).await; // let the stalled sub register
 
     // Flood well past the bounded funnel (256). This also overruns the injector
-    // ring, so the outbound `pump_sink` consumer lags — it must skip the gap and
+    // ring, so the outbound route lags — it must skip the gap and
     // keep publishing (not die), while the stalled client's pump drops on overflow
     // and the healthy client keeps up.
     for i in 0..2000u32 {

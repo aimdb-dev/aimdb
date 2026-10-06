@@ -216,7 +216,7 @@ impl TopicFilter for ExactFilter {
     }
 }
 
-/// A stub grammar for tests of the router and of `inbound_router`.
+/// A stub grammar for tests of the router and of `InboundDispatch`.
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;

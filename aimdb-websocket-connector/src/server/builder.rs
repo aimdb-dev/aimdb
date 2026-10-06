@@ -8,10 +8,10 @@
 //! ```text
 //! AimDbBuilder::build()
 //!   └─ WebSocketConnectorBuilder::build(&db)
-//!        ├─ inbound Router (client writes → producers, via the session Dispatch)
-//!        ├─ outbound `pump_sink` over the `WsBusSink` (records → broadcast bus)
+//!        ├─ InboundDispatch (client writes → producers, via the session Dispatch)
+//!        ├─ OutboundRoutes (records → broadcast bus, one broadcast loop)
 //!        ├─ start Axum / WebSocket server (per-connection `run_session`)
-//!        └─ return the server + pump futures
+//!        └─ return the server and broadcast-loop futures
 //! ```
 
 use std::{
@@ -24,7 +24,7 @@ use std::{
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{pump_sink, ConnectorBuilder, Dispatch, ExactGrammar};
+use aimdb_core::{ConnectorBuilder, Dispatch, ExactGrammar, InboundDispatch, OutboundRoutes};
 use axum::Router as AxumRouter;
 
 use aimdb_core::topic_matches;
@@ -32,7 +32,6 @@ use aimdb_core::topic_matches;
 use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
     client_manager::ClientManager,
-    connector::{SnapshotCache, WsBusSink},
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
@@ -277,13 +276,28 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
     {
         Box::pin(async move {
             // ── Inbound routes ──────────────────────────────────────
-            let router = Arc::new(db.inbound_router("ws", &ExactGrammar)?);
+            let inbound = InboundDispatch::new(db, "ws", &ExactGrammar)?;
 
             #[cfg(feature = "tracing")]
             tracing::info!(
                 "WS connector: {} inbound routes collected",
-                router.route_count()
+                inbound.route_count()
             );
+
+            // ── Outbound routes ─────────────────────────────────────
+            // Every route carries its record's index, which the broadcast
+            // bus checks client permissions against.
+            let outbound = OutboundRoutes::new(db, "ws")?;
+            if let Some(route) = outbound
+                .routes()
+                .iter()
+                .find(|r| r.config.record_index.is_none())
+            {
+                return Err(aimdb_core::DbError::runtime_error(format!(
+                    "WS connector: outbound route '{}' has no record index",
+                    route.default_topic
+                )));
+            }
 
             // ── Late-join snapshot cache (only when enabled) ──────
             let snapshot_map: Option<SnapshotCache> =
@@ -319,23 +333,14 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 client_mgr: client_mgr.clone(),
                 snapshot_provider,
                 query_handler: self.query_handler.clone(),
-                router: router.clone(),
+                inbound,
                 schema_by_type,
                 auth: self.auth.clone(),
                 late_join: self.late_join,
-                runtime_ctx: db.runtime_ctx(),
             });
 
-            // ── Outbound: the shared `pump_sink` drives records → bus ───────
-            // (same helper MQTT uses; the `WsBusSink` just broadcasts + caches).
-            let outbound_futures = pump_sink(
-                db,
-                "ws",
-                Arc::new(WsBusSink {
-                    client_mgr: client_mgr.clone(),
-                    snapshot: snapshot_map,
-                }),
-            );
+            // ── Outbound: one broadcast loop pulls records → bus ────
+            let broadcast = run_broadcast(outbound, client_mgr.clone(), snapshot_map);
 
             // ── Build Axum server future ──────────────────────────
             let state = ServerState {
@@ -352,11 +357,38 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             let server_future =
                 build_server_future(self.bind_addr, self.ws_path.clone(), state, additional);
 
-            let mut futures: Vec<BoxFuture> = Vec::with_capacity(1 + outbound_futures.len());
-            futures.push(server_future);
-            futures.extend(outbound_futures);
+            let futures: Vec<BoxFuture> = vec![server_future, Box::pin(broadcast)];
             Ok(futures)
         })
+    }
+}
+
+/// Shared late-join cache: (RecordId, topic) → last serialized bytes.
+pub(crate) type SnapshotCache = Arc<Mutex<HashMap<(usize, String), Vec<u8>>>>;
+
+/// Pull every outbound record update and fan it out to subscribed clients.
+///
+/// The bus carries raw record-value bytes tagged with the topic and the
+/// record's index; each connection's AimX codec applies the `event` envelope
+/// downstream. With late-join on, the latest bytes per (record, topic) are
+/// cached for snapshots first. Returns once every outbound route has closed.
+async fn run_broadcast(
+    mut outbound: OutboundRoutes,
+    client_mgr: ClientManager,
+    snapshot: Option<SnapshotCache>,
+) {
+    while let Some(msg) = outbound.next().await {
+        // Checked for every route at build.
+        let Some(index) = msg.route.config.record_index else {
+            continue;
+        };
+        let bytes = msg.payload.as_slice();
+        if let Some(map) = &snapshot {
+            map.lock()
+                .unwrap()
+                .insert((index, msg.topic.to_string()), bytes.to_vec());
+        }
+        client_mgr.broadcast(msg.topic, index, bytes).await;
     }
 }
 

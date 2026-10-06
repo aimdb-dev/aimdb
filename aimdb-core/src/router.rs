@@ -19,8 +19,8 @@ use crate::topic_pattern::{Spans, TopicFilter, TopicGrammar, TopicMatch, MAX_CAP
 
 /// Generic message router for connector dispatch
 ///
-/// Built by [`AimDb::inbound_router`](crate::AimDb::inbound_router). Routes
-/// incoming messages to the matching records' ingest callbacks. Uses linear
+/// Built by `AimDb::inbound_router` and held by
+/// [`InboundDispatch`](crate::InboundDispatch). Routes incoming messages to the matching records' ingest callbacks. Uses linear
 /// search which is efficient for <100 routes.
 ///
 /// # Performance

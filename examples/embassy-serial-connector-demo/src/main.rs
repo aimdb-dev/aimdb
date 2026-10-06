@@ -21,9 +21,13 @@
 //!
 //! ## Host side
 //!
+//! Run from the workspace root, on the machine the board is plugged into. This
+//! directory's `.cargo/config.toml` sets the thumbv8m target, so running from
+//! here tries to build the host demo for the MCU.
+//!
 //! ```bash
 //! cargo run -p aimdb-serial-connector --example serial_demo \
-//!     --features _test-tokio -- client /dev/ttyACM0 115200
+//!     --features std -- client /dev/ttyACM0 115200   # macOS: /dev/cu.usbmodemXXXX
 //! ```
 //!
 //! You should see `record.list` return the `counter` record, then `counter`
