@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **No core pumps (design 054).** Each backend's own task drives both
+- **No core pumps.** Each backend's own task drives both
   directions: it dispatches inbound publishes through an `InboundDispatch` and
   pulls outbound messages from `OutboundRoutes`. The `Embedded` backends
   encode packets into one `bbqueue` write ring instead of a `Vec` per packet

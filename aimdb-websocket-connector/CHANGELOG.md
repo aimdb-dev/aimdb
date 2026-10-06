@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The server dispatches client writes and pulls broadcasts itself (design
-  054).** One broadcast loop pulls from `OutboundRoutes` and feeds the client
-  bus, caching late-join snapshots on the way; client writes go through an
+- **The server dispatches client writes and pulls broadcasts itself.**
+  One broadcast loop pulls from `OutboundRoutes` and feeds the client bus,
+  caching late-join snapshots on the way; client writes go through an
   `InboundDispatch`. `WsBusSink` is removed and `server::Router` is no longer
   re-exported. `build()` fails if an outbound route has no record index,
   instead of the first publish failing.

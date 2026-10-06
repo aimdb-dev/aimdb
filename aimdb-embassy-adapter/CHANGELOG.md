@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed (breaking)
 
-- **`EmbassySinkRaw`, `EmbassySink`, `EmbassySourceRaw` and `EmbassySource`**
-  (design 054). They force-`Send`ed a `!Send` sink or source so it could ride
+- **`EmbassySinkRaw`, `EmbassySink`, `EmbassySourceRaw` and `EmbassySource`**.
+  They force-`Send`ed a `!Send` sink or source so it could ride
   core's `pump_sink` / `pump_source`, which no longer exist: a connector now
   runs its own task and pulls from `OutboundRoutes`. The `into_box_future`
   helper and `NetStack` remain.

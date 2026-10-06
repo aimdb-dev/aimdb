@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Design 055: wildcard inbound links
+### Added — wildcard inbound links
 
 - **One inbound link can feed many topics into one record.**
   `link_from("mqtt://sensors/{device}/temp")` matches every device;
@@ -60,7 +60,7 @@ is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
   withheld by the broker instead of reconnecting the client forever.
   ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
 
-### Changed (breaking) — Design 054: zero-allocation connector boundary
+### Changed (breaking) — zero-allocation connector boundary
 
 Each connector's own task now drives both directions; core runs no task per
 connector or per route, and a steady-state message crosses the boundary

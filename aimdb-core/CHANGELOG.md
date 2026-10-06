@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Topic patterns on inbound links (design 055).** `{name}` captures one
+- **Topic patterns on inbound links.** `{name}` captures one
   level, `{name..}` the rest; the syntax is checked at `build()`, and the
   connector's `TopicGrammar` compiles each pattern into a `TopicFilter` when it
   builds. `ExactGrammar` is the grammar for connectors without wildcards.
@@ -25,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including patterns a `TopicResolverFn` returns, and reports every link it
   cannot compile at once. `Router::subscriptions()` lists the filters to
   subscribe, without those another filter covers.
-- **`OutboundRoutes`: one pull for every outbound link of a scheme (design
-  054).** `OutboundRoutes::new(db, scheme)` builds a route per link, each with
+- **`OutboundRoutes`: one pull for every outbound link of a scheme.**
+  `OutboundRoutes::new(db, scheme)` builds a route per link, each with
   its record's reader, topic writer and serializers, and a lock-free ready set
   that wakes only routes with data. A connector's own task calls
   `next().await` (or `poll_next`, or `poll_stage` / `take_staged` / `reject`
@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, API)
 
-- **Connector SPI: the push pumps are gone (design 054).** Removed
+- **Connector SPI: the push pumps are gone.** Removed
   `session::pump_sink`, `session::pump_source`, `Source`, the `Connector`
   trait (with `transport::Connector::publish`), `TopicProvider`,
   `OutboundRoute`, `AimDb::collect_outbound_routes`, `SerializedSource`,

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - **`KnxConnector::new(binder, delay, url)` no longer takes `&'static
-  Channels`** (design 054). The connection task dispatches inbound telegrams
+  Channels`**. The connection task dispatches inbound telegrams
   into their records and pulls outbound values from their record buffers
   itself, so no `embassy_sync` queue sits between it and core. `Channels`,
   `TelegramChannel`, `CommandChannel`, `DEFAULT_QUEUE` and the `N` const
