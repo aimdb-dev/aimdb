@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Design 055: wildcard inbound links
+### Added — wildcard inbound links
 
 - **One inbound link can feed many topics into one record.**
   `link_from("mqtt://sensors/{device}/temp")` matches every device;
@@ -59,6 +59,28 @@ is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
   (`Maximum Packet Size` 3,328 in CONNECT), so an oversized retained message is
   withheld by the broker instead of reconnecting the client forever.
   ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
+
+### Changed (breaking) — zero-allocation connector boundary
+
+Each connector's own task now drives both directions; core runs no task per
+connector or per route, and a steady-state message crosses the boundary
+without allocating on a scratch serializer.
+
+- **Core** adds `OutboundRoutes` (one pull for every outbound link of a scheme,
+  with a lock-free ready set and per-route `RouteStats`) and `InboundDispatch`,
+  plus `Reader::poll_recv`. `pump_sink`, `pump_source`, `Source`, `Connector`,
+  `TopicProvider` and `collect_outbound_routes` are removed, and
+  `with_topic_provider` becomes `with_topic_writer` / `with_topic_fn`, which
+  write the topic into a bounded buffer. ([aimdb-core](aimdb-core/CHANGELOG.md))
+- **MQTT** encodes embedded packets into one `bbqueue` write ring, sized with
+  `with_write_buffer`, and the native backend moves the topic instead of
+  cloning it. ([aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
+- **KNX**: `KnxConnector::new` loses its `&'static Channels` argument.
+  ([aimdb-knx-connector](aimdb-knx-connector/CHANGELOG.md))
+- **WebSocket** runs one broadcast loop over `OutboundRoutes`.
+  ([aimdb-websocket-connector](aimdb-websocket-connector/CHANGELOG.md))
+- **Embassy adapter** drops `EmbassySink` and `EmbassySource`.
+  ([aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md))
 
 ## [2.0.0] - 2026-09-18
 

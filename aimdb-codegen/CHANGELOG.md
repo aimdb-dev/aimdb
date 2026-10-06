@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Generated KNX wiring drops the `Channels` static**: it calls
+  `KnxConnector::new(TokioNet::udp(..), TokioDelay, url)`, matching
+  `aimdb-knx-connector`'s new signature.
+
 ## [0.3.0] - 2026-09-18
 
 ### Added
