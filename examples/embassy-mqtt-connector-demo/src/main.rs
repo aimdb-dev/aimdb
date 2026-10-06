@@ -40,7 +40,7 @@
 //! 3. Build and flash from this directory — its `.cargo/config.toml` selects
 //!    the thumbv8m target and the probe-rs runner:
 //! ```bash
-//! cargo run --release
+//! cargo run
 //! ```
 //!
 //! 4. Watch the traffic, and send the board a command:
@@ -63,7 +63,7 @@
 //! skipped), which is why the script puts even an IPv4 literal in as one.
 //!
 //! ```bash
-//! cargo run --release --features tls
+//! cargo run --features tls
 //! ```
 
 extern crate alloc;
