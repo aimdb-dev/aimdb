@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`KnxConnector::new(binder, delay, url)` no longer takes `&'static
+  Channels`** (design 054). The connection task dispatches inbound telegrams
+  into their records and pulls outbound values from their record buffers
+  itself, so no `embassy_sync` queue sits between it and core. `Channels`,
+  `TelegramChannel`, `CommandChannel`, `DEFAULT_QUEUE` and the `N` const
+  generic on `KnxConnector` are removed, as is the `embassy-sync` dependency.
+  Delete the `static CHANNELS` and the argument.
+- **A command produced while the tunnel connects waits in its record buffer**
+  and goes out once the handshake completes; routes are subscribed in
+  `build()`, before the task first runs. Which values survive an outage is the
+  record buffer's decision.
+- **`critical-section-std-impl` is a deprecated no-op**, kept so existing
+  consumers keep building. Nothing here needs a `critical-section`
+  implementation any more.
+
 ## [0.5.0] - 2026-09-18
 
 ### Changed
