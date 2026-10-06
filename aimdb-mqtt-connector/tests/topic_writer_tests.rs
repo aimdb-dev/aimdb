@@ -316,8 +316,6 @@ async fn test_topic_writer_with_connector_registration() {
 async fn test_topic_resolver_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
-    std::env::set_var("TEST_MQTT_TOPIC", "commands/test/dynamic");
-
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
             .with_client_id("test-topic-resolver"),
@@ -337,9 +335,6 @@ async fn test_topic_resolver_with_connector_registration() {
 
     // Build succeeds with connector registered
     assert!(builder.build().await.is_ok());
-
-    // Cleanup
-    std::env::remove_var("TEST_MQTT_TOPIC");
 }
 
 #[tokio::test]
