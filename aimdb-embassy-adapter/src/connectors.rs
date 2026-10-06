@@ -1,28 +1,20 @@
-//! The data-plane bridge — the one audited home for the single-core `unsafe` +
-//! [`SendFutureWrapper`] that every Embassy data-plane connector used to
-//! hand-roll.
+//! The one audited home for the single-core `unsafe` that Embassy connectors
+//! need.
 //!
 //! AimDB's connector contract is `Send`-everywhere (so a Tokio app can
 //! `tokio::spawn(runner.run())`). Embassy's primitives (channels over
 //! `NoopRawMutex`, a borrowed `embassy_net::Stack`, …) are `!Send` *by design* —
 //! single-core, cooperative, no preemption or thread migration. Bridging the two
 //! requires force-`Send`ing the Embassy futures; this module does that **once**,
-//! so a connector crate carries **no `unsafe` and no wrapper**.
+//! so a connector crate carries **no `unsafe` and no wrapper**: it boxes its
+//! protocol task with [`into_box_future`] and holds the network stack as a
+//! `NetStack`.
 //!
-//! Data-plane transports (MQTT, KNX) contribute an [`EmbassySinkRaw`] (outbound)
-//! and/or [`EmbassySourceRaw`] (inbound) and ride core's
-//! [`pump_sink`](aimdb_core::session::pump_sink) /
-//! [`pump_source`](aimdb_core::session::pump_source) via the force-`Send`
-//! bridges [`EmbassySink`] / [`EmbassySource`].
-//!
-//! Session transports (serial, TCP, …) no longer come through here. They ride
+//! Session transports (serial, TCP, …) do not come through here. They ride
 //! core's runtime-neutral spine directly — `SessionClientConnector` /
 //! `SessionServerConnector` over `FramedConnection`, with the byte source from
 //! this crate's `io` or `net` module (unlinked: neither exists in a
-//! `connectors`-only build) — so the Embassy duals this module used to
-//! carry (`EmbassySessionClient`/`Server`, `EmbassyConnection`, `OneShotCell`
-//! and the one-shot dialer/listener) are gone. Their one-shot semantics live in
-//! core as `OneShot`, `OneShotDialer` and `OneShotListener`.
+//! `connectors`-only build).
 //!
 //! # Safety invariant (shared by every `unsafe impl` below)
 //!
@@ -34,86 +26,11 @@ use core::future::Future;
 use core::pin::Pin;
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-
-use aimdb_core::session::{BoxFut, Payload, Source};
-use aimdb_core::transport::{Connector, ConnectorConfig, PublishError};
 
 use crate::SendFutureWrapper;
 
 /// The runner's collected future type (`Send`, as the std contract requires).
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-// ===========================================================================
-// Data-plane bridges — let a `!Send` sink/source ride core's pumps.
-// ===========================================================================
-
-/// The pure outbound I/O a data-plane connector contributes: publish one payload.
-/// The `!Send` dual of [`Connector`]; [`EmbassySink`] force-`Send`s it so it can
-/// drive core's [`pump_sink`](aimdb_core::session::pump_sink).
-///
-/// Args are owned (a data-plane sink enqueues owned data onto its channel anyway),
-/// so the returned future borrows only `&self` — matching [`Connector::publish`]'s
-/// `'_` return shape.
-pub trait EmbassySinkRaw {
-    /// Publish `payload` to `destination` (e.g. enqueue onto an Embassy channel).
-    fn publish(
-        &self,
-        destination: String,
-        config: ConnectorConfig,
-        payload: Vec<u8>,
-    ) -> impl Future<Output = Result<(), PublishError>>;
-}
-
-/// Force-`Send` bridge turning an [`EmbassySinkRaw`] into a [`Connector`], so an
-/// Embassy outbound sink rides core's [`pump_sink`](aimdb_core::session::pump_sink)
-/// unchanged.
-pub struct EmbassySink<C>(pub C);
-
-// SAFETY: single-core cooperative Embassy executor — see the module-level invariant.
-unsafe impl<C> Send for EmbassySink<C> {}
-// SAFETY: same invariant; `Connector` is shared behind `Arc<dyn Connector>`.
-unsafe impl<C> Sync for EmbassySink<C> {}
-
-impl<C: EmbassySinkRaw> Connector for EmbassySink<C> {
-    fn publish(
-        &self,
-        destination: &str,
-        config: &ConnectorConfig,
-        payload: &[u8],
-    ) -> Pin<Box<dyn Future<Output = Result<(), PublishError>> + Send + '_>> {
-        // Own the args so the inner future borrows only `&self` (see trait doc).
-        Box::pin(SendFutureWrapper(self.0.publish(
-            destination.to_string(),
-            config.clone(),
-            payload.to_vec(),
-        )))
-    }
-}
-
-/// The pure inbound I/O a data-plane connector contributes: yield the next
-/// `(topic, payload)`. The `!Send` dual of [`Source`]; [`EmbassySource`]
-/// force-`Send`s it so it can drive core's
-/// [`pump_source`](aimdb_core::session::pump_source).
-pub trait EmbassySourceRaw {
-    /// Yield the next `(topic, payload)`, or `None` when the source is done.
-    fn next(&mut self) -> impl Future<Output = Option<(String, Payload)>>;
-}
-
-/// Force-`Send` bridge turning an [`EmbassySourceRaw`] into a [`Source`], so an
-/// Embassy inbound stream rides core's
-/// [`pump_source`](aimdb_core::session::pump_source) unchanged.
-pub struct EmbassySource<S>(pub S);
-
-// SAFETY: single-core cooperative Embassy executor — see the module-level invariant.
-unsafe impl<S> Send for EmbassySource<S> {}
-
-impl<S: EmbassySourceRaw> Source for EmbassySource<S> {
-    fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>> {
-        Box::pin(SendFutureWrapper(self.0.next()))
-    }
-}
 
 /// Force-`Send` + box a connector's long-lived **protocol task** (an MQTT broker
 /// manager, a KNX tunnelling state machine, …) so it can join the runner's

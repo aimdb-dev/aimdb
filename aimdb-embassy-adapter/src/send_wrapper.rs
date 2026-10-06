@@ -4,13 +4,8 @@
 //! returns `Vec<Pin<Box<dyn Future + Send>>>` and `AimDbRunner` drives them on a
 //! `Send` `BoxFuture`. Embassy's primitives (channels over `NoopRawMutex`, …) are
 //! `!Send` *by design* — single-core, cooperative, no preemption or thread
-//! migration — so an Embassy connector's data-plane futures must be force-`Send`ed
-//! to satisfy that bound.
-//!
-//! This is also *why* Embassy data-plane connectors hand-roll their outbound /
-//! inbound loops instead of riding core's `pump_sink` / `pump_source`: those need a
-//! `Send + Sync` `Connector` / `Send` `Source`, which `!Send` Embassy channels
-//! cannot be without force-`Send`ing every primitive.
+//! migration — so an Embassy connector's futures must be force-`Send`ed to
+//! satisfy that bound.
 
 use core::future::Future;
 use core::pin::Pin;

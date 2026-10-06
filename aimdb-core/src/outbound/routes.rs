@@ -2,7 +2,6 @@
 //! connector's transport task.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::poll_fn;
@@ -12,7 +11,7 @@ use super::ready::{Polled, ReadyRoutes};
 use super::RouteId;
 use crate::connector::SerializeError;
 use crate::transport::ConnectorConfig;
-use crate::{AimDb, ConfigError, DbError, DbResult, RuntimeContext};
+use crate::{AimDb, DbError, DbResult, RuntimeContext};
 
 /// One outbound route, for parsing per-route configuration once at build.
 #[derive(Debug, Clone)]
@@ -161,8 +160,6 @@ pub(crate) struct RouteParts {
     pub(crate) route: Box<dyn PollRoute>,
     pub(crate) topic_capacity: usize,
     pub(crate) payload_capacity: usize,
-    /// The link uses `with_topic_provider`, which this path does not support.
-    pub(crate) topic_provider: bool,
 }
 
 /// Builds a link's [`RouteParts`], subscribing to its record.
@@ -200,31 +197,12 @@ const _: fn() = || {
 impl OutboundRoutes {
     /// Subscribes every outbound link of `scheme` and allocates the scratch
     /// once: the largest topic capacity plus the largest payload capacity.
-    ///
-    /// Rejects every link that uses `with_topic_provider`.
     pub fn new(db: &AimDb, scheme: &str) -> DbResult<Self> {
         let mut routes = Vec::new();
         let mut states = Vec::new();
-        let mut errors = Vec::new();
 
-        for (record_index, record_key, link) in db.outbound_links(scheme) {
-            let Some(factory) = &link.route_factory else {
-                errors.push(ConfigError::new(
-                    record_key,
-                    Some(link.url.to_string()),
-                    "link was not registered through `link_to`",
-                ));
-                continue;
-            };
-            let parts = factory(db);
-            if parts.topic_provider {
-                errors.push(ConfigError::new(
-                    record_key,
-                    Some(link.url.to_string()),
-                    "`with_topic_provider` is not supported here; use `with_topic_writer` or `with_topic_fn`",
-                ));
-                continue;
-            }
+        for (record_index, link) in db.outbound_links(scheme) {
+            let parts = (link.route_factory)(db);
             let mut config = ConnectorConfig::from_query(&link.config);
             config.record_index = Some(record_index);
             routes.push(RouteInfo {
@@ -235,10 +213,6 @@ impl OutboundRoutes {
                 payload_capacity: parts.payload_capacity,
             });
             states.push(parts.route);
-        }
-
-        if !errors.is_empty() {
-            return Err(DbError::InvalidConfiguration { errors });
         }
 
         let topic_region = routes.iter().map(|r| r.topic_capacity).max().unwrap_or(0);

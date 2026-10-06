@@ -5,9 +5,7 @@
 //! ([`EnvelopeCodec`]), and dispatch ([`Dispatch`]/[`Session`]), over a
 //! role-neutral [`Inbound`]/[`Outbound`] message set shared by the reactive
 //! server engine (`serve`/`run_session`) and the proactive client engine
-//! (`run_client`/`pump_client`). Data-plane connectors use `pump_sink`/
-//! `pump_source` over the [`Source`] / [`Connector`](crate::transport::Connector)
-//! capabilities.
+//! (`run_client`/`pump_client`).
 //!
 //! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`.
 
@@ -27,8 +25,6 @@ mod connector;
 mod endpoint;
 #[cfg(feature = "connector-session")]
 mod io;
-#[cfg(feature = "connector-session")]
-mod pump;
 #[cfg(feature = "connector-session")]
 mod server;
 
@@ -53,8 +49,6 @@ pub use io::{
     Framer, FramerFactory, FramingDialer, FramingListener, IoError, OneShot, OneShotDialer,
     OneShotListener, StreamDialer, StreamListener,
 };
-#[cfg(feature = "connector-session")]
-pub use pump::{pump_sink, pump_source};
 #[cfg(feature = "connector-session")]
 pub use server::{run_session, serve, SessionConfig};
 
@@ -518,19 +512,6 @@ pub trait EnvelopeCodec: Send + Sync {
 }
 
 // ===========================================================================
-// Data-plane capabilities — connectionless (an external library owns any
-// session). The outbound `Sink` is the canonical
-// [`Connector`](crate::transport::Connector); the inbound `Source` is below.
-// ===========================================================================
-
-/// External → AimDB data-plane: a stream of inbound frames, drained by
-/// `pump_source`.
-pub trait Source: Send {
-    /// Yield the next `(topic, payload)`, or `None` when the source is done.
-    fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>>;
-}
-
-// ===========================================================================
 // Taking each trait as `&dyn Trait` forces the dyn-compatibility check on all
 // targets, not just under `cargo test`.
 // ===========================================================================
@@ -543,7 +524,6 @@ fn _assert_object_safe(
     _dispatch: &dyn Dispatch,
     _session: &dyn Session,
     _codec: &dyn EnvelopeCodec,
-    _source: &dyn Source,
 ) {
 }
 
@@ -632,13 +612,6 @@ mod tests {
         }
     }
 
-    struct MockSource;
-    impl Source for MockSource {
-        fn next(&mut self) -> BoxFut<'_, Option<(String, Payload)>> {
-            unimplemented!()
-        }
-    }
-
     /// Every trait is `dyn`-usable.
     #[test]
     fn traits_are_object_safe() {
@@ -648,7 +621,6 @@ mod tests {
         let _dispatch: Box<dyn Dispatch> = Box::new(MockDispatch);
         let _session: Box<dyn Session> = Box::new(MockSession);
         let _codec: Box<dyn EnvelopeCodec> = Box::new(MockCodec);
-        let _source: Box<dyn Source> = Box::new(MockSource);
     }
 
     /// `Box<dyn Dialer>` satisfies the `Dialer` bound, so a runtime-selected

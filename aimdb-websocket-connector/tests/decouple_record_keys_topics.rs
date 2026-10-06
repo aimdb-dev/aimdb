@@ -382,7 +382,7 @@ async fn test_fixture(
                 )
         }
         GrantType::Injected => {
-            // Grant for TopicProvider tests
+            // Grant for topic writer tests
             let perms = Permissions {
                 read_patterns: vec!["injected.granted".to_string()],
                 write_patterns: vec![],
@@ -468,7 +468,7 @@ async fn test_fixture(
         });
     });
 
-    // Extra keys for TopicProvider test
+    // Extra keys for the topic writer test
     for key in ["injected.granted", "injected.denied"] {
         sb.configure::<Inject>(key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 64 }) // don't coalesce successive values
@@ -754,7 +754,7 @@ async fn client_wildcard_subscription_receives_public_only() {
 }
 
 #[tokio::test]
-async fn topic_provider_injects_for_unsubscribed_client() {
+async fn topic_writer_injects_for_unsubscribed_client() {
     let addr = free_addr();
     let server_db = test_fixture(addr, GrantType::Injected, None).await;
 

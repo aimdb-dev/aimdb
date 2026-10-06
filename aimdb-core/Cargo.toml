@@ -42,10 +42,10 @@ alloc = ["serde"] # Enable heap in no_std
 remote = ["alloc", "serde_json"]
 
 # The connector-session substrate (`crate::session`): the dyn-safe trait set
-# (Connection/Listener/Dialer, Dispatch/EnvelopeCodec, Source + shared types) and
-# the runtime-neutral engines built on it — the reactive server (`serve`/
-# `run_session`), the proactive client (`run_client`/`pump_client`), the
-# `pump_sink`/`pump_source` data plane, and the generic session connectors. Engine
+# (Connection/Listener/Dialer, Dispatch/EnvelopeCodec + shared types), the byte
+# and datagram transports, and the runtime-neutral engines built on them — the
+# reactive server (`serve`/`run_session`), the proactive client
+# (`run_client`/`pump_client`), and the generic session connectors. Engine
 # logic included; all compiles on `no_std + alloc`. The AimX protocol port
 # (`session::aimx`) additionally needs `remote-access`.
 connector-session = ["alloc"]
