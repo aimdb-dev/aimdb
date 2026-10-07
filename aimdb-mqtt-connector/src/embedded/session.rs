@@ -53,8 +53,10 @@ pub(crate) async fn run_sessions<D>(
     topics: alloc::vec::Vec<alloc::string::String>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
     settings: crate::embedded::manager::Settings,
-    events: alloc::sync::Arc<crate::embedded::EventChannel>,
-    actions: alloc::sync::Arc<crate::embedded::ActionChannel>,
+    inbound: aimdb_core::InboundDispatch,
+    mut outbound: aimdb_core::OutboundRoutes,
+    opts: alloc::vec::Vec<crate::publish_opts::PublishOpts>,
+    write_buffer: usize,
     runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
 where
@@ -64,12 +66,16 @@ where
     use mountain_mqtt::data::quality_of_service::QualityOfService;
 
     use crate::embedded::session_loop::run_session;
+    use crate::embedded::write_ring::WriteRing;
 
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
         .iter()
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
+
+    // Allocated once and reused by every session.
+    let ring = WriteRing::new(write_buffer);
 
     loop {
         let mut stream = match dialer.connect(&host, port).await {
@@ -90,8 +96,10 @@ where
             tx,
             &connection_settings,
             &subscribe_topics,
-            &events,
-            &actions,
+            &inbound,
+            &mut outbound,
+            &opts,
+            &ring,
             &settings,
             &dialer,
             runtime.as_ref(),

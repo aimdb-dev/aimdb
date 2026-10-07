@@ -24,6 +24,7 @@ use embedded_tls::{
 
 use crate::embedded::manager::Settings;
 use crate::embedded::session_loop::run_session;
+use crate::embedded::write_ring::WriteRing;
 use mountain_mqtt::client::ConnectionSettings;
 use mountain_mqtt::data::quality_of_service::QualityOfService;
 
@@ -320,8 +321,10 @@ pub(crate) async fn run_tls<D>(
     topics: Vec<String>,
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
-    events: Arc<crate::embedded::EventChannel>,
-    actions: Arc<crate::embedded::ActionChannel>,
+    inbound: aimdb_core::InboundDispatch,
+    mut outbound: aimdb_core::OutboundRoutes,
+    opts: Vec<crate::publish_opts::PublishOpts>,
+    write_buffer: usize,
     delay: D,
     runtime: Arc<dyn aimdb_core::RuntimeOps>,
 ) -> !
@@ -342,6 +345,9 @@ where
         .iter()
         .map(|topic| (topic.as_str(), QualityOfService::Qos1))
         .collect();
+
+    // Allocated once and reused by every session.
+    let ring = WriteRing::new(write_buffer);
 
     loop {
         // Certificate validity needs real time. Take it from the runtime when
@@ -408,8 +414,10 @@ where
             TlsWrite(tls_tx),
             &connection_settings,
             &subscribe_topics,
-            &events,
-            &actions,
+            &inbound,
+            &mut outbound,
+            &opts,
+            &ring,
             &settings,
             &delay,
             runtime.as_ref(),

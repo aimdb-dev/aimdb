@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Topic patterns on inbound links (design 055).** `{name}` captures one
+- **Topic patterns on inbound links.** `{name}` captures one
   level, `{name..}` the rest; the syntax is checked at `build()`, and the
   connector's `TopicGrammar` compiles each pattern into a `TopicFilter` when it
   builds. `ExactGrammar` is the grammar for connectors without wildcards.
@@ -25,8 +25,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including patterns a `TopicResolverFn` returns, and reports every link it
   cannot compile at once. `Router::subscriptions()` lists the filters to
   subscribe, without those another filter covers.
+- **`OutboundRoutes`: one pull for every outbound link of a scheme.**
+  `OutboundRoutes::new(db, scheme)` builds a route per link, each with
+  its record's reader, topic writer and serializers, and a lock-free ready set
+  that wakes only routes with data. A connector's own task calls
+  `next().await` (or `poll_next`, or `poll_stage` / `take_staged` / `reject`
+  to commit a message only once it has room) and receives an `OutboundMessage`
+  borrowing the route's topic and payload buffers, so a message allocates
+  nothing on a scratch serializer. `routes()` lists `RouteInfo` (default topic,
+  `ConnectorConfig` with `record_index`, topic and payload capacities);
+  `stats(id)` reports `RouteStats` (`sent`, `rejected`, `lagged`,
+  `topic_overflow`, `serialize_failed`). Lag, serialize failures and a closed
+  buffer are handled and counted inside; `next` ends when every route has
+  closed. `OutboundPayload` is `Borrowed` or `Owned`, with `as_slice` and
+  `into_vec`.
+- **`InboundDispatch`: the inbound counterpart.** `InboundDispatch::new(db,
+  scheme, grammar)` wraps the router and the runtime context;
+  `dispatch(topic, payload)` deserializes and produces, logging failures, and
+  `subscriptions()` lists the filters to subscribe. It is `Clone`, so the
+  session task, the event loop and the inbound pumps share one.
+- **`with_topic_writer(capacity, writer)` and `with_topic_fn(capacity, f)`**
+  replace `with_topic_provider`. The writer receives the value and a
+  `TopicBuf` (`push_str`, `write!`) of `capacity` bytes and returns
+  `Ok(true)` to publish there or `Ok(false)` for the link's default topic. A
+  topic that overflows the buffer skips the value and is counted in
+  `topic_overflow`, whatever the writer returns.
+- **`Reader::poll_recv`**, the poll form of `recv`, for tasks that wait on
+  several readers at once. `recv` is unchanged.
 
 ### Changed (breaking, API)
+
+- **Connector SPI: the push pumps are gone.** Removed
+  `session::pump_sink`, `session::pump_source`, `Source`, the `Connector`
+  trait (with `transport::Connector::publish`), `TopicProvider`,
+  `OutboundRoute`, `AimDb::collect_outbound_routes`, `SerializedSource`,
+  `SerializedReader`, `SerializedValue`, `SerializedValueInto`,
+  `SerializedPayload` and `SourceFactoryFn`. A connector now builds
+  `InboundDispatch` and `OutboundRoutes` in `build()` and drives both
+  directions from its own transport task; core spawns no task per connector or
+  per route.
+- **`with_topic_provider` is replaced by `with_topic_writer` /
+  `with_topic_fn`**, which write the topic into a bounded buffer instead of
+  returning an `Option<String>`.
+- **`pump_client(db, scheme, inbound, handle)` returns `DbResult<Vec<_>>`**
+  and drives all outbound routes from one task instead of one per route, plus
+  one future per inbound subscription. During an outage the engine's command
+  queue, not the record buffer, decides what survives.
+- **`OutboundConnectorLink`'s route factory and `new` are `pub(crate)`, and the
+  `router` module is no longer public.**
 
 - **One inbound path.** Removed `AimDb::collect_inbound_routes`,
   `RouterBuilder`, `Route` and the public `Router::new`; a `Router` comes from
@@ -58,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ConnectorConfig::from_query` parses that pair into `record_index` rather than
   passing it on in `protocol_options`. `record_index` is therefore a reserved
   config key: a value set through `with_config("record_index", …)` is
-  overridden by the stamped one, which is appended last.
+  overridden by the stamped one, which is appended last. `OutboundRoutes`
+  now stamps it, in `RouteInfo::config`.
 
 ## [2.0.0] - 2026-09-18
 

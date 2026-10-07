@@ -26,10 +26,9 @@ Plus two informational benches that exercise the full runner-driven pipeline.
   `b1_b2_remote_json` (host). These compare issue #196's direct JSON bytes with
   the compatibility `serde_json::Value` tree through the real typed record,
   buffer, `Payload` and AimX envelope. Socket I/O and scheduling are excluded.
-- **connector boundary** — `b0_alloc_connector` (host). Baseline for design
-  054: `Router::route`, `pump_source` with a minimal `Source`, and the
-  per-message `recv_into` + `Connector::publish` calls of `pump_sink`, on a
-  no-op connector.
+- **connector boundary** — `b0_alloc_connector` (host). The connector
+  interfaces from design 054: `InboundDispatch::dispatch` and
+  `OutboundRoutes::next`, on a no-op connector.
 - **Embassy** — `b0_alloc_embassy`, `b1_b2_embassy`
   (host). These drive the real [`EmbassyBuffer`] backend via
   `futures::executor::block_on` over embassy-sync's poll methods — no
@@ -127,11 +126,11 @@ The committed baseline lives in `data/baselines/b0_alloc_tokio.json`. When a cha
 `b0_alloc_embassy` mirrors this against the Embassy buffer backend and writes `data/baselines/b0_alloc_embassy.json` — also **0 allocs/msg** across all three profiles, confirming the Embassy `poll_recv` path is allocation-free on the host. The on-target B3 bench (`examples/embassy-bench-stm32h5`) re-checks the same 0-alloc claim against the real embedded allocator.
 
 `b0_alloc_linkable` warms up for 1,000 iterations, then measures 10,000 generated-shape postcard `Linkable::encode_into` calls into one stack buffer.
-The required result is **0 allocation calls and 0 allocated bytes**. It isolates the codec seam: `SerializedReader` still returns a boxed future, dynamic topics may allocate and connector implementations may copy payload ownership after the core pump lends them the scratch slice.
+The required result is **0 allocation calls and 0 allocated bytes**. It isolates the codec seam: connector implementations may still copy the payload after `OutboundRoutes` lends them the scratch slice.
 
 `b0_alloc_remote_json` warms the production in-memory `record.get` and subscription-event paths, then compares 5000 tree/direct operations. Its gate is relative: direct JSON must reduce both allocation calls and allocated bytes. It does not require zero allocations because the owned JSON `Vec`, `Arc<[u8]>` payload and AimX envelope serialization still own storage.
 
-`b0_alloc_connector` measures what the connector interfaces cost per message, with no transport. It asserts today's values exactly (0 for `route`, 2 for `pump_source`, 2–3 outbound), so a regression *or* an improvement fails it until `EXPECTED` in the bench and `data/baselines/b0_alloc_connector.json` are updated together. The inbound `pump_source` row is the difference of two runs, so pump setup cancels out. See design 054 for where each allocation comes from.
+`b0_alloc_connector` measures what the connector interfaces cost per message, with no transport. It asserts its values exactly (0 everywhere except a new key, 1, and the owned serializer, 1), so a regression *or* an improvement fails it until `EXPECTED` in the bench and `data/baselines/b0_alloc_connector.json` are updated together. `make bench-gate` runs it. See design 054 for where each allocation comes from.
 
 > **Embassy eager registration (design 039 F8/F9).** An Embassy `SpmcRing` reader registers its embassy `Subscriber` eagerly, at `subscribe()` time — matching Tokio's `broadcast` — so no separate priming step is needed before the first `push`.
 

@@ -39,9 +39,15 @@ type BuildFuture<'a> = Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + S
 pub struct Native;
 
 /// The `mountain-mqtt` backend over a caller-supplied transport.
+///
+/// Inbound publishes are delivered into their records by the session task
+/// itself. At QoS 1 the PUBACK is sent before delivery, so it means the
+/// message reached AimDB, not that every record kept it: a record whose
+/// buffer is full drops it, and the broker does not resend.
 #[cfg(feature = "embedded")]
 pub struct Embedded<D> {
     pub(crate) dialer: D,
+    pub(crate) write_buffer: usize,
 }
 
 /// The `mountain-mqtt` backend over `embedded-tls`, on the same
@@ -50,6 +56,7 @@ pub struct Embedded<D> {
 pub struct EmbeddedTls<D> {
     pub(crate) dialer: D,
     pub(crate) options: crate::embedded::TlsSlot,
+    pub(crate) write_buffer: usize,
 }
 
 /// An MQTT connector over the backend `B`.
@@ -85,7 +92,10 @@ impl MqttConnector<Native> {
             client_id: self.client_id,
             credentials: self.credentials,
             keep_alive: self.keep_alive,
-            backend: Embedded { dialer },
+            backend: Embedded {
+                dialer,
+                write_buffer: crate::embedded::DEFAULT_WRITE_BUFFER,
+            },
         }
     }
 
@@ -105,6 +115,7 @@ impl MqttConnector<Native> {
             backend: EmbeddedTls {
                 dialer,
                 options: crate::embedded::TlsSlot::new(options),
+                write_buffer: crate::embedded::DEFAULT_WRITE_BUFFER,
             },
         }
     }
@@ -134,6 +145,38 @@ impl<B> MqttConnector<B> {
     /// (MQTT CONNECT keep-alive). Defaults to 60 s.
     pub fn with_keep_alive(mut self, keep_alive: Duration) -> Self {
         self.keep_alive = keep_alive;
+        self
+    }
+}
+
+/// The write buffer's documentation, shared by both embedded backends.
+#[cfg(feature = "embedded")]
+macro_rules! write_buffer_doc {
+    () => {
+        "Size the session's write ring, in bytes (default 4,096). Allocated once \
+         and reused across reconnects.\n\n\
+         An outbound PUBLISH frame plus a 64-byte reserve must fit in half the \
+         ring (1,984 bytes of frame at the default). `build()` fails for a \
+         route whose largest frame does not fit, and for a CONNECT or \
+         SUBSCRIBE that does not; an owned payload over the limit at runtime \
+         is skipped and counted as rejected in the route's `RouteStats`."
+    };
+}
+
+#[cfg(feature = "embedded")]
+impl<D> MqttConnector<Embedded<D>> {
+    #[doc = write_buffer_doc!()]
+    pub fn with_write_buffer(mut self, bytes: usize) -> Self {
+        self.backend.write_buffer = bytes;
+        self
+    }
+}
+
+#[cfg(feature = "embedded-tls")]
+impl<D> MqttConnector<EmbeddedTls<D>> {
+    #[doc = write_buffer_doc!()]
+    pub fn with_write_buffer(mut self, bytes: usize) -> Self {
+        self.backend.write_buffer = bytes;
         self
     }
 }
@@ -223,6 +266,7 @@ where
             credentials,
             keep_alive_secs,
             &self.dialer,
+            self.write_buffer,
         )
     }
 }

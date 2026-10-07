@@ -285,10 +285,10 @@ impl<T> Clone for Consumer<T> {
 }
 
 // ============================================================================
-// Fused outbound source
+// Outbound routes
 // ============================================================================
 
-/// Type alias for the unified typed serializer captured by [`FusedSource`]
+/// Type alias for the unified typed serializer captured by [`TypedRoute`]
 ///
 /// Raw and context-aware serializers collapse into this shape at `finish()`;
 /// the raw variant simply ignores the threaded context.
@@ -298,9 +298,12 @@ type FusedSerializeFn<T> = Arc<
         + Sync,
 >;
 
+/// Builds a link's `Consumer<T>` from the live database, once per route.
+type ConsumerFactoryFn<T> = Arc<dyn Fn(&AimDb) -> Consumer<T> + Send + Sync>;
+
 /// Optional allocation-free serializer captured beside [`FusedSerializeFn`].
 ///
-/// The callback writes into one pump-owned bounded scratch buffer. Returning
+/// The callback writes into the `OutboundRoutes` scratch buffer. Returning
 /// `BufferTooSmall` selects the owned serializer for that value; other failures
 /// retain the existing skip-and-log behavior.
 type FusedSerializeIntoFn<T> = Arc<
@@ -309,157 +312,105 @@ type FusedSerializeIntoFn<T> = Arc<
         + Sync,
 >;
 
-/// The [`SerializedSource`](crate::connector::SerializedSource) built by
-/// `OutboundConnectorBuilder::finish()` — holds the typed consumer,
-/// serializer, and optional topic provider, so every per-message step stays
-/// typed (no `Box<dyn Any>`).
-struct FusedSource<T: Send + Sync + 'static + Debug + Clone> {
-    consumer: Consumer<T>,
-    serialize: FusedSerializeFn<T>,
-    serialize_into: Option<(usize, FusedSerializeIntoFn<T>)>,
-    topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
-}
+/// An outbound link's topic writer and the capacity it writes into.
+type TopicWriterCfg<T> = (usize, Arc<dyn crate::connector::TopicWriter<T>>);
 
-impl<T> crate::connector::SerializedSource for FusedSource<T>
-where
-    T: Send + Sync + 'static + Debug + Clone,
-{
-    fn serializer_scratch_capacity(&self) -> Option<usize> {
-        self.serialize_into.as_ref().map(|(capacity, _)| *capacity)
-    }
-
-    fn subscribe(&self) -> Box<dyn crate::connector::SerializedReader> {
-        Box::new(FusedReader {
-            inner: self.consumer.subscribe(),
-            serialize: self.serialize.clone(),
-            serialize_into: self
-                .serialize_into
-                .as_ref()
-                .map(|(_, serialize_into)| serialize_into.clone()),
-            topic: self.topic.clone(),
-        })
+/// Runs `writer` for `value` into `out`. `Ok(true)`: publish to what `out`
+/// holds; `Ok(false)`: to the link's default topic; `Err`: the topic did not
+/// fit and the value is skipped, whatever the writer returned.
+fn write_topic<T, W: crate::connector::TopicWriter<T> + ?Sized>(
+    writer: &W,
+    value: &T,
+    out: &mut crate::connector::TopicBuf<'_>,
+) -> Result<bool, crate::connector::TopicOverflow> {
+    match writer.write_topic(value, out) {
+        Ok(written) if !out.overflowed() => Ok(written),
+        _ => Err(crate::connector::TopicOverflow),
     }
 }
 
-/// One subscription of a [`FusedSource`]: recv → resolve destination →
-/// serialize, all on the typed value.
-///
-/// The connector SPI keeps its boxed `RecvSerializedFuture` (BYOC stays
-/// stable); only the *inner* per-message box is eliminated by reading through
-/// the allocation-free [`Reader<T>`](crate::buffer::Reader).
-struct FusedReader<T: Clone + Send + 'static> {
-    inner: crate::buffer::Reader<T>,
+/// Serializes one outbound value: into `scratch` through
+/// `with_serializer_into` when the link has one, else (or when the value does
+/// not fit) through the owned serializer.
+fn serialize_outbound<T>(
+    serialize: &FusedSerializeFn<T>,
+    serialize_into: Option<&FusedSerializeIntoFn<T>>,
+    ctx: &crate::RuntimeContext,
+    value: &T,
+    scratch: &mut [u8],
+) -> Result<crate::outbound::StagedPayload, crate::outbound::SerializeFailure> {
+    use crate::connector::SerializeError;
+    use crate::outbound::{SerializeFailure, StagedPayload};
+
+    let Some(serialize_into) = serialize_into else {
+        return serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Owned);
+    };
+    match serialize_into(ctx, value, scratch) {
+        Ok(len) if len <= scratch.len() => Ok(StagedPayload::Scratch(len)),
+        Ok(len) => Err(SerializeFailure::InvalidLength {
+            len,
+            capacity: scratch.len(),
+        }),
+        Err(SerializeError::BufferTooSmall) => serialize(ctx, value)
+            .map(StagedPayload::Owned)
+            .map_err(SerializeFailure::Fallback),
+        Err(e) => Err(SerializeFailure::Into(e)),
+    }
+}
+
+/// One outbound link's per-route state inside
+/// [`OutboundRoutes`](crate::OutboundRoutes): reader, topic writer and
+/// serializers, all typed.
+struct TypedRoute<T: Clone + Send + 'static> {
+    reader: crate::buffer::Reader<T>,
+    writer: Option<Arc<dyn crate::connector::TopicWriter<T>>>,
     serialize: FusedSerializeFn<T>,
     serialize_into: Option<FusedSerializeIntoFn<T>>,
-    topic: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
 }
 
-impl<T: Clone + Send + 'static> crate::connector::SerializedReader for FusedReader<T> {
-    fn recv<'a>(
-        &'a mut self,
-        ctx: &'a crate::RuntimeContext,
-    ) -> crate::connector::RecvSerializedFuture<'a> {
-        Box::pin(async move {
-            loop {
-                // Buffer errors propagate unchanged: `BufferLagged` lets the
-                // pump skip the gap and keep going; anything else ends it.
-                let value = self.inner.recv().await?;
-                // Resolve the destination while the typed value is in hand.
-                let dest = self.topic.as_ref().and_then(|p| p.topic(&value));
-                match (self.serialize)(ctx, &value) {
-                    Ok(payload) => return Ok(crate::connector::SerializedValue { dest, payload }),
-                    Err(_e) => {
-                        // Same skip-and-log the pumps used to do around the
-                        // erased serializer.
-                        log_error!(
-                            "outbound link: failed to serialize {} (dest {:?}): {:?}",
-                            core::any::type_name::<T>(),
-                            dest,
-                            _e
-                        );
-                        continue;
-                    }
+impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
+    fn poll_route(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+        ctx: &crate::RuntimeContext,
+        topic: &mut [u8],
+        payload: &mut [u8],
+    ) -> core::task::Poll<crate::outbound::RouteOutcome> {
+        use crate::outbound::RouteOutcome;
+        use core::task::Poll;
+
+        let value = match self.reader.poll_recv(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(value)) => value,
+            Poll::Ready(Err(crate::DbError::BufferLagged { lag_count, .. })) => {
+                return Poll::Ready(RouteOutcome::Lagged(lag_count));
+            }
+            Poll::Ready(Err(e)) => return Poll::Ready(RouteOutcome::Closed(e)),
+        };
+
+        let topic_len = match &self.writer {
+            None => None,
+            Some(writer) => {
+                let mut out = crate::connector::TopicBuf::new(topic);
+                match write_topic(&**writer, &value, &mut out) {
+                    Ok(written) => written.then_some(out.len()),
+                    Err(_) => return Poll::Ready(RouteOutcome::TopicOverflow),
                 }
             }
-        })
-    }
+        };
 
-    fn recv_into<'a>(
-        &'a mut self,
-        ctx: &'a crate::RuntimeContext,
-        scratch: &'a mut [u8],
-    ) -> crate::connector::RecvSerializedIntoFuture<'a> {
-        Box::pin(async move {
-            loop {
-                let value = self.inner.recv().await?;
-                let dest = self.topic.as_ref().and_then(|p| p.topic(&value));
-
-                let Some(serialize_into) = &self.serialize_into else {
-                    match (self.serialize)(ctx, &value) {
-                        Ok(payload) => {
-                            return Ok(crate::connector::SerializedValueInto {
-                                dest,
-                                payload: crate::connector::SerializedPayload::Owned(payload),
-                            });
-                        }
-                        Err(_e) => {
-                            log_error!(
-                                "outbound link: failed to serialize {} (dest {:?}): {:?}",
-                                core::any::type_name::<T>(),
-                                dest,
-                                _e
-                            );
-                            continue;
-                        }
-                    }
-                };
-
-                match serialize_into(ctx, &value, scratch) {
-                    Ok(len) => {
-                        if scratch.get(..len).is_none() {
-                            log_error!(
-                                "outbound link: serializer for {} returned invalid length {} for {}-byte scratch buffer",
-                                core::any::type_name::<T>(),
-                                len,
-                                scratch.len()
-                            );
-                            continue;
-                        }
-                        return Ok(crate::connector::SerializedValueInto {
-                            dest,
-                            payload: crate::connector::SerializedPayload::Scratch { len },
-                        });
-                    }
-                    Err(crate::connector::SerializeError::BufferTooSmall) => {
-                        match (self.serialize)(ctx, &value) {
-                            Ok(payload) => {
-                                return Ok(crate::connector::SerializedValueInto {
-                                    dest,
-                                    payload: crate::connector::SerializedPayload::Owned(payload),
-                                });
-                            }
-                            Err(_e) => {
-                                log_error!(
-                                    "outbound link: fallback serialization failed for {} (dest {:?}): {:?}",
-                                    core::any::type_name::<T>(),
-                                    dest,
-                                    _e
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        log_error!(
-                            "outbound link: failed to serialize {} into scratch buffer (dest {:?}): {:?}",
-                            core::any::type_name::<T>(),
-                            dest,
-                            _e
-                        );
-                        continue;
-                    }
-                }
-            }
+        let serialized = serialize_outbound(
+            &self.serialize,
+            self.serialize_into.as_ref(),
+            ctx,
+            &value,
+            payload,
+        );
+        Poll::Ready(match serialized {
+            Ok(payload) => RouteOutcome::Staged { topic_len, payload },
+            Err(failure) => RouteOutcome::SerializeFailed(failure),
         })
     }
 }
@@ -743,7 +694,7 @@ where
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
-            topic_provider: None,
+            topic_writer: None,
         }
     }
 
@@ -777,7 +728,7 @@ pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + C
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
-    topic_provider: Option<Arc<dyn crate::connector::TopicProvider<T>>>,
+    topic_writer: Option<TopicWriterCfg<T>>,
 }
 
 impl<'r, 'a, T> OutboundConnectorBuilder<'r, 'a, T>
@@ -857,24 +808,40 @@ where
         self
     }
 
-    /// Sets a dynamic topic provider
+    /// Sets a [`TopicWriter`](crate::connector::TopicWriter) that writes each
+    /// value's destination.
     ///
-    /// The provider receives the value being published and returns
-    /// the topic/destination to publish to. Return `None` to use the default
-    /// static topic from the URL.
-    ///
-    /// # Type Safety
-    ///
-    /// The provider is type-checked at compile time against `T` and stays
-    /// typed end-to-end: it is fused into the link's serialized source and
-    /// called with `&T` per value.
-    pub fn with_topic_provider<P>(mut self, provider: P) -> Self
+    /// `capacity` is the longest topic the writer produces, in bytes. A value
+    /// whose topic does not fit is skipped and logged. For a closure, use
+    /// [`with_topic_fn`](Self::with_topic_fn).
+    pub fn with_topic_writer<W>(mut self, capacity: usize, writer: W) -> Self
     where
-        P: crate::connector::TopicProvider<T> + 'static,
+        W: crate::connector::TopicWriter<T> + 'static,
     {
-        // Stays typed: fused into the link's SerializedSource at finish().
-        self.topic_provider = Some(Arc::new(provider));
+        self.topic_writer = Some((capacity, Arc::new(writer)));
         self
+    }
+
+    /// Sets a closure that writes each value's destination; see
+    /// [`with_topic_writer`](Self::with_topic_writer).
+    ///
+    /// ```rust,ignore
+    /// .with_topic_fn(32, |v, out| {
+    ///     write!(out, "sensors/{}/{}", v.site, v.id)?;
+    ///     Ok(true)
+    /// })
+    /// ```
+    pub fn with_topic_fn<F>(self, capacity: usize, f: F) -> Self
+    where
+        F: Fn(
+                &T,
+                &mut crate::connector::TopicBuf<'_>,
+            ) -> Result<bool, crate::connector::TopicOverflow>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.with_topic_writer(capacity, f)
     }
 
     /// Finalizes the connector registration
@@ -970,38 +937,32 @@ where
             self.registrar.last_stage = Some((StageKind::Link, 0));
         }
 
-        // Fused source factory that captures type T and record key.
+        // Resolves the record and builds a `Consumer<T>` bound to its buffer
+        // handle, once per route (not per message) — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures`.
         //
-        // Resolves the record at route-collection time (not per-message) and
-        // constructs a `Consumer<T>` bound to a pre-resolved buffer handle —
-        // same pattern as the build-time path in
-        // `TypedRecord::collect_consumer_futures`. The serializer
-        // and topic provider ride along typed, so the readers handed to the
-        // pumps yield destination + payload with no erasure crossing.
-        //
-        // The factory runs during build() after every record is registered and
-        // validated (including the linked-records-need-a-buffer check), so
-        // failures here are aimdb bugs, not user mistakes.
+        // The factories run during build() after every record is registered
+        // and validated (including the linked-records-need-a-buffer check),
+        // so failures here are aimdb bugs, not user mistakes.
         #[allow(
             clippy::panic,
             reason = "the factory returns no Result and these lookups were validated at build() time"
         )]
-        let source_factory: crate::connector::SourceFactoryFn = {
+        let make_consumer: ConsumerFactoryFn<T> = {
             let record_key = self.registrar.record_key.clone();
-            let topic_provider = self.topic_provider;
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
                     .get_typed_record_by_key::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
-                            "source factory: record '{record_key}' lookup failed ({e:?}) — \
+                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
                              this is a bug in aimdb-core"
                         )
                     });
                 let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
                     panic!(
-                        "source factory: record '{record_key}' has no buffer despite \
+                        "outbound link: record '{record_key}' has no buffer despite \
                          build()-time validation — this is a bug in aimdb-core"
                     )
                 });
@@ -1010,20 +971,35 @@ where
                 let mut consumer = Consumer::<T>::new(buffer);
                 #[cfg(feature = "observability")]
                 consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
-                Box::new(FusedSource {
-                    consumer,
-                    serialize: serialize.clone(),
-                    serialize_into: serialize_into.clone(),
-                    topic: topic_provider.clone(),
-                }) as Box<dyn crate::connector::SerializedSource>
+                consumer
             })
         };
 
-        let mut link = ConnectorLink::new(url, source_factory);
+        // Subscribed when `OutboundRoutes` is built.
+        let route_factory: crate::outbound::RouteFactoryFn = {
+            let topic_writer = self.topic_writer;
+            Arc::new(move |db: &AimDb| {
+                let (topic_capacity, writer) = match &topic_writer {
+                    Some((capacity, writer)) => (*capacity, Some(writer.clone())),
+                    None => (0, None),
+                };
+                crate::outbound::RouteParts {
+                    route: Box::new(TypedRoute {
+                        reader: make_consumer(db).subscribe(),
+                        writer,
+                        serialize: serialize.clone(),
+                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
+                    }),
+                    topic_capacity,
+                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
+                }
+            })
+        };
+
+        let mut link = ConnectorLink::new(url, route_factory);
         link.config = self.config;
 
-        // Store the connector link - sources will be created later in build()
-        // after connectors are actually built
+        // Routes are built later, when a connector builds its `OutboundRoutes`.
         self.registrar.rec.add_outbound_connector(link);
         self.registrar
     }
@@ -1293,10 +1269,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        connector::{SerializeError, SerializedPayload, SerializedReader as _, TopicProvider},
-        DbResult,
-    };
+    use crate::{connector::SerializeError, DbResult};
     use core::pin::Pin;
 
     #[cfg(not(feature = "std"))]
@@ -1993,10 +1966,11 @@ mod tests {
         }
     }
 
-    /// Routes `payload` on `topic` through the `mqtt` inbound router.
+    /// Dispatches `payload` on `topic` through the `mqtt` inbound routes.
     fn route(db: &crate::AimDb, topic: &str, payload: &[u8]) {
-        let router = db.inbound_router("mqtt", &Plus).expect("routes compile");
-        router.route(topic, payload, &db.runtime_ctx()).unwrap();
+        crate::InboundDispatch::new(db, "mqtt", &Plus)
+            .expect("routes compile")
+            .dispatch(topic, payload);
     }
 
     /// End-to-end inbound path: bytes → fused ingest → typed buffer push,
@@ -2043,7 +2017,7 @@ mod tests {
     }
 
     // ====================================================================
-    // inbound_router: patterns, keys and connector-build errors
+    // InboundDispatch: patterns, keys and connector-build errors
     // ====================================================================
 
     use crate::topic_pattern::test_support::Plus;
@@ -2080,8 +2054,16 @@ mod tests {
         })
     }
 
+    fn config_errors<T>(result: crate::DbResult<T>) -> Vec<crate::ConfigError> {
+        match result {
+            Err(crate::DbError::InvalidConfiguration { errors }) => errors,
+            Err(e) => panic!("unexpected error {e:?}"),
+            Ok(_) => panic!("expected configuration errors"),
+        }
+    }
+
     #[tokio::test]
-    async fn inbound_router_routes_patterns_with_shared_keys() {
+    async fn inbound_dispatch_routes_patterns_with_shared_keys() {
         let keys: Arc<spin::Mutex<Vec<crate::KeyId>>> = Default::default();
         let seen = keys.clone();
         let (db, last, count) = inbound_db(move |reg| {
@@ -2102,25 +2084,25 @@ mod tests {
         })
         .await;
 
-        let router = db.inbound_router("mqtt", &Plus).expect("routes compile");
-        let subscriptions: Vec<String> = router
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        let subscriptions: Vec<String> = inbound
             .subscriptions()
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(subscriptions, ["cmd/in", "hum/+", "temp/+"]);
+        assert_eq!(inbound.route_count(), 3);
 
-        let ctx = db.runtime_ctx();
-        let route = |topic: &str| {
-            router.route(topic, b"", &ctx).unwrap();
+        let dispatch = |topic: &str| {
+            inbound.dispatch(topic, b"");
             last.load(Ordering::SeqCst)
         };
-        assert_eq!(route("temp/a"), 0);
-        assert_eq!(route("hum/b"), 1);
-        assert_eq!(route("hum/a"), 0, "one key table per record");
-        assert_eq!(route("cmd/in"), 100);
+        assert_eq!(dispatch("temp/a"), 0);
+        assert_eq!(dispatch("hum/b"), 1);
+        assert_eq!(dispatch("hum/a"), 0, "one key table per record");
+        assert_eq!(dispatch("cmd/in"), 100);
         let produced = count.load(Ordering::SeqCst);
-        route("temp/c");
+        dispatch("temp/c");
         assert_eq!(count.load(Ordering::SeqCst), produced, "full table drops");
 
         let a = keys.lock()[0];
@@ -2136,16 +2118,8 @@ mod tests {
         }
     }
 
-    fn config_errors(result: crate::DbResult<crate::Router>) -> Vec<crate::ConfigError> {
-        match result {
-            Err(crate::DbError::InvalidConfiguration { errors }) => errors,
-            Err(e) => panic!("unexpected error {e:?}"),
-            Ok(_) => panic!("expected configuration errors"),
-        }
-    }
-
     #[tokio::test]
-    async fn inbound_router_rejects_links_it_cannot_compile() {
+    async fn inbound_dispatch_rejects_links_it_cannot_compile() {
         let (db, _, _) = inbound_db(|reg| {
             reg.link_from("mqtt://s/{d}/t")
                 .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
@@ -2162,7 +2136,7 @@ mod tests {
         })
         .await;
 
-        let errors = config_errors(db.inbound_router("mqtt", &Plus));
+        let errors = config_errors(crate::InboundDispatch::new(&db, "mqtt", &Plus));
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors.iter().all(|e| e.record_key == "rec.in"));
         assert!(errors[0].message.contains("unbalanced '{' in 'r/{d'"));
@@ -2170,41 +2144,43 @@ mod tests {
             .message
             .contains("key 'd' is not a capture of 'k/{x}'"));
 
-        let errors = config_errors(db.inbound_router("mqtt", &crate::ExactGrammar));
+        let errors = config_errors(crate::InboundDispatch::new(
+            &db,
+            "mqtt",
+            &crate::ExactGrammar,
+        ));
         assert_eq!(errors.len(), 3, "{errors:?}");
         assert!(errors[0]
             .message
             .contains("does not support topic patterns"));
     }
 
-    #[cfg(feature = "connector-session")]
     #[tokio::test]
-    async fn pump_source_routes_through_the_given_router() {
-        struct Once(Option<(String, crate::Payload)>);
-        impl crate::Source for Once {
-            fn next(&mut self) -> crate::BoxFut<'_, Option<(String, crate::Payload)>> {
-                let next = self.0.take();
-                Box::pin(async move { next })
-            }
-        }
+    async fn inbound_dispatch_clones_share_records() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<crate::InboundDispatch>();
 
-        let (db, last, _) = inbound_db(|reg| {
-            reg.link_from("mqtt://temp/{d}")
-                .key("d", 2)
-                .with_match_deserializer(key_deser)
+        let (db, last, count) = inbound_db(|reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx, bytes: &[u8]| {
+                    Ok(TestRecord {
+                        value: bytes.len() as i32,
+                    })
+                })
                 .finish();
         })
         .await;
-        let router = db.inbound_router("mqtt", &Plus).unwrap();
-        let source = Once(Some(("temp/a".into(), Arc::from(&b"x"[..]))));
-        for pump in crate::pump_source(&db, router, source) {
-            pump.await;
-        }
-        assert_eq!(last.load(Ordering::SeqCst), 0);
+
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        let clone = inbound.clone();
+        drop(inbound);
+        clone.dispatch("cmd/in", b"abcd");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last.load(Ordering::SeqCst), 4);
     }
 
     // ====================================================================
-    // Fused outbound reader tests
+    // OutboundRoutes over typed links
     // ====================================================================
 
     /// Buffer reader that replays a fixed script, then reports the buffer
@@ -2213,29 +2189,111 @@ mod tests {
         script: Vec<Result<TestRecord, crate::DbError>>,
     }
 
-    impl ScriptedReader {
-        fn closed() -> crate::DbError {
-            crate::DbError::BufferClosed {
-                buffer_name: "scripted".to_string(),
-            }
-        }
-    }
-
     impl crate::buffer::BufferReader<TestRecord> for ScriptedReader {
         fn poll_recv(
             &mut self,
             _cx: &mut core::task::Context<'_>,
         ) -> core::task::Poll<Result<TestRecord, crate::DbError>> {
             let next = if self.script.is_empty() {
-                Err(Self::closed())
+                Err(crate::DbError::BufferClosed {
+                    buffer_name: "scripted".to_string(),
+                })
             } else {
                 self.script.remove(0)
             };
             core::task::Poll::Ready(next)
         }
         fn try_recv(&mut self) -> Result<TestRecord, crate::DbError> {
-            unimplemented!("not needed for fused reader tests")
+            unimplemented!("not needed for outbound route tests")
         }
+    }
+
+    type Script = fn() -> Vec<Result<TestRecord, crate::DbError>>;
+
+    /// Buffer whose readers replay `script`.
+    struct ScriptedBuffer(Script);
+
+    impl crate::buffer::DynBuffer<TestRecord> for ScriptedBuffer {
+        fn push(&self, _value: TestRecord) {}
+        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+            Box::new(ScriptedReader { script: (self.0)() })
+        }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+    }
+
+    fn values(values: &[i32]) -> Vec<Result<TestRecord, crate::DbError>> {
+        values
+            .iter()
+            .map(|&value| Ok(TestRecord { value }))
+            .collect()
+    }
+
+    fn le(_ctx: crate::RuntimeContext, r: &TestRecord) -> Result<Vec<u8>, SerializeError> {
+        Ok(r.value.to_le_bytes().to_vec())
+    }
+
+    /// Writes `r` into `out`.
+    fn le_into(
+        _ctx: crate::RuntimeContext,
+        r: &TestRecord,
+        out: &mut [u8],
+    ) -> Result<usize, SerializeError> {
+        let bytes = r.value.to_le_bytes();
+        out.get_mut(..bytes.len())
+            .ok_or(SerializeError::BufferTooSmall)?
+            .copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
+
+    /// `OutboundRoutes` for the `mqtt` links `links` registers on a record
+    /// whose buffer replays `script`.
+    async fn outbound(
+        script: Script,
+        links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
+    ) -> (crate::AimDb, crate::OutboundRoutes) {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.out", move |reg| {
+            reg.buffer_raw(Box::new(ScriptedBuffer(script)));
+            links(reg);
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+        let outbound = crate::OutboundRoutes::new(&db, "mqtt").expect("outbound routes");
+        (db, outbound)
+    }
+
+    /// The next message as `(topic, value, owned)`.
+    async fn pull(o: &mut crate::OutboundRoutes) -> Option<(String, i32, bool)> {
+        let msg = o.next().await?;
+        let owned = matches!(msg.payload, crate::OutboundPayload::Owned(_));
+        let bytes: [u8; 4] = msg.payload.as_slice().try_into().expect("4 bytes");
+        Some((msg.topic.to_string(), i32::from_le_bytes(bytes), owned))
+    }
+
+    /// A lag is counted and skipped; a closed buffer ends the route.
+    #[tokio::test]
+    async fn outbound_routes_count_lag_and_end_on_close() {
+        let (_db, mut o) = outbound(
+            || {
+                vec![
+                    Ok(TestRecord { value: 1 }),
+                    Err(lagged()),
+                    Ok(TestRecord { value: 2 }),
+                ]
+            },
+            |reg| {
+                reg.link_to("mqtt://tele/out").with_serializer(le).finish();
+            },
+        )
+        .await;
+
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 1, true)));
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 2, true)));
+        assert_eq!(o.stats(0).unwrap().lagged, 1);
+        assert_eq!(pull(&mut o).await, None);
     }
 
     fn lagged() -> crate::DbError {
@@ -2245,287 +2303,180 @@ mod tests {
         }
     }
 
-    fn fused_reader(
-        script: Vec<Result<TestRecord, crate::DbError>>,
-        serialize: FusedSerializeFn<TestRecord>,
-        topic: Option<Arc<dyn TopicProvider<TestRecord>>>,
-    ) -> FusedReader<TestRecord> {
-        FusedReader {
-            inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
-            serialize,
-            serialize_into: None,
-            topic,
-        }
-    }
-
-    fn fused_reader_into(
-        script: Vec<Result<TestRecord, crate::DbError>>,
-        serialize: FusedSerializeFn<TestRecord>,
-        serialize_into: FusedSerializeIntoFn<TestRecord>,
-    ) -> FusedReader<TestRecord> {
-        FusedReader {
-            inner: crate::buffer::Reader::new(Box::new(ScriptedReader { script })),
-            serialize,
-            serialize_into: Some(serialize_into),
-            topic: None,
-        }
-    }
-
-    fn test_ctx() -> crate::RuntimeContext {
-        crate::RuntimeContext::new(Arc::new(MockRuntime))
-    }
-
-    /// Buffer errors propagate through the fused reader unchanged, so the
-    /// pumps keep their `BufferLagged => continue / Err => break` shape.
+    /// A value whose serializer fails is counted and skipped.
     #[tokio::test]
-    async fn fused_reader_propagates_buffer_errors() {
-        let mut reader = fused_reader(
-            vec![
-                Ok(TestRecord { value: 1 }),
-                Err(lagged()),
-                Ok(TestRecord { value: 2 }),
-            ],
-            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            None,
-        );
-        let ctx = test_ctx();
+    async fn outbound_routes_skip_serialize_failures() {
+        let (_db, mut o) = outbound(
+            || values(&[13, 42]),
+            |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_serializer(|ctx, r: &TestRecord| {
+                        if r.value == 13 {
+                            return Err(SerializeError::InvalidData);
+                        }
+                        le(ctx, r)
+                    })
+                    .finish();
+            },
+        )
+        .await;
 
-        let first = reader.recv(&ctx).await.expect("first value");
-        assert_eq!(first.payload, 1i32.to_le_bytes().to_vec());
-        assert_eq!(first.dest, None);
-
-        let err = reader.recv(&ctx).await.expect_err("lag must propagate");
-        assert!(matches!(err, crate::DbError::BufferLagged { .. }));
-
-        let second = reader.recv(&ctx).await.expect("second value");
-        assert_eq!(second.payload, 2i32.to_le_bytes().to_vec());
-
-        let closed = reader.recv(&ctx).await.expect_err("closed must propagate");
-        assert!(matches!(closed, crate::DbError::BufferClosed { .. }));
-    }
-
-    /// Serialization failures are skipped inside the reader (logged), exactly
-    /// like the old pump-side `continue`.
-    #[tokio::test]
-    async fn fused_reader_skips_serialize_failures() {
-        let mut reader = fused_reader(
-            vec![Ok(TestRecord { value: 13 }), Ok(TestRecord { value: 42 })],
-            Arc::new(|_ctx, r| {
-                if r.value == 13 {
-                    Err(SerializeError::InvalidData)
-                } else {
-                    Ok(r.value.to_le_bytes().to_vec())
-                }
-            }),
-            None,
-        );
-
-        // One recv: the failing value is skipped, the next good one returned.
-        let msg = reader.recv(&test_ctx()).await.expect("value");
-        assert_eq!(msg.payload, 42i32.to_le_bytes().to_vec());
+        assert_eq!(pull(&mut o).await.map(|m| m.1), Some(42));
+        assert_eq!(o.stats(0).unwrap().serialize_failed, 1);
     }
 
     #[tokio::test]
-    async fn fused_reader_into_uses_scratch_without_owned_fallback() {
+    async fn outbound_routes_use_scratch_without_owned_fallback() {
         let owned_calls = Arc::new(AtomicUsize::new(0));
         let into_calls = Arc::new(AtomicUsize::new(0));
-        let owned_counter = owned_calls.clone();
-        let into_counter = into_calls.clone();
-        let mut reader = fused_reader_into(
-            vec![Ok(TestRecord { value: 7 })],
-            Arc::new(move |_ctx, r| {
-                owned_counter.fetch_add(1, Ordering::SeqCst);
-                Ok(r.value.to_le_bytes().to_vec())
-            }),
-            Arc::new(move |_ctx, r, out| {
-                into_counter.fetch_add(1, Ordering::SeqCst);
-                let bytes = r.value.to_le_bytes();
-                out.get_mut(..bytes.len())
-                    .ok_or(SerializeError::BufferTooSmall)?
-                    .copy_from_slice(&bytes);
-                Ok(bytes.len())
-            }),
-        );
-        let mut scratch = [0_u8; 8];
+        let (owned_counter, into_counter) = (owned_calls.clone(), into_calls.clone());
+        let (_db, mut o) = outbound(
+            || values(&[7]),
+            move |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_serializer(move |ctx, r: &TestRecord| {
+                        owned_counter.fetch_add(1, Ordering::SeqCst);
+                        le(ctx, r)
+                    })
+                    .with_serializer_into(8, move |ctx, r: &TestRecord, out| {
+                        into_counter.fetch_add(1, Ordering::SeqCst);
+                        le_into(ctx, r, out)
+                    })
+                    .finish();
+            },
+        )
+        .await;
 
-        let msg = reader
-            .recv_into(&test_ctx(), &mut scratch)
-            .await
-            .expect("value");
-
-        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
-        assert_eq!(&scratch[..4], 7i32.to_le_bytes().as_slice());
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 7, false)));
         assert_eq!(into_calls.load(Ordering::SeqCst), 1);
         assert_eq!(owned_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn fused_reader_into_falls_back_once_when_scratch_is_small() {
+    async fn outbound_routes_fall_back_once_when_scratch_is_small() {
         let owned_calls = Arc::new(AtomicUsize::new(0));
         let owned_counter = owned_calls.clone();
-        let mut reader = fused_reader_into(
-            vec![Ok(TestRecord { value: 9 })],
-            Arc::new(move |_ctx, r| {
-                owned_counter.fetch_add(1, Ordering::SeqCst);
-                Ok(r.value.to_le_bytes().to_vec())
-            }),
-            Arc::new(|_ctx, _r, _out| Err(SerializeError::BufferTooSmall)),
-        );
-        let mut scratch = [0_u8; 2];
+        let (_db, mut o) = outbound(
+            || values(&[9]),
+            move |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_serializer(move |ctx, r: &TestRecord| {
+                        owned_counter.fetch_add(1, Ordering::SeqCst);
+                        le(ctx, r)
+                    })
+                    .with_serializer_into(2, |_ctx, _r: &TestRecord, _out| {
+                        Err(SerializeError::BufferTooSmall)
+                    })
+                    .finish();
+            },
+        )
+        .await;
 
-        let msg = reader
-            .recv_into(&test_ctx(), &mut scratch)
-            .await
-            .expect("fallback value");
-
-        assert_eq!(
-            msg.payload,
-            SerializedPayload::Owned(9i32.to_le_bytes().to_vec())
-        );
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 9, true)));
         assert_eq!(owned_calls.load(Ordering::SeqCst), 1);
     }
 
+    /// An into-slice serializer that reports more bytes than the scratch
+    /// holds, or fails with anything but `BufferTooSmall`, skips the value.
     #[tokio::test]
-    async fn fused_reader_into_rejects_invalid_length_and_skips_value() {
-        let mut reader = fused_reader_into(
-            vec![Ok(TestRecord { value: 1 }), Ok(TestRecord { value: 2 })],
-            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            Arc::new(|_ctx, r, out| {
-                if r.value == 1 {
-                    return Ok(out.len() + 1);
-                }
-                let bytes = r.value.to_le_bytes();
-                out[..bytes.len()].copy_from_slice(&bytes);
-                Ok(bytes.len())
-            }),
-        );
-        let mut scratch = [0_u8; 8];
+    async fn outbound_routes_skip_invalid_lengths_and_data() {
+        let (_db, mut o) = outbound(
+            || values(&[1, 2, 3]),
+            |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_serializer(le)
+                    .with_serializer_into(8, |ctx, r: &TestRecord, out| match r.value {
+                        1 => Ok(out.len() + 1),
+                        2 => Err(SerializeError::InvalidData),
+                        _ => le_into(ctx, r, out),
+                    })
+                    .finish();
+            },
+        )
+        .await;
 
-        let msg = reader
-            .recv_into(&test_ctx(), &mut scratch)
-            .await
-            .expect("second value");
-
-        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
-        assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 3, false)));
+        assert_eq!(o.stats(0).unwrap().serialize_failed, 2);
     }
 
+    /// `with_topic_fn` infers an unannotated closure's argument types;
+    /// `Ok(false)` publishes to the link's default topic.
     #[tokio::test]
-    async fn fused_reader_into_skips_invalid_data() {
-        let mut reader = fused_reader_into(
-            vec![Ok(TestRecord { value: 1 }), Ok(TestRecord { value: 2 })],
-            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            Arc::new(|_ctx, r, out| {
-                if r.value == 1 {
-                    return Err(SerializeError::InvalidData);
-                }
-                let bytes = r.value.to_le_bytes();
-                out[..bytes.len()].copy_from_slice(&bytes);
-                Ok(bytes.len())
-            }),
-        );
-        let mut scratch = [0_u8; 8];
+    async fn with_topic_fn_writes_the_topic_or_the_default() {
+        use core::fmt::Write as _;
+        let (_db, mut o) = outbound(
+            || values(&[5, 0]),
+            |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_topic_fn(8, |v, out| {
+                        if v.value <= 0 {
+                            return Ok(false);
+                        }
+                        write!(out, "dyn/{}", v.value)?;
+                        Ok(true)
+                    })
+                    .with_serializer(le)
+                    .finish();
+            },
+        )
+        .await;
 
-        let msg = reader
-            .recv_into(&test_ctx(), &mut scratch)
-            .await
-            .expect("second value");
-
-        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
-        assert_eq!(&scratch[..4], 2i32.to_le_bytes().as_slice());
+        assert_eq!(o.routes()[0].topic_capacity, 8);
+        assert_eq!(pull(&mut o).await.map(|m| m.0), Some("dyn/5".into()));
+        assert_eq!(pull(&mut o).await.map(|m| m.0), Some("tele/out".into()));
     }
 
-    /// The destination is resolved from the typed value while it is in hand.
+    /// A topic that overflows skips its value, even when the writer ignores
+    /// the error and returns `Ok(true)`.
     #[tokio::test]
-    async fn fused_reader_resolves_dynamic_topic() {
-        struct PositiveTopic;
-        impl TopicProvider<TestRecord> for PositiveTopic {
-            fn topic(&self, value: &TestRecord) -> Option<String> {
-                (value.value > 0).then(|| alloc::format!("dyn/{}", value.value))
-            }
-        }
+    async fn overflowing_topics_are_skipped() {
+        use core::fmt::Write as _;
+        let (_db, mut o) = outbound(
+            || values(&[123_456, 1_234_567, 7]),
+            |reg| {
+                reg.link_to("mqtt://tele/out")
+                    .with_topic_fn(6, |v, out| {
+                        if v.value == 1_234_567 {
+                            let _ = write!(out, "t/{}", v.value);
+                            return Ok(true);
+                        }
+                        write!(out, "t/{}", v.value)?;
+                        Ok(true)
+                    })
+                    .with_serializer(le)
+                    .finish();
+            },
+        )
+        .await;
 
-        let mut reader = fused_reader(
-            vec![Ok(TestRecord { value: 5 }), Ok(TestRecord { value: 0 })],
-            Arc::new(|_ctx, r| Ok(r.value.to_le_bytes().to_vec())),
-            Some(Arc::new(PositiveTopic)),
-        );
-        let ctx = test_ctx();
-
-        let first = reader.recv(&ctx).await.expect("value");
-        assert_eq!(first.dest.as_deref(), Some("dyn/5"));
-
-        let second = reader.recv(&ctx).await.expect("value");
-        assert_eq!(second.dest, None); // falls back to the route default
+        // "t/123456" (8 bytes) and "t/1234567" (9 bytes) do not fit in 6.
+        assert_eq!(pull(&mut o).await, Some(("t/7".into(), 7, true)));
+        assert_eq!(o.stats(0).unwrap().topic_overflow, 2);
     }
 
-    /// End-to-end outbound path: registrar → build → collect → subscribe →
-    /// recv, pinning the factory wiring (raw and context serializers).
+    /// Registrar → build → `OutboundRoutes`, pinning the factory wiring: the
+    /// serializer set last wins, whichever way its context is typed.
     #[tokio::test]
     async fn outbound_roundtrip_yields_serialized_values() {
-        /// Buffer whose readers replay one canned value, then close.
-        struct CannedBuffer;
-        impl crate::buffer::DynBuffer<TestRecord> for CannedBuffer {
-            fn push(&self, _value: TestRecord) {}
-            fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
-                Box::new(ScriptedReader {
-                    script: vec![Ok(TestRecord { value: 5 })],
-                })
-            }
-            fn as_any(&self) -> &dyn core::any::Any {
-                self
-            }
-        }
+        let (_db, mut o) = outbound(
+            || values(&[5]),
+            |reg| {
+                reg.link_to("mqtt://tele/out?qos=1")
+                    .with_serializer(|_ctx, _r: &TestRecord| Ok(vec![0]))
+                    .with_serializer(|_ctx: crate::RuntimeContext, r: &TestRecord| {
+                        Ok(r.value.to_le_bytes().to_vec())
+                    })
+                    .with_serializer_into(4, |ctx, r: &TestRecord, out| le_into(ctx, r, out))
+                    .finish();
+            },
+        )
+        .await;
 
-        struct FixedTopic;
-        impl TopicProvider<TestRecord> for FixedTopic {
-            fn topic(&self, value: &TestRecord) -> Option<String> {
-                Some(alloc::format!("dyn/{}", value.value))
-            }
-        }
-
-        let mut builder = crate::AimDbBuilder::new()
-            .runtime(Arc::new(MockRuntime))
-            .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.out", |reg| {
-            reg.buffer_raw(Box::new(CannedBuffer));
-            // Raw set first, context set last — context must win (the kind
-            // enum is gone; mutual exclusion is behavior now).
-            reg.link_to("mqtt://tele/out")
-                .with_topic_provider(FixedTopic)
-                .with_serializer(|_ctx, _r: &TestRecord| Ok(vec![0]))
-                .with_serializer(|_ctx: crate::RuntimeContext, r: &TestRecord| {
-                    Ok(r.value.to_le_bytes().to_vec())
-                })
-                .with_serializer_into(4, |_ctx, r: &TestRecord, out| {
-                    let encoded = r.value.to_le_bytes();
-                    let dest = out
-                        .get_mut(..encoded.len())
-                        .ok_or(SerializeError::BufferTooSmall)?;
-                    dest.copy_from_slice(&encoded);
-                    Ok(encoded.len())
-                })
-                .finish();
-        });
-        let (db, _runner) = builder.build().await.expect("build must succeed");
-
-        let routes = db.collect_outbound_routes("mqtt");
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].topic, "tele/out");
-        assert_eq!(routes[0].source.serializer_scratch_capacity(), Some(4));
-
-        let mut reader = routes[0].source.subscribe();
-        let ctx = db.runtime_ctx();
-        let mut scratch = [0u8; 4];
-        let msg = reader.recv_into(&ctx, &mut scratch).await.expect("value");
-        assert_eq!(msg.dest.as_deref(), Some("dyn/5"));
-        assert_eq!(msg.payload, SerializedPayload::Scratch { len: 4 });
-        assert_eq!(scratch, 5i32.to_le_bytes());
-
-        let closed = reader
-            .recv_into(&ctx, &mut scratch)
-            .await
-            .expect_err("buffer closed");
-        assert!(matches!(closed, crate::DbError::BufferClosed { .. }));
+        let route = &o.routes()[0];
+        assert_eq!(&*route.default_topic, "tele/out");
+        assert_eq!(route.payload_capacity, 4);
+        assert_eq!(route.config.record_index, Some(0));
+        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 5, false)));
+        assert_eq!(pull(&mut o).await, None);
     }
 }

@@ -13,9 +13,8 @@ categories = ["network-programming", "embedded", "asynchronous"]
 
 [features]
 default = ["aimdb-core/alloc"]
-# `aimdb-core/connector-session` provides the data-plane `pump_sink`/`pump_source`
-# helpers the tokio client builds on (re-exported there; `std` implies it too).
-# The `rumqttc` backend, which owns its socket, TLS and reconnect.
+# `aimdb-core/connector-session` provides the `StreamDialer`/`Delay` traits
+# `MqttConnector`'s transport bounds name. The `rumqttc` backend, which owns its socket, TLS and reconnect.
 std = [
     "aimdb-core/std",
     "aimdb-core/alloc",
@@ -49,6 +48,8 @@ embedded = [
     # `mountain-mqtt`'s packet types take `heapless::Vec`, so the session names
     # it to build them. Same 0.8 the dependency itself resolves.
     "dep:heapless",
+    # The session's write ring.
+    "dep:bbqueue",
 ]
 
 # Convenience bundle: `embedded` plus the Embassy transport and clock. The
@@ -157,6 +158,9 @@ embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
 embassy-futures = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
+# Byte ring the embedded session encodes outbound packets into. `AtomicCoord`
+# needs atomic CAS, which every supported embedded target has.
+bbqueue = { version = "0.7", default-features = false, features = ["alloc"], optional = true }
 embassy-net = { version = "0.9.0", optional = true, features = [
     "tcp",
     "dhcpv4",

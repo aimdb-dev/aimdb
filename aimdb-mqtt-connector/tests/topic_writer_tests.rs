@@ -1,7 +1,7 @@
-//! Integration tests for MQTT TopicProvider and TopicResolver functionality
+//! Integration tests for MQTT TopicWriter and TopicResolver functionality
 //!
 //! These tests verify the dynamic topic routing features:
-//! - **TopicProvider**: Outbound (AimDB → MQTT) dynamic topic selection per-value
+//! - **TopicWriter**: Outbound (AimDB → MQTT) dynamic topic selection per-value
 //! - **TopicResolver**: Inbound (MQTT → AimDB) late-binding topic resolution at startup
 //!
 //! The tests use mock data and don't require a running MQTT broker.
@@ -9,9 +9,10 @@
 #![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::connector::TopicProvider;
+use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
 use aimdb_core::{AimDbBuilder, Producer, RuntimeContext};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -67,107 +68,134 @@ impl Command {
 }
 
 // ============================================================================
-// TopicProvider Implementations
+// TopicWriter Implementations
 // ============================================================================
 
-/// Dynamic topic provider that routes based on sensor_id
+/// Dynamic topic writer that routes based on sensor_id
 ///
 /// This demonstrates the core use case: routing to different MQTT topics
 /// based on data content (e.g., multi-tenant, device-specific topics).
-struct SensorIdTopicProvider;
+struct SensorIdTopic;
 
-impl TopicProvider<Temperature> for SensorIdTopicProvider {
-    fn topic(&self, value: &Temperature) -> Option<String> {
-        // Route to topic based on sensor_id
-        Some(format!("sensors/temp/{}", value.sensor_id))
+impl TopicWriter<Temperature> for SensorIdTopic {
+    fn write_topic(
+        &self,
+        value: &Temperature,
+        out: &mut TopicBuf<'_>,
+    ) -> Result<bool, TopicOverflow> {
+        write!(out, "sensors/temp/{}", value.sensor_id)?;
+        Ok(true)
     }
 }
 
-/// Topic provider that returns None for fallback testing
+/// Topic writer that falls back to the link's default topic
 ///
-/// When the provider returns None, the connector should use the default
-/// topic from the link_to() URL.
-struct FallbackTopicProvider;
+/// When the writer returns `Ok(false)`, the connector uses the default topic
+/// from the link_to() URL.
+struct FallbackTopic;
 
-impl TopicProvider<Temperature> for FallbackTopicProvider {
-    fn topic(&self, value: &Temperature) -> Option<String> {
-        // Return None for specific sensor_ids to test fallback
+impl TopicWriter<Temperature> for FallbackTopic {
+    fn write_topic(
+        &self,
+        value: &Temperature,
+        out: &mut TopicBuf<'_>,
+    ) -> Result<bool, TopicOverflow> {
         if value.sensor_id == "use-default" {
-            None
-        } else {
-            Some(format!("sensors/custom/{}", value.sensor_id))
+            return Ok(false);
         }
+        write!(out, "sensors/custom/{}", value.sensor_id)?;
+        Ok(true)
     }
 }
 
-/// Topic provider that uses temperature thresholds
+/// Topic writer that uses temperature thresholds
 ///
 /// Demonstrates conditional routing based on data values.
-struct ThresholdTopicProvider {
+struct ThresholdTopic {
     threshold: f32,
 }
 
-impl TopicProvider<Temperature> for ThresholdTopicProvider {
-    fn topic(&self, value: &Temperature) -> Option<String> {
+impl TopicWriter<Temperature> for ThresholdTopic {
+    fn write_topic(
+        &self,
+        value: &Temperature,
+        out: &mut TopicBuf<'_>,
+    ) -> Result<bool, TopicOverflow> {
         if value.celsius > self.threshold {
-            Some("alerts/high-temp".into())
+            out.push_str("alerts/high-temp")?;
         } else if value.celsius < 0.0 {
-            Some("alerts/freezing".into())
+            out.push_str("alerts/freezing")?;
         } else {
-            None // Use default topic for normal temps
+            return Ok(false); // Use default topic for normal temps
         }
+        Ok(true)
+    }
+}
+
+/// What `writer` writes for `value` into 64 bytes: `Some(topic)`, or `None`
+/// for the link's default.
+fn written(writer: &dyn TopicWriter<Temperature>, value: &Temperature) -> Option<String> {
+    let mut storage = [0u8; 64];
+    let mut out = TopicBuf::new(&mut storage);
+    match writer.write_topic(value, &mut out) {
+        Ok(true) => Some(out.as_str().to_string()),
+        Ok(false) => None,
+        Err(TopicOverflow) => panic!("topic overflowed 64 bytes"),
     }
 }
 
 // ============================================================================
-// Unit Tests for TopicProvider
+// Unit Tests for TopicWriter
 // ============================================================================
 
 #[test]
-fn test_sensor_id_topic_provider() {
-    let provider = SensorIdTopicProvider;
+fn test_sensor_id_topic_writer() {
+    let writer = SensorIdTopic;
 
     let temp_indoor = Temperature::new("indoor-001", 22.0);
     assert_eq!(
-        provider.topic(&temp_indoor),
+        written(&writer, &temp_indoor),
         Some("sensors/temp/indoor-001".into())
     );
 
     let temp_outdoor = Temperature::new("outdoor-garden", 5.5);
     assert_eq!(
-        provider.topic(&temp_outdoor),
+        written(&writer, &temp_outdoor),
         Some("sensors/temp/outdoor-garden".into())
     );
 }
 
 #[test]
-fn test_fallback_topic_provider() {
-    let provider = FallbackTopicProvider;
+fn test_fallback_topic_writer() {
+    let writer = FallbackTopic;
 
     // Normal case: returns custom topic
     let temp = Temperature::new("kitchen", 21.0);
-    assert_eq!(provider.topic(&temp), Some("sensors/custom/kitchen".into()));
+    assert_eq!(
+        written(&writer, &temp),
+        Some("sensors/custom/kitchen".into())
+    );
 
     // Fallback case: returns None
     let temp_default = Temperature::new("use-default", 20.0);
-    assert_eq!(provider.topic(&temp_default), None);
+    assert_eq!(written(&writer, &temp_default), None);
 }
 
 #[test]
-fn test_threshold_topic_provider() {
-    let provider = ThresholdTopicProvider { threshold: 30.0 };
+fn test_threshold_topic_writer() {
+    let writer = ThresholdTopic { threshold: 30.0 };
 
     // Normal temperature: fallback to default
     let normal = Temperature::new("room", 22.0);
-    assert_eq!(provider.topic(&normal), None);
+    assert_eq!(written(&writer, &normal), None);
 
     // High temperature: route to alert topic
     let hot = Temperature::new("server-room", 35.0);
-    assert_eq!(provider.topic(&hot), Some("alerts/high-temp".into()));
+    assert_eq!(written(&writer, &hot), Some("alerts/high-temp".into()));
 
     // Freezing: route to freezing alert
     let cold = Temperature::new("outdoor", -5.0);
-    assert_eq!(provider.topic(&cold), Some("alerts/freezing".into()));
+    assert_eq!(written(&writer, &cold), Some("alerts/freezing".into()));
 }
 
 // ============================================================================
@@ -215,15 +243,15 @@ fn test_topic_resolver_with_config() {
 }
 
 // ============================================================================
-// Integration Test: TopicProvider with AimDbBuilder (No Connector)
+// Integration Test: TopicWriter with AimDbBuilder (No Connector)
 // ============================================================================
 
-/// Test that TopicProvider can be configured without connector (verifies API)
+/// Test that a record can be configured without connector (verifies API)
 ///
 /// Note: These tests verify the configuration API compiles and works,
 /// but don't test actual MQTT connectivity (that requires a broker).
 #[tokio::test]
-async fn test_topic_provider_registration_api() {
+async fn test_topic_writer_registration_api() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let produced_count = Arc::new(AtomicU32::new(0));
     let produced_count_clone = produced_count.clone();
@@ -250,20 +278,20 @@ async fn test_topic_provider_registration_api() {
     assert!(db.is_ok());
 }
 
-/// Test TopicProvider with MqttConnector registration
+/// Test TopicWriter with MqttConnector registration
 ///
-/// This test verifies the full configuration API including link_to + with_topic_provider
-/// works correctly at compile time. Runtime requires actual MQTT broker.
+/// This test verifies the full configuration API including link_to + with_topic_writer
+/// works correctly. Runtime requires actual MQTT broker.
 #[tokio::test]
-async fn test_topic_provider_with_connector_registration() {
+async fn test_topic_writer_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
-            .with_client_id("test-topic-provider"),
+            .with_client_id("test-topic-writer"),
     );
 
-    // Register with dynamic topic provider - validates compile-time API
+    // Register with a dynamic topic writer
     builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
@@ -273,7 +301,7 @@ async fn test_topic_provider_with_connector_registration() {
                 },
             )
             .link_to("mqtt://sensors/temp/default") // Fallback topic
-            .with_topic_provider(SensorIdTopicProvider) // Dynamic routing!
+            .with_topic_writer(64, SensorIdTopic) // Dynamic routing!
             .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
@@ -287,8 +315,6 @@ async fn test_topic_provider_with_connector_registration() {
 #[tokio::test]
 async fn test_topic_resolver_with_connector_registration() {
     let runtime = Arc::new(TokioAdapter::new().unwrap());
-
-    std::env::set_var("TEST_MQTT_TOPIC", "commands/test/dynamic");
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost:1883")
@@ -309,9 +335,6 @@ async fn test_topic_resolver_with_connector_registration() {
 
     // Build succeeds with connector registered
     assert!(builder.build().await.is_ok());
-
-    // Cleanup
-    std::env::remove_var("TEST_MQTT_TOPIC");
 }
 
 #[tokio::test]
@@ -345,7 +368,10 @@ async fn test_mixed_static_and_dynamic_topics() {
                 },
             )
             .link_to("mqtt://sensors/temp/fallback")
-            .with_topic_provider(SensorIdTopicProvider)
+            .with_topic_fn(64, |temp, out| {
+                write!(out, "sensors/temp/{}", temp.sensor_id)?;
+                Ok(true)
+            })
             .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
             .finish();
     });
@@ -355,117 +381,125 @@ async fn test_mixed_static_and_dynamic_topics() {
 }
 
 // ============================================================================
-// Test TopicProvider as a typed trait object
+// Test TopicWriter as a typed trait object
 // ============================================================================
 
 #[test]
-fn test_topic_provider_as_trait_object() {
-    use aimdb_core::connector::TopicProvider;
-    use std::sync::Arc;
-
-    // Providers are stored as Arc<dyn TopicProvider<T>> and stay typed
+fn test_topic_writer_as_trait_object() {
+    // Writers are stored as Arc<dyn TopicWriter<T>> and stay typed
     // end-to-end — a wrong-type call is unrepresentable.
-    let provider: Arc<dyn TopicProvider<Temperature>> = Arc::new(SensorIdTopicProvider);
+    let writer: Arc<dyn TopicWriter<Temperature>> = Arc::new(SensorIdTopic);
 
     let temp = Temperature::new("kitchen", 22.0);
-    assert_eq!(provider.topic(&temp), Some("sensors/temp/kitchen".into()));
+    assert_eq!(
+        written(&*writer, &temp),
+        Some("sensors/temp/kitchen".into())
+    );
+}
+
+#[test]
+fn test_a_topic_over_the_capacity_overflows() {
+    let mut storage = [0u8; 8];
+    let mut out = TopicBuf::new(&mut storage);
+    let temp = Temperature::new("kitchen", 22.0);
+    // "sensors/temp/kitchen" is 20 bytes.
+    assert_eq!(
+        SensorIdTopic.write_topic(&temp, &mut out),
+        Err(TopicOverflow)
+    );
 }
 
 // ============================================================================
 // Test: Simulate Connector Topic Resolution Logic
 // ============================================================================
 //
-// These tests simulate EXACTLY what the fused outbound reader does internally
-// while it still holds the typed value:
-// ```rust
-// let dest = topic.as_ref().and_then(|p| p.topic(&value));
-// // ...later, in the pump:
-// let dest = msg.dest.unwrap_or_else(|| default_topic.clone());
-// ```
+// These tests simulate what `OutboundRoutes` does while it still holds the
+// typed value: the written topic, or the route's default on `Ok(false)` or
+// without a writer.
 
 /// Simulates the fused reader's topic resolution for outbound messages
 fn resolve_topic_like_connector(
     default_topic: &str,
-    topic_provider: Option<&dyn aimdb_core::connector::TopicProvider<Temperature>>,
+    topic_writer: Option<&dyn TopicWriter<Temperature>>,
     value: &Temperature,
 ) -> String {
-    topic_provider
-        .and_then(|provider| provider.topic(value))
+    topic_writer
+        .and_then(|writer| written(writer, value))
         .unwrap_or_else(|| default_topic.to_string())
 }
 
 #[test]
-fn test_connector_topic_resolution_with_dynamic_provider() {
-    let provider = SensorIdTopicProvider;
+fn test_connector_topic_resolution_with_dynamic_writer() {
+    let writer = SensorIdTopic;
     let default_topic = "sensors/temp/default";
 
-    // Test 1: Dynamic topic is returned when provider returns Some
+    // Test 1: The written topic is returned when the writer returns Ok(true)
     let temp_kitchen = Temperature::new("kitchen", 22.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &temp_kitchen);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &temp_kitchen);
     assert_eq!(resolved, "sensors/temp/kitchen");
 
     // Test 2: Different sensor_id → different topic
     let temp_bedroom = Temperature::new("bedroom", 19.5);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &temp_bedroom);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &temp_bedroom);
     assert_eq!(resolved, "sensors/temp/bedroom");
 
     // Test 3: Multi-tenant scenario
     let temp_tenant_a = Temperature::new("tenant-a/room-1", 21.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &temp_tenant_a);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &temp_tenant_a);
     assert_eq!(resolved, "sensors/temp/tenant-a/room-1");
 }
 
 #[test]
 fn test_connector_topic_resolution_fallback_to_default() {
-    let provider = FallbackTopicProvider;
+    let writer = FallbackTopic;
     let default_topic = "sensors/temp/default";
 
-    // Test 1: Provider returns Some → use dynamic topic
+    // Test 1: Writer returns Ok(true) → use the written topic
     let temp_kitchen = Temperature::new("kitchen", 22.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &temp_kitchen);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &temp_kitchen);
     assert_eq!(resolved, "sensors/custom/kitchen");
 
-    // Test 2: Provider returns None → fallback to default
+    // Test 2: Writer returns Ok(false) → fallback to default
     let temp_use_default = Temperature::new("use-default", 20.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &temp_use_default);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &temp_use_default);
     assert_eq!(resolved, "sensors/temp/default"); // Fallback!
 }
 
 #[test]
-fn test_connector_topic_resolution_no_provider() {
+fn test_connector_topic_resolution_no_writer() {
     let default_topic = "sensors/temp/static";
 
-    // No provider configured → always use default
+    // No writer configured → always use default
     let temp = Temperature::new("kitchen", 22.0);
     let resolved = resolve_topic_like_connector(default_topic, None, &temp);
     assert_eq!(resolved, "sensors/temp/static");
 }
 
 #[test]
-fn test_connector_topic_resolution_with_threshold_provider() {
-    let provider = ThresholdTopicProvider { threshold: 30.0 };
+fn test_connector_topic_resolution_with_threshold_writer() {
+    let writer = ThresholdTopic { threshold: 30.0 };
     let default_topic = "sensors/temp/normal";
 
-    // Normal temperature → fallback (provider returns None)
+    // Normal temperature → fallback (writer returns Ok(false))
     let normal_temp = Temperature::new("room", 22.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &normal_temp);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &normal_temp);
     assert_eq!(resolved, "sensors/temp/normal"); // Default
 
     // High temperature → alert topic
     let hot_temp = Temperature::new("server-room", 35.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &hot_temp);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &hot_temp);
     assert_eq!(resolved, "alerts/high-temp"); // Dynamic
 
     // Freezing → freezing alert
     let cold_temp = Temperature::new("outdoor", -5.0);
-    let resolved = resolve_topic_like_connector(default_topic, Some(&provider), &cold_temp);
+    let resolved = resolve_topic_like_connector(default_topic, Some(&writer), &cold_temp);
     assert_eq!(resolved, "alerts/freezing"); // Dynamic
 }
 
 /// Test that verifies the inbound topic resolver is called correctly
 #[test]
 fn test_inbound_topic_resolver_simulation() {
-    // Simulate what inbound_router does for TopicResolver
+    // Simulate how inbound routes resolve a TopicResolver
     fn resolve_inbound_topic(
         default_topic: &str,
         resolver: Option<&dyn Fn() -> Option<String>>,

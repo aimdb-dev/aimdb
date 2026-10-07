@@ -67,6 +67,12 @@ harness = false
 name = "b0_alloc_connector"
 harness = false
 
+# Outbound wake-up time per message, 1 to 256 routes.
+# Informational: not in `bench-gate`.
+[[bench]]
+name = "b1_outbound_wakeup"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/

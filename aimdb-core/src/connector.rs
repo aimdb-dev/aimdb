@@ -82,169 +82,131 @@ impl std::fmt::Display for SerializeError {
 #[cfg(feature = "std")]
 impl std::error::Error for SerializeError {}
 
-/// One serialized record update, produced by a fused [`SerializedReader`]
-///
-/// Carries the wire payload plus the destination resolved by the link's
-/// [`TopicProvider`] while the typed value was still in hand — the last
-/// erasure crossing the old `topic_any(&dyn Any)` path required.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SerializedValue {
-    /// Dynamic destination resolved by the link's `TopicProvider<T>`;
-    /// `None` means use the route's default topic (from the URL).
-    pub dest: Option<String>,
-    /// Wire payload from the link's serializer.
-    ///
-    /// `Vec<u8>` requires heap allocation; works on `std` and
-    /// `no_std + alloc` (not bare-metal without an allocator).
-    pub payload: Vec<u8>,
-}
-
-/// Location of a payload produced by [`SerializedReader::recv_into`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SerializedPayload {
-    /// The initialized prefix of the caller-provided scratch buffer.
-    ///
-    /// A custom reader returning this variant must write the prefix during the
-    /// same `recv_into` call and its source must advertise a sufficient
-    /// [`SerializedSource::serializer_scratch_capacity`]. The pump validates
-    /// the length before publishing.
-    Scratch {
-        /// Number of initialized payload bytes in the scratch buffer.
-        len: usize,
-    },
-    /// Compatibility fallback from the existing `Vec` serializer.
-    Owned(Vec<u8>),
-}
-
-/// One serialized record produced into caller-owned scratch storage or an owned fallback.
-///
-/// No reference escapes the async reader call. The pump validates `len`, then
-/// borrows its own scratch buffer only for the subsequent `publish().await`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SerializedValueInto {
-    /// Dynamic destination resolved while the typed record was available.
-    pub dest: Option<String>,
-    /// Scratch prefix metadata or an owned compatibility payload.
-    pub payload: SerializedPayload,
-}
-
-/// Type alias for the future returned by [`SerializedReader::recv`]
-///
-/// Manual boxed future for object safety — same pattern as the rest of this
-/// module (`#[async_trait]` would drag in `std`).
-pub type RecvSerializedFuture<'a> =
-    Pin<Box<dyn Future<Output = DbResult<SerializedValue>> + Send + 'a>>;
-
-/// Future returned by [`SerializedReader::recv_into`].
-pub type RecvSerializedIntoFuture<'a> =
-    Pin<Box<dyn Future<Output = DbResult<SerializedValueInto>> + Send + 'a>>;
-
-/// A subscription to one record, fused with destination resolution and
-/// serialization at registration time — no `dyn Any` crosses this boundary
-///.
-pub trait SerializedReader: Send {
-    /// Yield the next successfully serialized value.
-    ///
-    /// `ctx` is threaded per call (not captured) for context-aware
-    /// serializers. Buffer errors propagate unchanged:
-    /// `DbError::BufferLagged` means values were skipped but the reader
-    /// recovered; any other error means the buffer is gone. Serialization
-    /// failures are logged and skipped inside the reader.
-    fn recv<'a>(&'a mut self, ctx: &'a crate::RuntimeContext) -> RecvSerializedFuture<'a>;
-
-    /// Yield the next serialized value into caller-owned scratch storage.
-    ///
-    /// Third-party readers remain source-compatible: the default adapter calls
-    /// [`recv`](Self::recv) and returns its `Vec<u8>` as
-    /// [`SerializedPayload::Owned`]. AimDB's fused reader overrides this method
-    /// when an into-slice serializer was registered.
-    fn recv_into<'a>(
-        &'a mut self,
-        ctx: &'a crate::RuntimeContext,
-        _scratch: &'a mut [u8],
-    ) -> RecvSerializedIntoFuture<'a> {
-        Box::pin(async move {
-            let value = self.recv(ctx).await?;
-            Ok(SerializedValueInto {
-                dest: value.dest,
-                payload: SerializedPayload::Owned(value.payload),
-            })
-        })
-    }
-}
-
-/// A record's outbound wire interface, built where the record type `T` is
-/// known (`OutboundConnectorBuilder::finish`) and consumed by the pumps as
-/// bytes. Replaces the erased `ConsumerTrait` + serializer + topic-provider
-/// triple.
-pub trait SerializedSource: Send + Sync {
-    /// Scratch capacity requested by this source's into-slice serializer.
-    ///
-    /// `None` means the source only supports the existing owned serializer. A
-    /// source whose reader can return [`SerializedPayload::Scratch`] must
-    /// return `Some(capacity)` here so the route pump provides that storage.
-    fn serializer_scratch_capacity(&self) -> Option<usize> {
-        None
-    }
-
-    /// Subscribe to the record's updates.
-    ///
-    /// Synchronous and infallible — the buffer handle is pre-resolved at
-    /// construction.
-    fn subscribe(&self) -> Box<dyn SerializedReader>;
-}
-
-/// Type alias for source factory callback (alloc feature)
-///
-/// Takes the live [`AimDb`] and returns the fused [`SerializedSource`].
-/// This allows capturing the record type T at link_to() time while storing
-/// the factory in a type-erased ConnectorLink. The factory runs once at
-/// route-collection time, not per message.
-///
-/// Available in both `std` and `no_std + alloc` environments.
-pub type SourceFactoryFn = Arc<dyn Fn(&AimDb) -> Box<dyn SerializedSource> + Send + Sync>;
-
 // ============================================================================
-// TopicProvider - Dynamic topic/destination routing
+// TopicWriter - Destinations written into bounded storage
 // ============================================================================
 
-/// Trait for dynamic topic providers (outbound only)
+/// Writes an outbound link's destination for each value (outbound only).
 ///
-/// Implement this trait to dynamically determine MQTT topics (or KNX group addresses)
-/// based on the data being published. This enables reusable routing logic that
-/// can be shared across multiple record types.
-///
-/// # Type Safety
-///
-/// The trait is generic over `T`, providing compile-time type safety
-/// at the implementation site. The provider stays typed end-to-end: it is
-/// fused into the link's [`SerializedSource`] at registration time and
-/// called with `&T` while the value is in hand.
-///
-/// # no_std Compatibility
-///
-/// Works in both `std` and `no_std + alloc` environments.
+/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundConnectorBuilder::with_topic_fn)
+/// takes one directly. A writer type goes to
+/// [`with_topic_writer`](crate::typed_api::OutboundConnectorBuilder::with_topic_writer).
 ///
 /// # Example
 ///
 /// ```rust
-/// use aimdb_core::connector::TopicProvider;
+/// use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
+/// use core::fmt::Write;
 /// # #[derive(Clone, Debug)] struct Temperature { sensor_id: u32 }
 ///
-/// struct SensorTopicProvider;
+/// struct SensorTopic;
 ///
-/// impl TopicProvider<Temperature> for SensorTopicProvider {
-///     fn topic(&self, value: &Temperature) -> Option<String> {
-///         Some(format!("sensors/temp/{}", value.sensor_id))
+/// impl TopicWriter<Temperature> for SensorTopic {
+///     fn write_topic(&self, value: &Temperature, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+///         write!(out, "sensors/temp/{}", value.sensor_id)?;
+///         Ok(true)
 ///     }
 /// }
 /// ```
-pub trait TopicProvider<T>: Send + Sync {
-    /// Determine the topic/destination for a given value
+pub trait TopicWriter<T>: Send + Sync {
+    /// Write the destination for `value` into `out`.
     ///
-    /// Returns `Some(topic)` to use a dynamic topic, or `None` to fall back
-    /// to the static topic from the `link_to()` URL.
-    fn topic(&self, value: &T) -> Option<String>;
+    /// `Ok(true)` publishes to what was written, `Ok(false)` to the static
+    /// topic from the `link_to()` URL. A value whose topic does not fit is
+    /// skipped, whatever this returns; the topic is never truncated.
+    fn write_topic(&self, value: &T, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow>;
+}
+
+impl<T, F> TopicWriter<T> for F
+where
+    F: Fn(&T, &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> + Send + Sync,
+{
+    fn write_topic(&self, value: &T, out: &mut TopicBuf<'_>) -> Result<bool, TopicOverflow> {
+        self(value, out)
+    }
+}
+
+/// A topic did not fit in its link's topic capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicOverflow;
+
+impl From<core::fmt::Error> for TopicOverflow {
+    fn from(_: core::fmt::Error) -> Self {
+        TopicOverflow
+    }
+}
+
+/// Bounded topic storage handed to a [`TopicWriter`].
+///
+/// A write that does not fit is refused whole, so the contents are always
+/// valid UTF-8. After the first refused write every later write is refused
+/// too.
+pub struct TopicBuf<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+    overflowed: bool,
+}
+
+impl<'a> TopicBuf<'a> {
+    /// An empty topic over `buf`; its capacity is `buf.len()`.
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            len: 0,
+            overflowed: false,
+        }
+    }
+
+    /// Append `s`, or refuse it whole if it does not fit.
+    pub fn push_str(&mut self, s: &str) -> Result<(), TopicOverflow> {
+        let end = self.len + s.len();
+        match self.buf.get_mut(self.len..end) {
+            Some(dst) if !self.overflowed => {
+                dst.copy_from_slice(s.as_bytes());
+                self.len = end;
+                Ok(())
+            }
+            _ => {
+                self.overflowed = true;
+                Err(TopicOverflow)
+            }
+        }
+    }
+
+    /// Bytes written so far.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether nothing has been written.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The most bytes this topic can hold.
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// The topic written so far.
+    pub fn as_str(&self) -> &str {
+        // Only whole `&str`s are ever copied in, so this cannot fail.
+        self.buf
+            .get(..self.len)
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether a write was refused.
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+}
+
+impl core::fmt::Write for TopicBuf<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.push_str(s).map_err(|_| core::fmt::Error)
+    }
 }
 
 /// Address of a record link: `scheme://resource` (e.g. `mqtt://sensors/temp`).
@@ -444,11 +406,10 @@ impl fmt::Display for ConnectorUrl {
     }
 }
 
-/// Configuration for a connector link
+/// Configuration for an outbound connector link
 ///
-/// Stores the parsed URL, configuration, and the fused source factory until
-/// the record is built. The actual client creation and handler spawning
-/// happens during the build phase.
+/// Stores the parsed URL, configuration, and the route factory until the
+/// database is built. `OutboundRoutes` runs the factory once per link.
 #[derive(Clone)]
 pub struct ConnectorLink {
     /// Parsed link address (`scheme://resource`)
@@ -457,17 +418,8 @@ pub struct ConnectorLink {
     /// Additional configuration options (protocol-specific)
     pub config: Vec<(String, String)>,
 
-    /// Fused source factory (alloc feature)
-    ///
-    /// Takes the live [`AimDb`] and returns the [`SerializedSource`] whose
-    /// readers yield destination + payload directly (subscribe → recv →
-    /// resolve topic → serialize, all typed inside). Captures the record
-    /// type T at link_to() configuration time — `finish()` validates the
-    /// serializer is present before registering the link, so the factory is
-    /// always set.
-    ///
-    /// Available in both `std` and `no_std + alloc` environments.
-    pub source_factory: SourceFactoryFn,
+    /// Builds the link's route for `OutboundRoutes`.
+    pub(crate) route_factory: crate::outbound::RouteFactoryFn,
 }
 
 impl Debug for ConnectorLink {
@@ -475,29 +427,18 @@ impl Debug for ConnectorLink {
         f.debug_struct("ConnectorLink")
             .field("url", &self.url)
             .field("config", &self.config)
-            .field("source_factory", &"<factory>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl ConnectorLink {
-    /// Creates a new connector link from a link address and source factory
-    pub fn new(url: LinkAddress, source_factory: SourceFactoryFn) -> Self {
+    /// Creates a new connector link from a link address and route factory
+    pub(crate) fn new(url: LinkAddress, route_factory: crate::outbound::RouteFactoryFn) -> Self {
         Self {
             url,
             config: Vec::new(),
-            source_factory,
+            route_factory,
         }
-    }
-
-    /// Creates the fused serialized source using the stored factory.
-    ///
-    /// Runs once at route-collection time; the readers it hands out are the
-    /// per-message path (no `Box<dyn Any>`).
-    ///
-    /// Available in both `std` and `no_std + alloc` environments.
-    pub fn create_source(&self, db: &AimDb) -> Box<dyn SerializedSource> {
-        (self.source_factory)(db)
     }
 }
 
@@ -749,8 +690,9 @@ fn parse_connector_url(url: &str) -> DbResult<ConnectorUrl> {
 ///     ) -> Pin<Box<dyn Future<Output = DbResult<Vec<BoxFuture>>> + Send + 'a>> {
 ///         Box::pin(async move {
 ///             // Wildcard rules are the connector's; `&ExactGrammar` if it has none.
-///             let router = db.inbound_router(self.scheme(), &MqttGrammar)?;
-///             let connector = MqttConnector::new(&self.broker_url, router).await?;
+///             let inbound = InboundDispatch::new(db, self.scheme(), &MqttGrammar)?;
+///             let outbound = OutboundRoutes::new(db, self.scheme())?;
+///             let connector = MqttConnector::new(&self.broker_url, inbound, outbound).await?;
 ///             Ok(connector.futures())
 ///         })
 ///     }
@@ -764,8 +706,8 @@ pub trait ConnectorBuilder: Send + Sync {
     /// Build the connector and return its driving futures.
     ///
     /// Called during `AimDbBuilder::build()` after the database has been
-    /// constructed. The returned futures (infrastructure loops + per-route
-    /// publishers) are appended to the builder's accumulator and driven by
+    /// constructed. The returned futures (typically the transport task)
+    /// are appended to the builder's accumulator and driven by
     /// `AimDbRunner::run()`.
     ///
     /// # Arguments
@@ -796,12 +738,12 @@ pub trait ConnectorBuilder: Send + Sync {
     /// Whether registering a second connector under this scheme is an error.
     ///
     /// Say `true` when [`build`](Self::build) claims every route for its
-    /// scheme — [`inbound_router`](crate::AimDb::inbound_router),
-    /// [`collect_outbound_routes`](crate::AimDb::collect_outbound_routes),
-    /// and `crate::session`'s `pump_source`, `pump_sink` and `pump_client`
-    /// (left unlinked: that module is behind `connector-session`, and this
-    /// trait is not) all filter by scheme alone, so two such connectors each
-    /// collect *all* of it: every `link_to` gets two publishers, and the routes
+    /// scheme — [`InboundDispatch`](crate::InboundDispatch),
+    /// [`OutboundRoutes`](crate::OutboundRoutes) and `crate::session`'s
+    /// `pump_client` (left unlinked: that module is behind
+    /// `connector-session`, and this trait is not) all filter by scheme
+    /// alone, so two such connectors each collect *all* of it: every
+    /// `link_to` gets two publishers, and the routes
     /// cannot be divided between the two endpoints because nothing in a route
     /// names which connector it belongs to. That misconfiguration is otherwise
     /// silent, and it fails as duplicated or misdirected traffic at runtime
@@ -929,70 +871,50 @@ mod tests {
     }
 
     // ========================================================================
-    // TopicProvider Tests
+    // TopicBuf Tests
     // ========================================================================
 
-    #[allow(dead_code)]
-    #[derive(Debug, Clone)]
-    struct TestTemperature {
-        sensor_id: String,
-        celsius: f32,
-    }
-
-    struct TestTopicProvider;
-
-    impl super::TopicProvider<TestTemperature> for TestTopicProvider {
-        fn topic(&self, value: &TestTemperature) -> Option<String> {
-            Some(format!("sensors/temp/{}", value.sensor_id))
-        }
+    #[test]
+    fn topic_buf_accepts_an_exact_fit() {
+        let mut storage = [0u8; 6];
+        let mut out = super::TopicBuf::new(&mut storage);
+        assert!(out.is_empty());
+        out.push_str("ab/").unwrap();
+        out.push_str("cde").unwrap();
+        assert_eq!((out.as_str(), out.len(), out.capacity()), ("ab/cde", 6, 6));
+        assert!(!out.overflowed());
     }
 
     #[test]
-    fn test_topic_provider_as_trait_object() {
-        // Providers are stored as Arc<dyn TopicProvider<T>> — typed, no
-        // erasure.
-        let provider: Arc<dyn super::TopicProvider<TestTemperature>> = Arc::new(TestTopicProvider);
-        let temp = TestTemperature {
-            sensor_id: "kitchen-001".into(),
-            celsius: 22.5,
-        };
+    fn topic_buf_refuses_an_overflowing_write_whole() {
+        let mut storage = [0u8; 6];
+        let mut out = super::TopicBuf::new(&mut storage);
+        out.push_str("ab/").unwrap();
+        // "cdé" is 4 bytes: one over, and it ends in a two-byte character.
+        assert_eq!(out.push_str("cdé"), Err(super::TopicOverflow));
+        assert_eq!(out.as_str(), "ab/");
+        assert!(out.overflowed());
+        // Latched: a write that would fit is refused too.
+        assert!(out.push_str("x").is_err());
+        assert_eq!(out.as_str(), "ab/");
+    }
 
+    #[test]
+    fn topic_buf_overflow_propagates_through_write() {
+        use core::fmt::Write as _;
+        fn writer(v: u32, out: &mut super::TopicBuf<'_>) -> Result<bool, super::TopicOverflow> {
+            write!(out, "t/{v}")?;
+            Ok(true)
+        }
+        let mut storage = [0u8; 4];
         assert_eq!(
-            provider.topic(&temp),
-            Some("sensors/temp/kitchen-001".into())
+            writer(12, &mut super::TopicBuf::new(&mut storage)),
+            Ok(true)
         );
-    }
-
-    #[test]
-    fn test_topic_provider_returns_none() {
-        struct OptionalTopicProvider;
-
-        impl super::TopicProvider<TestTemperature> for OptionalTopicProvider {
-            fn topic(&self, temp: &TestTemperature) -> Option<String> {
-                if temp.sensor_id.is_empty() {
-                    None // Fall back to default topic
-                } else {
-                    Some(format!("sensors/{}", temp.sensor_id))
-                }
-            }
-        }
-
-        let provider: Arc<dyn super::TopicProvider<TestTemperature>> =
-            Arc::new(OptionalTopicProvider);
-
-        // Non-empty sensor_id returns dynamic topic
-        let temp_with_id = TestTemperature {
-            sensor_id: "abc".into(),
-            celsius: 20.0,
-        };
-        assert_eq!(provider.topic(&temp_with_id), Some("sensors/abc".into()));
-
-        // Empty sensor_id returns None (fallback)
-        let temp_without_id = TestTemperature {
-            sensor_id: String::new(),
-            celsius: 20.0,
-        };
-        assert_eq!(provider.topic(&temp_without_id), None);
+        assert_eq!(
+            writer(123, &mut super::TopicBuf::new(&mut storage)),
+            Err(super::TopicOverflow)
+        );
     }
 
     // ========================================================================
