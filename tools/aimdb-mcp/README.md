@@ -1,5 +1,7 @@
 # aimdb-mcp
 
+[![aimdb-mcp MCP server](https://glama.ai/mcp/servers/aimdb-dev/aimdb/badges/score.svg)](https://glama.ai/mcp/servers/aimdb-dev/aimdb)
+
 Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspection and debugging.
 
 ## Overview
