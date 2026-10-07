@@ -33,10 +33,6 @@ pub enum SyncError {
         message: String,
     },
 
-    /// Timeout while setting a value.
-    #[error("Timeout while setting value")]
-    SetTimeout,
-
     /// Timeout while getting a value.
     #[error("Timeout while getting value")]
     GetTimeout,
@@ -73,7 +69,7 @@ impl SyncError {
             // runtime thread that panicked. Neither has a `DbError` behind it.
             Self::DetachFailed { .. } => DbErrorKind::Internal,
 
-            Self::SetTimeout | Self::GetTimeout => DbErrorKind::Retry,
+            Self::GetTimeout => DbErrorKind::Retry,
 
             // Terminal for the same reason RuntimeShutdown is: the runtime
             // thread is gone and will not come back in this process.
@@ -118,7 +114,6 @@ mod tests {
             DbErrorKind::Internal
         );
         assert_eq!(SyncError::GetTimeout.kind(), DbErrorKind::Retry);
-        assert_eq!(SyncError::SetTimeout.kind(), DbErrorKind::Retry);
         assert_eq!(SyncError::RuntimeShutdown.kind(), DbErrorKind::Closed);
         // Terminal for the same reason: the runtime thread is gone and will
         // not come back in this process, so a caller must not retry.

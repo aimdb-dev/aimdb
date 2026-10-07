@@ -25,7 +25,7 @@ use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
-use aimdb_knx_connector::{Channels, KnxConnector};
+use aimdb_knx_connector::KnxConnector;
 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_uds_connector::UdsServer;
@@ -103,17 +103,14 @@ async fn main() -> DbResult<()> {
         .security_policy(SecurityPolicy::read_only())
         .max_connections(10);
 
-    // The adapter owns the UDP socket and the clock; the channels are the
-    // caller's, exactly as on the MCU.
-    static KNX_CHANNELS: Channels = Channels::new();
-
+    // The adapter owns the UDP socket and the clock; the connector owns the
+    // tunnelling protocol.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(KnxConnector::new(
             TokioNet::udp(Ipv4Addr::UNSPECIFIED),
             TokioDelay,
             "knx://192.168.1.4:3671",
-            &KNX_CHANNELS,
         ))
         .with_connector(UdsServer::from_config(remote_config));
 

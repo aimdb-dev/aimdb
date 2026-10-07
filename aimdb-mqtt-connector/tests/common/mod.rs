@@ -26,6 +26,10 @@ pub struct Seen {
     pub keep_alives: Vec<u16>,
     pub subscribes: Vec<Vec<String>>,
     pub published: Vec<(String, Vec<u8>)>,
+    /// The Maximum Packet Size each MQTT 5 CONNECT advertised, when it did.
+    pub max_packet_sizes: Vec<u32>,
+    /// Pushes withheld because they exceeded the client's Maximum Packet Size.
+    pub withheld: usize,
 }
 
 impl Seen {
@@ -125,6 +129,30 @@ fn take_field(body: &[u8], i: &mut usize) -> Option<String> {
 /// the protocol name, level and flags.
 fn connect_keep_alive(body: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([*body.get(8)?, *body.get(9)?]))
+}
+
+/// The Maximum Packet Size property (0x27) of an MQTT 5 CONNECT, if present.
+/// Knows the fixed-size properties a client sends; anything else ends the
+/// scan with `None`.
+fn connect_max_packet_size(body: &[u8]) -> Option<u32> {
+    let mut i = 10;
+    let len = take_varint(body, &mut i)?;
+    let end = i + len;
+    while i < end {
+        let id = *body.get(i)?;
+        i += 1;
+        match id {
+            0x27 => {
+                let b = body.get(i..i + 4)?;
+                return Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+            }
+            0x11 => i += 4,        // session expiry interval
+            0x21 | 0x22 => i += 2, // receive maximum, topic alias maximum
+            0x17 | 0x19 => i += 1, // request problem / response information
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// The identity a CONNECT carries: client id, then the credentials its flags
@@ -261,6 +289,9 @@ where
 {
     let mut buf = Vec::new();
     let mut v5 = true;
+    // The client's Maximum Packet Size: a broker must not send it anything
+    // larger, so a push over it is withheld.
+    let mut client_max: Option<u32> = None;
 
     loop {
         let Some((first, body)) = read_packet(socket, &mut buf).await else {
@@ -279,6 +310,14 @@ where
                     }
                     if let Some(keep_alive) = connect_keep_alive(&body) {
                         seen.keep_alives.push(keep_alive);
+                    }
+                    client_max = if v5 {
+                        connect_max_packet_size(&body)
+                    } else {
+                        None
+                    };
+                    if let Some(max) = client_max {
+                        seen.max_packet_sizes.push(max);
                     }
                 }
                 let ack: &[u8] = if v5 {
@@ -299,11 +338,10 @@ where
                     return;
                 }
                 if let Some((topic, payload)) = after.push {
-                    if socket
-                        .write_all(&publish(topic, payload, v5))
-                        .await
-                        .is_err()
-                    {
+                    let packet = publish(topic, payload, v5);
+                    if client_max.is_some_and(|max| packet.len() > max as usize) {
+                        seen.lock().unwrap().withheld += 1;
+                    } else if socket.write_all(&packet).await.is_err() {
                         return;
                     }
                 }
@@ -676,5 +714,83 @@ impl Delay for CountingDialer {
     fn sleep(&self, d: Duration) -> impl Future<Output = ()> + Send {
         self.sleeps.fetch_add(1, Ordering::Relaxed);
         Delay::sleep(&self.inner, d)
+    }
+}
+
+// ===========================================================================
+// The echo broker: relays a client's publish back to it when it subscribed to
+// that topic, as a real broker would.
+// ===========================================================================
+
+/// A QoS 1 PUBLISH in the protocol version the client connected with.
+fn publish_qos1_for(topic: &str, payload: &[u8], packet_id: u16, v5: bool) -> Vec<u8> {
+    if v5 {
+        return publish_qos1(topic, payload, packet_id);
+    }
+    let mut rest = Vec::new();
+    rest.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+    rest.extend_from_slice(topic.as_bytes());
+    rest.extend_from_slice(&packet_id.to_be_bytes());
+    rest.extend_from_slice(payload);
+    let mut packet = vec![0x32];
+    varint(rest.len(), &mut packet);
+    packet.extend_from_slice(&rest);
+    packet
+}
+
+/// Serve one connection: CONNACK, SUBACK (recording the topics), PUBACK every
+/// QoS 1 publish, and send a publish on a subscribed topic back at QoS 1.
+async fn serve_echo(mut socket: TcpStream) {
+    let _ = socket.set_nodelay(true);
+    let mut buf = Vec::new();
+    let mut v5 = true;
+    let mut subscribed: Vec<String> = Vec::new();
+    let mut next_id: u16 = 0;
+    loop {
+        let Some((first, body)) = read_packet(&mut socket, &mut buf).await else {
+            return;
+        };
+        let reply: Vec<u8> = match first >> 4 {
+            1 => {
+                v5 = is_v5(&body);
+                if v5 {
+                    vec![0x20, 0x03, 0x00, 0x00, 0x00]
+                } else {
+                    vec![0x20, 0x02, 0x00, 0x00]
+                }
+            }
+            8 => suback(&body, v5, &mut subscribed),
+            3 => {
+                let Some((topic, payload, packet_id)) = parse_publish(first, &body, v5) else {
+                    return;
+                };
+                let mut reply = Vec::new();
+                if let Some(id) = packet_id {
+                    reply.extend_from_slice(&[0x40, 0x02, id[0], id[1]]);
+                }
+                if subscribed.iter().any(|t| t == &topic) {
+                    next_id = next_id.wrapping_add(1).max(1);
+                    reply.extend_from_slice(&publish_qos1_for(&topic, &payload, next_id, v5));
+                }
+                reply
+            }
+            12 => vec![0xD0, 0x00],
+            14 => return,
+            // PUBACKs for the echoes, and anything else: nothing to answer.
+            _ => continue,
+        };
+        if socket.write_all(&reply).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Accept forever, serving each connection with [`serve_echo`].
+pub async fn echo_broker(listener: TcpListener) {
+    loop {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        tokio::spawn(serve_echo(socket));
     }
 }

@@ -9,7 +9,6 @@ use aimdb_data_contracts::{SchemaType, Settable};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,38 +58,6 @@ fn set_value_constructs_produces_and_is_consumed() {
 
     assert_eq!(received.celsius, 22.5);
     assert!(received.timestamp > 0, "timestamp should be stamped");
-
-    handle.detach().expect("failed to detach");
-}
-
-#[test]
-fn try_set_value_is_non_blocking_and_produces() {
-    let adapter = Arc::new(TokioAdapter);
-    let mut builder = AimDbBuilder::new().runtime(adapter);
-
-    builder.configure::<Temperature>("temperature", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(|_ctx, _consumer| async move {});
-    });
-
-    let handle = builder.attach().expect("failed to attach");
-    let producer = handle
-        .producer::<Temperature>("temperature")
-        .expect("failed to create producer");
-    let mut consumer = handle
-        .consumer::<Temperature>("temperature")
-        .expect("failed to create consumer");
-
-    producer
-        .try_set_value(18.0)
-        .expect("try_set_value should succeed");
-
-    thread::sleep(Duration::from_millis(100));
-
-    let received = consumer
-        .get_with_timeout(Duration::from_secs(2))
-        .expect("failed to consume");
-    assert_eq!(received.celsius, 18.0);
 
     handle.detach().expect("failed to detach");
 }

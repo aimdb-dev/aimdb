@@ -6,6 +6,7 @@
 //! payloads on the wire.
 #![cfg(feature = "_test-backend-parity")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -180,6 +181,123 @@ async fn both_backends_round_trip_against_one_broker() {
         payloads,
         vec![b"1".as_slice(), b"2".as_slice()],
         "each backend must publish its own record's bytes"
+    );
+}
+
+fn parse(data: &[u8]) -> Result<u64, String> {
+    core::str::from_utf8(data)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| String::from("bad payload"))
+}
+
+/// Deserializer calls per record.
+#[derive(Default)]
+struct Calls {
+    pattern: AtomicUsize,
+    exact: AtomicUsize,
+}
+
+/// A keyed pattern record beside an exact record whose topic it covers.
+fn build_pattern_db(
+    connector: impl aimdb_core::ConnectorBuilder + 'static,
+    calls: Arc<Calls>,
+) -> impl std::future::Future<Output = (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner)> {
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+
+    let pattern_calls = calls.clone();
+    builder.configure::<u64>("readings", move |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://parity/{device}/in")
+            .key("device", 4)
+            .with_match_deserializer(move |_ctx, m, data: &[u8]| {
+                pattern_calls.pattern.fetch_add(1, Ordering::SeqCst);
+                match (m.get("device"), m.key().map(|k| k.index())) {
+                    (Some("kitchen"), Some(0)) => parse(data),
+                    other => Err(format!("unexpected match {other:?}")),
+                }
+            })
+            .finish();
+    });
+
+    builder.configure::<u64>("kitchen", move |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt://parity/kitchen/in")
+            .with_deserializer(move |_ctx, data: &[u8]| {
+                calls.exact.fetch_add(1, Ordering::SeqCst);
+                parse(data)
+            })
+            .finish();
+    });
+
+    async move { builder.build().await.expect("build db") }
+}
+
+/// A pattern link beside an exact link it covers: each backend subscribes only
+/// the covering filter, each record receives the broker's one PUBLISH once,
+/// and the capture and key reach the deserializer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pattern_link_covers_exact_link_on_both_backends() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("mqtt://127.0.0.1:{port}");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let native = MqttConnector::new(url.clone()).with_client_id("pattern-native");
+    let embedded = MqttConnector::new(url)
+        .transport(TokioNet::tcp())
+        .with_client_id("pattern-embedded");
+    let (native_calls, embedded_calls) = (Arc::new(Calls::default()), Arc::new(Calls::default()));
+    let (native_db, native_runner) = build_pattern_db(native, native_calls.clone()).await;
+    let (embedded_db, embedded_runner) = build_pattern_db(embedded, embedded_calls.clone()).await;
+
+    let mut inbound = Vec::new();
+    for db in [&native_db, &embedded_db] {
+        for record in ["readings", "kitchen"] {
+            inbound.push(db.consumer::<u64>(record).expect("consumer").subscribe());
+        }
+    }
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), Some(("parity/kitchen/in", b"7")));
+    let values = tokio::select! {
+        _ = native_runner.run() => panic!("the native runner returned"),
+        _ = embedded_runner.run() => panic!("the embedded runner returned"),
+        _ = broker => panic!("the broker returned"),
+        values = async {
+            let mut values = Vec::new();
+            for reader in &mut inbound {
+                values.push(reader.recv().await.expect("inbound"));
+            }
+            // Room for a second delivery, which must not come.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            values
+        } => values,
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            let seen = seen.lock().unwrap();
+            panic!("watchdog: {:?} subscribed", seen.subscribed_topics());
+        }
+    };
+
+    assert_eq!(values, [7, 7, 7, 7], "every record on both backends gets 7");
+    for (backend, calls) in [("native", &native_calls), ("embedded", &embedded_calls)] {
+        assert_eq!(
+            calls.pattern.load(Ordering::SeqCst),
+            1,
+            "{backend} pattern link"
+        );
+        assert_eq!(
+            calls.exact.load(Ordering::SeqCst),
+            1,
+            "{backend} exact link"
+        );
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.subscribed_topics(),
+        ["parity/+/in", "parity/+/in"],
+        "each backend subscribes only the covering filter"
     );
 }
 

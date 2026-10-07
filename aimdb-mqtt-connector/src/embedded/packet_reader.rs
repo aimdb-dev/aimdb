@@ -89,6 +89,12 @@ impl<const N: usize> PacketReader<N> {
         Ok(Some(total))
     }
 
+    /// Whether the packet at the head is a PUBLISH above QoS 0, which the
+    /// client answers with a PUBACK. Reads only the first header byte.
+    pub(crate) fn head_needs_ack(&self) -> bool {
+        self.len > 0 && self.buf[0] >> 4 == 3 && (self.buf[0] >> 1) & 0b11 != 0
+    }
+
     /// Parse the complete packet at the head of the buffer.
     ///
     /// `total` must come from [`framed_len`](Self::framed_len). Takes `&self`,
@@ -160,6 +166,25 @@ mod tests {
             reader.consume(total);
         }
         got
+    }
+
+    #[test]
+    fn only_a_publish_above_qos_0_needs_an_ack() {
+        let mut reader = PacketReader::<64>::new();
+        assert!(!reader.head_needs_ack(), "empty");
+
+        reader.feed(&publish_bytes("t", b"x")).unwrap();
+        assert!(!reader.head_needs_ack(), "QoS 0 publish");
+        reader.consume(reader.framed_len().unwrap().unwrap());
+
+        let mut qos1 = publish_bytes("t", b"x");
+        qos1[0] |= 0b0010;
+        reader.feed(&qos1).unwrap();
+        assert!(reader.head_needs_ack(), "QoS 1 publish");
+        reader.consume(qos1.len());
+
+        reader.feed(CONNACK).unwrap();
+        assert!(!reader.head_needs_ack(), "CONNACK");
     }
 
     #[test]

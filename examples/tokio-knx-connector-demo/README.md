@@ -27,16 +27,12 @@ Demonstrates bidirectional KNX/IP integration with AimDB using the Tokio runtime
 Edit `src/main.rs` to match your KNX setup:
 
 ```rust
-// The connector's queues, held for the process lifetime.
-static KNX_CHANNELS: Channels = Channels::new();
-
 // The adapter owns the UDP socket and the clock; the connector owns the
 // tunnelling protocol. Only the gateway URL needs changing.
 .with_connector(KnxConnector::new(
     TokioNet::udp(Ipv4Addr::UNSPECIFIED),
     TokioDelay,
     "knx://YOUR_GATEWAY_IP:3671",  // Change to your gateway IP
-    &KNX_CHANNELS,
 ))
 
 // Group addresses

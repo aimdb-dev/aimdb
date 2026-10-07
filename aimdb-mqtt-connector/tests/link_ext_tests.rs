@@ -7,7 +7,7 @@
 #![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::AimDbBuilder;
+use aimdb_core::{AimDbBuilder, InboundDispatch, OutboundRoutes};
 use aimdb_data_contracts::{link_codecs, LinkCodec, LinkCodecBuilderExt};
 use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Reading {
-    #[allow(dead_code)]
     value: f32,
 }
 
@@ -103,27 +102,29 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
 
     let (db, _runner) = builder.build().await.expect("build must succeed");
 
-    let outbound = db.collect_outbound_routes("mqtt");
-    assert_eq!(outbound.len(), 1);
-    assert_eq!(outbound[0].topic, "sensors/codec");
-    assert_eq!(outbound[0].source.serializer_scratch_capacity(), Some(64));
-    assert!(outbound[0]
-        .config
-        .contains(&("qos".to_string(), "2".to_string())));
-    assert!(outbound[0]
-        .config
-        .contains(&("retain".to_string(), "true".to_string())));
+    let outbound = OutboundRoutes::new(&db, "mqtt").expect("outbound routes");
+    let routes = outbound.routes();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(&*routes[0].default_topic, "sensors/codec");
+    assert_eq!(routes[0].payload_capacity, 64);
+    let options = &routes[0].config.protocol_options;
+    assert!(options.contains(&("qos".to_string(), "2".to_string())));
+    assert!(options.contains(&("retain".to_string(), "true".to_string())));
 
     let id = db.inner().resolve_str("test.reading.codec").unwrap();
     let record = db.inner().storage(id).unwrap();
     let inbound_config = &record.inbound_connectors()[0].config;
     assert!(inbound_config.contains(&("qos".to_string(), "0".to_string())));
 
-    let inbound = db.collect_inbound_routes("mqtt");
-    assert_eq!(inbound.len(), 1);
-    assert_eq!(inbound[0].0, "commands/codec");
+    let inbound =
+        InboundDispatch::new(&db, "mqtt", &aimdb_core::ExactGrammar).expect("inbound routes");
+    assert_eq!(inbound.subscriptions(), [Arc::from("commands/codec")]);
     let encoded = link_codecs::Postcard::<64>
         .encode(&Reading { value: 17.5 })
         .expect("Postcard encode must succeed");
-    inbound[0].1(&db.runtime_ctx(), &encoded).expect("Postcard ingest must succeed");
+    let mut reader = db
+        .subscribe::<Reading>("test.reading.codec")
+        .expect("subscribe");
+    inbound.dispatch("commands/codec", &encoded);
+    assert_eq!(reader.try_recv().expect("Postcard ingest").value, 17.5);
 }

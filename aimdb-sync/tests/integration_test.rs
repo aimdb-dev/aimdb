@@ -170,20 +170,18 @@ fn test_timeout_operations() {
     handle.detach().expect("Failed to detach");
 }
 
-/// Test non-blocking operations
+/// Test an immediate consumer read.
 #[test]
-fn test_non_blocking_operations() {
+fn test_non_blocking_consumer_operation() {
     let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
 
     // Try get on empty buffer (should fail)
     let result = consumer.try_get();
     assert!(matches!(result, Err(SyncError::GetTimeout)));
 
-    // Try set (should succeed immediately)
+    // Set should succeed immediately
     let test_value = test_value();
-    producer
-        .try_set(test_value.clone())
-        .expect("Failed to try_set");
+    producer.set(test_value.clone()).expect("Failed to set");
 
     // Use blocking get to ensure we receive the value
     // (try_get is inherently racy in this test scenario)
@@ -263,20 +261,18 @@ fn check_reports_what_a_publish_would_find() {
     ));
 }
 
-/// Test error handling - runtime shutdown, non-blocking operations
+/// Test an immediate consumer read after runtime shutdown.
 #[test]
 fn test_runtime_shutdown_error_non_blocking() {
-    let (handle, producer, mut consumer) = setup(BufferCfg::SpmcRing { capacity: 10 });
+    let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
+    let mut consumer = handle
+        .consumer::<TestData>("test.data")
+        .expect("Failed to create consumer");
 
     // Shut down the runtime
     handle.detach().expect("Failed to detach");
 
-    // Non-blocking operations should now fail with RuntimeShutdown too
-    let test_value = test_value();
-
-    let result = producer.try_set(test_value);
-    assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
-
+    // Immediate reads should now fail with RuntimeShutdown too
     let result = consumer.try_get();
     assert!(matches!(result, Err(SyncError::RuntimeShutdown)));
 }
@@ -358,7 +354,7 @@ fn test_single_latest_semantics() {
     }
 
     // Use get_latest() to drain the channel and get the most recent value.
-    // The BufferLagged errors occuring during it are ignored
+    // BufferLagged errors occurring during it are ignored
     let latest = consumer.get_latest().expect("Failed to get latest");
 
     // Should get the last value (5) since get_latest() drains the channel

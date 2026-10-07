@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QUERY_ALL_PATTERN};
+use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
 use aimdb_core::session::Session;
 use aimdb_core::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
@@ -24,9 +24,9 @@ use aimdb_core::{
 use serde_json::Value;
 
 use super::{
-    auth::{AuthHandler, ClientId, ClientInfo, Permissions},
+    auth::{AuthHandler, ClientId, ClientInfo, Permissions, RecordsBits},
     client_manager::ClientManager,
-    session::{QueryHandler, Router, SnapshotProvider},
+    session::{QueryHandler, SnapshotProvider},
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
@@ -37,13 +37,12 @@ pub struct WsDispatch {
     pub(crate) client_mgr: ClientManager,
     pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
     pub(crate) query_handler: Option<Arc<dyn QueryHandler>>,
-    pub(crate) router: Arc<Router>,
+    pub(crate) inbound: aimdb_core::InboundDispatch,
     /// Record `type_id` string → data-contract schema name, used to stamp
     /// `schema_type` onto the `record.list` rows core hands back.
     pub(crate) schema_by_type: Arc<HashMap<String, String>>,
     pub(crate) auth: Arc<dyn AuthHandler>,
     pub(crate) late_join: bool,
-    pub(crate) runtime_ctx: aimdb_core::RuntimeContext,
 }
 
 impl Dispatch for WsDispatch {
@@ -69,6 +68,7 @@ impl Dispatch for WsDispatch {
                 id: ClientId(0),
                 remote_addr: ([0, 0, 0, 0], 0).into(),
                 permissions: Permissions::default(),
+                record_perms: Arc::new(RecordsBits::new(0)),
             })
         });
         Box::new(WsSession {
@@ -76,11 +76,10 @@ impl Dispatch for WsDispatch {
             client_mgr: self.client_mgr.clone(),
             snapshot_provider: self.snapshot_provider.clone(),
             query_handler: self.query_handler.clone(),
-            router: self.router.clone(),
+            inbound: self.inbound.clone(),
             schema_by_type: self.schema_by_type.clone(),
             auth: self.auth.clone(),
             late_join: self.late_join,
-            runtime_ctx: self.runtime_ctx.clone(),
             info,
         })
     }
@@ -92,11 +91,10 @@ struct WsSession {
     client_mgr: ClientManager,
     snapshot_provider: Arc<dyn SnapshotProvider>,
     query_handler: Option<Arc<dyn QueryHandler>>,
-    router: Arc<Router>,
+    inbound: aimdb_core::InboundDispatch,
     schema_by_type: Arc<HashMap<String, String>>,
     auth: Arc<dyn AuthHandler>,
     late_join: bool,
-    runtime_ctx: aimdb_core::RuntimeContext,
     info: Arc<ClientInfo>,
 }
 
@@ -115,11 +113,7 @@ impl Session for WsSession {
                     // name core can't resolve.
                     let mut records = Vec::new();
                     for mut record in self.db.list_records() {
-                        if !self
-                            .auth
-                            .authorize_list(&self.info, &record.record_key)
-                            .await
-                        {
+                        if !self.info.record_perms.is_allowed(record.record_id as usize) {
                             continue;
                         }
                         if record.schema_type.is_none() {
@@ -142,17 +136,27 @@ impl Session for WsSession {
         })
     }
 
+    /// Called when a client subscribes to a topic
+    /// As `Auth` no longer gate topic (permissions lie in record keys),
+    /// a client could subscribe to a topic which has no associated records.
+    /// As a result, no message could reach that client.
     fn subscribe<'a>(
         &'a mut self,
         topic: &'a str,
     ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
+        // Deny subscription for no-grant clients,
+        // as clients having grants could have empty permission bitmap.
+        if self.info.permissions.read_patterns.is_empty() {
+            return Box::pin(async move { Err(RpcError::Denied) });
+        }
+
         Box::pin(async move {
-            // Per-operation authorization via the async `AuthHandler` hook.
-            if !self.auth.authorize_subscribe(&self.info, topic).await {
-                return Err(RpcError::Denied);
-            }
             // Register on the shared bus; the engine owns and drops the stream.
-            let (_sub_id, stream) = self.client_mgr.subscribe(topic);
+            // A topic always come with a record, so the client always receive a stream,
+            // message broadcasting will check for granted permissions (allowed records) later
+            let (_sub_id, stream) = self
+                .client_mgr
+                .subscribe(topic, self.info.record_perms.clone());
             Ok(stream)
         })
     }
@@ -161,10 +165,13 @@ impl Session for WsSession {
         if !self.late_join {
             return Vec::new();
         }
+
+        // Filtered by client's record permissions
         self.snapshot_provider
             .snapshots(topic)
             .into_iter()
-            .map(|(topic, bytes)| (topic, Payload::from(bytes.as_slice())))
+            .filter(|(record_id, _, _)| self.info.record_perms.is_allowed(*record_id))
+            .map(|(_, topic, bytes)| (topic, Payload::from(bytes.as_slice())))
             .collect()
     }
 
@@ -177,9 +184,8 @@ impl Session for WsSession {
             if !self.auth.authorize_write(&self.info, topic).await {
                 return Err(RpcError::Denied);
             }
-            self.router
-                .route(topic, &payload, &self.runtime_ctx)
-                .map_err(|_| RpcError::Internal)
+            self.inbound.dispatch(topic, &payload);
+            Ok(())
         })
     }
 }
@@ -188,8 +194,9 @@ impl WsSession {
     /// `record.query` with the shared `{name, limit, start, end}` params and
     /// `{records, total}` result: a plugged-in
     /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
-    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`. The pattern
-    /// passes [`AuthHandler::authorize_query`] before either is consulted.
+    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
+    /// A client having no grant will have its query denied.
+    /// Grants allow clients to query both live and persist records.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
@@ -203,12 +210,16 @@ impl WsSession {
         let start = params.get("start").and_then(|v| v.as_u64());
         let end = params.get("end").and_then(|v| v.as_u64());
 
-        if !self.auth.authorize_query(&self.info, &name).await {
+        // No-grant clients have their requests denied
+        // Grant clients whose perms matching persisted records,
+        // but matching no live records, are not denied
+        if self.info.permissions.read_patterns.is_empty() {
             return Err(RpcError::Denied);
-        }
+        };
 
-        if let Some(handler) = &self.query_handler {
-            let (records, total) = handler
+        // The query is handled here
+        let records: Vec<QueryRecord> = if let Some(handler) = &self.query_handler {
+            let (records, _total) = handler
                 .handle_query(&name, start, end, limit)
                 .await
                 .map_err(|_e| {
@@ -216,26 +227,44 @@ impl WsSession {
                     tracing::warn!("record.query handler failed: {}", _e);
                     RpcError::Internal
                 })?;
-            return Ok(serde_json::json!({ "records": records, "total": total }));
-        }
+            records
+        } else {
+            let handler_fut = {
+                let handler = self
+                    .db
+                    .extensions()
+                    .get::<QueryHandlerFn>()
+                    .ok_or(RpcError::NotFound)?;
+                handler(QueryHandlerParams {
+                    name,
+                    limit,
+                    start,
+                    end,
+                })
+            };
+            let mut values = handler_fut.await.map_err(|_e| {
+                #[cfg(feature = "tracing")]
+                tracing::warn!("record.query persistence handler failed: {}", _e);
+                RpcError::Internal
+            })?;
 
-        let handler_fut = {
-            let handler = self
-                .db
-                .extensions()
-                .get::<QueryHandlerFn>()
-                .ok_or(RpcError::NotFound)?;
-            handler(QueryHandlerParams {
-                name,
-                limit,
-                start,
-                end,
-            })
+            // The QueryHandlerFn returns json, so that needs to be parsed back to Vec<QueryRecord>
+            // so the output could be filtered by per-client grant.
+            // A malformed json is QueryHandlerFn bug and surfaces as `Internal`
+            match values.get_mut("records").map(Value::take) {
+                None | Some(Value::Null) => Vec::new(),
+                Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("record.query handler returned malformed records: {}", _e);
+                    RpcError::Internal
+                })?,
+            }
         };
-        handler_fut.await.map_err(|_e| {
-            #[cfg(feature = "tracing")]
-            tracing::warn!("record.query persistence handler failed: {}", _e);
-            RpcError::Internal
-        })
+
+        // Query results need to be filtered by grant patterns,
+        // This ensures that clients could query reach persist records in store,
+        let records = self.auth.authorize_query_record(&self.info, records);
+
+        Ok(serde_json::json!({ "records": records, "total": records.len() }))
     }
 }

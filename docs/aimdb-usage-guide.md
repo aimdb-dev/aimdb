@@ -315,7 +315,7 @@ knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master
 use aimdb_core::prelude::*;
 use aimdb_tokio_adapter::TokioAdapter;
 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
-use aimdb_knx_connector::{Channels, KnxConnector};
+use aimdb_knx_connector::KnxConnector;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -323,9 +323,6 @@ use std::sync::Arc;
 struct LightState {
     is_on: bool,
 }
-
-// One channel pair per connector, held for the process lifetime.
-static CHANNELS: Channels = Channels::new();
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -339,7 +336,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TokioNet::udp(Ipv4Addr::UNSPECIFIED),
             TokioDelay,
             "knx://192.168.1.19:3671",
-            &CHANNELS,
         ))
         .configure::<LightState>("light.state", |reg| {
             reg.buffer(BufferCfg::SingleLatest)

@@ -62,6 +62,17 @@ harness = false
 name = "b1_b2_remote_json"
 harness = false
 
+# Connector-boundary allocations per message (design 054 baseline).
+[[bench]]
+name = "b0_alloc_connector"
+harness = false
+
+# Outbound wake-up time per message, 1 to 256 routes.
+# Informational: not in `bench-gate`.
+[[bench]]
+name = "b1_outbound_wakeup"
+harness = false
+
 [features]
 default = ["std"]
 # Gates `profiles`/`reports`/`harness` and their criterion/serde_json/
@@ -149,3 +160,5 @@ critical-section = { version = "1.1", features = ["std"] }
 defmt = { workspace = true }
 embassy-time-driver = "0.2.2"
 postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+# `MqttGrammar` for the pattern rows of b0_alloc_connector (no backend).
+aimdb-mqtt-connector = { path = "../aimdb-mqtt-connector", default-features = false }

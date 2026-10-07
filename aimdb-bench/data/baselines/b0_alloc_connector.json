@@ -1,0 +1,83 @@
+[
+  {
+    "profile": "inbound_dispatch",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "inbound_dispatch_pattern",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "inbound_dispatch_keyed_known",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "inbound_dispatch_keyed_new",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 2010,
+    "total_bytes": 373456,
+    "batch_size": 2000,
+    "allocs_per_msg": 1.005,
+    "bytes_per_msg": 186.728
+  },
+  {
+    "profile": "outbound_next_static_topic",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 1,
+    "total_bytes": 64,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0005,
+    "bytes_per_msg": 0.032
+  },
+  {
+    "profile": "outbound_next_written_topic",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "outbound_next_owned",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 2000,
+    "total_bytes": 16000,
+    "batch_size": 2000,
+    "allocs_per_msg": 1.0,
+    "bytes_per_msg": 8.0
+  },
+  {
+    "profile": "outbound_next_round_robin",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 1,
+    "total_bytes": 128,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0005,
+    "bytes_per_msg": 0.064
+  },
+  {
+    "profile": "outbound_next_parked",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  }
+]

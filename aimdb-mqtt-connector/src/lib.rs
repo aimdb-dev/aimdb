@@ -111,6 +111,10 @@ extern crate alloc;
 // One `MqttConnector` over the `Native` and `Embedded` protocol backends.
 pub mod connector;
 
+// MQTT topic filters for inbound links (works on every feature leg).
+pub mod grammar;
+pub use grammar::MqttGrammar;
+
 // MQTT knobs over core's generic link builders (works on every feature leg).
 pub mod link_ext;
 pub use link_ext::{MqttLinkExt, MqttOutboundLinkExt};
@@ -122,6 +126,9 @@ pub mod native;
 // The `mountain-mqtt` backend: session loop, manager, and the TLS transport.
 #[cfg(feature = "embedded")]
 pub mod embedded;
+
+#[cfg(any(feature = "std", feature = "embedded"))]
+pub(crate) mod publish_opts;
 
 // SNTP wire codec — pure and feature-independent so it is unit-tested on the
 // host; only the TLS I/O task consumes it.

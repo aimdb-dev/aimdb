@@ -287,13 +287,16 @@ mod tests {
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
     use aimdb_core::buffer::{BufferReader, DynBuffer};
-    use aimdb_core::connector::SerializeError;
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
-    use aimdb_core::connector::{ConnectorBuilder, SerializedPayload};
+    use aimdb_core::connector::ConnectorBuilder;
+    use aimdb_core::connector::SerializeError;
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
     use aimdb_core::executor::test_support::NoopRuntimeOps;
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
-    use aimdb_core::{AimDb, AimDbBuilder, BoxFuture, DbError, DbResult};
+    use aimdb_core::{
+        AimDb, AimDbBuilder, BoxFuture, DbError, DbResult, InboundDispatch, OutboundPayload,
+        OutboundRoutes,
+    };
     use serde::{Deserialize, Serialize};
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
@@ -584,109 +587,72 @@ mod tests {
             });
 
             let (db, _runner) = builder.build().await.expect("codec routes build");
-            let routes = db.collect_outbound_routes("test");
-            assert_eq!(routes.len(), 4);
-
-            let json_route = routes
-                .iter()
-                .find(|route| route.topic == "json")
-                .expect("JSON route");
-            assert_eq!(json_route.source.serializer_scratch_capacity(), None);
-            let mut json_reader = json_route.source.subscribe();
-            let mut unused_scratch = [];
-            let json_message = json_reader
-                .recv_into(&db.runtime_ctx(), &mut unused_scratch)
-                .await
-                .expect("JSON payload");
-            let SerializedPayload::Owned(json_bytes) = json_message.payload else {
-                panic!("JSON must use owned serialization");
+            let mut outbound = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let route = |topic: &str| {
+                outbound
+                    .routes()
+                    .iter()
+                    .find(|route| &*route.default_topic == topic)
+                    .expect("route")
+                    .clone()
             };
+            assert_eq!(outbound.routes().len(), 4);
+            // A payload capacity of 0 means owned serialization only.
+            assert_eq!(route("json").payload_capacity, 0);
+            assert_eq!(route("postcard").payload_capacity, 64);
+            assert!(route("postcard")
+                .config
+                .protocol_options
+                .contains(&("wire".to_string(), "binary".to_string())));
+            assert_eq!(route("postcard-owned-fallback").payload_capacity, 1);
+            assert_eq!(
+                route("postcard-replaced-by-json").payload_capacity,
+                0,
+                "owned-only replacement must clear the previous scratch codec"
+            );
+
+            // Each canned reader yields one value, then closes its route.
+            let mut messages = std::collections::BTreeMap::new();
+            while let Some(msg) = outbound.next().await {
+                let owned = matches!(msg.payload, OutboundPayload::Owned(_));
+                messages.insert(msg.topic.to_string(), (msg.payload.into_vec(), owned));
+            }
+            let message = |topic: &str| messages.get(topic).expect("message").clone();
+
+            let (json_bytes, owned) = message("json");
+            assert!(owned, "JSON must use owned serialization");
             let decoded_json: Reading = link_codecs::Json.decode(&json_bytes).expect("JSON decode");
             assert_eq!(decoded_json, reading);
 
-            let postcard_route = routes
-                .iter()
-                .find(|route| route.topic == "postcard")
-                .expect("Postcard route");
-            assert_eq!(
-                postcard_route.source.serializer_scratch_capacity(),
-                Some(64)
-            );
-            assert!(postcard_route
-                .config
-                .contains(&("wire".to_string(), "binary".to_string())));
-            let mut postcard_reader = postcard_route.source.subscribe();
-            let mut scratch = [0_u8; 64];
-            let postcard_message = postcard_reader
-                .recv_into(&db.runtime_ctx(), &mut scratch)
-                .await
-                .expect("Postcard payload");
-            let SerializedPayload::Scratch { len } = postcard_message.payload else {
-                panic!("Postcard must use route scratch storage");
-            };
+            let (postcard_bytes, owned) = message("postcard");
+            assert!(!owned, "Postcard must use route scratch storage");
             let decoded_postcard: Reading = link_codecs::Postcard::<64>
-                .decode(&scratch[..len])
+                .decode(&postcard_bytes)
                 .expect("Postcard decode");
             assert_eq!(decoded_postcard, reading);
-            assert_ne!(json_bytes, scratch[..len]);
+            assert_ne!(json_bytes, postcard_bytes);
 
-            let fallback_route = routes
-                .iter()
-                .find(|route| route.topic == "postcard-owned-fallback")
-                .expect("undersized Postcard route");
-            assert_eq!(fallback_route.source.serializer_scratch_capacity(), Some(1));
-            let mut fallback_reader = fallback_route.source.subscribe();
-            let mut undersized_scratch = [0_u8; 1];
-            let fallback_message = fallback_reader
-                .recv_into(&db.runtime_ctx(), &mut undersized_scratch)
-                .await
-                .expect("owned Postcard fallback");
-            let SerializedPayload::Owned(fallback_bytes) = fallback_message.payload else {
-                panic!("undersized Postcard scratch must use owned fallback");
-            };
+            let (fallback_bytes, owned) = message("postcard-owned-fallback");
+            assert!(owned, "undersized Postcard scratch must use owned fallback");
             let decoded_fallback: Reading = link_codecs::Postcard::<1>
                 .decode(&fallback_bytes)
                 .expect("fallback Postcard decode");
             assert_eq!(decoded_fallback, reading);
 
-            let replacement_route = routes
-                .iter()
-                .find(|route| route.topic == "postcard-replaced-by-json")
-                .expect("replacement route");
-            assert_eq!(
-                replacement_route.source.serializer_scratch_capacity(),
-                None,
-                "owned-only replacement must clear the previous scratch codec"
-            );
-            let mut replacement_reader = replacement_route.source.subscribe();
-            let replacement_message = replacement_reader
-                .recv_into(&db.runtime_ctx(), &mut [])
-                .await
-                .expect("replacement JSON payload");
-            let SerializedPayload::Owned(replacement_bytes) = replacement_message.payload else {
-                panic!("replacement JSON codec must use owned serialization");
-            };
+            let (replacement_bytes, owned) = message("postcard-replaced-by-json");
+            assert!(owned, "replacement JSON codec must use owned serialization");
             assert_eq!(replacement_bytes, json_bytes);
 
-            let inbound = db.collect_inbound_routes("test");
-            assert_eq!(inbound.len(), 2);
-            let json_ingest = inbound
-                .iter()
-                .find(|(topic, _)| topic == "json-in")
-                .map(|(_, ingest)| ingest)
-                .expect("JSON ingest route");
-            json_ingest(&db.runtime_ctx(), &json_bytes).expect("JSON ingest");
+            let inbound = InboundDispatch::new(&db, "test", &aimdb_core::ExactGrammar)
+                .expect("inbound routes");
+            assert_eq!(inbound.route_count(), 2);
+            inbound.dispatch("json-in", &json_bytes);
             assert_eq!(
                 json_in.lock().expect("JSON capture lock").as_ref(),
                 Some(&reading)
             );
 
-            let postcard_ingest = inbound
-                .iter()
-                .find(|(topic, _)| topic == "postcard-in")
-                .map(|(_, ingest)| ingest)
-                .expect("Postcard ingest route");
-            postcard_ingest(&db.runtime_ctx(), &scratch[..len]).expect("Postcard ingest");
+            inbound.dispatch("postcard-in", &postcard_bytes);
             assert_eq!(
                 postcard_in.lock().expect("Postcard capture lock").as_ref(),
                 Some(&reading)
@@ -744,31 +710,23 @@ mod tests {
                     .with_serializer(|_ctx, _value| Ok(Vec::new()))
                     .finish();
             });
-            builder.configure::<Reading>("reading.formats.in", |registrar| {
-                registrar.buffer_raw(Box::new(CapturingBuffer {
-                    latest: Arc::new(std::sync::Mutex::new(None)),
-                }));
-                registrar.linked_from_with("test://json-in", link_codecs::Json);
-                registrar.linked_from("test://default-in");
-            });
             let (db, _runner) = builder.build().await.expect("build");
 
-            let mut formats: Vec<(String, WireFormat, usize)> = db
-                .collect_outbound_routes_with_meta("test")
-                .into_iter()
-                .map(|(_, meta)| meta)
-                .chain(
-                    db.collect_inbound_routes_with_meta("test")
-                        .into_iter()
-                        .map(|(_, meta)| meta),
-                )
-                .map(|meta| {
-                    let records = meta
-                        .config
+            let routes = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let mut formats: Vec<(String, WireFormat, usize)> = routes
+                .routes()
+                .iter()
+                .map(|route| {
+                    let config = &route.config.protocol_options;
+                    let records = config
                         .iter()
                         .filter(|(key, _)| key == WIRE_FORMAT_KEY)
                         .count();
-                    (meta.topic, WireFormat::recorded_in(&meta.config), records)
+                    (
+                        route.default_topic.to_string(),
+                        WireFormat::recorded_in(config),
+                        records,
+                    )
                 })
                 .collect();
             formats.sort_by(|a, b| a.0.cmp(&b.0));
@@ -776,9 +734,7 @@ mod tests {
             let expected = [
                 ("custom-after-codec", WireFormat::Unspecified, 0),
                 ("default", WireFormat::Unspecified, 0),
-                ("default-in", WireFormat::Unspecified, 0),
                 ("json", WireFormat::Json, 1),
-                ("json-in", WireFormat::Json, 1),
                 ("postcard", WireFormat::Postcard, 1),
                 ("replaced", WireFormat::Json, 1),
             ];

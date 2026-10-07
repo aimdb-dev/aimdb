@@ -1,19 +1,22 @@
 # aimdb-sync
 
-Synchronous API wrapper for AimDB - blocking operations for async database.
+Synchronous API wrapper for AimDB.
 
 ## Overview
 
-`aimdb-sync` provides a synchronous interface to AimDB, enabling blocking operations on the async database. Perfect for FFI bindings, legacy codebases, simple scripts, and situations where async is impractical.
+`aimdb-sync` provides a synchronous interface to AimDB for code that does not use an async executor. Perfect for FFI bindings, legacy codebases, simple scripts, and situations where async is impractical.
 
 **Key Features:**
-- **Pure Sync Context**: Works in plain `fn main()` - no `#[tokio::main]` required
-- **Blocking Operations**: Familiar sync API (set, get, try_get, etc.)
-- **Thread-Safe**: All types are `Send + Sync`, shareable across threads
+- **Pure Sync Context**: Works in plain `fn main()` - no `#[tokio::main]` required. Blocking calls panic if made from async code inside a Tokio runtime
+- **Synchronous API**: Produce and consume records without `async` or `await`
+- **Thread-Safe**: `SyncProducer` type is `Send + Sync`, shareable across threads. `SyncConsumer` type is `Send` only, can be moved to another thread.
 - **Type-Safe**: Full compile-time type safety with generics
-- **Timeout Support**: All operations support configurable timeouts
+- **Timeout Support**: Blocking consumer read operations support configurable timeouts
 
 ## Architecture
+
+Producers write directly to AimDB record buffers. Consumers read from the
+buffers through `Reader<T>`. A background thread runs AimDB's async tasks.
 
 ```
 ┌──────────────────────────────┐
@@ -24,11 +27,9 @@ Synchronous API wrapper for AimDB - blocking operations for async database.
                │ SyncConsumer<T>
                ▼
 ┌──────────────────────────────┐
-│   Channel Bridge             │
-│   (tokio::sync::mpsc +       │
-│    std::sync::mpsc)          │
+│   AimDB Record Buffer        │
 └──────────────┬───────────────┘
-               │
+               | shared with
                ▼
 ┌──────────────────────────────┐
 │   Async Context              │
@@ -43,9 +44,9 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-sync = "0.5"
-aimdb-core = "1.0"
-aimdb-tokio-adapter = "0.5"
+aimdb-sync = "0.6"
+aimdb-core = "2.0"
+aimdb-tokio-adapter = "0.7"
 ```
 
 ### Basic Example
@@ -54,11 +55,10 @@ aimdb-tokio-adapter = "0.5"
 use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct Temperature {
     celsius: f32,
     sensor_id: String,
@@ -69,15 +69,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
     
     let handle = builder.attach()?;
     
     // Get sync handles
-    let producer = handle.producer::<Temperature>()?;
-    let consumer = handle.consumer::<Temperature>()?;
+    let producer = handle.producer::<Temperature>("temperature")?;
+    let mut consumer = handle.consumer::<Temperature>("temperature")?;
     
     // Send from one thread
     let prod_handle = std::thread::spawn(move || {
@@ -111,42 +111,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Producer Operations
 
-`SyncProducer<T>` provides blocking send operations:
+`SyncProducer<T>` writes directly to the configured record buffer:
 
-### Blocking Send
+### Write a Value
 
 ```rust
-let producer = handle.producer::<Temperature>()?;
+let producer = handle.producer::<Temperature>("temperature")?;
 
 let temp = Temperature { 
     celsius: 23.5, 
     sensor_id: "sensor-001".to_string() 
 };
 
-// Blocks until send completes
+// Writes directly to the configured record buffer
 producer.set(temp)?;
-```
-
-### Send with Timeout
-
-```rust
-use std::time::Duration;
-
-// Block for max 1 second
-match producer.set_with_timeout(temp, Duration::from_secs(1)) {
-    Ok(_) => println!("Sent successfully"),
-    Err(e) => eprintln!("Timeout or error: {}", e),
-}
-```
-
-### Non-Blocking Send
-
-```rust
-// Returns immediately (doesn't wait for produce to complete)
-match producer.try_set(temp) {
-    Ok(_) => println!("Sent immediately"),
-    Err(e) => eprintln!("Channel full or error: {}", e),
-}
 ```
 
 ## Consumer Operations
@@ -156,7 +134,7 @@ match producer.try_set(temp) {
 ### Blocking Receive
 
 ```rust
-let consumer = handle.consumer::<Temperature>()?;
+let mut consumer = handle.consumer::<Temperature>("temperature")?;
 
 // Blocks until value is available
 let temp = consumer.get()?;
@@ -185,6 +163,19 @@ match consumer.try_get() {
 }
 ```
 
+### Latest Value
+
+`get_latest()` waits for one value, then returns the newest available value.
+`get_latest_with_timeout()` applies its timeout only while waiting for the
+first value. Both methods skip `BufferLagged` while catching up.
+
+```rust
+let latest = consumer.get_latest()?;
+
+let latest_with_timeout =
+    consumer.get_latest_with_timeout(Duration::from_secs(1))?;
+```
+
 ## Multi-Consumer Pattern
 
 Multiple consumers can receive from the same record:
@@ -200,18 +191,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<Temperature>(|reg| {
+    builder.configure::<Temperature>("temperature", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     
     let handle = builder.attach()?;
-    let producer = handle.producer::<Temperature>()?;
+    let producer = handle.producer::<Temperature>("temperature")?;
     
     // Spawn multiple consumer threads
     let mut handles = vec![];
     
     for id in 0..3 {
-        let consumer = handle.consumer::<Temperature>()?;
+        let mut consumer = handle.consumer::<Temperature>("temperature")?;
         let handle = std::thread::spawn(move || {
             loop {
                 match consumer.get_with_timeout(Duration::from_secs(1)) {
@@ -244,37 +235,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Thread Safety
 
-All sync types are `Send + Sync`:
+`SyncProducer` type is `Send + Sync`, shareable across threads. `SyncConsumer` type is `Send` only, can be moved to another thread:
 
 ```rust
-use std::sync::Arc;
+let producer = handle.producer::<Temperature>("temperature")?;
+let mut consumer = handle.consumer::<Temperature>("temperature")?;
 
-let producer = Arc::new(handle.producer::<Temperature>()?);
-let consumer = Arc::new(handle.consumer::<Temperature>()?);
-
-// Share across threads
+// `SyncProducer` implements `Clone`
 let prod_clone = producer.clone();
 std::thread::spawn(move || {
     prod_clone.set(Temperature { celsius: 25.0, sensor_id: "s1".to_string() }).ok();
 });
 
-let cons_clone = consumer.clone();
+// `SyncConsumer` implements `Send`, can be moved to another thread
 std::thread::spawn(move || {
-    let value = cons_clone.get().ok();
+    consumer.get().ok();
 });
 ```
 
 ## Error Handling
 
 ```rust
-use aimdb_core::DbError;
+use aimdb_sync::SyncError;
 
 match producer.set(temp) {
     Ok(_) => println!("Success"),
-    Err(DbError::SetTimeout) => {
-        eprintln!("Operation timed out");
-    }
-    Err(DbError::RuntimeShutdown) => {
+    Err(SyncError::RuntimeShutdown) => {
         eprintln!("Runtime thread has stopped");
     }
     Err(e) => {
@@ -284,10 +270,15 @@ match producer.set(temp) {
 ```
 
 Common error types:
-- `DbError::SetTimeout` / `DbError::GetTimeout`: Operation exceeded timeout
-- `DbError::RuntimeShutdown`: Runtime thread stopped or channel closed
-- `DbError::RecordNotFound`: Type not registered in database
-- `DbError::AttachFailed`: Failed to start runtime thread
+- `SyncError::GetTimeout`: Operation exceeded timeout
+- `SyncError::RuntimeShutdown`: Runtime thread stopped
+- `SyncError::ForkedChild`: A forked child no longer has the runtime thread
+- `SyncError::Db(DbError::RecordKeyNotFound {...})`: Type not registered in database
+- `SyncError::Db(DbError::BufferLagged {...})`: An SPMC consumer missed overwritten values
+- `SyncError::AttachFailed`: Failed to start runtime thread
+
+`set()` reports producer key and type errors. `handle.consumer()` reports
+equivalent consumer errors during construction.
 
 ## Configuration Options
 
@@ -298,39 +289,27 @@ Choose buffer based on use case:
 ```rust
 use aimdb_core::buffer::BufferCfg;
 
-// SPMC Ring: Multiple consumers, bounded history
-builder.configure::<MyData>(|reg| {
+// SPMC Ring: Multiple consumers, bounded history, overwrites the oldest value when full
+builder.configure::<MyData>("my-data", |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
 });
 
-// SingleLatest: Always get newest value
-builder.configure::<MyData>(|reg| {
+// SingleLatest: Always get newest value, each write replaces the previous value
+builder.configure::<MyData>("my-data", |reg| {
     reg.buffer(BufferCfg::SingleLatest);
 });
 
-// Mailbox: Single slot, overwrite
-builder.configure::<MyData>(|reg| {
+// Mailbox: One pending value. A new value overwrites an unread one, and with
+// several consumers each value is taken by only one of them
+builder.configure::<MyData>("my-data", |reg| {
     reg.buffer(BufferCfg::Mailbox);
 });
 ```
 
-### Channel Capacity
-
-Control the sync bridge channel size:
-
-```rust
-// Default capacity (100)
-let producer = handle.producer::<Temperature>()?;
-let consumer = handle.consumer::<Temperature>()?;
-
-// Custom capacity for high-frequency data
-let producer = handle.producer_with_capacity::<Temperature>(1000)?;
-let consumer = handle.consumer_with_capacity::<Temperature>(1000)?;
-```
-
 ## Shutdown
 
-Database automatically shuts down when dropped:
+Call `detach()` to stop and join the runtime thread. Dropping the handle only
+signals shutdown and does not wait:
 
 ```rust
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -344,7 +323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Or with timeout
     // handle.detach_timeout(Duration::from_secs(5))?;
     
-    // Or just drop (automatic cleanup with warning)
+    // Dropping only signals shutdown
     // drop(handle);
     
     Ok(())
@@ -357,7 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
-use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle};
+use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncConsumer, SyncProducer};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -365,6 +344,10 @@ use std::time::Duration;
 // Wrap async AimDB for legacy sync code
 pub struct LegacyAdapter {
     handle: AimDbHandle,
+    producer: SyncProducer<SensorData>,
+    // Kept for the adapter's lifetime: a new SPMC consumer only sees values
+    // produced after it subscribes.
+    consumer: SyncConsumer<SensorData>,
 }
 
 impl LegacyAdapter {
@@ -372,27 +355,23 @@ impl LegacyAdapter {
         let adapter = Arc::new(TokioAdapter);
         let mut builder = AimDbBuilder::new().runtime(adapter);
         
-        builder.configure::<SensorData>(|reg| {
+        builder.configure::<SensorData>("sensor-data", |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
         });
         
         let handle = builder.attach()?;
-        Ok(Self { handle })
+        let producer = handle.producer::<SensorData>("sensor-data")?;
+        let consumer = handle.consumer::<SensorData>("sensor-data")?;
+        Ok(Self { handle, producer, consumer })
     }
     
     pub fn send_sensor_data(&self, data: SensorData) -> Result<(), String> {
-        let producer = self.handle.producer::<SensorData>()
-            .map_err(|e| e.to_string())?;
-        
-        producer.set_with_timeout(data, Duration::from_secs(1))
+        self.producer.set(data)
             .map_err(|e| e.to_string())
     }
     
-    pub fn read_sensor_data(&self) -> Result<SensorData, String> {
-        let consumer = self.handle.consumer::<SensorData>()
-            .map_err(|e| e.to_string())?;
-        
-        consumer.get_with_timeout(Duration::from_secs(1))
+    pub fn read_sensor_data(&mut self) -> Result<SensorData, String> {
+        self.consumer.get_with_timeout(Duration::from_secs(1))
             .map_err(|e| e.to_string())
     }
     
@@ -416,13 +395,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<LogMessage>(|reg| {
+    builder.configure::<LogMessage>("log-message", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
     });
     
     let handle = builder.attach()?;
-    let producer = handle.producer::<LogMessage>()?;
-    let consumer = handle.consumer::<LogMessage>()?;
+    let producer = handle.producer::<LogMessage>("log-message")?;
+    let mut consumer = handle.consumer::<LogMessage>("log-message")?;
     
     // Simple loop - no async/await
     loop {
@@ -441,15 +420,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Performance Considerations
 
 ### Overhead
-- Channel crossing adds ~1-10μs latency
-- Background runtime uses dedicated threads
-- Memory: One tokio::mpsc channel per producer, one std::mpsc channel per consumer
+- `attach()` starts a dedicated background thread that owns and drives the Tokio runtime.
 
 ### Optimization Tips
-1. **Batch Operations**: Group multiple sets/gets when possible
-2. **Avoid Blocking**: Use `try_*` methods in latency-sensitive paths
-3. **Channel Capacity**: Tune for expected throughput
-4. **Thread Count**: Match runtime_threads to workload
+- **Avoid Blocking**: Use `SyncConsumer::try_get()` when the caller thread must not wait.
 
 ## Testing
 
@@ -460,8 +434,6 @@ cargo test -p aimdb-sync
 # Run with logging
 RUST_LOG=debug cargo test -p aimdb-sync -- --nocapture
 
-# Benchmark
-cargo bench -p aimdb-sync
 ```
 
 ## Complete Examples

@@ -85,15 +85,19 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
+mod inbound_dispatch;
+mod inbound_key;
+mod outbound;
 #[cfg(feature = "observability")]
 pub mod profiling;
 pub mod record_id;
 #[cfg(feature = "remote")]
 pub mod remote;
-pub mod router;
+mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
 pub mod signal;
+pub mod topic_pattern;
 pub mod transform;
 pub mod transport;
 pub mod typed_api;
@@ -114,9 +118,8 @@ pub use buffer::JsonReader;
 pub use buffer::Reader;
 pub use buffer::TryProduceError;
 pub use builder::{AimDb, AimDbBuilder};
-pub use builder::{OutboundRoute, RouteMeta};
 pub use connector::ConnectorBuilder;
-pub use transport::{Connector, ConnectorConfig, PublishError};
+pub use transport::{ConnectorConfig, PublishError};
 pub use typed_api::{
     Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
     StageKind,
@@ -138,10 +141,9 @@ pub use remote::topic_leaf;
 // compatible). See docs/design/remote-access-via-connectors.md.
 #[cfg(feature = "connector-session")]
 pub use session::{
-    is_wildcard, pattern_contains, pump_sink, pump_source, topic_matches, AuthError, BoxFut,
-    BoxStream, CodecError, Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener,
-    Outbound, Payload, PeerInfo, RpcError, SessionCtx, SessionLimits, Source, SubUpdate,
-    TransportError, TransportResult,
+    is_wildcard, pattern_contains, topic_matches, AuthError, BoxFut, BoxStream, CodecError,
+    Connection, Dialer, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload, PeerInfo,
+    RpcError, SessionCtx, SessionLimits, SubUpdate, TransportError, TransportResult,
 };
 
 // Signal gauge handle (always available; inert without `observability`)
@@ -155,17 +157,25 @@ pub use profiling::{
 };
 
 // Connector Infrastructure exports
-pub use connector::TopicProvider;
 pub use connector::TopicResolverFn;
 pub use connector::{ConnectorLink, ConnectorUrl, LinkAddress, SerializeError};
 pub use connector::{IngestFactoryFn, IngestFn};
-pub use connector::{
-    SerializedPayload, SerializedReader, SerializedSource, SerializedValue, SerializedValueInto,
-    SourceFactoryFn,
-};
+pub use connector::{TopicBuf, TopicOverflow, TopicWriter};
 
 // Router exports for connector implementations
-pub use router::{Route, Router, RouterBuilder};
+pub use inbound_dispatch::InboundDispatch;
+pub use outbound::{
+    OutboundMessage, OutboundPayload, OutboundRoutes, RouteId, RouteInfo, RouteStats,
+};
+
+// Topic grammar for connectors with wildcard subscriptions
+pub use topic_pattern::{
+    ExactGrammar, PatternError, PatternPart, Spans, TopicFilter, TopicGrammar, TopicMatch,
+    TopicPattern, MAX_CAPTURES,
+};
+
+// Keys assigned to capture values of keyed inbound links
+pub use inbound_key::KeyId;
 
 // Record identification exports
 pub use record_id::{RecordId, RecordKey, StringKey};

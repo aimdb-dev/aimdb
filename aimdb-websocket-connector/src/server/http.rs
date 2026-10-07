@@ -56,7 +56,7 @@ use tower_http::cors::CorsLayer;
 use crate::transport::WsServerConnection;
 
 use super::{
-    auth::{AuthError, AuthRequest, ClientInfo, DynAuthHandler},
+    auth::{AuthError, AuthRequest, ClientInfo, DynAuthHandler, RecordsBits},
     client_manager::ClientManager,
 };
 
@@ -82,6 +82,8 @@ pub(crate) struct ServerState {
     /// Per-connection subscription cap.
     pub max_subs_per_connection: usize,
     pub started_at: Instant,
+    /// List records' unique key, ordered by registration order
+    pub records: Arc<Vec<String>>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -225,6 +227,12 @@ async fn ws_upgrade_handler(
         }
     };
 
+    // Build record bits based on permissions.read_patterns
+    let record_perms = Arc::new(RecordsBits::resolve_permissions(
+        &state.records,
+        &permissions,
+    ));
+
     // Resolve identity synchronously, before the upgrade, and carry it into the
     // engine via `PeerInfo::ext` (WS-style `reads_hello:false`).
     let id = state.client_mgr.next_client_id();
@@ -232,6 +240,7 @@ async fn ws_upgrade_handler(
         id,
         remote_addr,
         permissions,
+        record_perms,
     };
 
     #[cfg(feature = "tracing")]

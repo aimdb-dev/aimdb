@@ -121,7 +121,7 @@ aimdb --connect tcp://hub.local:7001 graph dot | dot -Tsvg > fleet.svg
 aimdb --connect serial:///dev/ttyACM0?baud=115200 record list
 ```
 
-Or point an AI client at the built-in [MCP server](tools/aimdb-mcp/) and ask: *"What is the current temperature at station alpha?"*
+Or point an AI client at the built-in [MCP server](tools/aimdb-mcp/) (also [listed on Glama](https://glama.ai/mcp/servers/aimdb-dev/aimdb)) and ask: *"What is the current temperature at station alpha?"*
 
 ## Use it from your language
 
@@ -204,6 +204,13 @@ docker compose up
 **Connectors today:** MQTT · KNX · WebSocket · TCP · Serial · Unix sockets. Kafka and Modbus are planned. A new connector is one trait impl.
 
 ## Under the hood
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/aimdb-architecture-dark.svg">
+    <img src="assets/aimdb-architecture-light.svg" alt="AimDB architecture: inbound connectors push into typed records, outbound connectors pull from the same buffers, and the aimdb CLI and MCP server reach every record through one AimX server" width="900">
+  </picture>
+</p>
 
 - **The Rust type is the contract.** No IDL, no schema registry. CI cross-compiles the same contracts from Cortex-M to WASM. → [Data contracts](https://aimdb.dev/blog/data-contracts-deep-dive)
 - **Buffers decide how data moves.** SPMC Ring for streams, SingleLatest for state, Mailbox for commands. Zero allocations per message, [measured](aimdb-bench/data/baselines). → [Buffers](https://aimdb.dev/docs/getting-started)

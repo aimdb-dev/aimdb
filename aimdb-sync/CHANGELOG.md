@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Issue #212:** Removed `SyncProducer::try_set`,
+  `SyncProducer::try_set_value`, and `SyncError::SetTimeout`. Every built-in
+  buffer overwrites rather than refusing a write, so these APIs duplicated
+  `set()` and `set_value()` without providing distinct behavior.
+
 ## [0.6.0] - 2026-09-18
 
 ### Added
@@ -159,6 +166,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Capacity-related API removed: `AimDbBuilderSyncExt::producer_with_capacity`/`consumer_with_capacity` and the `DEFAULT_SYNC_CHANNEL_CAPACITY` constant are gone.
   - `SyncConsumer`: `get`, `try_get`, `get_with_timeout`, `get_latest`, and `get_latest_with_timeout` now take `&mut self` (was `&self`)
   - `SyncConsumer` no longer implements `Clone` or `Sync` (still `Send`).
+  - `BufferLagged` now reaches callers of `get`, `get_with_timeout`, and
+    `try_get` as `SyncError::Db(DbError::BufferLagged { .. })`; the old
+    forwarding task swallowed it.
   - **Migration.** The replacement for a cloned consumer is a second
     `handle.consumer()` — but note that it is not a like-for-like swap.
     Cloning in 0.5.0 shared one stream, so each clone got *a share* of the

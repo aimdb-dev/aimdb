@@ -13,6 +13,7 @@ use alloc::boxed::Box;
 #[cfg(feature = "remote")]
 use alloc::vec::Vec;
 use core::future::poll_fn;
+use core::task::{Context, Poll};
 
 use crate::buffer::BufferReader;
 use crate::DbError;
@@ -46,6 +47,17 @@ impl<T: Clone + Send> Reader<T> {
     /// - **Mailbox**: Waits for slot value, takes and clears it
     pub async fn recv(&mut self) -> Result<T, DbError> {
         poll_fn(|cx| self.inner.poll_recv(cx)).await
+    }
+
+    /// Poll for the next value, for hand-written `poll` code.
+    ///
+    /// Follows the [`BufferReader::poll_recv`] contract: on `Pending` the
+    /// waker in `cx` is registered (the latest one wins), and spurious
+    /// wake-ups are allowed. `Pending` does not always mean the buffer is
+    /// empty: on Tokio a broadcast reader also returns it, with a self-wake,
+    /// once the task's cooperative budget is spent.
+    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+        self.inner.poll_recv(cx)
     }
 
     /// Non-blocking receive — returns immediately.
@@ -95,5 +107,73 @@ impl JsonReader {
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
     pub fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
         self.inner.try_recv_json_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use futures_util::task::AtomicWaker;
+
+    /// One-slot buffer: `0` is empty. Its reader registers the waker on
+    /// `Pending`, and `produce` wakes it.
+    #[derive(Default)]
+    struct Slot {
+        value: AtomicU32,
+        waker: AtomicWaker,
+    }
+
+    impl Slot {
+        fn produce(&self, v: u32) {
+            self.value.store(v, Ordering::Release);
+            self.waker.wake();
+        }
+    }
+
+    struct SlotReader(Arc<Slot>);
+
+    impl BufferReader<u32> for SlotReader {
+        fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<u32, DbError>> {
+            self.0.waker.register(cx.waker());
+            match self.0.value.swap(0, Ordering::AcqRel) {
+                0 => Poll::Pending,
+                v => Poll::Ready(Ok(v)),
+            }
+        }
+
+        fn try_recv(&mut self) -> Result<u32, DbError> {
+            match self.0.value.swap(0, Ordering::AcqRel) {
+                0 => Err(DbError::BufferEmpty),
+                v => Ok(v),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Flag(AtomicBool);
+
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn poll_recv_registers_the_waker_and_is_woken_by_a_produce() {
+        let slot = Arc::new(Slot::default());
+        let mut reader = Reader::new(Box::new(SlotReader(Arc::clone(&slot))));
+        let flag = Arc::new(Flag::default());
+        let waker = Arc::clone(&flag).into();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(reader.poll_recv(&mut cx).is_pending());
+        assert!(!flag.0.load(Ordering::Acquire));
+
+        slot.produce(7);
+        assert!(flag.0.load(Ordering::Acquire));
+        assert!(matches!(reader.poll_recv(&mut cx), Poll::Ready(Ok(7))));
     }
 }

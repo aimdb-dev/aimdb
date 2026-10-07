@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin
+.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -56,6 +56,7 @@ help:
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
+	@printf "    bench-gate           Assert connector allocation counts (b0_alloc_connector)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -254,10 +255,14 @@ test:
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker
 	@printf "$(YELLOW)  → Testing MQTT connector (both backends, one broker, one process)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity
+	@printf "$(YELLOW)  → Testing MQTT connector (allocations per round trip, both backends)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test alloc_round_trip
 	@printf "$(YELLOW)  → Testing MQTT connector (mqtts:// against a pinned self-signed root)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker
 	@printf "$(YELLOW)  → Testing MQTT connector (event-driven session: wake cadence, partial packets, QoS 1)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test session_loop
+	@printf "$(YELLOW)  → Testing MQTT connector (embedded packet-size limits against a fake broker)$(NC)\n"
+	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test write_ring_proofs
 	@printf "$(YELLOW)  → Testing MQTT connector (the same criteria over mqtts://)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_session
 	@printf "$(YELLOW)  → Testing MQTT connector (no_std unit tests: framing, deadlines, TLS duplex)$(NC)\n"
@@ -406,10 +411,14 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test tokio_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (backend parity)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test backend_parity -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (allocations per round trip)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-backend-parity" --test alloc_round_trip -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (mqtts:// host smoke)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_broker -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (event-driven session criteria)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test session_loop -- -D warnings
+	@printf "$(YELLOW)  → Clippy on MQTT connector (embedded packet-size limits)$(NC)\n"
+	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tokio-broker" --test write_ring_proofs -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (the same criteria over mqtts://)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --no-default-features --features "_test-tls-broker" --test tls_session -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (no_std unit tests)$(NC)\n"
@@ -756,6 +765,14 @@ publish:
 	done
 	@printf "$(GREEN)✓ All $(words $(PUBLISH_ORDER)) crates published successfully!$(NC)\n"
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
+
+## Benchmark gates
+# Runs the counting-allocator connector bench, which asserts its EXPECTED
+# allocations per message and fails on any difference.
+# Deterministic, so it gates CI without a quiet runner.
+bench-gate:
+	@printf "$(GREEN)Checking connector allocation counts...$(NC)\n"
+	cargo bench --package aimdb-bench --bench b0_alloc_connector
 
 ## Drift guards
 # The README quickstart is compiled as examples/readme-quickstart; this target

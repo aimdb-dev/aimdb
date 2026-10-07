@@ -34,37 +34,12 @@ use crate::typed_api::RecordRegistrar;
 use crate::typed_record::{AnyRecord, AnyRecordExt, RecordFutureCollector, TypedRecord};
 use crate::{DbError, DbResult};
 
-/// One outbound route returned by [`AimDb::collect_outbound_routes`]
-pub struct OutboundRoute {
-    /// Default topic/destination from the URL path; used when the source
-    /// yields no per-value destination.
-    pub topic: String,
-    /// Fused wire-level source: its readers yield destination + serialized
-    /// payload directly (subscribe → recv → resolve topic → serialize, all
-    /// typed inside — no `Box<dyn Any>` per message).
-    pub source: Box<dyn crate::connector::SerializedSource>,
-    /// Configuration options from the URL query
-    pub config: Vec<(String, String)>,
-}
-
-/// Per-route facts paired with each route by
-/// [`AimDb::collect_outbound_routes_with_meta`] and
-/// [`AimDb::collect_inbound_routes_with_meta`].
-#[non_exhaustive]
-pub struct RouteMeta {
-    /// Resolved topic: the URL resource, or the inbound topic resolver's result.
-    pub topic: String,
-    /// `TypeId` of the record the route belongs to.
-    pub type_id: TypeId,
-    /// The link's configuration options.
-    pub config: Vec<(String, String)>,
-}
-
 /// One registered record: its key, concrete type, and type-erased storage.
 struct RecordEntry {
     key: StringKey,
     type_id: TypeId,
     record: Box<dyn AnyRecord>,
+    key_table: Option<Arc<crate::inbound_key::KeyTable>>,
 }
 
 /// Internal database state
@@ -77,6 +52,9 @@ struct RecordEntry {
 pub struct AimDbInner {
     /// Record entries, indexed by `RecordId`. Order matches registration
     /// order. Immutable after build().
+    ///
+    /// Per-client authorization is based on index of RecordEntry in `storage`
+    /// Never reorder, remove, or `swap_remove` entries as these could break current logic.
     storages: Vec<RecordEntry>,
 
     /// Name → RecordId lookup (control plane)
@@ -207,7 +185,19 @@ impl AimDbInner {
             .enumerate()
             .map(|(i, e)| {
                 let id = RecordId::new(i as u32);
-                e.record.collect_metadata(e.type_id, e.key, id)
+                let mut metadata = e.record.collect_metadata(e.type_id, e.key, id);
+                metadata.inbound_keys = e.key_table.as_ref().map(|table| {
+                    let captures = e.record.inbound_connectors().iter();
+                    crate::remote::InboundKeysInfo {
+                        captures: captures
+                            .filter_map(|l| l.key.as_ref().map(|(capture, _)| capture.clone()))
+                            .collect(),
+                        capacity: table.capacity(),
+                        assigned: table.assigned(),
+                        dropped: table.dropped(),
+                    }
+                });
+                metadata
             })
             .collect()
     }
@@ -687,10 +677,16 @@ impl AimDbBuilder {
             }
 
             let id = RecordId::new(storages.len() as u32);
+            // `finish()` checked that keyed links of a record agree on it.
+            let key_capacity = record
+                .inbound_connectors()
+                .iter()
+                .find_map(|l| l.key.as_ref().map(|(_, capacity)| *capacity));
             storages.push(RecordEntry {
                 key,
                 type_id,
                 record,
+                key_table: key_capacity.map(|c| Arc::new(crate::inbound_key::KeyTable::new(c))),
             });
             by_key.insert(key, id);
         }
@@ -1170,123 +1166,105 @@ impl AimDb {
         self.inner.set_record_from_json(record_name, json_value)
     }
 
-    /// Collects inbound connector routes for automatic router construction (std only)
+    /// The inbound router for `scheme`: every link compiled against the
+    /// connector's `grammar`, keyed links sharing their record's key table.
     ///
-    /// Iterates all records, filters their inbound_connectors by scheme,
-    /// and returns routes with fused ingest callbacks (deserialize + produce
-    /// in one typed closure — no `Box<dyn Any>` per message).
-    ///
-    /// # Arguments
-    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
-    ///
-    /// # Returns
-    /// Vector of tuples: (topic, ingest)
-    ///
-    /// The topic is resolved dynamically if a `TopicResolverFn` is configured,
-    /// otherwise the static topic from the URL is used.
-    pub fn collect_inbound_routes(
+    /// Rejects every link the grammar or its key cannot compile, naming the
+    /// record and the resolved topic.
+    pub(crate) fn inbound_router(
         &self,
         scheme: &str,
-    ) -> Vec<(String, crate::connector::IngestFn)> {
-        self.collect_inbound_routes_with_meta(scheme)
-            .into_iter()
-            .map(|(ingest, meta)| (meta.topic, ingest))
-            .collect()
-    }
-
-    /// Like [`collect_inbound_routes`](Self::collect_inbound_routes), paired
-    /// with each route's [`RouteMeta`].
-    pub fn collect_inbound_routes_with_meta(
-        &self,
-        scheme: &str,
-    ) -> Vec<(crate::connector::IngestFn, RouteMeta)> {
+        grammar: &'static dyn crate::TopicGrammar,
+    ) -> DbResult<crate::router::Router> {
         let mut routes = Vec::new();
+        let mut errors = Vec::new();
 
         for entry in &self.inner.storages {
             for link in entry.record.inbound_connectors() {
                 if link.url.scheme() != scheme {
                     continue;
                 }
-
-                // Resolve topic: dynamic (from resolver) or static (from URL)
-                let meta = RouteMeta {
-                    topic: link.resolve_topic(),
-                    type_id: entry.type_id,
-                    config: link.config.clone(),
-                };
-                routes.push((link.create_ingest(self), meta));
-            }
-        }
-
-        if !routes.is_empty() {
-            log_debug!(
-                "Collected {} inbound routes for scheme '{}'",
-                routes.len(),
-                scheme
-            );
-        }
-
-        routes
-    }
-
-    /// Collects outbound routes for a specific protocol scheme
-    ///
-    /// Mirrors `collect_inbound_routes()` for symmetry. Iterates all records,
-    /// filters their outbound_connectors by scheme, and returns
-    /// [`OutboundRoute`]s carrying fused serialized sources (subscribe →
-    /// recv → resolve topic → serialize, all typed inside — no
-    /// `Box<dyn Any>` per message).
-    ///
-    /// This method is called by connectors during their `build()` phase to
-    /// collect all configured outbound routes and spawn publisher tasks
-    /// (usually via `pump_sink`).
-    ///
-    /// # Arguments
-    /// * `scheme` - URL scheme to filter by (e.g., "mqtt", "kafka")
-    pub fn collect_outbound_routes(&self, scheme: &str) -> Vec<OutboundRoute> {
-        self.collect_outbound_routes_with_meta(scheme)
-            .into_iter()
-            .map(|(route, _)| route)
-            .collect()
-    }
-
-    /// Like [`collect_outbound_routes`](Self::collect_outbound_routes), paired
-    /// with each route's [`RouteMeta`].
-    pub fn collect_outbound_routes_with_meta(
-        &self,
-        scheme: &str,
-    ) -> Vec<(OutboundRoute, RouteMeta)> {
-        let mut routes = Vec::new();
-
-        for entry in &self.inner.storages {
-            for link in entry.record.outbound_connectors() {
-                if link.url.scheme() != scheme {
-                    continue;
+                match self.inbound_route(entry, link, grammar) {
+                    Ok(route) => routes.push(route),
+                    Err(message) => errors.push(crate::ConfigError::new(
+                        entry.key.as_str(),
+                        Some(link.url.to_string()),
+                        message,
+                    )),
                 }
-
-                let topic = link.url.resource_id().to_string();
-                let meta = RouteMeta {
-                    topic: topic.clone(),
-                    type_id: entry.type_id,
-                    config: link.config.clone(),
-                };
-                let route = OutboundRoute {
-                    topic,
-                    source: link.create_source(self),
-                    config: link.config.clone(),
-                };
-                routes.push((route, meta));
             }
         }
 
-        if !routes.is_empty() {
-            log_debug!(
-                "Collected {} outbound routes for scheme '{}'",
-                routes.len(),
-                scheme
-            );
+        if !errors.is_empty() {
+            return Err(DbError::InvalidConfiguration { errors });
         }
+        Ok(crate::router::Router::new(grammar, routes))
+    }
 
-        routes
+    fn inbound_route(
+        &self,
+        entry: &RecordEntry,
+        link: &crate::connector::InboundConnectorLink,
+        grammar: &'static dyn crate::TopicGrammar,
+    ) -> Result<crate::router::CompiledRoute, String> {
+        let topic = link.resolve_topic();
+        let pattern = crate::TopicPattern::parse(&topic).map_err(|e| e.to_string())?;
+        let filter = grammar.compile(&pattern)?;
+        let names: Box<[Box<str>]> = pattern.capture_names().map(Box::from).collect();
+
+        let key = match (&link.key, &entry.key_table) {
+            (Some((capture, _)), Some(table)) => {
+                let capture_number =
+                    names.iter().position(|n| **n == **capture).ok_or_else(|| {
+                        alloc::format!("key '{capture}' is not a capture of '{topic}'")
+                    })?;
+                Some((table.clone(), capture_number))
+            }
+            _ => None,
+        };
+
+        Ok(crate::router::CompiledRoute::pattern(
+            filter,
+            names,
+            key,
+            link.create_ingest(self),
+        ))
+    }
+
+    /// The capture value `key` stands for on record `record_key`.
+    pub fn inbound_key_name(&self, record_key: &str, key: crate::KeyId) -> Option<Arc<str>> {
+        let id = self.inner.by_key.get(record_key)?;
+        self.inner
+            .storages
+            .get(id.index())?
+            .key_table
+            .as_ref()?
+            .name(key)
+    }
+
+    /// Every outbound link of `scheme`, with its record's index.
+    pub(crate) fn outbound_links<'a>(
+        &'a self,
+        scheme: &'a str,
+    ) -> impl Iterator<Item = (usize, &'a crate::connector::ConnectorLink)> + 'a {
+        self.inner
+            .storages
+            .iter()
+            .enumerate()
+            .flat_map(move |(i, entry)| {
+                // i and RecordId must match: connectors get i as `record_index`
+                debug_assert_eq!(
+                    self.inner.by_key.get(&entry.key).map(|id| id.index()),
+                    Some(i),
+                    "record storage order diverges from RecordId for key {}",
+                    entry.key.as_str()
+                );
+                entry
+                    .record
+                    .outbound_connectors()
+                    .iter()
+                    .filter(move |link| link.url.scheme() == scheme)
+                    .map(move |link| (i, link))
+            })
     }
 }
