@@ -7,7 +7,7 @@ Synchronous API wrapper for AimDB.
 `aimdb-sync` provides a synchronous interface to AimDB for code that does not use an async executor. Perfect for FFI bindings, legacy codebases, simple scripts, and situations where async is impractical.
 
 **Key Features:**
-- **Pure Sync Context**: Works in plain `fn main()` - no `#[tokio::main]` required
+- **Pure Sync Context**: Works in plain `fn main()` - no `#[tokio::main]` required. Blocking calls panic if made from async code inside a Tokio runtime
 - **Synchronous API**: Produce and consume records without `async` or `await`
 - **Thread-Safe**: `SyncProducer` type is `Send + Sync`, shareable across threads. `SyncConsumer` type is `Send` only, can be moved to another thread.
 - **Type-Safe**: Full compile-time type safety with generics
@@ -55,11 +55,10 @@ aimdb-tokio-adapter = "0.7"
 use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct Temperature {
     celsius: f32,
     sensor_id: String,
@@ -300,7 +299,8 @@ builder.configure::<MyData>("my-data", |reg| {
     reg.buffer(BufferCfg::SingleLatest);
 });
 
-// Mailbox: One pending value. Reading removes it
+// Mailbox: One pending value. A new value overwrites an unread one, and with
+// several consumers each value is taken by only one of them
 builder.configure::<MyData>("my-data", |reg| {
     reg.buffer(BufferCfg::Mailbox);
 });
@@ -336,7 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use aimdb_core::{AimDbBuilder, buffer::BufferCfg};
-use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle};
+use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncConsumer, SyncProducer};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -344,6 +344,10 @@ use std::time::Duration;
 // Wrap async AimDB for legacy sync code
 pub struct LegacyAdapter {
     handle: AimDbHandle,
+    producer: SyncProducer<SensorData>,
+    // Kept for the adapter's lifetime: a new SPMC consumer only sees values
+    // produced after it subscribes.
+    consumer: SyncConsumer<SensorData>,
 }
 
 impl LegacyAdapter {
@@ -356,22 +360,18 @@ impl LegacyAdapter {
         });
         
         let handle = builder.attach()?;
-        Ok(Self { handle })
+        let producer = handle.producer::<SensorData>("sensor-data")?;
+        let consumer = handle.consumer::<SensorData>("sensor-data")?;
+        Ok(Self { handle, producer, consumer })
     }
     
     pub fn send_sensor_data(&self, data: SensorData) -> Result<(), String> {
-        let producer = self.handle.producer::<SensorData>("sensor-data")
-            .map_err(|e| e.to_string())?;
-        
-        producer.set(data)
+        self.producer.set(data)
             .map_err(|e| e.to_string())
     }
     
-    pub fn read_sensor_data(&self) -> Result<SensorData, String> {
-        let mut consumer = self.handle.consumer::<SensorData>("sensor-data")
-            .map_err(|e| e.to_string())?;
-        
-        consumer.get_with_timeout(Duration::from_secs(1))
+    pub fn read_sensor_data(&mut self) -> Result<SensorData, String> {
+        self.consumer.get_with_timeout(Duration::from_secs(1))
             .map_err(|e| e.to_string())
     }
     
