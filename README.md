@@ -121,7 +121,7 @@ aimdb --connect tcp://hub.local:7001 graph dot | dot -Tsvg > fleet.svg
 aimdb --connect serial:///dev/ttyACM0?baud=115200 record list
 ```
 
-Or point an AI client at the built-in [MCP server](tools/aimdb-mcp/) and ask: *"What is the current temperature at station alpha?"*
+Or point an AI client at the built-in [MCP server](tools/aimdb-mcp/) (also [listed on Glama](https://glama.ai/mcp/servers/aimdb-dev/aimdb)) and ask: *"What is the current temperature at station alpha?"*
 
 ## Use it from your language
 
