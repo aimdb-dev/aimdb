@@ -100,6 +100,10 @@ where
     ///   values were dropped. Not fatal, the next call resumes.
     /// - `SyncError::Db` for other errors that occurred during the read
     ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a Tokio runtime.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -141,6 +145,10 @@ where
     ///   values were dropped. Not fatal, the next call resumes.
     /// - `SyncError::Db` for other errors that occurred during the read
     ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a Tokio runtime.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -166,6 +174,8 @@ where
     /// ```
     pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
         let (handle, reader) = self.reader.enter()?;
+        // Create the timer inside the async block. Creating it earlier would
+        // panic because no Tokio reactor is active on this thread yet.
         let fut = async { tokio::time::timeout(timeout, Self::get_impl(reader)).await };
         let res = handle.block_on(fut);
         res.unwrap_or_else(|_| Err(SyncError::GetTimeout))
@@ -228,11 +238,18 @@ where
     ///
     /// The most recent available record of type `T`.
     ///
+    /// `BufferLagged` is skipped. Other errors are returned before the first
+    /// value. After a value is read, draining stops on an error and returns the
+    /// latest value.
+    ///
     /// # Errors
-    /// Note that the error is only reported if no value was retrieved at all.
-    /// Errors occuring after that are ignored; the latest obtained value is returned instead.
+    ///
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
-    /// - `SyncError::Db` if another error occured upon the very first read.
+    /// - `SyncError::Db` if another database error occurs before the first value
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a Tokio runtime.
     ///
     /// # Example
     ///
@@ -260,7 +277,7 @@ where
         // 1) can simply sequence get_catch_up and try_get -
         //    no one else does it simultaneously thanks to &mut self
         // 2) if draining ends up with an error, we follow the previous impl
-        //    and return the latest succesfully read value
+        //    and return the latest successfully read value
         // 3) potentially loops forever if producer keeps producing
         let oldest = self.get_catch_up(None)?;
         let latest = self.drain_remaining(oldest);
@@ -275,12 +292,22 @@ where
     ///
     /// # Arguments
     ///
-    /// - `timeout`: Maximum time to wait for the first value
+    /// - `timeout`: Maximum time to wait for the first value. The drain after
+    ///   that first value is not bounded by this timeout.
+    ///
+    /// `BufferLagged` is skipped. Other errors are returned before the first
+    /// value. After a value is read, draining stops on an error and returns the
+    /// latest value.
     ///
     /// # Errors
     ///
     /// - `SyncError::GetTimeout` if the timeout expires before any value arrives
     /// - `SyncError::RuntimeShutdown` if the runtime thread has stopped
+    /// - `SyncError::Db` if another database error occurs before the first value
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from inside a Tokio runtime.
     ///
     /// # Example
     ///
@@ -316,7 +343,7 @@ where
     }
 
     // Blocks until get() retrieves a value, or until the deadline is missed.
-    // Skips BufferLagged occuring in the process, and raises all other errors
+    // Skips BufferLagged occurring in the process, and raises all other errors
     fn get_catch_up(&mut self, deadline: Option<Instant>) -> SyncResult<T> {
         loop {
             let res = match deadline {
@@ -345,7 +372,7 @@ where
             match self.try_get() {
                 Ok(next) => cur = next,
                 Err(SyncError::Db(DbError::BufferLagged { .. })) => continue,
-                // errors occured during draining will be ignored
+                // errors occurring during draining will be ignored
                 Err(_) => return cur,
             }
         }

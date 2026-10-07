@@ -54,7 +54,7 @@ std = ["aimdb-core/std", "dep:tokio", "dep:aimdb-tokio-adapter", "dep:libc"]
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 
-# SyncProducer::set_value / try_set_value / set_value_at for Settable types
+# SyncProducer::set_value / set_value_at for Settable types
 data-contracts = ["dep:aimdb-data-contracts"]
 
 # Fork detection only, and only where `pthread_atfork` exists. Optional and

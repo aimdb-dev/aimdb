@@ -2,7 +2,6 @@
 
 use crate::runtime::Runtime;
 use crate::{SyncError, SyncResult};
-use aimdb_core::TryProduceError;
 use alloc::sync::Weak;
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -25,14 +24,8 @@ use core::marker::PhantomData;
 /// # #[derive(Clone, Debug, Serialize, Deserialize)]
 /// # struct Temperature { celsius: f32 }
 /// # fn example(producer: &SyncProducer<Temperature>) -> SyncResult<()> {
-/// // Set value (blocks until sent)
+/// // Set a value synchronously
 /// producer.set(Temperature { celsius: 25.0 })?;
-///
-/// // Try to set (non-blocking)
-/// match producer.try_set(Temperature { celsius: 27.0 }) {
-///     Ok(()) => println!("Success"),
-///     Err(_) => println!("Buffer full, try later"),
-/// }
 /// # Ok(())
 /// # }
 /// ```
@@ -109,16 +102,19 @@ where
         self.runtime()?.check()
     }
 
-    /// Set the value, blocking until it can be sent.
+    /// Set a value synchronously.
     ///
-    /// This call will block the current thread until the value can be sent to the runtime thread.
-    /// It's guaranteed to deliver the value eventually unless the runtime thread has shut down.
+    /// Checks the runtime, finds the record by key, checks its type, and writes
+    /// directly to its buffer. This method does not wait for buffer space.
+    /// Every current buffer overwrites according to its configured behavior.
     ///
     /// # Errors
     ///
-    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
-    /// Returns any error from the underlying `produce()` operation (e.g., record not registered,
-    /// buffer full, etc.).
+    /// - [`SyncError::RuntimeShutdown`] if the runtime has shut down.
+    /// - [`SyncError::ForkedChild`] if this producer was inherited across a
+    ///   Unix `fork()` without its runtime thread.
+    /// - [`SyncError::Db`] if the key is not registered or names a different
+    ///   record type.
     ///
     /// # Example
     ///
@@ -135,56 +131,13 @@ where
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
     /// let producer = handle.producer::<MyData>("my_data")?;
-    /// producer.set(MyData { value: 42 })?; // blocks until value is sent and produced
+    /// producer.set(MyData { value: 42 })?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
         let rt = self.runtime()?;
         rt.db()?.produce(&self.key, value).map_err(SyncError::Db)
-    }
-
-    /// Try to set the value without blocking.
-    ///
-    /// Pushes the value directly into the record's buffer. Unlike `set()`, this never
-    /// blocks: it fails immediately if the buffer is full instead of waiting for space.
-    ///
-    /// # Errors
-    ///
-    /// Returns `SyncError::SetTimeout` for bounded, non-overwriting buffer
-    /// implementations if the buffer is full.
-    /// Returns `SyncError::RuntimeShutdown` if the runtime thread has been detached.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use aimdb_core::AimDbBuilder;
-    /// use aimdb_sync::{AimDbBuilderSyncExt, SyncResult};
-    /// use aimdb_tokio_adapter::TokioAdapter;
-    /// use std::sync::Arc;
-    ///
-    /// # #[derive(Debug, Clone)]
-    /// # struct MyData { value: i32 }
-    /// # fn main() -> SyncResult<()> {
-    /// let handle = AimDbBuilder::new()
-    ///     .runtime(Arc::new(TokioAdapter))
-    ///     .attach()?;
-    /// let producer = handle.producer::<MyData>("my_data")?;
-    /// match producer.try_set(MyData { value: 42 }) {
-    ///     Ok(()) => println!("Sent immediately"),
-    ///     Err(_) => println!("Buffer full or runtime shutdown"),
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn try_set(&self, value: T) -> SyncResult<()> {
-        let rt = self.runtime()?;
-        let db = rt.db()?;
-        let producer = db.producer(&self.key)?;
-        producer.try_produce(value).map_err(|e| match e {
-            TryProduceError::Full(_) => SyncError::SetTimeout,
-            TryProduceError::Closed(_) => SyncError::RuntimeShutdown,
-        })
     }
 }
 
@@ -199,7 +152,7 @@ impl<T> SyncProducer<T>
 where
     T: aimdb_data_contracts::Settable + Send + 'static + Debug + Clone,
 {
-    /// Construct via `T::set(value, now)` and send. Blocking, like [`set`](Self::set).
+    /// Construct via `T::set(value, now)` and send via [`set`](Self::set).
     ///
     /// Stamps with the *caller's* `SystemTime` (sample time at the edge), not
     /// the engine's `ctx.time()` — use [`set_value_at`](Self::set_value_at) for
@@ -238,11 +191,6 @@ where
     /// ```
     pub fn set_value(&self, value: T::Value) -> SyncResult<()> {
         self.set(T::set(value, unix_now_ms()))
-    }
-
-    /// Non-blocking variant, like [`try_set`](Self::try_set).
-    pub fn try_set_value(&self, value: T::Value) -> SyncResult<()> {
-        self.try_set(T::set(value, unix_now_ms()))
     }
 
     /// Explicit-timestamp variant (replay, testing).
