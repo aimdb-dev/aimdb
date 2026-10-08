@@ -60,6 +60,27 @@ These stages ship v1's ROS feature.
 | s15 | `hardware` | STM32H5 example; flash and RAM against the MQTT embedded build | Criteria 4 and 5 |
 | s16 | `docs` | Connector guide section, "AimDB and ROS 2" page, CHANGELOGs | The feature branch is ready to merge into `main` |
 
+## Notes for s08
+
+From the review of `ZenohGrammar` (PR #307), checked against a live
+zenoh 1.10.1 session:
+
+- **Wildcard-keyed samples.** A `put` on `a/*` reaches every intersecting
+  subscriber with `a/*` as its key. The grammar already makes such keys match
+  no route; 053 §4.3 also promises a counter. Core has no inbound route
+  statistics (`RouteStats` is outbound only), so s08 decides where it lives.
+- **Declare subscribers with `filter()`,** which is already canonical, through
+  `keyexpr::new` / `KeyExpr::try_from`. Never run a raw pattern through
+  `autocanonize`: in zenoh-keyexpr 1.10.1 it panics on `a$*$*` and turns
+  `a$*$*$*` into an invalid `a$*$*`.
+- **Partly overlapping filters** (`a/*/c` with `a/b/*`) still deliver a sample
+  once per subscriber, 055 §5.7's known difference. A possible fix: subscriber
+  `i`'s callback dispatches only if no earlier subscription `j < i` also
+  matches the key, using `ZenohGrammar` on the subscription strings. This is
+  the same idea as MQTT 5's subscription identifiers.
+- **Criterion 11 needs a real session.** `tests/inbound_routes.rs` emulates
+  Zenoh's delivery; s08 adds the same cases over a live peer.
+
 ## Dependencies
 
 | Stage | Needs |

@@ -422,12 +422,23 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
   as MQTT's grammar requires a whole level, so a capture's value is never
   part of a chunk; a hand-written `$*` inside a chunk is accepted as an
   unnamed wildcard. Verbatim `@` chunks follow the Zenoh key-expression
-  rules. Matching and `covers` are the connector's own
-  code, `no_std + alloc`, so both backends share them. `zenoh-keyexpr`'s
-  `includes` and `intersects` are the test oracle (§9). **[checked]**:
-  `zenoh-keyexpr` 1.10.1 is `no_std + alloc` without its default `std`
-  feature, so it could also become the implementation if the oracle tests
-  show ours adds nothing.
+  rules. The subscribed filter is the canonical key expression
+  (`{a..}/{b}` subscribes `*/**`), and where a pattern is ambiguous a
+  `{name..}` capture takes as few chunks as it can. A sample whose key is
+  itself a wildcard matches no route: Zenoh delivers a `put` on `a/*` to
+  every intersecting subscriber with `a/*` as its key, and `{cell}` would
+  capture `*` and spend a key on it. The connector counts those samples so
+  the drop is visible. **[verified]** on zenoh 1.10.1. Matching and `covers` are the connector's own
+  code, `no_std + alloc`, so both backends share them. Matching is linear in
+  the key and allocation-free, since keys come from remote publishers: each
+  `**` takes chunks only until the next segment fits. `zenoh-keyexpr`'s
+  `includes` and `intersects` are the test oracle (§9), and `covers` equals
+  `includes` on its corpus. **[checked]**: `zenoh-keyexpr` 1.10.1 is
+  `no_std + alloc` without its default `std` feature, but it should not
+  become the implementation: it has no captures, its `intersects` recurses
+  once per chunk under `**` (a 32,000-chunk key overflows a 2 MiB stack),
+  and its `autocanonize` panics on `a$*$*`. The backends hand Zenoh the
+  grammar's canonical `filter()`, never a pattern through `autocanonize`.
 - No tokens, no attachment, no type in the key. CDR over `zenoh://` is allowed
   (`linked_to_with(url, Cdr::<256>)`) for non-ROS consumers that want it. It will
   not reach ROS, and the docs say so.
