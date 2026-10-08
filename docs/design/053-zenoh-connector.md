@@ -438,8 +438,9 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
     a record linked to both receives each sample once per route, not once
     per subscriber. Filters that overlap only partly (`a/*/c` and `a/b/*`)
     both stay, and Zenoh delivers a sample matching both to each
-    subscriber: the record behind each route sees it twice. That is
-    055 §5.7's MQTT 5 case, and it is documented the same way.
+    subscriber. Subscriber `i`'s callback therefore dispatches only if no
+    earlier subscription matches the key, so each route still sees it once
+    (s08, tested). 055 §5.7's MQTT 5 duplicate does not occur on Zenoh.
   - An inbound `with_topic_resolver` is honoured: its result goes through
     the same grammar.
 - **`ZenohGrammar`** implements `TopicGrammar` (055 §5.1). `{name}` compiles
@@ -453,8 +454,9 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
   `{name..}` capture takes as few chunks as it can. A sample whose key is
   itself a wildcard matches no route: Zenoh delivers a `put` on `a/*` to
   every intersecting subscriber with `a/*` as its key, and `{cell}` would
-  capture `*` and spend a key on it. The connector counts those samples so
-  the drop is visible. **[verified]** on zenoh 1.10.1. Matching and `covers` are the connector's own
+  capture `*` and spend a key on it. The connector logs the first such
+  sample at `warn` and every one at `debug`; a count can join inbound route
+  statistics once core has them. **[verified]** on zenoh 1.10.1. Matching and `covers` are the connector's own
   code, `no_std + alloc`, so both backends share them. Matching is linear in
   the key and allocation-free, since keys come from remote publishers: each
   `**` takes chunks only until the next segment fits. `zenoh-keyexpr`'s
@@ -1017,6 +1019,12 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
 - **[verified]** `session.liveliness().declare_token(..)` and the put
   builder's `.attachment(..)` exist in `zenoh` 1.8.0 (`api/liveliness.rs:114`,
   `api/builders/sample.rs:56`).
+- **Session.** The session task opens the session, retrying every 5 s while
+  no router answers (client mode gives up at once otherwise). From then on
+  Zenoh reconnects and re-declares subscribers, publishers and tokens itself.
+  Every fixed outbound key is validated at `build()` and declared as a
+  publisher; a key written by a topic writer is checked per message and put
+  through the session.
 - **Data path.** The session task pulls with `OutboundRoutes::next()` and
   calls `put`, whose payload is an owned `ZBytes`: an `Owned` payload moves
   in, a `Borrowed` one is copied, as in MQTT's native backend (054 §4.7). A

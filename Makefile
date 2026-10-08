@@ -388,6 +388,7 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (std)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --features "std" --all-targets -- -D warnings
+	cargo clippy --package aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (embedded, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --no-default-features --features "embedded" --all-targets -- -D warnings
 	cargo clippy --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings

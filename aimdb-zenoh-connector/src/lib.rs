@@ -13,6 +13,17 @@
 
 extern crate alloc;
 
+/// The URL scheme of plain Zenoh links.
+pub(crate) const SCHEME: &str = "zenoh";
+
+// One `ZenohConnector` over its protocol backends.
+pub mod connector;
+pub use connector::{Native, ZenohConnector};
+
+// The `zenoh` crate backend.
+#[cfg(feature = "std")]
+mod native;
+
 // Zenoh key expressions for inbound links (works on every feature leg).
 pub mod grammar;
 pub use grammar::ZenohGrammar;
