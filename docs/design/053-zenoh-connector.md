@@ -96,6 +96,11 @@
 
   The changes are in the scope list, §2, §4.1, §4.3, §4.4, §4.6, §4.7,
   §4.9, §5.1, §5.2, §6, §7, §8, §9, §10, §11, §12 and §13.
+- **rev 10, 2026-10-08.** The spike (§11 step 1) ran against live routers and
+  ROS 2 nodes, and answered S2 and S6: yes to both (§10). It also found that
+  released Rolling binaries still vendor zenoh-c 1.8.0, so 1.10.1 was tested
+  with Eclipse's own `zenohd` (§3). The live captures are in §3. The changes
+  are in §3, §5.1, §5.2, §10 and §11.
 
 **Implemented** (on `feat/aimdb-zenoh-connector`): `aimdb-cdr`,
 `WireFormat` on `Linkable` and `LinkCodec`, and the recorded
@@ -227,8 +232,12 @@ Differences between distros and dependencies:
   **[verified]**: Jazzy and Kilted have no backends code, and the Jazzy→Lyrical
   diff of `liveliness_utils.cpp` is otherwise only the backend escaping.
 - Jazzy, Kilted and Lyrical vendor zenoh-c 1.8.0 plus fixes (commit `05bd370`,
-  zenoh `2687c51`). **Rolling has moved to zenoh-c 1.10.1** plus fixes
-  (`07b0d43`), so S2 has to cover both. All four build the router with
+  zenoh `2687c51`). Rolling's source branch has moved to zenoh-c 1.10.1 plus
+  fixes (`07b0d43`), so S2 has to cover both. **[verified]** that the
+  *released* binaries lag: the apt packages `ros-lyrical-rmw-zenoh-cpp`
+  0.10.6 and `ros-rolling-rmw-zenoh-cpp` 0.13.0 (both built 2026-09-15) ship
+  `libzenohc` v1.8.0-2687c51. The spike therefore tested 1.10.1 with
+  Eclipse's `zenohd` 1.10.1 image as the router (§10, S2). All four build the router with
   `zenoh/transport_serial`, which matters once zenoh-nostd gains serial (§5.2).
 - **Subscribers are zenoh-ext `AdvancedSubscriber`s** (`rmw_subscription_data.cpp:434`).
   For a `VOLATILE` subscriber they use default options and receive a plain
@@ -236,6 +245,23 @@ Differences between distros and dependencies:
   publishers it detects through liveliness for history. Our v1 publishers
   have no cache and are not detectable, so such a subscriber, rviz on `/map`
   for example, gets live samples but no history until v1.1 (§6).
+
+**Captured live (rev 10)** from Lyrical's `demo_nodes_cpp` talker through
+`rmw_zenohd`. Every element matches the table above:
+
+- Data key: `0/chatter/example_interfaces::msg::dds_::String_/RIHS01_5509d866a579951f2fc6c19577c32605ba16f308cae7b498341d79536d4eb06b`.
+  Lyrical's talker publishes `example_interfaces/msg/String`, not `std_msgs`.
+- Payload `000100001100000048656c6c6f20576f726c643a2034363200`: the header,
+  then `u32` 17 and `Hello World: 462` with its NUL.
+- Attachment, 33 bytes: `ce01000000000000` (sequence number 462),
+  `3f629a2ea5a1dc18` (timestamp), `10`, then the GID
+  `0a93e656da27421a4169e87cbacda088`.
+- Node token: `@ros2_lv/0/8a6f0f1ec9ba74b35b16caa1d9043206/0/0/NN/%/%/talker`.
+- Publisher token: `@ros2_lv/0/8a6f0f1ec9ba74b35b16caa1d9043206/0/10/MP/%/%/talker/%chatter/example_interfaces::msg::dds_::String_/RIHS01_5509…06b/::,7:,:,:,,`
+  (depth 7). XXH3-128 of this token, low half first, gives exactly the GID in
+  the attachment, which confirms S3 live.
+- `/rosout`'s token carries a non-default QoS: `:1:,1000:,:10,0:,,`
+  (`TRANSIENT_LOCAL`, depth 1000, lifespan 10 s).
 
 Two consequences shape the design.
 
@@ -1003,11 +1029,9 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
 - Publisher options mirror rmw_zenoh's (`rmw_publisher_data.cpp:942`):
   - Zenoh `reliability` follows the QoS reliability.
   - Congestion control is `DROP`, or `BLOCK` for `RELIABLE` with `KEEP_ALL`.
-- Pin a zenoh release that is wire-compatible with the router rmw_zenoh vendors:
-  zenoh-c 1.8.0 in Jazzy, Kilted and Lyrical, and 1.10.1 in Rolling (§3). The
-  latest `zenoh` on crates.io is 1.10.1. Zenoh promises 1.x wire
-  compatibility, and the interop test must prove it for both routers
-  (**[spike S2]**).
+- Pin `zenoh` 1.10.1, the latest on crates.io. **[verified]** (S2, §10) that
+  it is wire-compatible with the 1.8.0 router in Lyrical and Rolling and with
+  a 1.10.1 router. The interop test (§9) keeps proving it.
 - Cost: a large dependency tree, kept behind the `std` feature and never reachable
   from `embedded`. The same CI guard pattern as design 041's `rand` tracer applies.
 
@@ -1053,9 +1077,8 @@ connector deposited (§4.7):
    staged message is taken with `take_staged` after the `select` returns
    and `put` from the borrowed payload, so it is never copied into a queue.
    `session.run()` stays pinned across iterations, so a `put` is awaited
-   while `run` is pending; both borrow the session. Whether zenoh-nostd
-   allows that is S6 (§10). rev 8's `select(run, drain_actions)` assumed
-   the same.
+   while `run` is pending; both borrow the session. **[verified]** (S6, §10):
+   a `put` completes without `run` being polled.
 4. On error, back off through `Delay`, reconnect and re-declare. Values
    produced meanwhile wait in their record buffers, so what is sent after
    the reconnect depends on each record's buffer type (054 §4.6).
@@ -1277,14 +1300,27 @@ on `RouteInfo` and `InboundRouteInfo`.
 
 ## 10. Open questions
 
-rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
-(§11 step 1) now has to answer **S2 and S6** for v1. S1 matters only for v2.
+rev 6 answered S3, S4 and S5 from source and offline runs. The spike (§11
+step 1, rev 10) answered S2 and S6, and confirmed S3 and S4 live. Only S1
+remains, and it matters for v2 only.
 
 - **S1 (v2).** Does `rmw_zenohd` accept `DeclareToken` from a zenoh-nostd client
   on `main`, without Interest? Does the node then appear in `ros2 node list`?
-- **S2.** Is zenoh-nostd 0.2 wire-compatible with the zenoh-c 1.8 router, and is the
-  pinned `zenoh` crate? It also has to be checked against Rolling's 1.10.1
-  router (§3).
+- **S2. Answered (rev 10): yes.** Tested on the host, against Lyrical's and
+  Rolling's `rmw_zenohd` (both zenoh-c 1.8.0, §3) and Eclipse's `zenohd`
+  1.10.1:
+  - **`zenoh` 1.10.1 as a ROS node, through all three routers.** A
+    hand-built node token, publisher token and `put` with the attachment:
+    `ros2 node list` shows the node; `ros2 topic info -v` shows its type,
+    hash, QoS and the GID we computed, byte for byte; `ros2 topic echo`
+    decodes the CDR payload. In reverse, `ros2 topic pub` reaches our
+    subscriber with a valid attachment.
+  - **zenoh-nostd 0.2.0 (`e88f73a`) with its std platform.** Its `put` reaches
+    a `zenoh` 1.10.1 subscriber through the 1.8.0 and the 1.10.1 router, and
+    its subscriber receives every `put` from the `zenoh` crate through both.
+    Two zenoh-nostd sessions also reach each other through the 1.8.0 router.
+- **S3** and **S4** were also confirmed live: see §3's captures, and the hash
+  that `ros2 topic info -v` printed above.
 - **S3. Answered: yes.** rmw_zenoh's `simplified_xxhash3.cpp`, compiled
   unchanged, and `xxhash-rust` 0.8.18's `xxh3_128` give identical
   `(low64, high64)` for 603 inputs. Those cover every length from 0 to 600
@@ -1305,10 +1341,13 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
   *peer's* (`other_zid`). The fix is a one-line upstream accessor, or a
   `with_zid` constructor that lets AimDB choose the ZID it puts in its tokens.
   It joins the liveliness PR in §11 step 6.
-- **S6.** Can zenoh-nostd's `put` be awaited while `session.run()` is pending
-  on the same session (§5.2, task shape)? If not, outbound messages go
-  through the session's own send path, and §7's outbound row is measured
-  again. Spike part (b) answers it.
+- **S6. Answered (rev 10): yes.** One task, as §5.2 has it: `session.run()`
+  pinned, `select`ed against a timer, and each `put` awaited outside the
+  `select`, so `run` is not polled during it. On zenoh-nostd 0.2.0 through
+  Lyrical's router, 20 paced puts finished in 66–300 µs each. A burst of
+  5,000 back-to-back puts, with `run` polled once between puts, finished
+  with the slowest at 516 µs (debug build), and a `zenoh` subscriber
+  received all 5,000.
 - **Q6. Answered (rev 7): fully qualified only.** The namespace sets the node's
   identity, not its topics (§4.2, §4.3). The link URL cannot tell an absolute
   name from a relative one.
@@ -1329,7 +1368,7 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
 
 | # | Step | Depends on |
 |---|---|---|
-| 1 | **Spike (about 2 days).** Two parts: (a) with the `zenoh` crate, a hand-built token plus a `put` with an attachment, seen by `ros2 topic echo`, `ros2 node list` and `ros2 topic info -v`; (b) a zenoh-nostd `put` on the host reaching a zenoh 1.8 subscriber through `rmw_zenohd`, and the same against Rolling's 1.10.1 router, with the `put` awaited while `session.run()` is pending. Answers S2 and S6. S3 and S4 were answered in rev 6, and part (a) now only confirms them live | — |
+| 1 | ✅ **Spike (about 2 days).** Two parts: (a) with the `zenoh` crate, a hand-built token plus a `put` with an attachment, seen by `ros2 topic echo`, `ros2 node list` and `ros2 topic info -v`; (b) a zenoh-nostd `put` on the host reaching a zenoh 1.8 subscriber through `rmw_zenohd`, and the same against Rolling's 1.10.1 router, with the `put` awaited while `session.run()` is pending. Answers S2 and S6. S3 and S4 were answered in rev 6, and part (a) now only confirms them live | — |
 | 2 | ✅ `aimdb-cdr`; ✅ `Linkable::WIRE_FORMAT` and `LinkCodec::WIRE_FORMAT` with the recorded `aimdb.wire_format`; `RosMessage` and `#[derive(RosMessage)]`; `link_codecs::Cdr` (in data-contracts and aimdb-derive) | — |
 | 3 | `profile/` module and its golden tests (criterion 1) | 1 |
 | 4 | Core: `RouteInfo::type_id` and `InboundDispatch::routes()`, and removing `TOPIC_WRITER_KEY` (§4.6); `ZenohGrammar` and its oracle tests (criterion 11); `Shared`, `ZenohConnector`, `Ros2Connector` and the registry on the native backend; interop CI (criteria 2, 8, 9). **This ships v1's ROS feature on its own** | 2, 3 |
@@ -1347,9 +1386,8 @@ publishable.
 zenoh-nostd beyond spike part (b). A std gateway speaking `ros2://`, plus
 `zenoh://` between std AimDB peers, is a complete release. Steps 5 and 6 then
 gate only the MCU half, and zenoh-nostd's publishing question (Q7) never holds
-up the ROS feature. After rev 9, the known blockers are S2 (wire compatibility with both
-vendored routers), S6 (`put` beside `run`, embedded only) and the
-zenoh-nostd publish. The rev 5 and rev 6 corrections each have an in-design fix.
+up the ROS feature. After rev 10, the only known blocker is the zenoh-nostd
+release on crates.io (Q7). The rev 5 and rev 6 corrections each have an in-design fix.
 
 On the roadmap, v1 lands after the conformance suite and doubles as BYOC tutorial
 material. v2 (§4.9) is sequenced separately once its three preconditions hold.
@@ -1417,6 +1455,12 @@ material. v2 (§4.9) is sequenced separately once its three preconditions hold.
   `aimdb-embassy-adapter/src/{connectors.rs,net.rs}`, and
   `aimdb-mqtt-connector/src/{connector.rs,native.rs,link_ext.rs,embedded/{mod,session,tls}.rs}`
   and `tests/tokio_broker.rs`.
+- rev 10's spike, run on 2026-10-08 with Docker on the host network:
+  `ros:lyrical` and `ros:rolling` with `ros-<distro>-rmw-zenoh-cpp` 0.10.6 /
+  0.13.0 and `demo_nodes_cpp`; `eclipse/zenoh:1.10.1` (`zenohd`); a client on
+  the `zenoh` 1.10.1 crate; and zenoh-nostd 0.2.0 (`e88f73a`) with its
+  `zenoh-std` platform, its `z_pub`/`z_sub` examples, and a single-task
+  variant for S6. The spike code is not in the tree.
 - `ZettaScaleLabs/hiroz` @ `c503843` (2026-09-23), rev 8: `hiroz-cdr`,
   `hiroz-protocol`, `hiroz-schema`, `hiroz-msgs`, and `hiroz/src/{msg,ros_msg}.rs`.
 - rev 5 also ran two checks on the pinned rustc 1.98.0. One confirmed that a
