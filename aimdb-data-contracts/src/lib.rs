@@ -62,6 +62,10 @@ extern crate self as aimdb_data_contracts;
 #[doc(hidden)]
 pub mod __private {
     pub extern crate alloc;
+    #[cfg(feature = "ros2")]
+    pub use aimdb_cdr;
+    #[cfg(feature = "ros2")]
+    pub use aimdb_core::connector::SerializeError;
     #[cfg(any(feature = "linkable-json", feature = "migratable"))]
     pub use serde_json;
 }
@@ -96,6 +100,9 @@ mod ros_message;
 
 #[cfg(feature = "ros2")]
 pub use ros_message::{ros2, RosMessage, RosNameError};
+
+#[cfg(feature = "ros2")]
+pub use aimdb_derive::RosMessage;
 
 #[cfg(feature = "observable")]
 mod observable;

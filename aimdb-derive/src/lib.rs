@@ -30,6 +30,7 @@ use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Error, Fields, Lit, Meta};
 
 mod migration_chain;
+mod ros_message;
 
 /// Variable-arity replacement for `aimdb-data-contracts`'s old 3-arm
 /// `macro_rules! migration_chain`. Re-exported as
@@ -98,6 +99,53 @@ pub fn derive_linkable(input: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Derive `RosMessage` for a struct that mirrors a ROS 2 message.
+///
+/// Emits three impls:
+/// - `SchemaType`, with `NAME` set to the ROS type (`pkg/msg/Name`);
+/// - `Linkable` as CDR through `aimdb-cdr`, with a bounded `encode_into`;
+/// - `RosMessage`, with the DDS type name derived from the ROS type.
+///
+/// Requires `Serialize + Deserialize` and the `ros2` feature of
+/// `aimdb-data-contracts`. Fields must follow the `.msg` in order and type,
+/// since CDR is positional; an empty message carries
+/// `structure_needs_at_least_one_member: u8`, as ROS does.
+///
+/// Attributes:
+/// - `#[ros(type = "pkg/msg/Name", hash = "RIHS01_…")]`, both required and
+///   checked at compile time. Copy the hash from `ros2 topic info -v`.
+/// - `#[ros(encode_capacity = N)]`: the scratch buffer for the bounded encode
+///   path, 256 bytes by default.
+/// - `#[ros(max_len = N)]` on a `String` or `Vec` field, for a bounded
+///   `string<=N` or `T[<=N]`: encoding fails when the field is longer
+///   (bytes for a string, elements for a sequence).
+///
+/// # Example
+///
+/// Illustrative (not compiled: see the crate-level note — compiled
+/// integration tests live in `aimdb-data-contracts`).
+///
+/// ```rust,ignore
+/// use aimdb_data_contracts::RosMessage;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Clone, Debug, Serialize, Deserialize, RosMessage)]
+/// #[ros(type = "cell_msgs/msg/SpindleCommand", hash = "RIHS01_…")]
+/// pub struct SpindleCommand {
+///     pub rpm: f64,
+///     pub enabled: bool,
+///     #[ros(max_len = 32)]
+///     pub tool_id: String,
+/// }
+/// ```
+#[proc_macro_derive(RosMessage, attributes(ros))]
+pub fn derive_ros_message(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    ros_message::derive(input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }
 
 /// Derive the `RecordKey` trait for an enum

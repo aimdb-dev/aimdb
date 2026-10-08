@@ -1,0 +1,5 @@
+error: expected `type`, `hash` or `encode_capacity`
+ --> tests/compile-fail-ros/unknown_key.rs:5:119
+  |
+5 | #[ros(type = "std_msgs/msg/String", hash = "RIHS01_00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", depth = 10)]
+  |                                                                                                                       ^^^^^

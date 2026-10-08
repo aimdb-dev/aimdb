@@ -646,9 +646,9 @@ The type mapping, as the docs will print it:
 | `byte`, `char`, `uint8` / `int8` | `u8` / `i8` |
 | `uint16` … `int64` | `u16` … `i64` |
 | `float32` / `float64` | `f32` / `f64` |
-| `string`, `string<=N` | `String` (the bound is checked on encode) |
+| `string`, `string<=N` | `String`; a bound is `#[ros(max_len = N)]`, checked on encode (bytes) |
 | `T[N]` | `[T; N]` |
-| `T[]`, `T[<=N]` | `Vec<T>` (the bound is checked on encode) |
+| `T[]`, `T[<=N]` | `Vec<T>`; a bound is `#[ros(max_len = N)]`, checked on encode (elements) |
 | `pkg/Type` | a `RosMessage` struct |
 | `wstring` | unsupported in v1 |
 
