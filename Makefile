@@ -82,7 +82,7 @@ build:
 	cargo build --package aimdb-cdr
 	cargo build --package aimdb-cdr --no-default-features
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (std)$(NC)\n"
-	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,ros2"
+	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
 	cargo build --package aimdb-data-contracts --no-default-features --features alloc
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std + format-neutral linkable)$(NC)\n"
@@ -156,7 +156,7 @@ test:
 	cargo test --package aimdb-cdr
 	cargo test --package aimdb-cdr --no-default-features
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
-	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,ros2"
+	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2"
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + format-neutral linkable)$(NC)\n"
 	cargo test --package aimdb-data-contracts --no-default-features --features alloc,linkable
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + linkable-postcard)$(NC)\n"
@@ -165,6 +165,8 @@ test:
 	cargo test --package aimdb-data-contracts --no-default-features --features alloc,linkable-json,migratable
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + ros2)$(NC)\n"
 	cargo test --package aimdb-data-contracts --no-default-features --features alloc,ros2
+	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + linkable-cdr)$(NC)\n"
+	cargo test --package aimdb-data-contracts --no-default-features --features alloc,linkable-cdr
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features alloc
 	@printf "$(YELLOW)  → Testing aimdb-core (std platform)$(NC)\n"
@@ -302,7 +304,7 @@ clippy:
 	cargo clippy --package aimdb-cdr --all-targets -- -D warnings
 	cargo clippy --package aimdb-cdr --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (std)$(NC)\n"
-	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,ros2" --all-targets -- -D warnings
+	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc + format-neutral linkable)$(NC)\n"
@@ -313,6 +315,8 @@ clippy:
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc,linkable-json,migratable --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc + ros2)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc,ros2 --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc + linkable-cdr)$(NC)\n"
+	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc,linkable-cdr --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote)$(NC)\n"
@@ -441,7 +445,7 @@ doc:
 	@mkdir -p target/doc-final/cloud
 	@mkdir -p target/doc-final/embedded
 	@printf "$(YELLOW)  → Building cloud/edge documentation$(NC)\n"
-	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,ros2" --no-deps
+	cargo doc --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2" --no-deps
 	cargo doc --package aimdb-core --features "std,tracing,observability" --no-deps
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net,embedded-io" --no-deps
 	cargo doc --package aimdb-sync --no-deps
@@ -514,6 +518,8 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable-json,migratable
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc + ros2) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,ros2
+	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc + linkable-cdr) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable-cdr
 	@printf "$(YELLOW)  → Checking weather-mesh-common (no_std migratable, real TemperatureV1ToV2 chain, no direct serde_json dep) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package weather-mesh-common --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features migratable
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
