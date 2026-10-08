@@ -16,3 +16,6 @@ extern crate alloc;
 // Zenoh key expressions for inbound links (works on every feature leg).
 pub mod grammar;
 pub use grammar::ZenohGrammar;
+
+// rmw_zenoh's wire conventions for `ros2://` links.
+mod profile;

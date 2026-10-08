@@ -291,7 +291,7 @@ aimdb-zenoh-connector
 ├── link_ext.rs     `std`: Ros2LinkExt, QoS overrides for the long form (§4.3)
 ├── profile/        the rmw_zenoh profile: pure, alloc-only, host-tested once
 │   ├── keys.rs         data keys, liveliness tokens, name mangling, QoS strings
-│   ├── gid.rs          XXH3-128 over the token (xxhash-rust, no_std)
+│   ├── gid.rs          XXH3-128 over the token (twox-hash, no_std)
 │   └── attachment.rs   the 33-byte attachment, encoded into a stack array
 ├── native.rs       `std`: the zenoh crate, both schemes
 └── embedded/       `embedded`: zenoh-nostd, no_std + alloc, `zenoh://` only
@@ -1238,8 +1238,11 @@ on `RouteInfo` and `InboundRouteInfo`.
 1. **Golden profile tests.** Data keys, node and entity tokens, QoS strings and
    GIDs are byte-equal to values captured from a real rmw_zenoh on Jazzy and Lyrical
    (`ros2 topic info -v`, and the router's admin space for tokens). The captures
-   include a non-zero domain and a namespaced node. Until they exist, the same
-   values are cross-checked against `hiroz-protocol`.
+   include a non-zero domain and a namespaced node. **Met (s07)** with
+   captures taken by a `zenoh` client on the router (tokens by liveliness
+   query, keys and attachments by a `**` subscriber). `hiroz-protocol` is not
+   used: its QoS encoding writes depth 42, which rmw_zenoh leaves empty, and
+   drops the depth for keep-all, which rmw_zenoh keeps (`::2,10:…`).
 2. **Interop CI (native).** In Docker (`ros:lyrical` plus rmw_zenoh), a `ros2://`
    outbound link arrives in `ros2 topic echo` with correct values.
    `ros2 topic info -v` lists the publisher with the right node, type, QoS and GID.
@@ -1326,7 +1329,9 @@ remains, and it matters for v2 only.
   `(low64, high64)` for 603 inputs. Those cover every length from 0 to 600
   bytes, which spans all of XXH3's size classes, plus realistic node and
   publisher tokens. A GID read from a live `ros2 topic info -v` stays in
-  criterion 1 as the end-to-end check.
+  criterion 1 as the end-to-end check. The profile uses `twox-hash` (MIT)
+  instead: `xxhash-rust` is BSL-1.0, which `deny.toml` does not allow. Its
+  GIDs equal the 14 captured from Jazzy and Lyrical attachments.
 - **S4. Answered: yes, on Jazzy, Kilted, Lyrical and Rolling.**
   `ros2 topic info -v` prints each endpoint through rclpy's endpoint-info
   `__str__`, which includes `Topic type hash: RIHS01_<hex>`. That is
