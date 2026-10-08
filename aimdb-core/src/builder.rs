@@ -1169,23 +1169,38 @@ impl AimDb {
     /// The inbound router for `scheme`: every link compiled against the
     /// connector's `grammar`, keyed links sharing their record's key table.
     ///
+    /// Also returns one [`InboundRouteInfo`](crate::InboundRouteInfo) per
+    /// route, in the router's order.
+    ///
     /// Rejects every link the grammar or its key cannot compile, naming the
     /// record and the resolved topic.
     pub(crate) fn inbound_router(
         &self,
         scheme: &str,
         grammar: &'static dyn crate::TopicGrammar,
-    ) -> DbResult<crate::router::Router> {
+    ) -> DbResult<(crate::router::Router, Vec<crate::InboundRouteInfo>)> {
         let mut routes = Vec::new();
+        let mut infos = Vec::new();
         let mut errors = Vec::new();
 
-        for entry in &self.inner.storages {
+        for (record_index, entry) in self.inner.storages.iter().enumerate() {
             for link in entry.record.inbound_connectors() {
                 if link.url.scheme() != scheme {
                     continue;
                 }
-                match self.inbound_route(entry, link, grammar) {
-                    Ok(route) => routes.push(route),
+                let topic = link.resolve_topic();
+                match self.inbound_route(entry, link, &topic, grammar) {
+                    Ok(route) => {
+                        routes.push(route);
+                        let mut config =
+                            crate::transport::ConnectorConfig::from_query(&link.config);
+                        config.record_index = Some(record_index);
+                        infos.push(crate::InboundRouteInfo {
+                            topic: Arc::from(topic),
+                            type_id: entry.type_id,
+                            config,
+                        });
+                    }
                     Err(message) => errors.push(crate::ConfigError::new(
                         entry.key.as_str(),
                         Some(link.url.to_string()),
@@ -1198,17 +1213,17 @@ impl AimDb {
         if !errors.is_empty() {
             return Err(DbError::InvalidConfiguration { errors });
         }
-        Ok(crate::router::Router::new(grammar, routes))
+        Ok((crate::router::Router::new(grammar, routes), infos))
     }
 
     fn inbound_route(
         &self,
         entry: &RecordEntry,
         link: &crate::connector::InboundConnectorLink,
+        topic: &str,
         grammar: &'static dyn crate::TopicGrammar,
     ) -> Result<crate::router::CompiledRoute, String> {
-        let topic = link.resolve_topic();
-        let pattern = crate::TopicPattern::parse(&topic).map_err(|e| e.to_string())?;
+        let pattern = crate::TopicPattern::parse(topic).map_err(|e| e.to_string())?;
         let filter = grammar.compile(&pattern)?;
         let names: Box<[Box<str>]> = pattern.capture_names().map(Box::from).collect();
 
@@ -1242,11 +1257,11 @@ impl AimDb {
             .name(key)
     }
 
-    /// Every outbound link of `scheme`, with its record's index.
+    /// Every outbound link of `scheme`, with its record's index and type.
     pub(crate) fn outbound_links<'a>(
         &'a self,
         scheme: &'a str,
-    ) -> impl Iterator<Item = (usize, &'a crate::connector::ConnectorLink)> + 'a {
+    ) -> impl Iterator<Item = (usize, TypeId, &'a crate::connector::ConnectorLink)> + 'a {
         self.inner
             .storages
             .iter()
@@ -1264,7 +1279,7 @@ impl AimDb {
                     .outbound_connectors()
                     .iter()
                     .filter(move |link| link.url.scheme() == scheme)
-                    .map(move |link| (i, link))
+                    .map(move |link| (i, entry.type_id, link))
             })
     }
 }

@@ -18,6 +18,8 @@ use crate::{AimDb, DbError, DbResult, RuntimeContext};
 pub struct RouteInfo {
     /// Dense index, `0..routes().len()`.
     pub id: RouteId,
+    /// `TypeId` of the record the link belongs to.
+    pub type_id: core::any::TypeId,
     /// The topic from the link URL, used when no topic is written.
     pub default_topic: Arc<str>,
     /// The link's configuration, with `record_index` set.
@@ -201,12 +203,13 @@ impl OutboundRoutes {
         let mut routes = Vec::new();
         let mut states = Vec::new();
 
-        for (record_index, link) in db.outbound_links(scheme) {
+        for (record_index, type_id, link) in db.outbound_links(scheme) {
             let parts = (link.route_factory)(db);
             let mut config = ConnectorConfig::from_query(&link.config);
             config.record_index = Some(record_index);
             routes.push(RouteInfo {
                 id: routes.len(),
+                type_id,
                 default_topic: Arc::from(link.url.resource_id()),
                 config,
                 topic_capacity: parts.topic_capacity,

@@ -8,6 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::router::Router;
+use crate::transport::ConnectorConfig;
 use crate::{AimDb, DbResult, RuntimeContext, TopicGrammar};
 
 /// Every inbound link of one scheme, compiled against the connector's grammar.
@@ -17,7 +18,20 @@ use crate::{AimDb, DbResult, RuntimeContext, TopicGrammar};
 #[derive(Clone)]
 pub struct InboundDispatch {
     router: Arc<Router>,
+    routes: Arc<[InboundRouteInfo]>,
     ctx: RuntimeContext,
+}
+
+/// One inbound route, for parsing per-route configuration once at build.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct InboundRouteInfo {
+    /// The resolved topic or pattern, after any topic resolver.
+    pub topic: Arc<str>,
+    /// `TypeId` of the record the link belongs to.
+    pub type_id: core::any::TypeId,
+    /// The link's configuration, with `record_index` set.
+    pub config: ConnectorConfig,
 }
 
 impl InboundDispatch {
@@ -26,8 +40,10 @@ impl InboundDispatch {
     /// Rejects every link the grammar or its key cannot compile, naming the
     /// record and the resolved topic.
     pub fn new(db: &AimDb, scheme: &str, grammar: &'static dyn TopicGrammar) -> DbResult<Self> {
+        let (router, routes) = db.inbound_router(scheme, grammar)?;
         Ok(Self {
-            router: Arc::new(db.inbound_router(scheme, grammar)?),
+            router: Arc::new(router),
+            routes: routes.into(),
             ctx: db.runtime_ctx(),
         })
     }
@@ -37,6 +53,7 @@ impl InboundDispatch {
     pub(crate) fn from_parts(router: Router, ctx: RuntimeContext) -> Self {
         Self {
             router: Arc::new(router),
+            routes: Arc::from([]),
             ctx,
         }
     }
@@ -55,6 +72,12 @@ impl InboundDispatch {
     /// time, not per message.
     pub fn subscriptions(&self) -> Vec<Arc<str>> {
         self.router.subscriptions()
+    }
+
+    /// Routes, one per inbound link, for parsing per-route configuration once
+    /// at build.
+    pub fn routes(&self) -> &[InboundRouteInfo] {
+        &self.routes
     }
 
     /// Number of inbound routes.

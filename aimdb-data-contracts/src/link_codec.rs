@@ -804,31 +804,44 @@ mod tests {
                     .with_serializer(|_ctx, _value| Ok(Vec::new()))
                     .finish();
             });
+            builder.configure::<Reading>("reading.formats.in", |registrar| {
+                registrar.buffer_raw(Box::new(CapturingBuffer {
+                    latest: Arc::new(std::sync::Mutex::new(None)),
+                }));
+                registrar.linked_from_with("test://json-in", link_codecs::Json);
+                registrar.linked_from("test://default-in");
+            });
             let (db, _runner) = builder.build().await.expect("build");
 
-            let routes = OutboundRoutes::new(&db, "test").expect("outbound routes");
-            let mut formats: Vec<(String, WireFormat, usize)> = routes
+            let format_of = |topic: &str, config: &[(String, String)]| {
+                let records = config
+                    .iter()
+                    .filter(|(key, _)| key == WIRE_FORMAT_KEY)
+                    .count();
+                (topic.to_string(), WireFormat::recorded_in(config), records)
+            };
+            let outbound = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let inbound = InboundDispatch::new(&db, "test", &aimdb_core::ExactGrammar)
+                .expect("inbound routes");
+            let mut formats: Vec<(String, WireFormat, usize)> = outbound
                 .routes()
                 .iter()
-                .map(|route| {
-                    let config = &route.config.protocol_options;
-                    let records = config
+                .map(|route| format_of(&route.default_topic, &route.config.protocol_options))
+                .chain(
+                    inbound
+                        .routes()
                         .iter()
-                        .filter(|(key, _)| key == WIRE_FORMAT_KEY)
-                        .count();
-                    (
-                        route.default_topic.to_string(),
-                        WireFormat::recorded_in(config),
-                        records,
-                    )
-                })
+                        .map(|route| format_of(&route.topic, &route.config.protocol_options)),
+                )
                 .collect();
             formats.sort_by(|a, b| a.0.cmp(&b.0));
 
             let expected = [
                 ("custom-after-codec", WireFormat::Unspecified, 0),
                 ("default", WireFormat::Unspecified, 0),
+                ("default-in", WireFormat::Unspecified, 0),
                 ("json", WireFormat::Json, 1),
+                ("json-in", WireFormat::Json, 1),
                 ("postcard", WireFormat::Postcard, 1),
                 ("replaced", WireFormat::Json, 1),
             ];

@@ -67,6 +67,7 @@ mod tests {
             .collect();
         RouteInfo {
             id: 0,
+            type_id: core::any::TypeId::of::<()>(),
             default_topic: Arc::from("sensors/t"),
             config: ConnectorConfig::from_query(&query),
             topic_capacity: 0,
