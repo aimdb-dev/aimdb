@@ -1,0 +1,28 @@
+[package]
+name = "aimdb-zenoh-connector"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zenoh connector for AimDB, with an rmw_zenoh-compatible ROS 2 profile"
+keywords = ["zenoh", "ros2", "connector", "embedded", "aimdb"]
+categories = ["network-programming", "embedded", "asynchronous"]
+# Not released until the connector is complete.
+publish = false
+
+[features]
+default = ["aimdb-core/alloc"]
+# The `zenoh` crate backend: `zenoh://` and `ros2://`.
+std = ["aimdb-core/std", "aimdb-core/alloc"]
+# The `zenoh-nostd` backend over a caller-supplied transport: `zenoh://` only.
+embedded = ["aimdb-core/alloc"]
+
+[dependencies]
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+
+[dev-dependencies]
+# Reference matcher: oracle for `ZenohGrammar`'s matching and covering.
+zenoh-keyexpr = "1.10.1"

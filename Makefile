@@ -31,6 +31,8 @@ SYNC_NO_STD_FORBIDDEN := tokio|libc
 # executor, network stack, adapter or logger may reach its graph.
 MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell|aimdb-embassy-adapter|defmt|embedded-hal-async
 MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
+# The `zenoh` crate (not `zenoh-nostd`/`zenoh-keyexpr`) and tokio are std-only.
+ZENOH_EMBEDDED_FORBIDDEN := (^|[^-])zenoh v[0-9]|tokio
 # The guards below grep `cargo tree`'s stdout only — never `2>&1`. Cargo writes
 # progress to stderr, so on a cold cache "Downloaded embedded-hal-nb v1.0.0"
 # matches these patterns and fails the build.
@@ -81,6 +83,9 @@ build:
 	@printf "$(YELLOW)  → Building aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo build --package aimdb-cdr
 	cargo build --package aimdb-cdr --no-default-features
+	@printf "$(YELLOW)  → Building aimdb-zenoh-connector (std, embedded)$(NC)\n"
+	cargo build --package aimdb-zenoh-connector --features "std"
+	cargo build --package aimdb-zenoh-connector --no-default-features --features "embedded"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (std)$(NC)\n"
 	cargo build --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2"
 	@printf "$(YELLOW)  → Building aimdb-data-contracts (no_std)$(NC)\n"
@@ -229,6 +234,10 @@ test:
 	cargo test --package aimdb-persistence
 	@printf "$(YELLOW)  → Testing persistence SQLite backend$(NC)\n"
 	cargo test --package aimdb-persistence-sqlite
+	@printf "$(YELLOW)  → Testing Zenoh connector (std)$(NC)\n"
+	cargo test --package aimdb-zenoh-connector --features "std"
+	@printf "$(YELLOW)  → Testing Zenoh connector (embedded, no_std+alloc)$(NC)\n"
+	cargo test --package aimdb-zenoh-connector --no-default-features --features "embedded"
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio, no TLS backend)$(NC)\n"
 	cargo test --package aimdb-mqtt-connector --features "std"
 	@printf "$(YELLOW)  → Testing MQTT connector (tokio + native-tls)$(NC)\n"
@@ -274,7 +283,7 @@ test:
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -283,7 +292,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -377,6 +386,11 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --no-default-features --features "std" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (neutral, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on Zenoh connector (std)$(NC)\n"
+	cargo clippy --package aimdb-zenoh-connector --features "std" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on Zenoh connector (embedded, no_std+alloc)$(NC)\n"
+	cargo clippy --package aimdb-zenoh-connector --no-default-features --features "embedded" --all-targets -- -D warnings
+	cargo clippy --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio, no TLS backend)$(NC)\n"
 	cargo clippy --package aimdb-mqtt-connector --features "std" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MQTT connector (tokio + native-tls)$(NC)\n"
@@ -450,6 +464,7 @@ doc:
 	cargo doc --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability,net,embedded-io" --no-deps
 	cargo doc --package aimdb-sync --no-deps
 	cargo doc --package aimdb-mqtt-connector --features "std" --no-deps
+	cargo doc --package aimdb-zenoh-connector --features "std" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "std" --no-deps
 	cargo doc --package aimdb-codegen --no-deps
 	cargo doc --package aimdb-cli --no-deps
@@ -476,6 +491,7 @@ doc:
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embedded-tls" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-runtime" --no-deps
 	cargo doc --package aimdb-mqtt-connector --no-default-features --features "embassy-tls" --no-deps
+	cargo doc --package aimdb-zenoh-connector --no-default-features --features "embedded" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-serial-connector --no-default-features --features "connector" --no-deps
 	cargo doc --package aimdb-tcp-connector --no-default-features --features "connector" --no-deps
@@ -571,6 +587,20 @@ test-embedded:
 		printf '%s\n' "$$out" | grep -iE '$(MQTT_DEPENDENCY_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ mountain-mqtt is the codec alone$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-zenoh-connector (embedded backend) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded"
+	@printf "$(YELLOW)  → Asserting no std-only Zenoh crates in the embedded Zenoh backend$(NC)\n"
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -e features,no-dev 2>$$err) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		cat $$err; rm -f $$err; exit 1; \
+	}; \
+	rm -f $$err; \
+	if printf '%s\n' "$$out" | grep -qE '$(ZENOH_EMBEDDED_FORBIDDEN)'; then \
+		printf "$(RED)✗ a std-only crate leaked into the embedded Zenoh graph$(NC)\n"; \
+		printf '%s\n' "$$out" | grep -E '$(ZENOH_EMBEDDED_FORBIDDEN)'; exit 1; \
+	fi
+	@printf "$(BLUE)✓ embedded Zenoh graph is free of the zenoh crate and tokio$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy bundle) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
@@ -850,7 +880,7 @@ check-no-sim:
 GLOBALS_SCANNED := aimdb-core aimdb-cdr aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
 	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \
-	aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector \
+	aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector \
 	aimdb-serial-connector aimdb-tcp-connector
 GLOBALS_PATTERN := tracing_subscriber::|set_global_default|set_boxed_logger|set_logger\(|set_max_level|panic::set_hook|panic::take_hook|pthread_atfork|sigaction|signal_hook|set_var\(
 GLOBALS_ALLOWED := aimdb-sync/src/fork\.rs

@@ -12,6 +12,7 @@ members = [
     "aimdb-persistence",
     "aimdb-persistence-sqlite",
     "aimdb-mqtt-connector",
+    "aimdb-zenoh-connector",
     "aimdb-knx-connector",
     "aimdb-websocket-connector",
     "aimdb-uds-connector",

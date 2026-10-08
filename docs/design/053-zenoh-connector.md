@@ -422,7 +422,9 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
   as MQTT's grammar requires a whole level, so a capture's value is never
   part of a chunk; a hand-written `$*` inside a chunk is accepted as an
   unnamed wildcard. Verbatim `@` chunks follow the Zenoh key-expression
-  rules. Matching and `covers` are the connector's own
+  rules. The subscribed filter is the canonical key expression
+  (`{a..}/{b}` subscribes `*/**`), and where a pattern is ambiguous a
+  `{name..}` capture takes as few chunks as it can. Matching and `covers` are the connector's own
   code, `no_std + alloc`, so both backends share them. `zenoh-keyexpr`'s
   `includes` and `intersects` are the test oracle (§9). **[checked]**:
   `zenoh-keyexpr` 1.10.1 is `no_std + alloc` without its default `std`
