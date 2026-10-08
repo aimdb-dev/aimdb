@@ -6,12 +6,13 @@
 //!
 //! ```rust,ignore
 //! use aimdb_data_contracts::{
-//!     link_codecs::{Json, Postcard},
+//!     link_codecs::{Cdr, Json, Postcard},
 //!     LinkCodecBuilderExt, LinkCodecRegistrarExt,
 //! };
 //!
 //! registrar.linked_to_with("serial://mcu/reading", Postcard::<128>);
 //! registrar.linked_to_with("mqtt://cloud/reading", Json);
+//! registrar.linked_to_with("zenoh://cell/reading", Cdr::<128>);
 //! registrar
 //!     .link_to("mqtt://cloud/alerts")
 //!     .with_link_codec(Json)
@@ -20,7 +21,11 @@
 //! ```
 
 use alloc::string::String;
-#[cfg(any(feature = "linkable-json", feature = "linkable-postcard"))]
+#[cfg(any(
+    feature = "linkable-json",
+    feature = "linkable-postcard",
+    feature = "linkable-cdr"
+))]
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt::Debug;
@@ -131,6 +136,14 @@ pub mod link_codecs {
     #[cfg(feature = "linkable-postcard")]
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Postcard<const N: usize = 256>;
+
+    /// Little-endian CDR (XCDR1) with its encapsulation header, as ROS 2
+    /// sends it, with a route-local reusable scratch capacity.
+    ///
+    /// Decoding accepts both byte orders.
+    #[cfg(feature = "linkable-cdr")]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Cdr<const N: usize = 256>;
 }
 
 impl<T> LinkCodec<T> for link_codecs::Default
@@ -198,6 +211,31 @@ where
         match postcard::to_slice(value, out) {
             Ok(used) => Ok(used.len()),
             Err(postcard::Error::SerializeBufferFull) => Err(SerializeError::BufferTooSmall),
+            Err(_) => Err(SerializeError::InvalidData),
+        }
+    }
+}
+
+#[cfg(feature = "linkable-cdr")]
+impl<T, const N: usize> LinkCodec<T> for link_codecs::Cdr<N>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(N);
+    const WIRE_FORMAT: WireFormat = WireFormat::Cdr;
+
+    fn decode(&self, bytes: &[u8]) -> Result<T, String> {
+        aimdb_cdr::from_bytes(bytes).map_err(|error| error.to_string())
+    }
+
+    fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
+        aimdb_cdr::to_vec(value).map_err(|_| SerializeError::InvalidData)
+    }
+
+    fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
+        match aimdb_cdr::to_slice(value, out) {
+            Ok(used) => Ok(used),
+            Err(aimdb_cdr::Error::BufferTooSmall) => Err(SerializeError::BufferTooSmall),
             Err(_) => Err(SerializeError::InvalidData),
         }
     }
@@ -447,6 +485,62 @@ mod tests {
         );
         let malformed: Result<Reading, _> = codec.decode(&[]);
         assert!(malformed.is_err());
+    }
+
+    #[cfg(feature = "linkable-cdr")]
+    #[test]
+    fn cdr_codec_writes_header_and_handles_exact_and_undersized_buffers() {
+        let reading = Reading {
+            value: 1.5,
+            sequence: 0x0102_0304,
+        };
+        let codec = link_codecs::Cdr::<64>;
+        let owned = codec.encode(&reading).expect("CDR encode");
+        // Header, then `f32` and `u32` little-endian; both 4-aligned.
+        let mut expected = vec![0x00, 0x01, 0x00, 0x00];
+        expected.extend_from_slice(&1.5_f32.to_le_bytes());
+        expected.extend_from_slice(&0x0102_0304_u32.to_le_bytes());
+        assert_eq!(owned, expected);
+
+        let mut exact = vec![0_u8; owned.len()];
+        let written = codec
+            .encode_into(&reading, &mut exact)
+            .expect("exact CDR buffer");
+        assert_eq!(written, owned.len());
+        assert_eq!(exact, owned);
+        let decoded: Reading = codec.decode(&exact).expect("CDR decode");
+        assert_eq!(decoded, reading);
+
+        let mut small = vec![0_u8; owned.len() - 1];
+        assert_eq!(
+            codec.encode_into(&reading, &mut small),
+            Err(SerializeError::BufferTooSmall)
+        );
+        let bad_header: Result<Reading, _> = codec.decode(&[0x00, 0x07, 0x00, 0x00]);
+        assert!(bad_header.is_err());
+        assert_eq!(
+            <link_codecs::Cdr<64> as LinkCodec<Reading>>::ENCODE_BUFFER_CAPACITY,
+            Some(64)
+        );
+    }
+
+    #[cfg(feature = "linkable-cdr")]
+    #[test]
+    fn cdr_codec_decodes_big_endian() {
+        let mut big_endian = vec![0x00, 0x00, 0x00, 0x00];
+        big_endian.extend_from_slice(&1.5_f32.to_be_bytes());
+        big_endian.extend_from_slice(&7_u32.to_be_bytes());
+
+        let decoded: Reading = link_codecs::Cdr::<64>
+            .decode(&big_endian)
+            .expect("CDR_BE decode");
+        assert_eq!(
+            decoded,
+            Reading {
+                value: 1.5,
+                sequence: 7
+            }
+        );
     }
 
     /// A fresh reader replays one value. Separate route subscriptions receive
@@ -743,6 +837,39 @@ mod tests {
                 .map(|(topic, format, n)| (topic.as_str(), *format, *n))
                 .collect();
             assert_eq!(actual, expected);
+        });
+    }
+
+    #[cfg(all(
+        feature = "linkable-json",
+        feature = "linkable-postcard",
+        feature = "linkable-cdr"
+    ))]
+    #[test]
+    fn cdr_verb_records_cdr_and_takes_the_bounded_path() {
+        use super::WireFormat;
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new()
+                .runtime(Arc::new(NoopRuntimeOps))
+                .with_connector(NoopConnector);
+            builder.configure::<Reading>("reading.cdr", |registrar| {
+                registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
+                registrar.linked_to_with("test://cdr", link_codecs::Cdr::<64>);
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let routes = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let route = &routes.routes()[0];
+            assert_eq!(
+                WireFormat::recorded_in(&route.config.protocol_options),
+                WireFormat::Cdr
+            );
+            assert_eq!(route.payload_capacity, 64);
         });
     }
 }
