@@ -1070,7 +1070,7 @@ branch `dev/0.3.0`):
 
 | Finding | Consequence | Plan |
 |---|---|---|
-| Not on crates.io (`zenoh-nostd`, `zenoh-proto` and `zenoh-sansio` all 404); git tag `0.2.0` = `main` @ `e88f73a`, whose workspace `Cargo.toml` still says `0.1.0`; no commits on `main` since 2026-06-26; `dev/0.3.0` is 31 commits and roughly +9.5k lines ahead | A published AimDB crate cannot take a git dependency. **Blocks v1** | Ask upstream to publish. Meanwhile, do what `aimdb-mountain-mqtt` did: publish a zero-delta fork `aimdb-zenoh-nostd` pinned to a tag, and retire it when upstream releases |
+| Not on crates.io (`zenoh-nostd`, `zenoh-proto` and `zenoh-sansio` all 404); git tag `0.2.0` = `main` @ `e88f73a`, whose workspace `Cargo.toml` still says `0.1.0`; no commits on `main` since 2026-06-26; `dev/0.3.0` is 31 commits and roughly +9.5k lines ahead | A published AimDB crate cannot take a git dependency. **Blocks v1's embedded backend** | Ask upstream to publish, and wait for that release (Q7): no fork |
 | No liveliness-token API on `main` or `dev/0.3.0`. `DeclareToken`/`UndeclareToken` exist in `zenoh-proto` only (`msgs/declare.rs:27`) | An MCU cannot announce itself to the ROS graph. **Blocks v2 only** (§4.9) | A small upstream PR: `session.liveliness().declare_token(ke)`, modelled on `put`. Off the v1 critical path |
 | The session future is `!Send` for three separate reasons, **[verified]** with an `assert_send` probe: <ul><li>session and driver state sit behind `embassy_sync` `NoopRawMutex` (`api/session.rs:59`, `io/driver.rs:22`);</li><li>the link and transport traits return `impl Future` / `impl Iterator` with no `+ Send`, for example `ZTransportLinkRx::recv` (`io/transport/traits.rs:63`);</li><li>stored callbacks are `dyn ZDynCallback` without `+ Send`.</li></ul> | The session future is `!Send`, so the runner cannot box it without force-`Send` | Short term, use `aimdb-embassy-adapter::connectors::into_box_future`. That keeps the connector crate free of `unsafe`, but it makes `embedded` Embassy-bound for now: force-`Send` is sound only on a single-core cooperative executor. **[verified]** MQTT is not quite the precedent. It uses `into_box_future` only for its SNTP task (`embedded/mod.rs:491` at `eefe2c2`). Its session tasks go through the connector's own `unsafe { SendSession::new(..) }` (`embedded/session.rs:21`, plus `AssertSend` in `tls.rs:187`). That is sound for MQTT, whose streams really are `Send`, and it keeps MQTT's backend runtime-neutral. It would not be sound over zenoh-nostd's `NoopRawMutex` state, and it breaks criterion 7. Upstream, all three have to change before the backend becomes runtime-neutral: `CriticalSectionRawMutex`, `+ Send` on every return-position `impl Trait` in the link and transport traits (052 §5.1's rule), and `+ Send` on the callback objects. A mutex swap alone is not enough |
 | Uses `embassy-time` directly (`Timer`, `Instant`) | Every target needs an `embassy-time` driver. Host tests need one too, which the MQTT tests already supply | Accept. A FreeRTOS adapter must ship a driver |
@@ -1301,8 +1301,10 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
 - **Q6. Answered (rev 7): fully qualified only.** The namespace sets the node's
   identity, not its topics (§4.2, §4.3). The link URL cannot tell an absolute
   name from a relative one.
-- **Q7.** Publish the `aimdb-zenoh-nostd` fork now, or ship the embedded backend as
-  unpublished (git-only) until upstream releases?
+- **Q7. Answered (2026-10-08): wait for upstream.** No `aimdb-zenoh-nostd`
+  fork. The embedded backend ships once zenoh-nostd is released on
+  crates.io; until then the connector releases with the native backend
+  only.
 - **Q8.** Should plain `zenoh://` links carry a contract fingerprint in Zenoh's
   `encoding` field, to catch schema skew between AimDB peers? There is no
   precedent to copy. **[verified]** the WASM schema registry keys on
@@ -1321,7 +1323,7 @@ rev 6 answered S3, S4 and S5 from source and offline runs. The two-day spike
 | 3 | `profile/` module and its golden tests (criterion 1) | 1 |
 | 4 | Core: `RouteInfo::type_id` and `InboundDispatch::routes()`, and removing `TOPIC_WRITER_KEY` (§4.6); `ZenohGrammar` and its oracle tests (criterion 11); `Shared`, `ZenohConnector`, `Ros2Connector` and the registry on the native backend; interop CI (criteria 2, 8, 9). **This ships v1's ROS feature on its own** | 2, 3 |
 | 5 | Embedded backend (`zenoh://` only): gateway interop and allocation rows on host first (criteria 3, 12), then STM32H5 (criteria 4, 5) | 1, 4 |
-| 6 | Upstream. For v1, a crates.io publish or the fork. The rest is v2 prep and off the critical path: `Send` cleanliness (all three causes in §5.2), the liveliness API PR, and an own-ZID accessor (S5) | 1 |
+| 6 | Upstream. For v1's embedded backend, a crates.io release of zenoh-nostd (Q7: no fork). The rest is v2 prep and off the critical path: `Send` cleanliness (all three causes in §5.2), the liveliness API PR, and an own-ZID accessor (S5) | 1 |
 | 7 | Docs: design 012 connector-guide section, a BYOC tutorial built on this connector, an "AimDB and ROS 2" page, and the manufacturing-cell demo | 4, 5 |
 
 Steps 2 and 3 are pure and can land early; step 2 is half done. `aimdb-ros2-msgs` is

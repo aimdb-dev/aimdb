@@ -73,15 +73,16 @@ These stages ship v1's ROS feature.
 | s10 | s09 |
 | s11 | s10 |
 | s12 | s06 (S2), s11 |
-| s13 | s06 (S6), Q7 decided, s08 |
+| s13 | s06 (S6), a zenoh-nostd release, s08 |
 | s14 | s13 |
 | s15 | s14 |
-| s16 | s12, s15 |
+| s16 | s12; s15 once the embedded backend ships |
 
 - s01–s03 and s04–s05 do not touch each other and can run side by side.
 - s07 does not wait for the spike; it is checked against `hiroz-protocol`.
-- Q7 (053 §10) must be decided before s13: publish an `aimdb-zenoh-nostd`
-  fork now, or ship the embedded backend git-only until upstream releases.
+- Q7 (053 §10) is answered: no fork. s13–s15 wait for a zenoh-nostd
+  release on crates.io; until then the feature branch can merge into `main`
+  with the native backend only.
 - Upstream work (a zenoh-nostd release, `Send` cleanliness, the liveliness
   API, an own-ZID accessor) happens outside this repository. Only the
-  release blocks v1, and only from s13.
+  release blocks v1's embedded half, from s13.
