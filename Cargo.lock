@@ -440,6 +440,8 @@ name = "aimdb-zenoh-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-tokio-adapter",
+ "tokio",
  "zenoh-keyexpr",
 ]
 

@@ -26,3 +26,6 @@ aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = fal
 [dev-dependencies]
 # Reference matcher: oracle for `ZenohGrammar`'s matching and covering.
 zenoh-keyexpr = "1.10.1"
+# `tests/inbound_routes.rs`: links through core's router on a real runtime.
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = ["tokio-runtime"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
