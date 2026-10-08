@@ -12,6 +12,10 @@ use alloc::{boxed::Box, format, string::String, vec::Vec};
 /// chunk. Where a pattern is ambiguous, a `{name..}` capture takes as few
 /// chunks as it can. [`TopicFilter::filter`] is the canonical key expression
 /// Zenoh accepts for a subscriber (`{a..}/{b}` subscribes `*/**`).
+///
+/// A key that is itself a wildcard matches no pattern. Zenoh delivers a `put`
+/// on `a/*` to every intersecting subscriber with `a/*` as the key, and no
+/// record stands for it: `{cell}` would capture `*`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ZenohGrammar;
 
@@ -174,7 +178,7 @@ fn is_verbatim(chunk: &Chunk) -> bool {
     matches!(chunk, Chunk::Literal(text) if text.starts_with('@'))
 }
 
-/// Whether `a` matches every key `b` matches. Conservative for two `$*` chunks.
+/// Whether `a` matches every key `b` matches.
 fn includes(a: &[Chunk], b: &[Chunk]) -> bool {
     match (a.split_first(), b.split_first()) {
         (None, None) => true,
@@ -197,7 +201,9 @@ fn chunk_includes(a: &Chunk, b: &Chunk) -> bool {
         (Chunk::Literal(x), Chunk::Literal(y)) => x == y,
         (Chunk::Single(_), _) => true,
         (Chunk::Glob(pieces), Chunk::Literal(text)) => glob_matches(pieces, text),
-        (Chunk::Glob(x), Chunk::Glob(y)) => x == y,
+        // `a`'s pieces hold no `$` or `*`, so they can only land in `b`'s
+        // text between its `$*`s, and each `$*` of `b` falls in one of `a`'s.
+        (Chunk::Glob(x), Chunk::Glob(y)) => glob_matches(x, &y.join("$*")),
         _ => false,
     }
 }
@@ -287,6 +293,10 @@ impl TopicFilter for ZenohFilter {
     }
 
     fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
+        // A wildcard key (`*`, `**` or `$*`): see `ZenohGrammar`.
+        if topic.contains('*') {
+            return false;
+        }
         let start = (!topic.is_empty()).then_some(0);
         self.matches_from(0, topic, start, spans)
     }
@@ -323,11 +333,30 @@ mod tests {
 
     #[test]
     fn rejects_what_zenoh_rejects() {
+        for bad in ["a*", "a/**b", "a/#", "a/?", "a/$x", "a//b", "a/", "@*"] {
+            assert!(compile(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn captures_must_be_whole_chunks() {
         for bad in [
-            "dev-{id}", "a/{x}b", "a*", "a/**b", "a/#", "a/?", "a/$x", "a//b", "a/", "@v$*", "@*",
+            "dev-{id}",
+            "a/{x}b",
+            "a/{x}{y}",
+            "a/{x}{y..}",
+            "{x}$*",
+            "@{x}",
         ] {
             assert!(compile(bad).is_err(), "{bad} should be refused");
         }
+    }
+
+    /// Zenoh accepts `@v$*`, but in a verbatim chunk `$*` is literal: it
+    /// matches only the key `@v$*`. Refused as a likely mistake.
+    #[test]
+    fn rejects_wildcards_in_verbatim_chunks() {
+        assert!(compile("@v$*").is_err());
     }
 
     #[test]
@@ -386,6 +415,18 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_keys_match_nothing() {
+        for (pattern, key) in [
+            ("aimdb/{cell}/state", "aimdb/*/state"),
+            ("aimdb/{rest..}", "aimdb/**"),
+            ("{x}", "c$*"),
+            ("**", "a/*"),
+        ] {
+            assert_eq!(captures(pattern, key), None, "{pattern} on {key}");
+        }
+    }
+
+    #[test]
     fn sub_chunk_wildcard_matches_any_run() {
         assert!(captures("a/x$*", "a/x").is_some());
         assert!(captures("a/x$*", "a/xyz").is_some());
@@ -409,6 +450,9 @@ mod tests {
         assert!(!g.covers("**", "@ros2_lv/0"));
         assert!(!g.covers("*", "@v"));
         assert!(g.covers("@ros2_lv/**", "@ros2_lv/0/x"));
-        assert!(!g.covers("x$*", "x$*y"), "conservative for two `$*` chunks");
+        assert!(g.covers("x$*", "x$*y"));
+        assert!(g.covers("$*a$*", "a$*b"));
+        assert!(!g.covers("x$*y", "x$*"));
+        assert!(!g.covers("$*ab$*", "$*a$*b$*"), "`b` also matches `axb`");
     }
 }
