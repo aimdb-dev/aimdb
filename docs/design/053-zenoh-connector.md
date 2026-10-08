@@ -1019,12 +1019,21 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
 - **[verified]** `session.liveliness().declare_token(..)` and the put
   builder's `.attachment(..)` exist in `zenoh` 1.8.0 (`api/liveliness.rs:114`,
   `api/builders/sample.rs:56`).
-- **Session.** The session task opens the session, retrying every 5 s while
-  no router answers (client mode gives up at once otherwise). From then on
-  Zenoh reconnects and re-declares subscribers, publishers and tokens itself.
-  Every fixed outbound key is validated at `build()` and declared as a
-  publisher; a key written by a topic writer is checked per message and put
-  through the session.
+- **Session.** The session task opens the session, retrying with a back-off
+  from 1 s to 30 s while no router answers (client mode gives up at once
+  otherwise). From then on Zenoh reconnects and re-declares subscribers,
+  publishers and tokens itself. Every fixed outbound key is validated at
+  `build()` and declared as a publisher; a key written by a topic writer is
+  checked per message and put through the session.
+- **Remote only.** Subscribers set `allowed_origin(Locality::Remote)` and
+  every publication `allowed_destination(Locality::Remote)`. Zenoh's default,
+  `Any`, delivers a `put` to the same session's subscribers: a record linked
+  to and from one key then ingested its own publications in a loop, and an
+  inbound link saw the database's own writes. Two records of one database
+  therefore cannot exchange values through a Zenoh key; a transform does that.
+- **Deletes are ignored.** A remote `delete()` arrives as an empty sample; a
+  record has nothing to remove, so the callback drops it instead of handing
+  the deserializer zero bytes.
 - **Data path.** The session task pulls with `OutboundRoutes::next()` and
   calls `put`, whose payload is an owned `ZBytes`: an `Owned` payload moves
   in, a `Borrowed` one is copied, as in MQTT's native backend (054 §4.7). A

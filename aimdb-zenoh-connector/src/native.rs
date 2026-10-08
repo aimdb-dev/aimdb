@@ -16,13 +16,16 @@ use aimdb_core::{
 };
 use zenoh::key_expr::{keyexpr, KeyExpr};
 use zenoh::pubsub::Publisher;
+use zenoh::sample::{Locality, SampleKind};
 use zenoh::Session;
 
 use crate::connector::{BoxFuture, BuildFuture};
 use crate::{ZenohGrammar, SCHEME};
 
-/// Wait between attempts to open the session while no router answers.
-const OPEN_RETRY: Duration = Duration::from_secs(5);
+/// The first wait before retrying to open the session; it doubles up to
+/// [`OPEN_RETRY_MAX`] while no router answers.
+const OPEN_RETRY: Duration = Duration::from_secs(1);
+const OPEN_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// Validate every route and return the session task.
 pub(crate) fn build<'a>(
@@ -118,6 +121,11 @@ fn subscriptions(
 /// Open the session, subscribe, then publish until every outbound route has
 /// closed. Zenoh reconnects and re-declares on its own once the session is
 /// open.
+///
+/// Subscribers and publishers are remote-only: a `put` never reaches this
+/// session's own subscribers. Otherwise a record linked to and from one key
+/// would ingest its own publications in a loop, and an inbound link would see
+/// the database's own writes.
 async fn run(
     config: zenoh::Config,
     inbound: InboundDispatch,
@@ -125,12 +133,18 @@ async fn run(
     mut outbound: OutboundRoutes,
     keys: Vec<KeyExpr<'static>>,
 ) {
+    let mut wait = OPEN_RETRY;
     let session = loop {
         match zenoh::open(config.clone()).await {
             Ok(session) => break session,
             Err(_e) => {
-                log_error!("Zenoh: cannot open the session: {}", _e);
-                tokio::time::sleep(OPEN_RETRY).await;
+                log_warn!(
+                    "Zenoh: cannot open the session, retrying in {:?}: {}",
+                    wait,
+                    _e
+                );
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(OPEN_RETRY_MAX);
             }
         }
     };
@@ -139,7 +153,11 @@ async fn run(
     let _subscribers = subscribe(&session, &inbound, filters).await;
     let mut publishers: Vec<Option<Publisher<'static>>> = Vec::with_capacity(keys.len());
     for key in keys {
-        match session.declare_publisher(key).await {
+        match session
+            .declare_publisher(key)
+            .allowed_destination(Locality::Remote)
+            .await
+        {
             Ok(publisher) => publishers.push(Some(publisher)),
             Err(_e) => {
                 log_error!("Zenoh: cannot declare a publisher: {}", _e);
@@ -154,7 +172,12 @@ async fn run(
         let result = match (&publishers[id], written) {
             (Some(publisher), false) => publisher.put(msg.payload.into_vec()).await,
             _ => match written_key(msg.topic) {
-                Some(key) => session.put(key, msg.payload.into_vec()).await,
+                Some(key) => {
+                    session
+                        .put(key, msg.payload.into_vec())
+                        .allowed_destination(Locality::Remote)
+                        .await
+                }
                 None => {
                     log_error!("Zenoh: '{}' is not a key without wildcards", msg.topic);
                     outbound.reject(id);
@@ -184,25 +207,31 @@ fn written_key(topic: &str) -> Option<&keyexpr> {
 
 /// One subscriber per filter. A sample matching several filters reaches
 /// each subscriber; only the first one dispatches it, so every route sees it
-/// once. A sample on a wildcard key is dropped (`ZenohGrammar`).
+/// once. A sample on a wildcard key is dropped (`ZenohGrammar`), and so is a
+/// delete: a record has no value to remove.
 async fn subscribe(
     session: &Session,
     inbound: &InboundDispatch,
     filters: Vec<(KeyExpr<'static>, Box<dyn TopicFilter>)>,
 ) -> Vec<zenoh::pubsub::Subscriber<()>> {
-    let (keys, compiled): (Vec<_>, Vec<_>) = filters.into_iter().unzip();
-    let compiled: Arc<[Box<dyn TopicFilter>]> = compiled.into();
     let warned = Arc::new(AtomicBool::new(false));
-
-    let mut subscribers = Vec::with_capacity(keys.len());
-    for (i, key) in keys.into_iter().enumerate() {
+    // The filters of the subscribers declared so far: a later subscriber
+    // defers to these only, so a failed declaration suppresses nothing.
+    let mut earlier: Vec<Arc<dyn TopicFilter>> = Vec::with_capacity(filters.len());
+    let mut subscribers = Vec::with_capacity(filters.len());
+    for (key, compiled) in filters {
         let inbound = inbound.clone();
-        let compiled = compiled.clone();
+        let shadows: Arc<[Arc<dyn TopicFilter>]> = earlier.clone().into();
         let warned = warned.clone();
         let declared = session
             .declare_subscriber(key)
+            .allowed_origin(Locality::Remote)
             .callback(move |sample| {
                 let key = sample.key_expr().as_str();
+                if sample.kind() == SampleKind::Delete {
+                    log_debug!("Zenoh: ignored a delete on '{}'", key);
+                    return;
+                }
                 if key.contains('*') {
                     if !warned.swap(true, Ordering::Relaxed) {
                         log_warn!("Zenoh: dropping samples on wildcard keys, first '{}'", key);
@@ -211,14 +240,17 @@ async fn subscribe(
                     return;
                 }
                 let mut spans = [(0, 0); MAX_CAPTURES];
-                if compiled[..i].iter().any(|f| f.matches(key, &mut spans)) {
+                if shadows.iter().any(|f| f.matches(key, &mut spans)) {
                     return;
                 }
                 inbound.dispatch(key, &sample.payload().to_bytes());
             })
             .await;
         match declared {
-            Ok(subscriber) => subscribers.push(subscriber),
+            Ok(subscriber) => {
+                subscribers.push(subscriber);
+                earlier.push(Arc::from(compiled));
+            }
             Err(_e) => log_error!("Zenoh: cannot declare a subscriber: {}", _e),
         }
     }

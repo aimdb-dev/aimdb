@@ -313,3 +313,118 @@ async fn the_connector_waits_for_a_router_that_starts_later() {
         );
     }
 }
+
+/// A record linked to and from one key ingests no publication of its own:
+/// without remote-only locality, one value looped through the session
+/// hundreds of thousands of times a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_linked_both_ways_does_not_ingest_its_own_puts() {
+    let endpoint = format!("tcp/127.0.0.1:{}", free_port());
+    let _router = router(&endpoint).await;
+    let remote = client(&endpoint).await;
+    let echoes = remote.declare_subscriber("aimdb/mirror").await.unwrap();
+    let ingested = Arc::new(AtomicUsize::new(0));
+    let i = ingested.clone();
+    let (db, runner) = build(&endpoint, move |b| {
+        b.configure::<u32>("mirror", move |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+                .link_to("zenoh://aimdb/mirror")
+                .with_serializer(le)
+                .finish()
+                .link_from("zenoh://aimdb/mirror")
+                .with_deserializer(move |_ctx, bytes: &[u8]| {
+                    i.fetch_add(1, Ordering::SeqCst);
+                    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| "4 bytes")?))
+                })
+                .finish();
+        });
+    })
+    .await;
+    tokio::spawn(runner.run());
+
+    // Local values reach the remote side and never come back in.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let mut produced = 0u32;
+    loop {
+        db.produce("mirror", produced).unwrap();
+        produced += 1;
+        if let Ok(Ok(_)) =
+            tokio::time::timeout(Duration::from_millis(200), echoes.recv_async()).await
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no outbound sample");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(ingested.load(Ordering::SeqCst), 0, "own puts ingested");
+    while echoes.try_recv().ok().flatten().is_some() {}
+
+    // A remote value is ingested once, published back out once, and stops.
+    remote
+        .put("aimdb/mirror", 42u32.to_le_bytes().to_vec())
+        .await
+        .unwrap();
+    eventually("remote value ingested", || {
+        ingested.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        ingested.load(Ordering::SeqCst),
+        1,
+        "re-ingested its own echo"
+    );
+    let mut echoed = 0;
+    while echoes.try_recv().ok().flatten().is_some() {
+        echoed += 1;
+    }
+    // The remote put itself, plus the record's one echo of it.
+    assert!(echoed <= 2, "{echoed} samples after one remote put");
+}
+
+/// A remote `delete()` is not a value: it never reaches the deserializer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remote_delete_is_not_ingested() {
+    let endpoint = format!("tcp/127.0.0.1:{}", free_port());
+    let _router = router(&endpoint).await;
+    let remote = client(&endpoint).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let (_db, runner) = build(&endpoint, move |b| {
+        b.configure::<u32>("deleted", move |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_from("zenoh://aimdb/deleted")
+                .with_deserializer(move |_ctx, _bytes: &[u8]| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(0)
+                })
+                .finish();
+        });
+    })
+    .await;
+    tokio::spawn(runner.run());
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while calls.load(Ordering::SeqCst) == 0 {
+        remote.put("aimdb/deleted", "x").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "subscriber never ready"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = calls.load(Ordering::SeqCst);
+    remote.delete("aimdb/deleted").await.unwrap();
+    remote.put("aimdb/deleted", "after").await.unwrap();
+    eventually("the put after the delete", || {
+        calls.load(Ordering::SeqCst) > before
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        before + 1,
+        "the delete reached the deserializer"
+    );
+}
