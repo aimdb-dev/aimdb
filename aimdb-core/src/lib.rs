@@ -163,7 +163,7 @@ pub use connector::{IngestFactoryFn, IngestFn};
 pub use connector::{TopicBuf, TopicOverflow, TopicWriter};
 
 // Router exports for connector implementations
-pub use inbound_dispatch::InboundDispatch;
+pub use inbound_dispatch::{InboundDispatch, InboundRouteInfo};
 pub use outbound::{
     OutboundMessage, OutboundPayload, OutboundRoutes, RouteId, RouteInfo, RouteStats,
 };

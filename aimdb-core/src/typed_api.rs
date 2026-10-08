@@ -824,8 +824,7 @@ where
     ///
     /// `capacity` is the longest topic the writer produces, in bytes. A value
     /// whose topic does not fit is skipped and logged. For a closure, use
-    /// [`with_topic_fn`](Self::with_topic_fn). Recorded in the link config as
-    /// [`TOPIC_WRITER_KEY`](crate::connector::TOPIC_WRITER_KEY).
+    /// [`with_topic_fn`](Self::with_topic_fn).
     pub fn with_topic_writer<W>(mut self, capacity: usize, writer: W) -> Self
     where
         W: crate::connector::TopicWriter<T> + 'static,
@@ -949,8 +948,6 @@ where
             self.registrar.last_stage = Some((StageKind::Link, 0));
         }
 
-        let has_topic_writer = self.topic_writer.is_some();
-
         // Resolves the record and builds a `Consumer<T>` bound to its buffer
         // handle, once per route (not per message) — same pattern as the
         // build-time path in `TypedRecord::collect_consumer_futures`.
@@ -1012,12 +1009,6 @@ where
 
         let mut link = ConnectorLink::new(url, route_factory);
         link.config = self.config;
-        if has_topic_writer {
-            link.config.push((
-                crate::connector::TOPIC_WRITER_KEY.to_string(),
-                "true".to_string(),
-            ));
-        }
 
         // Routes are built later, when a connector builds its `OutboundRoutes`.
         self.registrar.rec.add_outbound_connector(link);
@@ -2557,34 +2548,68 @@ mod tests {
         assert!(!has_format(&inbound[1].config));
     }
 
-    #[test]
-    fn topic_writer_is_recorded_in_link_config() {
-        use crate::connector::TOPIC_WRITER_KEY;
+    /// Connectors read each route's record type and options from its info;
+    /// a topic writer shows as a non-zero `topic_capacity`.
+    #[tokio::test]
+    async fn route_infos_carry_type_config_and_resolved_topic() {
+        use core::any::TypeId;
 
-        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
-        rec.set_buffer(Box::new(MockBuffer));
-        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
-            vec![Box::new(MockConnectorBuilder {
-                scheme: "mqtt".to_string(),
-            })];
-        let extensions = crate::extensions::Extensions::new();
-        let mut reg = make_registrar(&mut rec, &builders, &extensions);
-
-        reg.link_to("mqtt://with")
-            .with_topic_fn(8, |_v, _out| Ok(false))
-            .with_serializer(|_ctx, _r: &TestRecord| Ok(vec![]))
-            .finish();
-        reg.link_to("mqtt://without")
-            .with_serializer(|_ctx, _r: &TestRecord| Ok(vec![]))
-            .finish();
-
-        let outbound = rec.outbound_connectors();
-        assert!(outbound[0]
-            .config
-            .contains(&(TOPIC_WRITER_KEY.to_string(), "true".to_string())));
-        assert!(!outbound[1]
-            .config
+        let (_db, outbound) = outbound(
+            || values(&[]),
+            |reg| {
+                reg.link_to("mqtt://tele/fixed")
+                    .with_serializer(le)
+                    .with_config("qos", "1")
+                    .finish();
+                reg.link_to("mqtt://tele/written")
+                    .with_topic_fn(16, |_v, _out| Ok(false))
+                    .with_serializer(le)
+                    .finish();
+            },
+        )
+        .await;
+        let routes = outbound.routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes
             .iter()
-            .any(|(k, _)| k == TOPIC_WRITER_KEY));
+            .all(|r| r.type_id == TypeId::of::<TestRecord>()));
+        assert_eq!(
+            routes[0].config.protocol_options,
+            vec![("qos".to_string(), "1".to_string())]
+        );
+        assert_eq!(routes[0].topic_capacity, 0);
+        assert_eq!(routes[1].topic_capacity, 16);
+
+        let resolved = Arc::new(AtomicUsize::new(0));
+        let calls = resolved.clone();
+        let (db, _last, _count) = inbound_db(move |reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_topic_resolver(move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Some("cmd/resolved".to_string())
+                })
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_config("qos", "2")
+                .finish();
+            reg.link_from("mqtt://dev/{id}")
+                .with_match_deserializer(key_deser)
+                .finish();
+        })
+        .await;
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(resolved.load(Ordering::SeqCst), 1, "resolved once");
+
+        let infos = inbound.routes();
+        assert_eq!(infos.len(), inbound.route_count());
+        let topics: Vec<&str> = infos.iter().map(|i| &*i.topic).collect();
+        assert_eq!(topics, ["cmd/resolved", "dev/{id}"]);
+        assert!(infos
+            .iter()
+            .all(|i| i.type_id == TypeId::of::<TestRecord>()));
+        assert!(infos.iter().all(|i| i.config.record_index == Some(0)));
+        assert_eq!(
+            infos[0].config.protocol_options,
+            vec![("qos".to_string(), "2".to_string())]
+        );
     }
 }

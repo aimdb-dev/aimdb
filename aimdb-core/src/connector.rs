@@ -413,9 +413,6 @@ impl fmt::Display for ConnectorUrl {
 /// Keys prefixed `aimdb.` are reserved; connectors must not use them.
 pub const WIRE_FORMAT_KEY: &str = "aimdb.wire_format";
 
-/// Link config key set to `"true"` on outbound links with a topic writer.
-pub const TOPIC_WRITER_KEY: &str = "aimdb.topic_writer";
-
 /// Configuration for an outbound connector link
 ///
 /// Stores the parsed URL, configuration, and the route factory until the
