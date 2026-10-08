@@ -25,6 +25,8 @@ linkable-json = ["linkable", "serde_json", "dep:aimdb-derive"]
 # stays optional and no_std-compatible; `alloc` supplies the correctness
 # fallback for values larger than the preferred route buffer.
 linkable-postcard = ["linkable", "dep:postcard"]
+# ROS 2 message identity (`RosMessage`) for `ros2://` links.
+ros2 = ["linkable"]
 # Dev-tier — never a default feature. The ext trait needs core's registrar,
 # same coupling `observable` has. `rand` is the tracer CI uses to prove a
 # production graph is sim-free (`make check-no-sim`).
