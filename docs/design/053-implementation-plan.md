@@ -45,10 +45,10 @@ These stages ship v1's ROS feature.
 
 | # | Branch | Scope | Done when |
 |---|---|---|---|
-| s08 | `native-zenoh` | `Shared` and `ZenohConnector` on the `zenoh` crate, `zenoh://` only: build-time slots, session task, `put`, subscriptions, `dispatch` (053 §4.7, §5.1) | End-to-end half of criterion 11 against an in-process Zenoh peer; `ZenohConnector` works alone |
+| s08 | `native-zenoh` | `ZenohConnector` on the `zenoh` crate, `zenoh://` only: session task, `put`, subscriptions, `dispatch` (053 §5.1) | End-to-end half of criterion 11 against an in-process Zenoh peer; `ZenohConnector` works alone |
 | s09 | `ros2-outbound` | `Ros2Connector`, registry, `Ros2Node`, domain resolution, `Ros2LinkExt`; outbound `ros2://` with node and publisher tokens, attachment, GID and sequence number | Criterion 9's `register` bound row (trybuild) and outbound build-time rows; domain-precedence tests |
 | s10 | `ros2-inbound` | Inbound `ros2://`: one subscriber per topic, subscriber tokens, dispatch under the link topic; refusals for patterns and for two types on one topic | Criterion 9's remaining rows; custom-serializer warning tests |
-| s11 | `shared-session` | `zenoh.ros2(..)` on one session: one-shot session task; a view never registered leaves an empty slot | Criterion 8 |
+| s11 | `shared-session` | `Shared` and `zenoh.ros2(..)` on one session: build-time slots, one-shot session task; a view never registered leaves an empty slot (053 §4.7) | Criterion 8 |
 | s12 | `interop-ci` | Docker interop job (`ros:lyrical` + rmw_zenoh); golden values captured from a real rmw_zenoh. Checkpoint with one CI run | Criteria 1 and 2 |
 
 ### Embedded backend
@@ -63,23 +63,28 @@ These stages ship v1's ROS feature.
 ## Notes for s08
 
 From the review of `ZenohGrammar` (PR #307), checked against a live
-zenoh 1.10.1 session:
+zenoh 1.10.1 session. Each is resolved in s08, as the last sentence says.
 
 - **Wildcard-keyed samples.** A `put` on `a/*` reaches every intersecting
   subscriber with `a/*` as its key. The grammar already makes such keys match
   no route; 053 §4.3 also promises a counter. Core has no inbound route
   statistics (`RouteStats` is outbound only), so s08 decides where it lives.
+  *Resolved:* logged, the first at `warn` and each at `debug`; a count waits
+  for inbound statistics in core.
 - **Declare subscribers with `filter()`,** which is already canonical, through
   `keyexpr::new` / `KeyExpr::try_from`. Never run a raw pattern through
   `autocanonize`: in zenoh-keyexpr 1.10.1 it panics on `a$*$*` and turns
-  `a$*$*$*` into an invalid `a$*$*`.
+  `a$*$*$*` into an invalid `a$*$*`. *Resolved:* `KeyExpr::try_from` on
+  `subscriptions()`.
 - **Partly overlapping filters** (`a/*/c` with `a/b/*`) still deliver a sample
   once per subscriber, 055 §5.7's known difference. A possible fix: subscriber
   `i`'s callback dispatches only if no earlier subscription `j < i` also
   matches the key, using `ZenohGrammar` on the subscription strings. This is
-  the same idea as MQTT 5's subscription identifiers.
+  the same idea as MQTT 5's subscription identifiers. *Resolved:* done;
+  `every_route_ingests_a_sample_once` fails without it (`[1, 1, 2, 2]`).
 - **Criterion 11 needs a real session.** `tests/inbound_routes.rs` emulates
-  Zenoh's delivery; s08 adds the same cases over a live peer.
+  Zenoh's delivery; s08 adds the same cases over a live peer. *Resolved:*
+  `tests/native_session.rs`, against an in-process router.
 
 ## Dependencies
 

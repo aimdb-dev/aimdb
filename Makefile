@@ -33,6 +33,8 @@ MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell
 MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
 # The `zenoh` crate (not `zenoh-nostd`/`zenoh-keyexpr`) and tokio are std-only.
 ZENOH_EMBEDDED_FORBIDDEN := (^|[^-])zenoh v[0-9]|tokio
+# `cargo deny check` sees default features only, which leave `zenoh` out.
+ZENOH_DENY := cargo deny --features "std,transport-tls,transport-quic,transport-ws" --manifest-path aimdb-zenoh-connector/Cargo.toml
 # The guards below grep `cargo tree`'s stdout only — never `2>&1`. Cargo writes
 # progress to stderr, so on a cold cache "Downloaded embedded-hal-nb v1.0.0"
 # matches these patterns and fails the build.
@@ -388,6 +390,7 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (std)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --features "std" --all-targets -- -D warnings
+	cargo clippy --package aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (embedded, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --no-default-features --features "embedded" --all-targets -- -D warnings
 	cargo clippy --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings
@@ -601,6 +604,17 @@ test-embedded:
 		printf '%s\n' "$$out" | grep -E '$(ZENOH_EMBEDDED_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ embedded Zenoh graph is free of the zenoh crate and tokio$(NC)\n"
+	@printf "$(YELLOW)  → Asserting the std Zenoh backend leaves transport compression off$(NC)\n"
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws" -e features -i zenoh-transport 2>$$err) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		cat $$err; rm -f $$err; exit 1; \
+	}; \
+	rm -f $$err; \
+	if printf '%s\n' "$$out" | grep -q 'zenoh-transport feature "transport_compression"'; then \
+		printf "$(RED)✗ zenoh transport compression is enabled; RUSTSEC-2026-0041 is ignored only because it is not$(NC)\n"; exit 1; \
+	fi
+	@printf "$(BLUE)✓ zenoh transport compression is off$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy bundle) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
@@ -685,6 +699,8 @@ deny:
 	@printf "$(YELLOW)  → Checking banned dependencies$(NC)\n"
 	@printf "$(YELLOW)  → Checking dependency sources$(NC)\n"
 	cargo deny check
+	@printf "$(YELLOW)  → Checking the Zenoh connector's std graph (not a default feature)$(NC)\n"
+	$(ZENOH_DENY) check
 
 audit:
 	@printf "$(GREEN)Auditing dependencies for vulnerabilities...$(NC)\n"
