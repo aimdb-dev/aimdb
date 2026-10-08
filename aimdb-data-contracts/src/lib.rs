@@ -91,6 +91,12 @@ pub use linkable::{LinkCodecRegistrarExt, LinkableRegistrarExt};
 #[cfg(feature = "linkable-json")]
 pub use aimdb_derive::Linkable;
 
+#[cfg(feature = "ros2")]
+mod ros_message;
+
+#[cfg(feature = "ros2")]
+pub use ros_message::{ros2, RosMessage, RosNameError};
+
 #[cfg(feature = "observable")]
 mod observable;
 
