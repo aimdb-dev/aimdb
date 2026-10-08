@@ -121,7 +121,10 @@ fn classify(text: &str) -> Result<Chunk, &'static str> {
         return Err("a verbatim '@' chunk cannot hold a wildcard");
     }
     let mut pieces: Vec<String> = text.split("$*").map(String::from).collect();
-    if pieces.iter().any(|p| p.contains(['*', '$'])) {
+    if pieces.iter().any(|p| p.contains('$')) {
+        return Err("'$' must be followed by '*'");
+    }
+    if pieces.iter().any(|p| p.contains('*')) {
         return Err("'*' and '**' must be whole chunks; inside a chunk use '$*'");
     }
     // `$*$*` is `$*`: drop the empty pieces between them.
@@ -368,6 +371,8 @@ mod tests {
         for bad in ["a*", "a/**b", "a/#", "a/?", "a/$x", "a//b", "a/", "@*"] {
             assert!(compile(bad).is_err(), "{bad} should be refused");
         }
+        let dollar = compile("a/$x").err().expect("refused");
+        assert!(dollar.contains("'$' must be followed by '*'"), "{dollar}");
     }
 
     #[test]
@@ -468,6 +473,8 @@ mod tests {
             .join("/");
         assert_eq!(captures("{a..}/x/{b..}/y/{c..}/z", &key), None);
         assert_eq!(captures("**/x/**/y/**/x/**/y/**/z", &key), None);
+        assert_eq!(captures("{a..}/{b..}/{c..}/z", &key), None);
+        assert_eq!(captures("**/x/**/z", &key), None);
         let last = captures("{a..}/x/{b..}", &key).expect("matches");
         assert_eq!((last[0].as_str(), last[1].len()), ("", key.len() - 2));
     }
