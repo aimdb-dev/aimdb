@@ -33,6 +33,8 @@ MQTT_EMBEDDED_FORBIDDEN := embassy-net|embassy-executor|embassy-time|static_cell
 MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
 # The `zenoh` crate (not `zenoh-nostd`/`zenoh-keyexpr`) and tokio are std-only.
 ZENOH_EMBEDDED_FORBIDDEN := (^|[^-])zenoh v[0-9]|tokio
+# `cargo deny check` sees default features only, which leave `zenoh` out.
+ZENOH_DENY := cargo deny --features "std,transport-tls,transport-quic,transport-ws" --manifest-path aimdb-zenoh-connector/Cargo.toml
 # The guards below grep `cargo tree`'s stdout only — never `2>&1`. Cargo writes
 # progress to stderr, so on a cold cache "Downloaded embedded-hal-nb v1.0.0"
 # matches these patterns and fails the build.
@@ -697,6 +699,8 @@ deny:
 	@printf "$(YELLOW)  → Checking banned dependencies$(NC)\n"
 	@printf "$(YELLOW)  → Checking dependency sources$(NC)\n"
 	cargo deny check
+	@printf "$(YELLOW)  → Checking the Zenoh connector's std graph (not a default feature)$(NC)\n"
+	$(ZENOH_DENY) check
 
 audit:
 	@printf "$(GREEN)Auditing dependencies for vulnerabilities...$(NC)\n"
