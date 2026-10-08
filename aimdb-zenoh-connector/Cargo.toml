@@ -22,6 +22,8 @@ embedded = ["aimdb-core/alloc"]
 
 [dependencies]
 aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+# XXH3-128 for rmw_zenoh GIDs; no_std.
+twox-hash = { version = "2", default-features = false, features = ["xxhash3_128"] }
 
 [dev-dependencies]
 # Reference matcher: oracle for `ZenohGrammar`'s matching and covering.

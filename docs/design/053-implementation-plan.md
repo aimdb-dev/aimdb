@@ -37,7 +37,7 @@ Already on the feature branch: `aimdb-cdr`, `WireFormat` on `Linkable` and
 | # | Branch | Scope | Done when |
 |---|---|---|---|
 | s06 | `spike` | Answer S2 (wire compatibility with the 1.8 and 1.10.1 routers) and S6 (`put` while `session.run()` is pending). Results go into 053 as rev 10; spike code stays out of the tree | 053 §10 answers S2 and S6. Needs Docker with ROS and rmw_zenoh |
-| s07 | `profile` | `profile/`: data keys, liveliness tokens, name mangling, QoS strings, GID, attachment, name validator (053 §3) | Criterion 1 against `hiroz-protocol`; real captures follow in s12 |
+| s07 | `profile` | `profile/`: data keys, liveliness tokens, name mangling, QoS strings, GID, attachment, name validator (053 §3) | Criterion 1, against values captured from rmw_zenoh on Jazzy and Lyrical |
 
 ### Native backend
 
@@ -100,7 +100,7 @@ zenoh 1.10.1 session:
 | s16 | s12; s15 once the embedded backend ships |
 
 - s01–s03 and s04–s05 do not touch each other and can run side by side.
-- s07 does not wait for the spike; it is checked against `hiroz-protocol`.
+- s07 is checked against captures from live rmw_zenoh nodes, not `hiroz-protocol`.
 - Q7 (053 §10) is answered: no fork. s13–s15 wait for a zenoh-nostd
   release on crates.io; until then the feature branch can merge into `main`
   with the native backend only.
