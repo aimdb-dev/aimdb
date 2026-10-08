@@ -238,49 +238,41 @@ fn chunk_at(topic: &str, at: usize) -> (&str, Option<usize>) {
 }
 
 impl ZenohFilter {
-    /// Matches `chunks[from..]` against the topic from byte `at` (`None`: the
-    /// topic is used up), backtracking over `**`.
-    fn matches_from(&self, from: usize, topic: &str, at: Option<usize>, spans: &mut Spans) -> bool {
-        // The router never passes more than `u16::MAX` bytes.
-        let span = |start: usize, end: usize| (start as u16, end as u16);
-        let Some(chunk) = self.chunks.get(from) else {
-            return at.is_none();
-        };
-
-        if let Chunk::Multi(capture) = chunk {
-            let start = at.unwrap_or(topic.len());
-            let (mut end, mut next) = (start, at);
-            loop {
-                if let Some(n) = capture {
-                    spans[*n] = span(start, end);
+    /// Matches `segment`, which holds no `**`, chunk by chunk from byte `at`
+    /// (`None`: the topic is used up). Returns where the topic continues, or
+    /// `None` if the segment does not fit there.
+    fn segment_at(
+        segment: &[Chunk],
+        topic: &str,
+        mut at: Option<usize>,
+        spans: &mut Spans,
+    ) -> Option<Option<usize>> {
+        for chunk in segment {
+            let here = at?;
+            let (text, after) = chunk_at(topic, here);
+            let fits = match chunk {
+                Chunk::Literal(literal) => literal == text,
+                Chunk::Single(capture) => {
+                    if let Some(n) = capture {
+                        spans[*n] = span(here, here + text.len());
+                    }
+                    !text.starts_with('@')
                 }
-                if self.matches_from(from + 1, topic, next, spans) {
-                    return true;
-                }
-                let Some(here) = next else { return false };
-                let (text, after) = chunk_at(topic, here);
-                if text.starts_with('@') {
-                    return false;
-                }
-                (end, next) = (here + text.len(), after);
+                Chunk::Glob(pieces) => !text.starts_with('@') && glob_matches(pieces, text),
+                Chunk::Multi(_) => false,
+            };
+            if !fits {
+                return None;
             }
+            at = after;
         }
-
-        let Some(here) = at else { return false };
-        let (text, after) = chunk_at(topic, here);
-        let fits = match chunk {
-            Chunk::Literal(literal) => literal == text,
-            Chunk::Single(capture) => {
-                if let Some(n) = capture {
-                    spans[*n] = span(here, here + text.len());
-                }
-                !text.starts_with('@')
-            }
-            Chunk::Glob(pieces) => !text.starts_with('@') && glob_matches(pieces, text),
-            Chunk::Multi(_) => false,
-        };
-        fits && self.matches_from(from + 1, topic, after, spans)
+        Some(at)
     }
+}
+
+/// The router never passes more than `u16::MAX` bytes.
+fn span(start: usize, end: usize) -> (u16, u16) {
+    (start as u16, end as u16)
 }
 
 impl TopicFilter for ZenohFilter {
@@ -297,8 +289,48 @@ impl TopicFilter for ZenohFilter {
         if topic.contains('*') {
             return false;
         }
+        // The pattern is segments separated by `**`. Each `**` takes chunks
+        // until the next segment fits, so segments land as early as they can:
+        // linear in the topic, and the fewest chunks for each `{name..}` in
+        // order. A `**` cannot take a verbatim chunk.
+        let is_multi = |c: &Chunk| matches!(c, Chunk::Multi(_));
+        let mut segments = self.chunks.split(is_multi).peekable();
+        let mut multis = self.chunks.iter().filter_map(|c| match c {
+            Chunk::Multi(capture) => Some(*capture),
+            _ => None,
+        });
+
         let start = (!topic.is_empty()).then_some(0);
-        self.matches_from(0, topic, start, spans)
+        let first = segments.next().unwrap_or(&[]);
+        let Some(mut at) = Self::segment_at(first, topic, start, spans) else {
+            return false;
+        };
+        while let Some(segment) = segments.next() {
+            let capture = multis.next().flatten();
+            let last = segments.peek().is_none();
+            let gap_start = at.unwrap_or(topic.len());
+            let (mut gap_end, mut here) = (gap_start, at);
+            loop {
+                if let Some(n) = capture {
+                    spans[n] = span(gap_start, gap_end);
+                }
+                match Self::segment_at(segment, topic, here, spans) {
+                    // The last segment must also use up the topic.
+                    Some(after) if !last || after.is_none() => {
+                        at = after;
+                        break;
+                    }
+                    _ => {}
+                }
+                let Some(p) = here else { return false };
+                let (text, next) = chunk_at(topic, p);
+                if text.starts_with('@') {
+                    return false;
+                }
+                (gap_end, here) = (p + text.len(), next);
+            }
+        }
+        at.is_none()
     }
 }
 
@@ -424,6 +456,20 @@ mod tests {
         ] {
             assert_eq!(captures(pattern, key), None, "{pattern} on {key}");
         }
+    }
+
+    /// Keys come from remote publishers: a near-miss on a 64 KB key with
+    /// several `**` must cost linear time, not one pass per way to split it.
+    #[test]
+    fn long_keys_match_in_linear_time() {
+        let key = (0..32_000)
+            .map(|i| if i % 2 == 0 { "x" } else { "y" })
+            .collect::<Vec<_>>()
+            .join("/");
+        assert_eq!(captures("{a..}/x/{b..}/y/{c..}/z", &key), None);
+        assert_eq!(captures("**/x/**/y/**/x/**/y/**/z", &key), None);
+        let last = captures("{a..}/x/{b..}", &key).expect("matches");
+        assert_eq!((last[0].as_str(), last[1].len()), ("", key.len() - 2));
     }
 
     #[test]

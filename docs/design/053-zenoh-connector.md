@@ -429,7 +429,9 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
   every intersecting subscriber with `a/*` as its key, and `{cell}` would
   capture `*` and spend a key on it. The connector counts those samples so
   the drop is visible. **[verified]** on zenoh 1.10.1. Matching and `covers` are the connector's own
-  code, `no_std + alloc`, so both backends share them. `zenoh-keyexpr`'s
+  code, `no_std + alloc`, so both backends share them. Matching is linear in
+  the key and allocation-free, since keys come from remote publishers: each
+  `**` takes chunks only until the next segment fits. `zenoh-keyexpr`'s
   `includes` and `intersects` are the test oracle (§9), and `covers` equals
   `includes` on its corpus. **[checked]**: `zenoh-keyexpr` 1.10.1 is
   `no_std + alloc` without its default `std` feature, but it should not
