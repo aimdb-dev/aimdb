@@ -8,6 +8,16 @@
 //! - `std`: the `zenoh` crate backend, both schemes
 //! - `embedded`: the `zenoh-nostd` backend over a caller-supplied transport,
 //!   `zenoh://` only
+//! - `transport-tls`, `transport-quic`, `transport-ws`: further Zenoh
+//!   transports for the `std` backend
+//!
+//! ## Zenoh transport compression
+//!
+//! This crate never enables `zenoh`'s `transport_compression`. With it,
+//! zenoh 1.10.1 decompresses through `lz4_flex` 0.10.0, which has
+//! RUSTSEC-2026-0041 (eclipse-zenoh/zenoh#2589). An application whose own
+//! dependencies enable it, for example `zenoh` with default features,
+//! compiles that path in.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

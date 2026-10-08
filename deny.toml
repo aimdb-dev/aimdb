@@ -28,6 +28,7 @@ ignore = [
     "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
     "RUSTSEC-2026-0173", # TEMP: proc-macro-error2 unmaintained (transitive via defmt-macros/tabled_derive)
     "RUSTSEC-2024-0436", # paste unmaintained: proc-macro only, via zenoh-keyexpr/token-cell (zenoh connector)
+    "RUSTSEC-2026-0041", # lz4_flex decompression, via zenoh-transport: compiled only with transport_compression, which the zenoh connector never enables (see .cargo/audit.toml)
 ]
 
 [sources]

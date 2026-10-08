@@ -602,6 +602,17 @@ test-embedded:
 		printf '%s\n' "$$out" | grep -E '$(ZENOH_EMBEDDED_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ embedded Zenoh graph is free of the zenoh crate and tokio$(NC)\n"
+	@printf "$(YELLOW)  → Asserting the std Zenoh backend leaves transport compression off$(NC)\n"
+	@err=$$(mktemp); \
+	out=$$(cargo tree -p aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws" -e features -i zenoh-transport 2>$$err) || { \
+		printf "$(RED)✗ cargo tree failed — refusing to pass vacuously:$(NC)\n"; \
+		cat $$err; rm -f $$err; exit 1; \
+	}; \
+	rm -f $$err; \
+	if printf '%s\n' "$$out" | grep -q 'zenoh-transport feature "transport_compression"'; then \
+		printf "$(RED)✗ zenoh transport compression is enabled; RUSTSEC-2026-0041 is ignored only because it is not$(NC)\n"; exit 1; \
+	fi
+	@printf "$(BLUE)✓ zenoh transport compression is off$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy bundle) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-mqtt-connector (Embassy + defmt) on thumbv7em-none-eabihf target$(NC)\n"
