@@ -1,0 +1,5 @@
+error: package must be lowercase letters, digits and single underscores, starting with a letter and not ending with '_'
+ --> tests/compile-fail-ros/bad_package.rs:5:14
+  |
+5 | #[ros(type = "Std_msgs/msg/String", hash = "RIHS01_00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")]
+  |              ^^^^^^^^^^^^^^^^^^^^^

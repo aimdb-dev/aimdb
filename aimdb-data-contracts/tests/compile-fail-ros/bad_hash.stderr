@@ -1,0 +1,5 @@
+error: type hash must be 'RIHS01_' followed by 64 lowercase hex digits
+ --> tests/compile-fail-ros/bad_hash.rs:5:44
+  |
+5 | #[ros(type = "std_msgs/msg/String", hash = "RIHS01_ABC")]
+  |                                            ^^^^^^^^^^^^

@@ -23,7 +23,7 @@ Already on the feature branch: `aimdb-cdr`, `WireFormat` on `Linkable` and
 |---|---|---|---|
 | s01 | `ros-message` | `RosMessage` trait behind a new `ros2` feature in `aimdb-data-contracts`; the DDS type-name helper; type-name and hash validators that the registry reuses | Unit tests for name building and validation |
 | s02 | `cdr-codec` | `link_codecs::Cdr<N>` behind `linkable-cdr`, over `aimdb-cdr::to_slice`; records `cdr` as the wire format | Takes the bounded encode path; wire-format test |
-| s03 | `derive` | `#[derive(RosMessage)]`: `SchemaType`, CDR `Linkable` and `RosMessage`; validates `type` and `hash`; `encode_capacity` | Criterion 10; the two compile-time rows of criterion 9 (trybuild) |
+| s03 | `derive` | `#[derive(RosMessage)]`: `SchemaType`, CDR `Linkable` and `RosMessage`; validates `type` and `hash`; `encode_capacity`; `max_len` for bounded strings and sequences | Criterion 10; criterion 9's malformed-attribute row (trybuild) |
 
 ### Core and grammar
 
@@ -46,7 +46,7 @@ These stages ship v1's ROS feature.
 | # | Branch | Scope | Done when |
 |---|---|---|---|
 | s08 | `native-zenoh` | `Shared` and `ZenohConnector` on the `zenoh` crate, `zenoh://` only: build-time slots, session task, `put`, subscriptions, `dispatch` (053 §4.7, §5.1) | End-to-end half of criterion 11 against an in-process Zenoh peer; `ZenohConnector` works alone |
-| s09 | `ros2-outbound` | `Ros2Connector`, registry, `Ros2Node`, domain resolution, `Ros2LinkExt`; outbound `ros2://` with node and publisher tokens, attachment, GID and sequence number | Criterion 9's outbound build-time rows; domain-precedence tests |
+| s09 | `ros2-outbound` | `Ros2Connector`, registry, `Ros2Node`, domain resolution, `Ros2LinkExt`; outbound `ros2://` with node and publisher tokens, attachment, GID and sequence number | Criterion 9's `register` bound row (trybuild) and outbound build-time rows; domain-precedence tests |
 | s10 | `ros2-inbound` | Inbound `ros2://`: one subscriber per topic, subscriber tokens, dispatch under the link topic; refusals for patterns and for two types on one topic | Criterion 9's remaining rows; custom-serializer warning tests |
 | s11 | `shared-session` | `zenoh.ros2(..)` on one session: one-shot session task; a view never registered leaves an empty slot | Criterion 8 |
 | s12 | `interop-ci` | Docker interop job (`ros:lyrical` + rmw_zenoh); golden values captured from a real rmw_zenoh. Checkpoint with one CI run | Criteria 1 and 2 |

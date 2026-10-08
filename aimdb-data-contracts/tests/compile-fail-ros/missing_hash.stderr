@@ -1,0 +1,7 @@
+error: RosMessage needs #[ros(hash = "…")]
+ --> tests/compile-fail-ros/missing_hash.rs:4:34
+  |
+4 | #[derive(Serialize, Deserialize, RosMessage)]
+  |                                  ^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `RosMessage` (in Nightly builds, run with -Z macro-backtrace for more info)
