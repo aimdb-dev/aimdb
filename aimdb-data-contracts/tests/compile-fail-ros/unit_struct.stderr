@@ -1,0 +1,5 @@
+error: RosMessage needs a struct with named fields; for an empty message, add `structure_needs_at_least_one_member: u8` as ROS does
+ --> tests/compile-fail-ros/unit_struct.rs:6:8
+  |
+6 | struct Empty;
+  |        ^^^^^

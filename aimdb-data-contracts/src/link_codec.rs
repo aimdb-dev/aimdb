@@ -6,12 +6,13 @@
 //!
 //! ```rust,ignore
 //! use aimdb_data_contracts::{
-//!     link_codecs::{Json, Postcard},
+//!     link_codecs::{Cdr, Json, Postcard},
 //!     LinkCodecBuilderExt, LinkCodecRegistrarExt,
 //! };
 //!
 //! registrar.linked_to_with("serial://mcu/reading", Postcard::<128>);
 //! registrar.linked_to_with("mqtt://cloud/reading", Json);
+//! registrar.linked_to_with("zenoh://cell/reading", Cdr::<128>);
 //! registrar
 //!     .link_to("mqtt://cloud/alerts")
 //!     .with_link_codec(Json)
@@ -20,13 +21,61 @@
 //! ```
 
 use alloc::string::String;
-#[cfg(any(feature = "linkable-json", feature = "linkable-postcard"))]
+#[cfg(any(
+    feature = "linkable-json",
+    feature = "linkable-postcard",
+    feature = "linkable-cdr"
+))]
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use aimdb_core::connector::SerializeError;
+use aimdb_core::connector::{SerializeError, WIRE_FORMAT_KEY};
 use aimdb_core::typed_api::{InboundConnectorBuilder, OutboundConnectorBuilder};
+
+/// The encoding a [`Linkable`](crate::Linkable) or [`LinkCodec`] speaks.
+///
+/// Codec verbs record it in the link config under
+/// [`WIRE_FORMAT_KEY`] so connectors can check it at build time.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireFormat {
+    /// Not declared; nothing is recorded.
+    Unspecified,
+    /// JSON.
+    Json,
+    /// Postcard.
+    Postcard,
+    /// OMG CDR (XCDR1) with encapsulation header, as used by ROS 2.
+    Cdr,
+}
+
+impl WireFormat {
+    /// The value recorded under [`WIRE_FORMAT_KEY`]; `None` for `Unspecified`.
+    pub const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Unspecified => None,
+            Self::Json => Some("json"),
+            Self::Postcard => Some("postcard"),
+            Self::Cdr => Some("cdr"),
+        }
+    }
+
+    /// Reads the format recorded in a link config; `Unspecified` if absent or
+    /// unknown.
+    pub fn recorded_in(config: &[(String, String)]) -> Self {
+        let value = config
+            .iter()
+            .find(|(key, _)| key == WIRE_FORMAT_KEY)
+            .map(|(_, value)| value.as_str());
+        match value {
+            Some("json") => Self::Json,
+            Some("postcard") => Self::Postcard,
+            Some("cdr") => Self::Cdr,
+            _ => Self::Unspecified,
+        }
+    }
+}
 
 /// A wire codec selected for one inbound or outbound record link.
 ///
@@ -46,6 +95,9 @@ pub trait LinkCodec<T>: Clone + Send + Sync + 'static {
     /// `None` keeps the route on owned serialization. `Some(n)` installs the
     /// scratch serializer alongside the mandatory owned fallback.
     const ENCODE_BUFFER_CAPACITY: Option<usize> = None;
+
+    /// What this codec puts on the wire, recorded on each link it is installed on.
+    const WIRE_FORMAT: WireFormat = WireFormat::Unspecified;
 
     /// Decode one connector payload into a record.
     fn decode(&self, bytes: &[u8]) -> Result<T, String>;
@@ -84,6 +136,14 @@ pub mod link_codecs {
     #[cfg(feature = "linkable-postcard")]
     #[derive(Clone, Copy, Debug, Default)]
     pub struct Postcard<const N: usize = 256>;
+
+    /// Little-endian CDR (XCDR1) with its encapsulation header, as ROS 2
+    /// sends it, with a route-local reusable scratch capacity.
+    ///
+    /// Decoding accepts both byte orders.
+    #[cfg(feature = "linkable-cdr")]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Cdr<const N: usize = 256>;
 }
 
 impl<T> LinkCodec<T> for link_codecs::Default
@@ -91,6 +151,7 @@ where
     T: crate::Linkable,
 {
     const ENCODE_BUFFER_CAPACITY: Option<usize> = T::ENCODE_BUFFER_CAPACITY;
+    const WIRE_FORMAT: WireFormat = T::WIRE_FORMAT;
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         T::from_bytes(bytes)
@@ -110,6 +171,8 @@ impl<T> LinkCodec<T> for link_codecs::Json
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
+    const WIRE_FORMAT: WireFormat = WireFormat::Json;
+
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
@@ -134,6 +197,7 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
     const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(N);
+    const WIRE_FORMAT: WireFormat = WireFormat::Postcard;
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         postcard::from_bytes(bytes).map_err(|error| error.to_string())
@@ -152,6 +216,31 @@ where
     }
 }
 
+#[cfg(feature = "linkable-cdr")]
+impl<T, const N: usize> LinkCodec<T> for link_codecs::Cdr<N>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    const ENCODE_BUFFER_CAPACITY: Option<usize> = Some(N);
+    const WIRE_FORMAT: WireFormat = WireFormat::Cdr;
+
+    fn decode(&self, bytes: &[u8]) -> Result<T, String> {
+        aimdb_cdr::from_bytes(bytes).map_err(|error| error.to_string())
+    }
+
+    fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
+        aimdb_cdr::to_vec(value).map_err(|_| SerializeError::InvalidData)
+    }
+
+    fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
+        match aimdb_cdr::to_slice(value, out) {
+            Ok(used) => Ok(used),
+            Err(aimdb_cdr::Error::BufferTooSmall) => Err(SerializeError::BufferTooSmall),
+            Err(_) => Err(SerializeError::InvalidData),
+        }
+    }
+}
+
 /// Selects a codec on an individual typed connector builder.
 ///
 /// The builder type is preserved, so connector-specific extension methods can
@@ -164,7 +253,8 @@ where
     ///
     /// Calling this method again replaces the complete codec strategy. In
     /// particular, an owned-only codec clears any scratch serializer installed
-    /// by an earlier bounded codec.
+    /// by an earlier bounded codec. The codec's [`WireFormat`] is recorded
+    /// under [`WIRE_FORMAT_KEY`].
     fn with_link_codec<C>(self, codec: C) -> Self
     where
         C: LinkCodec<T>;
@@ -178,7 +268,7 @@ where
     where
         C: LinkCodec<T>,
     {
-        match C::ENCODE_BUFFER_CAPACITY {
+        let builder = match C::ENCODE_BUFFER_CAPACITY {
             Some(capacity) => {
                 let scratch_codec = codec.clone();
                 self.with_serializer(move |_ctx, value| codec.encode(value))
@@ -189,6 +279,11 @@ where
             None => self
                 .with_serializer(move |_ctx, value| codec.encode(value))
                 .clear_serializer_into(),
+        };
+        // After the setters, which clear any earlier record.
+        match C::WIRE_FORMAT.as_str() {
+            Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
+            None => builder,
         }
     }
 }
@@ -201,7 +296,11 @@ where
     where
         C: LinkCodec<T>,
     {
-        self.with_deserializer(move |_ctx, bytes| codec.decode(bytes))
+        let builder = self.with_deserializer(move |_ctx, bytes| codec.decode(bytes));
+        match C::WIRE_FORMAT.as_str() {
+            Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
+            None => builder,
+        }
     }
 }
 
@@ -386,6 +485,62 @@ mod tests {
         );
         let malformed: Result<Reading, _> = codec.decode(&[]);
         assert!(malformed.is_err());
+    }
+
+    #[cfg(feature = "linkable-cdr")]
+    #[test]
+    fn cdr_codec_writes_header_and_handles_exact_and_undersized_buffers() {
+        let reading = Reading {
+            value: 1.5,
+            sequence: 0x0102_0304,
+        };
+        let codec = link_codecs::Cdr::<64>;
+        let owned = codec.encode(&reading).expect("CDR encode");
+        // Header, then `f32` and `u32` little-endian; both 4-aligned.
+        let mut expected = vec![0x00, 0x01, 0x00, 0x00];
+        expected.extend_from_slice(&1.5_f32.to_le_bytes());
+        expected.extend_from_slice(&0x0102_0304_u32.to_le_bytes());
+        assert_eq!(owned, expected);
+
+        let mut exact = vec![0_u8; owned.len()];
+        let written = codec
+            .encode_into(&reading, &mut exact)
+            .expect("exact CDR buffer");
+        assert_eq!(written, owned.len());
+        assert_eq!(exact, owned);
+        let decoded: Reading = codec.decode(&exact).expect("CDR decode");
+        assert_eq!(decoded, reading);
+
+        let mut small = vec![0_u8; owned.len() - 1];
+        assert_eq!(
+            codec.encode_into(&reading, &mut small),
+            Err(SerializeError::BufferTooSmall)
+        );
+        let bad_header: Result<Reading, _> = codec.decode(&[0x00, 0x07, 0x00, 0x00]);
+        assert!(bad_header.is_err());
+        assert_eq!(
+            <link_codecs::Cdr<64> as LinkCodec<Reading>>::ENCODE_BUFFER_CAPACITY,
+            Some(64)
+        );
+    }
+
+    #[cfg(feature = "linkable-cdr")]
+    #[test]
+    fn cdr_codec_decodes_big_endian() {
+        let mut big_endian = vec![0x00, 0x00, 0x00, 0x00];
+        big_endian.extend_from_slice(&1.5_f32.to_be_bytes());
+        big_endian.extend_from_slice(&7_u32.to_be_bytes());
+
+        let decoded: Reading = link_codecs::Cdr::<64>
+            .decode(&big_endian)
+            .expect("CDR_BE decode");
+        assert_eq!(
+            decoded,
+            Reading {
+                value: 1.5,
+                sequence: 7
+            }
+        );
     }
 
     /// A fresh reader replays one value. Separate route subscriptions receive
@@ -596,6 +751,138 @@ mod tests {
                 postcard_in.lock().expect("Postcard capture lock").as_ref(),
                 Some(&reading)
             );
+        });
+    }
+
+    #[test]
+    fn wire_format_round_trips_through_link_config() {
+        use super::WireFormat;
+        use aimdb_core::connector::WIRE_FORMAT_KEY;
+
+        for format in [WireFormat::Json, WireFormat::Postcard, WireFormat::Cdr] {
+            let config = vec![(
+                WIRE_FORMAT_KEY.to_string(),
+                format.as_str().expect("named format").to_string(),
+            )];
+            assert_eq!(WireFormat::recorded_in(&config), format);
+        }
+        assert_eq!(WireFormat::Unspecified.as_str(), None);
+        assert_eq!(WireFormat::recorded_in(&[]), WireFormat::Unspecified);
+        let unknown = vec![(WIRE_FORMAT_KEY.to_string(), "xml".to_string())];
+        assert_eq!(WireFormat::recorded_in(&unknown), WireFormat::Unspecified);
+    }
+
+    #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
+    #[test]
+    fn codec_verbs_record_the_last_codecs_wire_format() {
+        use super::WireFormat;
+        use crate::LinkableRegistrarExt;
+        use aimdb_core::connector::WIRE_FORMAT_KEY;
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new()
+                .runtime(Arc::new(NoopRuntimeOps))
+                .with_connector(NoopConnector);
+            builder.configure::<Reading>("reading.formats", |registrar| {
+                registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
+                registrar.linked_to_with("test://json", link_codecs::Json);
+                registrar.linked_to_with("test://postcard", link_codecs::Postcard::<64>);
+                // `Reading`'s own Linkable declares no format.
+                registrar.linked_to("test://default");
+                registrar
+                    .link_to("test://replaced")
+                    .with_link_codec(link_codecs::Postcard::<64>)
+                    .with_link_codec(link_codecs::Json)
+                    .finish();
+                registrar
+                    .link_to("test://custom-after-codec")
+                    .with_link_codec(link_codecs::Json)
+                    .with_serializer(|_ctx, _value| Ok(Vec::new()))
+                    .finish();
+            });
+            builder.configure::<Reading>("reading.formats.in", |registrar| {
+                registrar.buffer_raw(Box::new(CapturingBuffer {
+                    latest: Arc::new(std::sync::Mutex::new(None)),
+                }));
+                registrar.linked_from_with("test://json-in", link_codecs::Json);
+                registrar.linked_from("test://default-in");
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let format_of = |topic: &str, config: &[(String, String)]| {
+                let records = config
+                    .iter()
+                    .filter(|(key, _)| key == WIRE_FORMAT_KEY)
+                    .count();
+                (topic.to_string(), WireFormat::recorded_in(config), records)
+            };
+            let outbound = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let inbound = InboundDispatch::new(&db, "test", &aimdb_core::ExactGrammar)
+                .expect("inbound routes");
+            let mut formats: Vec<(String, WireFormat, usize)> = outbound
+                .routes()
+                .iter()
+                .map(|route| format_of(&route.default_topic, &route.config.protocol_options))
+                .chain(
+                    inbound
+                        .routes()
+                        .iter()
+                        .map(|route| format_of(&route.topic, &route.config.protocol_options)),
+                )
+                .collect();
+            formats.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let expected = [
+                ("custom-after-codec", WireFormat::Unspecified, 0),
+                ("default", WireFormat::Unspecified, 0),
+                ("default-in", WireFormat::Unspecified, 0),
+                ("json", WireFormat::Json, 1),
+                ("json-in", WireFormat::Json, 1),
+                ("postcard", WireFormat::Postcard, 1),
+                ("replaced", WireFormat::Json, 1),
+            ];
+            let actual: Vec<(&str, WireFormat, usize)> = formats
+                .iter()
+                .map(|(topic, format, n)| (topic.as_str(), *format, *n))
+                .collect();
+            assert_eq!(actual, expected);
+        });
+    }
+
+    #[cfg(all(
+        feature = "linkable-json",
+        feature = "linkable-postcard",
+        feature = "linkable-cdr"
+    ))]
+    #[test]
+    fn cdr_verb_records_cdr_and_takes_the_bounded_path() {
+        use super::WireFormat;
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new()
+                .runtime(Arc::new(NoopRuntimeOps))
+                .with_connector(NoopConnector);
+            builder.configure::<Reading>("reading.cdr", |registrar| {
+                registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
+                registrar.linked_to_with("test://cdr", link_codecs::Cdr::<64>);
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let routes = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let route = &routes.routes()[0];
+            assert_eq!(
+                WireFormat::recorded_in(&route.config.protocol_options),
+                WireFormat::Cdr
+            );
+            assert_eq!(route.payload_capacity, 64);
         });
     }
 }

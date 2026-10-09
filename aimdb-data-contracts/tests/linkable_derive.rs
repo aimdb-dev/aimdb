@@ -7,7 +7,7 @@
 
 #![cfg(feature = "linkable-json")]
 
-use aimdb_data_contracts::{Linkable, SchemaType};
+use aimdb_data_contracts::{link_codecs, LinkCodec, Linkable, SchemaType, WireFormat};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Linkable)]
@@ -46,4 +46,13 @@ fn parses_hand_written_json() {
 fn rejects_invalid_json() {
     let invalid = b"not valid json";
     assert!(DerivedTemperature::from_bytes(invalid).is_err());
+}
+
+#[test]
+fn declares_json_wire_format() {
+    assert_eq!(DerivedTemperature::WIRE_FORMAT, WireFormat::Json);
+    assert_eq!(
+        <link_codecs::Default as LinkCodec<DerivedTemperature>>::WIRE_FORMAT,
+        WireFormat::Json
+    );
 }

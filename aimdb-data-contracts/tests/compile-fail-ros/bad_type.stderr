@@ -1,0 +1,5 @@
+error: expected a ROS message type `pkg/msg/Name`
+ --> tests/compile-fail-ros/bad_type.rs:5:14
+  |
+5 | #[ros(type = "std_msgs/String", hash = "RIHS01_00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")]
+  |              ^^^^^^^^^^^^^^^^^

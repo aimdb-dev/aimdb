@@ -25,6 +25,10 @@ linkable-json = ["linkable", "serde_json", "dep:aimdb-derive"]
 # stays optional and no_std-compatible; `alloc` supplies the correctness
 # fallback for values larger than the preferred route buffer.
 linkable-postcard = ["linkable", "dep:postcard"]
+# OMG CDR (XCDR1), the ROS 2 wire format, with a bounded scratch capacity.
+linkable-cdr = ["linkable", "dep:aimdb-cdr"]
+# ROS 2 message identity (`RosMessage`) for `ros2://` links.
+ros2 = ["linkable-cdr", "dep:aimdb-derive"]
 # Dev-tier — never a default feature. The ext trait needs core's registrar,
 # same coupling `observable` has. `rand` is the tracer CI uses to prove a
 # production graph is sim-free (`make check-no-sim`).
@@ -41,6 +45,9 @@ serde_json = { workspace = true, optional = true }
 postcard = { version = "1.0", default-features = false, features = [
     "alloc",
 ], optional = true }
+aimdb-cdr = { version = "0.1.0", path = "../aimdb-cdr", optional = true, default-features = false, features = [
+    "alloc",
+] }
 
 # migration_chain! + #[derive(Linkable)] proc-macros (build-time only; no
 # target/runtime/no_std impact — see aimdb-derive). No cycle: aimdb-derive

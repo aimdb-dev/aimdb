@@ -1,0 +1,68 @@
+[package]
+name = "aimdb-zenoh-connector"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zenoh connector for AimDB, with an rmw_zenoh-compatible ROS 2 profile"
+keywords = ["zenoh", "ros2", "connector", "embedded", "aimdb"]
+categories = ["network-programming", "embedded", "asynchronous"]
+
+[features]
+default = ["aimdb-core/alloc"]
+# The `zenoh` crate backend: `zenoh://` and `ros2://`, over TCP and UDP.
+std = [
+    "aimdb-core/std",
+    "aimdb-core/alloc",
+    "dep:zenoh",
+    "dep:tokio",
+    "dep:aimdb-data-contracts",
+]
+# Further Zenoh transports for the `std` backend, for `with_zenoh_config`.
+transport-tls = ["std", "zenoh/transport_tls"]
+transport-quic = ["std", "zenoh/transport_quic"]
+transport-ws = ["std", "zenoh/transport_ws"]
+# Log through aimdb-core's facade.
+tracing = ["aimdb-core/tracing"]
+log = ["aimdb-core/log"]
+# Reserved for the `zenoh-nostd` backend (`zenoh://` only), once zenoh-nostd is
+# on crates.io; today the `no_std` parts such as `ZenohGrammar`.
+embedded = ["aimdb-core/alloc"]
+
+[dependencies]
+aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+zenoh = { version = "1.10.1", default-features = false, features = [
+    "transport_tcp",
+    "transport_udp",
+], optional = true }
+# The session task's retry wait; zenoh itself runs on tokio.
+tokio = { workspace = true, features = ["time"], optional = true }
+# `RosMessage` and the recorded wire format, for `ros2://` links.
+aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false, features = [
+    "ros2",
+], optional = true }
+# XXH3-128 for rmw_zenoh GIDs; no_std.
+twox-hash = { version = "2", default-features = false, features = ["xxhash3_128"] }
+
+[dev-dependencies]
+# Reference matcher: oracle for `ZenohGrammar`'s matching and covering.
+zenoh-keyexpr = "1.10.1"
+# `tests/inbound_routes.rs`: links through core's router on a real runtime.
+aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = ["tokio-runtime"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `tests/ros2_outbound.rs`: derived ROS types and a non-CDR codec.
+aimdb-data-contracts = { path = "../aimdb-data-contracts", features = ["ros2", "linkable-json"] }
+serde = { version = "1", features = ["derive"] }
+# The `register` bound, as a compile error.
+trybuild = "1.0"
+
+[[example]]
+name = "ros2_talker"
+required-features = ["std"]
+
+[[example]]
+name = "ros2_listener"
+required-features = ["std"]

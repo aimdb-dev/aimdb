@@ -1,0 +1,101 @@
+//! The QoS field of a liveliness token.
+
+use alloc::string::String;
+use core::fmt;
+
+/// rmw_zenoh's own default depth: a token leaves the depth empty for it.
+const RMW_ZENOH_DEFAULT_DEPTH: u32 = 42;
+
+/// The QoS a `ros2://` link advertises. Deadline, lifespan and liveliness
+/// always take the ROS defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Qos {
+    pub reliability: Reliability,
+    pub durability: Durability,
+    pub history: History,
+    pub depth: u32,
+}
+
+/// A `ros2://` link's advertised reliability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reliability {
+    /// `RELIABLE`, the default.
+    Reliable,
+    /// `BEST_EFFORT`.
+    BestEffort,
+}
+
+impl Reliability {
+    /// The link config value.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Reliable => "reliable",
+            Self::BestEffort => "best_effort",
+        }
+    }
+
+    /// The inverse of [`as_str`](Self::as_str).
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "reliable" => Some(Self::Reliable),
+            "best_effort" => Some(Self::BestEffort),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Durability {
+    Volatile,
+    TransientLocal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum History {
+    KeepLast,
+    KeepAll,
+}
+
+impl Default for Qos {
+    /// The rmw default profile, as a default-constructed `rclcpp` publisher
+    /// has it: `KEEP_LAST` 10, `RELIABLE`, `VOLATILE`.
+    fn default() -> Self {
+        Self {
+            reliability: Reliability::Reliable,
+            durability: Durability::Volatile,
+            history: History::KeepLast,
+            depth: 10,
+        }
+    }
+}
+
+impl Qos {
+    /// The token's QoS field; see the [`Display`](fmt::Display) impl.
+    pub(crate) fn encode(&self) -> String {
+        alloc::format!("{self}")
+    }
+}
+
+impl fmt::Display for Qos {
+    /// `<reliability>:<durability>:<history>,<depth>:<deadline>:<lifespan>:<liveliness>`,
+    /// each component empty when it equals rmw_zenoh's default.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reliability = match self.reliability {
+            Reliability::Reliable => "",
+            Reliability::BestEffort => "2",
+        };
+        let durability = match self.durability {
+            Durability::Volatile => "",
+            Durability::TransientLocal => "1",
+        };
+        let history = match self.history {
+            History::KeepLast => "",
+            History::KeepAll => "2",
+        };
+        write!(f, "{reliability}:{durability}:{history},")?;
+        if self.depth != RMW_ZENOH_DEFAULT_DEPTH {
+            write!(f, "{}", self.depth)?;
+        }
+        f.write_str(":,:,:,,")
+    }
+}
