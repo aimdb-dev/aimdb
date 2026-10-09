@@ -43,7 +43,9 @@ async fn main() {
     let (db, runner) = builder.build().await.expect("build");
     tokio::spawn(runner.run());
 
-    for n in 1.. {
+    let mut n: u64 = 0;
+    loop {
+        n += 1;
         db.produce(
             "chatter",
             StringMsg {
