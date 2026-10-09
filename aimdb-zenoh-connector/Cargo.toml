@@ -63,3 +63,7 @@ trybuild = "1.0"
 [[example]]
 name = "ros2_talker"
 required-features = ["std"]
+
+[[example]]
+name = "ros2_listener"
+required-features = ["std"]

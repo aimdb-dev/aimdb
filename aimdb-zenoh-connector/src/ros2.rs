@@ -4,6 +4,7 @@ use std::any::{type_name, TypeId};
 use std::boxed::Box;
 use std::format;
 use std::string::String;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
@@ -14,7 +15,7 @@ use aimdb_core::{
 use aimdb_data_contracts::{ros2, RosMessage, WireFormat};
 use zenoh::key_expr::KeyExpr;
 use zenoh::qos::CongestionControl;
-use zenoh::sample::Locality;
+use zenoh::sample::{Locality, SampleKind};
 
 use crate::connector::{BoxFuture, BuildFuture};
 use crate::native::{config_error, open, session_config};
@@ -137,25 +138,39 @@ impl ConnectorBuilder for Ros2Connector {
                 check_type(ty).map_err(config_error)?;
             }
 
-            let inbound = InboundDispatch::new(db, SCHEME, &ExactGrammar)?;
-            if inbound.route_count() > 0 {
-                return Err(config_error(String::from(
-                    "inbound ros2:// links are not supported yet",
-                )));
-            }
-
             let outbound = OutboundRoutes::new(db, SCHEME)?;
-            let routes = outbound
+            let publishers = outbound
                 .routes()
                 .iter()
                 .enumerate()
-                .map(|(i, route)| plan(route, &self.types, domain, i as u32 + 1))
+                .map(|(i, route)| publisher(route, &self.types, domain, i as u32 + 1))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(config_error)?;
 
+            let inbound = InboundDispatch::new(db, SCHEME, &ExactGrammar)?;
+            let first_id = publishers.len() as u32 + 1;
+            let subscriptions =
+                subscriptions(&inbound, &self.types, domain, first_id).map_err(config_error)?;
+
+            for warning in publishers
+                .iter()
+                .map(|p| &p.link)
+                .chain(subscriptions.links.iter())
+                .filter_map(|link| link.warning.as_deref())
+            {
+                log_warn!("{}", warning);
+            }
+
             let config = session_config(&self.endpoint, self.config.clone())?;
-            let task: BoxFuture =
-                Box::pin(run(config, domain, self.node.clone(), outbound, routes));
+            let task: BoxFuture = Box::pin(run(
+                config,
+                domain,
+                self.node.clone(),
+                outbound,
+                publishers,
+                inbound,
+                subscriptions,
+            ));
             Ok(Vec::from([task]))
         })
     }
@@ -208,59 +223,137 @@ fn check_type(ty: &RosType) -> Result<(), String> {
     Ok(())
 }
 
-/// Everything one outbound route needs on the wire, fixed at build.
-struct Route {
+/// What one `ros2://` link of either direction needs on the wire, fixed at
+/// build.
+struct Link {
+    /// The fully qualified topic, `/cell4/temperature`.
     topic: String,
     ty: RosType,
     qos: Qos,
     entity_id: u32,
+    /// The rmw_zenoh data key.
     key: KeyExpr<'static>,
+    /// Logged once the whole configuration is known to be valid.
+    warning: Option<String>,
 }
 
-fn plan(
-    route: &RouteInfo,
+/// The checks both directions share: a ROS topic name, a registered type,
+/// CDR on the wire, and the QoS overrides.
+fn link(
+    resource: &str,
+    type_id: TypeId,
+    options: &[(String, String)],
     types: &[RosType],
     domain: u32,
     entity_id: u32,
-) -> Result<Route, String> {
-    let resource = &*route.default_topic;
+) -> Result<Link, String> {
     let topic = format!("/{resource}");
     profile::validate_topic(&topic).map_err(|e| format!("ROS topic '{topic}' {e}"))?;
-    if route.topic_capacity > 0 {
-        return Err(format!(
-            "ros2://{resource} has a topic writer; a ROS topic is fixed by its link"
-        ));
-    }
     let ty = types
         .iter()
-        .find(|t| t.type_id == route.type_id)
+        .find(|t| t.type_id == type_id)
         .cloned()
         .ok_or_else(|| {
             format!("ros2://{resource}: the record's type is not registered with Ros2Connector")
         })?;
-    let options = &route.config.protocol_options;
-    match WireFormat::recorded_in(options) {
-        WireFormat::Cdr => {}
-        WireFormat::Unspecified => log_warn!(
-            "ros2://{}: a custom serializer is installed; nothing checks that it writes CDR",
-            resource
-        ),
-        other => {
-            return Err(format!(
-                "ros2://{resource} encodes as {other:?}; a ROS topic needs CDR"
-            ))
-        }
-    }
+    let warning = codec_warning(resource, options)?;
     let qos = qos(options).map_err(|e| format!("ros2://{resource}: {e}"))?;
     let key = KeyExpr::try_from(profile::data_key(domain, &topic, ty.dds_name, ty.hash))
         .map_err(|e| format!("ros2://{resource}: {e}"))?;
-    Ok(Route {
+    Ok(Link {
         topic,
         ty,
         qos,
         entity_id,
         key,
+        warning,
     })
+}
+
+/// A codec verb records CDR; any other recorded format is refused. A custom
+/// serializer or deserializer records none: that is the documented escape
+/// hatch, so it warns instead.
+fn codec_warning(resource: &str, options: &[(String, String)]) -> Result<Option<String>, String> {
+    match WireFormat::recorded_in(options) {
+        WireFormat::Cdr => Ok(None),
+        WireFormat::Unspecified => Ok(Some(format!(
+            "ros2://{resource}: a custom serializer or deserializer is installed; \
+             nothing checks that it speaks CDR"
+        ))),
+        other => Err(format!(
+            "ros2://{resource} encodes as {other:?}; a ROS topic needs CDR"
+        )),
+    }
+}
+
+/// An outbound link: a ROS publisher.
+struct Publisher {
+    link: Link,
+}
+
+fn publisher(
+    route: &RouteInfo,
+    types: &[RosType],
+    domain: u32,
+    entity_id: u32,
+) -> Result<Publisher, String> {
+    let resource = &*route.default_topic;
+    if route.topic_capacity > 0 {
+        return Err(format!(
+            "ros2://{resource} has a topic writer; a ROS topic is fixed by its link"
+        ));
+    }
+    let link = link(
+        resource,
+        route.type_id,
+        &route.config.protocol_options,
+        types,
+        domain,
+        entity_id,
+    )?;
+    Ok(Publisher { link })
+}
+
+/// The inbound links: one subscription token per link, and one Zenoh
+/// subscriber per distinct topic.
+struct Subscriptions {
+    links: Vec<Link>,
+    /// Per distinct topic: its data key, and the link topic its samples are
+    /// dispatched under.
+    subscribers: Vec<(KeyExpr<'static>, Arc<str>)>,
+}
+
+fn subscriptions(
+    inbound: &InboundDispatch,
+    types: &[RosType],
+    domain: u32,
+    first_id: u32,
+) -> Result<Subscriptions, String> {
+    let mut links: Vec<Link> = Vec::with_capacity(inbound.routes().len());
+    let mut subscribers: Vec<(KeyExpr<'static>, Arc<str>)> = Vec::new();
+    for (i, route) in inbound.routes().iter().enumerate() {
+        let resource = &*route.topic;
+        let link = link(
+            resource,
+            route.type_id,
+            &route.config.protocol_options,
+            types,
+            domain,
+            first_id + i as u32,
+        )?;
+        if let Some(other) = links.iter().find(|l| l.topic == link.topic) {
+            if other.ty.type_id != link.ty.type_id {
+                return Err(format!(
+                    "ros2://{resource} is linked as {} and as {}; a ROS topic has one type",
+                    other.ty.dds_name, link.ty.dds_name
+                ));
+            }
+        } else {
+            subscribers.push((link.key.clone(), route.topic.clone()));
+        }
+        links.push(link);
+    }
+    Ok(Subscriptions { links, subscribers })
 }
 
 /// The link's QoS overrides on top of the rmw default profile.
@@ -286,14 +379,17 @@ fn qos(options: &[(String, String)]) -> Result<Qos, String> {
     Ok(qos)
 }
 
-/// Open the session, declare the node and every publisher's liveliness
-/// token, then publish each value with its attachment.
+/// Open the session; declare the node's, every publisher's and every
+/// subscription's liveliness token; subscribe; then publish each value with
+/// its attachment.
 async fn run(
     config: zenoh::Config,
     domain: u32,
     node: Ros2Node,
     mut outbound: OutboundRoutes,
-    routes: Vec<Route>,
+    publishers: Vec<Publisher>,
+    inbound: InboundDispatch,
+    subscriptions: Subscriptions,
 ) {
     let session = open(config).await;
     let zid = session.zid().to_string();
@@ -305,23 +401,28 @@ async fn run(
         namespace: &node.namespace,
         name: &node.name,
     };
-
-    let mut tokens = Vec::with_capacity(routes.len() + 1);
-    tokens.push(profile::node_token(&identity));
-    let mut publishers = Vec::with_capacity(routes.len());
-    let mut gids = Vec::with_capacity(routes.len());
-    for route in &routes {
-        let token = profile::entity_token(
+    let token = |link: &Link, kind| {
+        profile::entity_token(
             &identity,
-            route.entity_id,
-            EntityKind::Publisher,
-            &route.topic,
-            route.ty.dds_name,
-            route.ty.hash,
-            &route.qos,
-        );
+            link.entity_id,
+            kind,
+            &link.topic,
+            link.ty.dds_name,
+            link.ty.hash,
+            &link.qos,
+        )
+    };
+
+    let mut tokens = Vec::with_capacity(1 + publishers.len() + subscriptions.links.len());
+    tokens.push(profile::node_token(&identity));
+    let mut gids = Vec::with_capacity(publishers.len());
+    for publisher in &publishers {
+        let token = token(&publisher.link, EntityKind::Publisher);
         gids.push(profile::gid(&token));
         tokens.push(token);
+    }
+    for link in &subscriptions.links {
+        tokens.push(token(link, EntityKind::Subscription));
     }
     // Declared before the first publish, as rmw_zenoh does.
     let mut live = Vec::with_capacity(tokens.len());
@@ -331,29 +432,50 @@ async fn run(
             Err(_e) => log_error!("ROS 2: cannot declare a liveliness token: {}", _e),
         }
     }
-    for route in &routes {
-        let publisher = session
-            .declare_publisher(route.key.clone())
+
+    let mut subscribers = Vec::with_capacity(subscriptions.subscribers.len());
+    for (key, topic) in subscriptions.subscribers {
+        let inbound = inbound.clone();
+        let declared = session
+            .declare_subscriber(key)
+            .allowed_origin(Locality::Remote)
+            .callback(move |sample| {
+                // A delete has no value; the attachment is not needed.
+                if sample.kind() == SampleKind::Put {
+                    inbound.dispatch(&topic, &sample.payload().to_bytes());
+                }
+            })
+            .await;
+        match declared {
+            Ok(subscriber) => subscribers.push(subscriber),
+            Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", _e),
+        }
+    }
+
+    let mut senders = Vec::with_capacity(publishers.len());
+    for publisher in &publishers {
+        let declared = session
+            .declare_publisher(publisher.link.key.clone())
             .congestion_control(CongestionControl::Drop)
             .allowed_destination(Locality::Remote)
             .await;
-        match publisher {
-            Ok(publisher) => publishers.push(Some(publisher)),
+        match declared {
+            Ok(sender) => senders.push(Some(sender)),
             Err(_e) => {
                 log_error!(
                     "ROS 2: cannot declare a publisher on '{}': {}",
-                    route.topic,
+                    publisher.link.topic,
                     _e
                 );
-                publishers.push(None);
+                senders.push(None);
             }
         }
     }
 
-    let mut sequence = std::vec![0i64; routes.len()];
+    let mut sequence = std::vec![0i64; publishers.len()];
     while let Some(msg) = outbound.next().await {
         let id = msg.route.id;
-        let Some(publisher) = &publishers[id] else {
+        let Some(sender) = &senders[id] else {
             outbound.reject(id);
             continue;
         };
@@ -363,17 +485,22 @@ async fn run(
             timestamp_ns: now_ns(),
             gid: gids[id],
         };
-        let result = publisher
+        let result = sender
             .put(msg.payload.into_vec())
             .attachment(attachment.encode())
             .await;
         if let Err(_e) = result {
-            log_error!("ROS 2: put on '{}' failed: {}", routes[id].topic, _e);
+            log_error!(
+                "ROS 2: put on '{}' failed: {}",
+                publishers[id].link.topic,
+                _e
+            );
             outbound.reject(id);
         }
     }
-    // The tokens keep the node in the ROS graph for the life of the database.
-    let _live = live;
+    // The tokens keep the node in the ROS graph, and the subscribers deliver,
+    // for the life of the database.
+    let _alive = (live, subscribers);
     core::future::pending::<()>().await;
 }
 
@@ -410,6 +537,21 @@ mod tests {
         let bad = resolve_domain(None, Some("seven")).unwrap_err();
         assert!(bad.contains("ROS_DOMAIN_ID='seven'"), "{bad}");
         assert!(resolve_domain(None, Some("-1")).is_err());
+    }
+
+    #[test]
+    fn a_custom_serializer_warns_and_a_foreign_codec_fails() {
+        use aimdb_core::connector::WIRE_FORMAT_KEY;
+        let format = |f: &str| [(WIRE_FORMAT_KEY.to_string(), f.to_string())];
+        assert_eq!(codec_warning("t", &format("cdr")), Ok(None));
+        // `with_serializer` alone, or after a codec verb, which it clears.
+        let warning = codec_warning("t", &[]).unwrap().expect("a warning");
+        assert!(
+            warning.contains("ros2://t") && warning.contains("CDR"),
+            "{warning}"
+        );
+        let error = codec_warning("t", &format("json")).unwrap_err();
+        assert!(error.contains("Json"), "{error}");
     }
 
     #[test]

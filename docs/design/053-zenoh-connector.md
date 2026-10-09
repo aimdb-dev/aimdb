@@ -1055,6 +1055,9 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
   `ros2://` publisher from `Ros2Connector` shows in `ros2 node list` with its
   namespace, `ros2 topic info -v` shows its type, hash, QoS and GID, and
   `ros2 topic echo` decodes its values (`examples/ros2_talker.rs`).
+  **Verified live (s10)** the other way: `ros2 topic info -v` lists a
+  `ros2://` subscription with its node, type hash and depth, and every
+  message of `ros2 topic pub` reaches the record (`examples/ros2_listener.rs`).
 - Pin `zenoh` 1.10.1, the latest on crates.io. **[verified]** (S2, §10) that
   it is wire-compatible with the 1.8.0 router in Lyrical and Rolling and with
   a 1.10.1 router. The interop test (§9) keeps proving it.
