@@ -16,7 +16,13 @@ publish = false
 [features]
 default = ["aimdb-core/alloc"]
 # The `zenoh` crate backend: `zenoh://` and `ros2://`, over TCP and UDP.
-std = ["aimdb-core/std", "aimdb-core/alloc", "dep:zenoh", "dep:tokio"]
+std = [
+    "aimdb-core/std",
+    "aimdb-core/alloc",
+    "dep:zenoh",
+    "dep:tokio",
+    "dep:aimdb-data-contracts",
+]
 # Further Zenoh transports for the `std` backend, for `with_zenoh_config`.
 transport-tls = ["std", "zenoh/transport_tls"]
 transport-quic = ["std", "zenoh/transport_quic"]
@@ -35,6 +41,10 @@ zenoh = { version = "1.10.1", default-features = false, features = [
 ], optional = true }
 # The session task's retry wait; zenoh itself runs on tokio.
 tokio = { workspace = true, features = ["time"], optional = true }
+# `RosMessage` and the recorded wire format, for `ros2://` links.
+aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false, features = [
+    "ros2",
+], optional = true }
 # XXH3-128 for rmw_zenoh GIDs; no_std.
 twox-hash = { version = "2", default-features = false, features = ["xxhash3_128"] }
 
@@ -44,3 +54,12 @@ zenoh-keyexpr = "1.10.1"
 # `tests/inbound_routes.rs`: links through core's router on a real runtime.
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = ["tokio-runtime"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `tests/ros2_outbound.rs`: derived ROS types and a non-CDR codec.
+aimdb-data-contracts = { path = "../aimdb-data-contracts", features = ["ros2", "linkable-json"] }
+serde = { version = "1", features = ["derive"] }
+# The `register` bound, as a compile error.
+trybuild = "1.0"
+
+[[example]]
+name = "ros2_talker"
+required-features = ["std"]

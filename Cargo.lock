@@ -447,8 +447,11 @@ name = "aimdb-zenoh-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-tokio-adapter",
+ "serde",
  "tokio",
+ "trybuild",
  "twox-hash 2.1.5",
  "zenoh",
  "zenoh-keyexpr",

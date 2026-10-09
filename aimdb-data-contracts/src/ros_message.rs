@@ -39,6 +39,11 @@ use crate::Linkable;
 ///         "RIHS01_0000000000000000000000000000000000000000000000000000000000000000";
 /// }
 /// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a ROS 2 message type",
+    label = "not a `RosMessage`",
+    note = "derive it: `#[derive(RosMessage)]` with `#[ros(type = \"pkg/msg/Name\", hash = \"RIHS01_…\")]`"
+)]
 pub trait RosMessage: Linkable {
     /// The DDS type name rmw_zenoh puts in data keys and liveliness tokens,
     /// e.g. `std_msgs::msg::dds_::String_`. See [`ros2::dds_type_name`](crate::ros2::dds_type_name).

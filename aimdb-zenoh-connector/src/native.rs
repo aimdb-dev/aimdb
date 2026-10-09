@@ -55,7 +55,7 @@ pub(crate) fn build<'a>(
     })
 }
 
-fn config_error(message: String) -> DbError {
+pub(crate) fn config_error(message: String) -> DbError {
     DbError::runtime_error(format!("Failed to build Zenoh connector: {message}"))
 }
 
@@ -76,7 +76,10 @@ fn route_key(route: &RouteInfo) -> DbResult<KeyExpr<'static>> {
 
 /// Zenoh's defaults in client mode, or the caller's configuration, with
 /// `endpoint` as the router to connect to.
-fn session_config(endpoint: &str, config: Option<zenoh::Config>) -> DbResult<zenoh::Config> {
+pub(crate) fn session_config(
+    endpoint: &str,
+    config: Option<zenoh::Config>,
+) -> DbResult<zenoh::Config> {
     let mut config = match config {
         Some(config) => config,
         None => {
@@ -133,22 +136,7 @@ async fn run(
     mut outbound: OutboundRoutes,
     keys: Vec<KeyExpr<'static>>,
 ) {
-    let mut wait = OPEN_RETRY;
-    let session = loop {
-        match zenoh::open(config.clone()).await {
-            Ok(session) => break session,
-            Err(_e) => {
-                log_warn!(
-                    "Zenoh: cannot open the session, retrying in {:?}: {}",
-                    wait,
-                    _e
-                );
-                tokio::time::sleep(wait).await;
-                wait = (wait * 2).min(OPEN_RETRY_MAX);
-            }
-        }
-    };
-    log_info!("Zenoh: session {} open", session.zid());
+    let session = open(config).await;
 
     let _subscribers = subscribe(&session, &inbound, filters).await;
     let mut publishers: Vec<Option<Publisher<'static>>> = Vec::with_capacity(keys.len());
@@ -198,6 +186,27 @@ async fn run(
     log_info!("Zenoh: every outbound route has closed");
     // The subscribers keep delivering for the life of the database.
     core::future::pending::<()>().await;
+}
+
+/// Open a session, retrying with a back-off while no router answers.
+pub(crate) async fn open(config: zenoh::Config) -> Session {
+    let mut wait = OPEN_RETRY;
+    let session = loop {
+        match zenoh::open(config.clone()).await {
+            Ok(session) => break session,
+            Err(_e) => {
+                log_warn!(
+                    "Zenoh: cannot open the session, retrying in {:?}: {}",
+                    wait,
+                    _e
+                );
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(OPEN_RETRY_MAX);
+            }
+        }
+    };
+    log_info!("Zenoh: session {} open", session.zid());
+    session
 }
 
 /// A key written by a topic writer, if it is a valid key without wildcards.

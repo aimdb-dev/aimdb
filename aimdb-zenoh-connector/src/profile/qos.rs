@@ -1,6 +1,7 @@
 //! The QoS field of a liveliness token.
 
 use alloc::string::String;
+use core::fmt;
 
 /// rmw_zenoh's own default depth: a token leaves the depth empty for it.
 const RMW_ZENOH_DEFAULT_DEPTH: u32 = 42;
@@ -47,9 +48,16 @@ impl Default for Qos {
 }
 
 impl Qos {
+    /// The token's QoS field; see the [`Display`](fmt::Display) impl.
+    pub(crate) fn encode(&self) -> String {
+        alloc::format!("{self}")
+    }
+}
+
+impl fmt::Display for Qos {
     /// `<reliability>:<durability>:<history>,<depth>:<deadline>:<lifespan>:<liveliness>`,
     /// each component empty when it equals rmw_zenoh's default.
-    pub(crate) fn encode(&self) -> String {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let reliability = match self.reliability {
             Reliability::Reliable => "",
             Reliability::BestEffort => "2",
@@ -62,11 +70,10 @@ impl Qos {
             History::KeepLast => "",
             History::KeepAll => "2",
         };
-        let depth = if self.depth == RMW_ZENOH_DEFAULT_DEPTH {
-            String::new()
-        } else {
-            alloc::format!("{}", self.depth)
-        };
-        alloc::format!("{reliability}:{durability}:{history},{depth}:,:,:,,")
+        write!(f, "{reliability}:{durability}:{history},")?;
+        if self.depth != RMW_ZENOH_DEFAULT_DEPTH {
+            write!(f, "{}", self.depth)?;
+        }
+        f.write_str(":,:,:,,")
     }
 }

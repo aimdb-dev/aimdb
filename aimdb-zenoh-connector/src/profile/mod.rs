@@ -38,10 +38,11 @@ mod tests {
 
     #[test]
     fn mangling_turns_slashes_into_percent() {
-        assert_eq!(mangle(""), "%");
-        assert_eq!(mangle("/"), "%");
-        assert_eq!(mangle("/cell4"), "%cell4");
-        assert_eq!(mangle("/cell4/temperature"), "%cell4%temperature");
+        let m = |name: &str| alloc::format!("{}", mangle(name));
+        assert_eq!(m(""), "%");
+        assert_eq!(m("/"), "%");
+        assert_eq!(m("/cell4"), "%cell4");
+        assert_eq!(m("/cell4/temperature"), "%cell4%temperature");
     }
 
     #[test]
