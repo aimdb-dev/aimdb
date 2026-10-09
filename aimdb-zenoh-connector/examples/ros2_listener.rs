@@ -28,8 +28,7 @@ struct StringMsg {
 
 #[tokio::main]
 async fn main() {
-    let endpoint =
-        std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
+    let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
     let ros2 = Ros2Connector::new(endpoint, Ros2Node::new("listener").namespace("/aimdb"))
         .register::<StringMsg>();
 
