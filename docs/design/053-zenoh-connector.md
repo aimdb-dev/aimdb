@@ -795,10 +795,10 @@ two `ConnectorBuilder`s that can hold the same `Arc<Shared>`:
   its slot in `Shared`: a build-time `Mutex<Option<_>>` (`std` or `spin`,
   as in core), never locked per message.
 - **Whichever builds first returns the session task.** `Shared` holds a
-  one-shot (core's `session::OneShot`, design 052 §5.5) for it. The first
-  `build()` to run takes it and returns the session future; the second
-  returns no futures. So either connector works alone, and registration
-  order does not matter.
+  flag for it. The first `build()` to run sets it and returns the session
+  future; the second returns no futures. So either connector works alone,
+  and registration order does not matter (s11: one TCP connection in both
+  orders, counted through a proxy).
 - **The session task collects every slot before it connects.**
   `AimDbBuilder` calls every `build()` before `AimDbRunner::run()` polls
   anything, so on its first poll the task takes both connectors' parts. A

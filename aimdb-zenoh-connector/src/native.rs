@@ -19,7 +19,8 @@ use zenoh::pubsub::Publisher;
 use zenoh::sample::{Locality, SampleKind};
 use zenoh::Session;
 
-use crate::connector::{BoxFuture, BuildFuture};
+use crate::connector::BuildFuture;
+use crate::shared::Shared;
 use crate::{ZenohGrammar, SCHEME};
 
 /// The first wait before retrying to open the session; it doubles up to
@@ -28,11 +29,7 @@ const OPEN_RETRY: Duration = Duration::from_secs(1);
 const OPEN_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// Validate every route and return the session task.
-pub(crate) fn build<'a>(
-    db: &'a AimDb,
-    endpoint: &'a str,
-    config: Option<zenoh::Config>,
-) -> BuildFuture<'a> {
+pub(crate) fn build<'a>(db: &'a AimDb, shared: &'a Arc<Shared>) -> BuildFuture<'a> {
     Box::pin(async move {
         let inbound = InboundDispatch::new(db, SCHEME, &ZenohGrammar)?;
         // Subscribed now, so values produced before the session opens are kept.
@@ -42,7 +39,6 @@ pub(crate) fn build<'a>(
             .iter()
             .map(route_key)
             .collect::<Result<Vec<_>, _>>()?;
-        let config = session_config(endpoint, config)?;
         let filters = subscriptions(&inbound)?;
 
         log_info!(
@@ -50,9 +46,21 @@ pub(crate) fn build<'a>(
             filters.len(),
             keys.len()
         );
-        let task: BoxFuture = Box::pin(run(config, inbound, filters, outbound, keys));
-        Ok(Vec::from([task]))
+        shared.deposit_zenoh(ZenohParts {
+            inbound,
+            filters,
+            outbound,
+            keys,
+        })
     })
+}
+
+/// What `build()` prepares for the session task.
+pub(crate) struct ZenohParts {
+    inbound: InboundDispatch,
+    filters: Vec<(KeyExpr<'static>, Box<dyn TopicFilter>)>,
+    outbound: OutboundRoutes,
+    keys: Vec<KeyExpr<'static>>,
 }
 
 pub(crate) fn config_error(message: String) -> DbError {
@@ -121,71 +129,70 @@ fn subscriptions(
         .collect()
 }
 
-/// Open the session, subscribe, then publish until every outbound route has
-/// closed. Zenoh reconnects and re-declares on its own once the session is
-/// open.
+/// Subscribe, then publish until every outbound route has closed. Zenoh
+/// reconnects and re-declares on its own once the session is open.
 ///
 /// Subscribers and publishers are remote-only: a `put` never reaches this
 /// session's own subscribers. Otherwise a record linked to and from one key
 /// would ingest its own publications in a loop, and an inbound link would see
 /// the database's own writes.
-async fn run(
-    config: zenoh::Config,
-    inbound: InboundDispatch,
-    filters: Vec<(KeyExpr<'static>, Box<dyn TopicFilter>)>,
-    mut outbound: OutboundRoutes,
-    keys: Vec<KeyExpr<'static>>,
-) {
-    let session = open(config).await;
-
-    let _subscribers = subscribe(&session, &inbound, filters).await;
-    let mut publishers: Vec<Option<Publisher<'static>>> = Vec::with_capacity(keys.len());
-    for key in keys {
-        match session
-            .declare_publisher(key)
-            .allowed_destination(Locality::Remote)
-            .await
-        {
-            Ok(publisher) => publishers.push(Some(publisher)),
-            Err(_e) => {
-                log_error!("Zenoh: cannot declare a publisher: {}", _e);
-                publishers.push(None);
+impl ZenohParts {
+    pub(crate) async fn serve(self, session: &Session) {
+        let ZenohParts {
+            inbound,
+            filters,
+            mut outbound,
+            keys,
+        } = self;
+        let _subscribers = subscribe(session, &inbound, filters).await;
+        let mut publishers: Vec<Option<Publisher<'static>>> = Vec::with_capacity(keys.len());
+        for key in keys {
+            match session
+                .declare_publisher(key)
+                .allowed_destination(Locality::Remote)
+                .await
+            {
+                Ok(publisher) => publishers.push(Some(publisher)),
+                Err(_e) => {
+                    log_error!("Zenoh: cannot declare a publisher: {}", _e);
+                    publishers.push(None);
+                }
             }
         }
-    }
 
-    while let Some(msg) = outbound.next().await {
-        let id = msg.route.id;
-        let written = msg.topic != &*msg.route.default_topic;
-        let result = match (&publishers[id], written) {
-            (Some(publisher), false) => publisher.put(msg.payload.into_vec()).await,
-            _ => match written_key(msg.topic) {
-                Some(key) => {
-                    session
-                        .put(key, msg.payload.into_vec())
-                        .allowed_destination(Locality::Remote)
-                        .await
-                }
-                None => {
-                    log_error!("Zenoh: '{}' is not a key without wildcards", msg.topic);
-                    outbound.reject(id);
-                    continue;
-                }
-            },
-        };
-        if let Err(_e) = result {
-            log_error!(
-                "Zenoh: put on route '{}' failed: {}",
-                outbound.routes()[id].default_topic,
-                _e
-            );
-            outbound.reject(id);
+        while let Some(msg) = outbound.next().await {
+            let id = msg.route.id;
+            let written = msg.topic != &*msg.route.default_topic;
+            let result = match (&publishers[id], written) {
+                (Some(publisher), false) => publisher.put(msg.payload.into_vec()).await,
+                _ => match written_key(msg.topic) {
+                    Some(key) => {
+                        session
+                            .put(key, msg.payload.into_vec())
+                            .allowed_destination(Locality::Remote)
+                            .await
+                    }
+                    None => {
+                        log_error!("Zenoh: '{}' is not a key without wildcards", msg.topic);
+                        outbound.reject(id);
+                        continue;
+                    }
+                },
+            };
+            if let Err(_e) = result {
+                log_error!(
+                    "Zenoh: put on route '{}' failed: {}",
+                    outbound.routes()[id].default_topic,
+                    _e
+                );
+                outbound.reject(id);
+            }
         }
-    }
 
-    log_info!("Zenoh: every outbound route has closed");
-    // The subscribers keep delivering for the life of the database.
-    core::future::pending::<()>().await;
+        log_info!("Zenoh: every outbound route has closed");
+        // The subscribers keep delivering for the life of the database.
+        core::future::pending::<()>().await;
+    }
 }
 
 /// Open a session, retrying with a back-off while no router answers.
