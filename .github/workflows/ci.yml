@@ -4,9 +4,7 @@ on:
   push:
     branches: [ main, develop ]
   pull_request:
-    # The Zenoh connector's feature branch, so its stage PRs run the full
-    # matrix instead of a local `make check`.
-    branches: [ main, develop, feat/aimdb-zenoh-connector ]
+    branches: [ main, develop ]
 
 env:
   CARGO_TERM_COLOR: always
