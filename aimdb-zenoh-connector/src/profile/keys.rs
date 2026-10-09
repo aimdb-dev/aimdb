@@ -1,6 +1,7 @@
 //! Data keys and liveliness tokens.
 
 use alloc::string::String;
+use core::fmt;
 
 use super::Qos;
 
@@ -26,12 +27,26 @@ pub(crate) enum EntityKind {
 }
 
 /// A name as a single token chunk: every `/` becomes `%`, and an empty name
-/// is `%`.
-pub(crate) fn mangle(name: &str) -> String {
-    if name.is_empty() {
-        return String::from("%");
+/// is `%`. Written straight into the token, with no string of its own.
+pub(crate) fn mangle(name: &str) -> Mangled<'_> {
+    Mangled(name)
+}
+
+pub(crate) struct Mangled<'a>(&'a str);
+
+impl fmt::Display for Mangled<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            return f.write_str("%");
+        }
+        for (i, part) in self.0.split('/').enumerate() {
+            if i > 0 {
+                f.write_str("%")?;
+            }
+            f.write_str(part)?;
+        }
+        Ok(())
     }
-    name.replace('/', "%")
 }
 
 /// `<domain>/<topic>/<type>/<hash>`, the topic without its slashes at either
@@ -78,6 +93,6 @@ pub(crate) fn entity_token(
         mangle(node.namespace),
         node.name,
         mangle(topic),
-        qos.encode()
+        qos
     )
 }

@@ -34,9 +34,22 @@ pub use connector::{Native, ZenohConnector};
 #[cfg(feature = "std")]
 mod native;
 
+// `ros2://` links, on the `zenoh` crate backend.
+#[cfg(feature = "std")]
+mod ros2;
+#[cfg(feature = "std")]
+pub use ros2::{Ros2Connector, Ros2Node};
+
+// ROS 2 QoS overrides over core's link builders.
+#[cfg(feature = "std")]
+mod link_ext;
+#[cfg(feature = "std")]
+pub use link_ext::Ros2LinkExt;
+
 // Zenoh key expressions for inbound links (works on every feature leg).
 pub mod grammar;
 pub use grammar::ZenohGrammar;
 
 // rmw_zenoh's wire conventions for `ros2://` links.
 mod profile;
+pub use profile::Reliability;

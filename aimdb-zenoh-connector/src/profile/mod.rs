@@ -17,7 +17,8 @@ pub(crate) use attachment::{Attachment, ATTACHMENT_LEN};
 pub(crate) use gid::gid;
 pub(crate) use keys::{data_key, entity_token, mangle, node_token, EntityKind, Node};
 pub(crate) use names::{validate_namespace, validate_node_name, validate_topic, NameError};
-pub(crate) use qos::{Durability, History, Qos, Reliability};
+pub use qos::Reliability;
+pub(crate) use qos::{Durability, History, Qos};
 
 #[cfg(test)]
 mod golden;
@@ -38,10 +39,11 @@ mod tests {
 
     #[test]
     fn mangling_turns_slashes_into_percent() {
-        assert_eq!(mangle(""), "%");
-        assert_eq!(mangle("/"), "%");
-        assert_eq!(mangle("/cell4"), "%cell4");
-        assert_eq!(mangle("/cell4/temperature"), "%cell4%temperature");
+        let m = |name: &str| alloc::format!("{}", mangle(name));
+        assert_eq!(m(""), "%");
+        assert_eq!(m("/"), "%");
+        assert_eq!(m("/cell4"), "%cell4");
+        assert_eq!(m("/cell4/temperature"), "%cell4%temperature");
     }
 
     #[test]

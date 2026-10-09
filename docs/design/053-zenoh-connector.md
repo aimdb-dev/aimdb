@@ -1044,8 +1044,17 @@ The last command logs `spindle: 1200 rpm, enabled=true` in the gateway.
   arrives in several fragments is made contiguous first, which allocates;
   a contiguous one is borrowed.
 - Publisher options mirror rmw_zenoh's (`rmw_publisher_data.cpp:942`):
-  - Zenoh `reliability` follows the QoS reliability.
   - Congestion control is `DROP`, or `BLOCK` for `RELIABLE` with `KEEP_ALL`.
+    v1 exposes no `KEEP_ALL`, so it is always `DROP`.
+  - Zenoh `reliability` does **not** follow the QoS reliability in v1: the
+    publisher builder's `reliability()` is `#[unstable]` in zenoh 1.10.1
+    **[checked]**. A `BEST_EFFORT` link advertises it in its token and
+    travels on Zenoh's default reliable path, which no subscriber refuses
+    (§6). Revisit when the API is stable.
+- **Verified live (s09)** against Jazzy's and Lyrical's `rmw_zenohd`: a
+  `ros2://` publisher from `Ros2Connector` shows in `ros2 node list` with its
+  namespace, `ros2 topic info -v` shows its type, hash, QoS and GID, and
+  `ros2 topic echo` decodes its values (`examples/ros2_talker.rs`).
 - Pin `zenoh` 1.10.1, the latest on crates.io. **[verified]** (S2, §10) that
   it is wire-compatible with the 1.8.0 router in Lyrical and Rolling and with
   a 1.10.1 router. The interop test (§9) keeps proving it.
