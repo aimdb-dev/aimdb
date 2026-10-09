@@ -38,7 +38,7 @@ mod native;
 #[cfg(feature = "std")]
 mod ros2;
 #[cfg(feature = "std")]
-pub use ros2::{Reliability, Ros2Connector, Ros2Node};
+pub use ros2::{Ros2Connector, Ros2Node};
 
 // ROS 2 QoS overrides over core's link builders.
 #[cfg(feature = "std")]
@@ -52,3 +52,4 @@ pub use grammar::ZenohGrammar;
 
 // rmw_zenoh's wire conventions for `ros2://` links.
 mod profile;
+pub use profile::Reliability;

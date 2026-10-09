@@ -16,10 +16,32 @@ pub(crate) struct Qos {
     pub depth: u32,
 }
 
+/// A `ros2://` link's advertised reliability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Reliability {
+pub enum Reliability {
+    /// `RELIABLE`, the default.
     Reliable,
+    /// `BEST_EFFORT`.
     BestEffort,
+}
+
+impl Reliability {
+    /// The link config value.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Reliable => "reliable",
+            Self::BestEffort => "best_effort",
+        }
+    }
+
+    /// The inverse of [`as_str`](Self::as_str).
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "reliable" => Some(Self::Reliable),
+            "best_effort" => Some(Self::BestEffort),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

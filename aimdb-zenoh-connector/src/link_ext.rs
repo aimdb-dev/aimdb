@@ -13,7 +13,8 @@ use std::string::ToString;
 use aimdb_core::{InboundConnectorBuilder, OutboundConnectorBuilder};
 use core::fmt::Debug;
 
-use crate::ros2::{Reliability, DEPTH_KEY, RELIABILITY_KEY};
+use crate::ros2::{DEPTH_KEY, RELIABILITY_KEY};
+use crate::Reliability;
 
 /// The QoS a `ros2://` link advertises, beyond the rmw default profile
 /// (`KEEP_LAST` 10, `RELIABLE`, `VOLATILE`).

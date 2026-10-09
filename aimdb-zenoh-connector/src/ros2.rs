@@ -18,7 +18,7 @@ use zenoh::sample::Locality;
 
 use crate::connector::{BoxFuture, BuildFuture};
 use crate::native::{config_error, open, session_config};
-use crate::profile::{self, Attachment, Durability, EntityKind, History, Node, Qos};
+use crate::profile::{self, Attachment, Durability, EntityKind, History, Node, Qos, Reliability};
 
 /// The URL scheme of ROS 2 topic links.
 pub(crate) const SCHEME: &str = "ros2";
@@ -31,23 +31,8 @@ pub(crate) const DEPTH_KEY: &str = "ros2.depth";
 /// Link config key for [`Ros2LinkExt::with_reliability`](crate::Ros2LinkExt::with_reliability).
 pub(crate) const RELIABILITY_KEY: &str = "ros2.reliability";
 
-/// A link's advertised reliability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reliability {
-    /// `RELIABLE`, the default.
-    Reliable,
-    /// `BEST_EFFORT`.
-    BestEffort,
-}
-
-impl Reliability {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Reliable => "reliable",
-            Self::BestEffort => "best_effort",
-        }
-    }
-}
+/// The highest domain id ROS 2 documents.
+const DOMAIN_MAX: u32 = 232;
 
 /// The ROS 2 node AimDB appears as.
 #[derive(Debug, Clone)]
@@ -184,16 +169,27 @@ impl ConnectorBuilder for Ros2Connector {
     }
 }
 
-/// The domain `rcl` would use: the explicit one, else `ROS_DOMAIN_ID`, else 0.
+/// The domain `rcl` would use: the explicit one, else `ROS_DOMAIN_ID` unless
+/// it is empty, else 0. ROS 2 documents domains 0 to 232; a higher one would
+/// put the node where no other node is.
 fn resolve_domain(explicit: Option<u32>, env: Option<&str>) -> Result<u32, String> {
-    match (explicit, env) {
-        (Some(domain), _) => Ok(domain),
-        (None, Some(value)) => value
-            .trim()
-            .parse()
-            .map_err(|_| format!("{DOMAIN_ENV}='{value}' is not a domain id")),
-        (None, None) => Ok(0),
+    let env = env.map(str::trim).filter(|v| !v.is_empty());
+    let (domain, source) = match (explicit, env) {
+        (Some(domain), _) => (domain, "domain_id(..)"),
+        (None, Some(value)) => {
+            let domain = value
+                .parse()
+                .map_err(|_| format!("{DOMAIN_ENV}='{value}' is not a domain id"))?;
+            (domain, DOMAIN_ENV)
+        }
+        (None, None) => return Ok(0),
+    };
+    if domain > DOMAIN_MAX {
+        return Err(format!(
+            "domain {domain} from {source} is above {DOMAIN_MAX}, the highest ROS 2 domain"
+        ));
     }
+    Ok(domain)
 }
 
 /// A registered type's own claims: it is CDR, and its names are well formed.
@@ -279,15 +275,9 @@ fn qos(options: &[(String, String)]) -> Result<Qos, String> {
                     })?;
             }
             RELIABILITY_KEY => {
-                qos.reliability = match value.as_str() {
-                    "reliable" => profile::Reliability::Reliable,
-                    "best_effort" => profile::Reliability::BestEffort,
-                    _ => {
-                        return Err(format!(
-                            "reliability must be reliable or best_effort, got '{value}'"
-                        ))
-                    }
-                };
+                qos.reliability = Reliability::parse(value).ok_or_else(|| {
+                    format!("reliability must be reliable or best_effort, got '{value}'")
+                })?;
             }
             _ => {}
         }
@@ -408,6 +398,15 @@ mod tests {
         );
         assert_eq!(resolve_domain(None, Some(" 12 ")), Ok(12));
         assert_eq!(resolve_domain(None, None), Ok(0), "then 0");
+        assert_eq!(resolve_domain(None, Some("")), Ok(0), "empty is unset");
+        assert_eq!(resolve_domain(None, Some("  ")), Ok(0), "blank is unset");
+        assert_eq!(resolve_domain(Some(232), None), Ok(232));
+        assert_eq!(resolve_domain(None, Some("232")), Ok(232));
+        let high = resolve_domain(Some(233), None).unwrap_err();
+        assert!(high.contains("233 from domain_id(..)"), "{high}");
+        let high = resolve_domain(None, Some("233")).unwrap_err();
+        assert!(high.contains("233 from ROS_DOMAIN_ID"), "{high}");
+        assert!(resolve_domain(None, Some("4294967295")).is_err());
         let bad = resolve_domain(None, Some("seven")).unwrap_err();
         assert!(bad.contains("ROS_DOMAIN_ID='seven'"), "{bad}");
         assert!(resolve_domain(None, Some("-1")).is_err());
@@ -418,10 +417,7 @@ mod tests {
         let opt = |k: &str, v: &str| (k.to_string(), v.to_string());
         assert_eq!(qos(&[]).unwrap(), Qos::default());
         let q = qos(&[opt(DEPTH_KEY, "1"), opt(RELIABILITY_KEY, "best_effort")]).unwrap();
-        assert_eq!(
-            (q.depth, q.reliability),
-            (1, profile::Reliability::BestEffort)
-        );
+        assert_eq!((q.depth, q.reliability), (1, Reliability::BestEffort));
         assert!(qos(&[opt(DEPTH_KEY, "0")]).is_err());
         assert!(qos(&[opt(DEPTH_KEY, "ten")]).is_err());
         assert!(qos(&[opt(RELIABILITY_KEY, "maybe")]).is_err());
