@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
+.PHONY: ros2-interop help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -59,6 +59,7 @@ help:
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
+	@printf "    ros2-interop         ros2:// against a ROS 2 distribution in Docker (DISTRO=lyrical)\n"
 	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
 	@printf "    bench-gate           Assert connector allocation counts (b0_alloc_connector)\n"
 	@printf "\n"
@@ -837,6 +838,14 @@ bench-gate:
 # The README quickstart is compiled as examples/readme-quickstart; this target
 # fails when the README code block and the example diverge, or when the
 # example no longer compiles (design 038 §2.6/§3.13).
+# ros2:// against a real ROS 2 distribution (rmw_zenohd and the ros2 CLI in
+# Docker, host networking). DISTRO is a ros:<distro> image tag.
+DISTRO ?= lyrical
+ros2-interop:
+	@printf "$(GREEN)ROS 2 interop on $(DISTRO)...$(NC)\n"
+	cargo build --package aimdb-zenoh-connector --features "std" --examples
+	./aimdb-zenoh-connector/tests/interop/ros2_interop.sh $(DISTRO)
+
 readme-check:
 	@printf "$(GREEN)Checking README quickstart against examples/readme-quickstart...$(NC)\n"
 	@awk '/^```rust$$/{f=1;next} f&&/^```$$/{exit} f' README.md \
