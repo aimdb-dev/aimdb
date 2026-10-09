@@ -1276,6 +1276,10 @@ on `RouteInfo` and `InboundRouteInfo`.
    outbound link arrives in `ros2 topic echo` with correct values.
    `ros2 topic info -v` lists the publisher with the right node, type, QoS and GID.
    In the reverse direction, `ros2 topic pub` lands in a `ros2://` inbound record.
+   **Met (s12):** the `ros2-interop` CI job runs
+   `aimdb-zenoh-connector/tests/interop/ros2_interop.sh` on Jazzy and Lyrical
+   (`make ros2-interop DISTRO=…` locally). The GIDs themselves are checked
+   against captured attachments in s07 and against our own tokens in s09.
 3. **Gateway interop CI (embedded backend, on host).** The embedded backend over
    `TokioNet::tcp()` publishes on `zenoh://`. A native gateway in the same test
    re-publishes it on `ros2://` (§4.8), and it arrives in `ros2 topic echo`. The
