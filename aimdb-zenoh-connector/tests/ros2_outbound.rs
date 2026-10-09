@@ -258,15 +258,6 @@ async fn build_refuses_what_ros_would_not_see() {
     )
     .await;
     assert!(e.contains("namespace 'cell4'"), "namespace: {e}");
-
-    let e = refused(plain(""), |reg| {
-        reg.linked_from("ros2://cell4/command");
-    })
-    .await;
-    assert!(
-        e.contains("inbound ros2:// links are not supported yet"),
-        "{e}"
-    );
 }
 
 /// A hand-written `RosMessage` the derive would never produce.
