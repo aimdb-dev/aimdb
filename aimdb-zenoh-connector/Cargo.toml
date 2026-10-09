@@ -10,8 +10,6 @@ homepage.workspace = true
 description = "Zenoh connector for AimDB, with an rmw_zenoh-compatible ROS 2 profile"
 keywords = ["zenoh", "ros2", "connector", "embedded", "aimdb"]
 categories = ["network-programming", "embedded", "asynchronous"]
-# Not released until the connector is complete.
-publish = false
 
 [features]
 default = ["aimdb-core/alloc"]
@@ -30,7 +28,8 @@ transport-ws = ["std", "zenoh/transport_ws"]
 # Log through aimdb-core's facade.
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
-# The `zenoh-nostd` backend over a caller-supplied transport: `zenoh://` only.
+# Reserved for the `zenoh-nostd` backend (`zenoh://` only), once zenoh-nostd is
+# on crates.io; today the `no_std` parts such as `ZenohGrammar`.
 embedded = ["aimdb-core/alloc"]
 
 [dependencies]
