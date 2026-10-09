@@ -755,6 +755,7 @@ PUBLISH_ORDER := \
 	aimdb-uds-connector \
 	aimdb-knx-connector \
 	aimdb-mqtt-connector \
+	aimdb-zenoh-connector \
 	aimdb-persistence-sqlite \
 	aimdb-serial-connector \
 	aimdb-sync \

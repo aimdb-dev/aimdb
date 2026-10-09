@@ -53,12 +53,16 @@ These stages ship v1's ROS feature.
 
 ### Embedded backend
 
+**Deferred (2026-10-09)** until zenoh-nostd is released on crates.io. A git
+dependency would keep the crate unpublishable, native backend included, so
+none of s13–s15 starts before the release.
+
 | # | Branch | Scope | Done when |
 |---|---|---|---|
 | s13 | `embedded-shim` | zenoh-nostd dependency; `ZLink` shim over `StreamDialer` that owns its socket; `Resources` per connection (053 §5.2) | Builds for `thumbv7em-none-eabihf`; loopback tests |
 | s14 | `embedded-session` | Embedded session task; gateway interop on the host over `TokioNet` on a `current_thread` runtime; allocation bench rows | Criteria 3, 7 and 12 |
 | s15 | `hardware` | STM32H5 example; flash and RAM against the MQTT embedded build | Criteria 4 and 5 |
-| s16 | `docs` | Connector guide section, "AimDB and ROS 2" page, CHANGELOGs | The feature branch is ready to merge into `main` |
+| s16 | `docs` | For the native release: CHANGELOGs, the connector's README, an "AimDB and ROS 2" page, the usage guide, and the crate in the publish set | The feature branch is ready to merge into `main` |
 
 ## Notes for s08
 
@@ -112,3 +116,7 @@ zenoh 1.10.1 session. Each is resolved in s08, as the last sentence says.
 - Upstream work (a zenoh-nostd release, `Send` cleanliness, the liveliness
   API, an own-ZID accessor) happens outside this repository. Only the
   release blocks v1's embedded half, from s13.
+- Follow-ups after s16, not stages of this plan: refresh design 012 (the
+  connector development guide still describes the pre-054 `Connector` trait
+  and pumps), a BYOC tutorial built on this connector, and the
+  manufacturing-cell demo (053 §11 step 7).

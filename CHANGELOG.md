@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-codegen/CHANGELOG.md](aimdb-codegen/CHANGELOG.md)
 > - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
 > - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
+> - [aimdb-cdr/CHANGELOG.md](aimdb-cdr/CHANGELOG.md)
 > - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
 > - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
 > - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
+> - [aimdb-zenoh-connector/CHANGELOG.md](aimdb-zenoh-connector/CHANGELOG.md)
 > - [aimdb-knx-connector/CHANGELOG.md](aimdb-knx-connector/CHANGELOG.md)
 > - [aimdb-websocket-connector/CHANGELOG.md](aimdb-websocket-connector/CHANGELOG.md)
 > - [aimdb-uds-connector/CHANGELOG.md](aimdb-uds-connector/CHANGELOG.md)
@@ -28,6 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
+
+### Added — Zenoh connector and ROS 2 topics
+
+- **AimDB records as ROS 2 topics, with no ROS install on the AimDB side.**
+  `Ros2Connector` speaks rmw_zenoh's conventions (data keys, liveliness
+  tokens, attachments, CDR), so `ros2 node list`, `ros2 topic info -v`,
+  `ros2 topic echo` and `ros2 topic pub` see AimDB as a ROS node. A struct
+  becomes a ROS message with `#[derive(RosMessage)]`.
+  ([aimdb-zenoh-connector](aimdb-zenoh-connector/CHANGELOG.md),
+  [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md),
+  [aimdb-derive](aimdb-derive/CHANGELOG.md))
+- **`zenoh://` links** with Zenoh key expressions, captures and keys, and a
+  gateway that bridges devices on plain Zenoh to ROS 2 on one router
+  connection. ([aimdb-zenoh-connector](aimdb-zenoh-connector/CHANGELOG.md))
+- **`aimdb-cdr`**: `no_std` serde for OMG CDR, the ROS 2 wire format.
+  ([aimdb-cdr](aimdb-cdr/CHANGELOG.md))
+- **Connectors learn each link's record type and wire format**:
+  `RouteInfo::type_id`, `InboundDispatch::routes()` and the reserved
+  `aimdb.wire_format` link key. ([aimdb-core](aimdb-core/CHANGELOG.md))
 
 ### Added — wildcard inbound links
 

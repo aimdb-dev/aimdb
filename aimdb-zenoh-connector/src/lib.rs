@@ -6,8 +6,9 @@
 //! ## Features
 //!
 //! - `std`: the `zenoh` crate backend, both schemes
-//! - `embedded`: the `zenoh-nostd` backend over a caller-supplied transport,
-//!   `zenoh://` only
+//! - `embedded`: reserved for the `zenoh-nostd` backend (`zenoh://` only),
+//!   which follows once zenoh-nostd is on crates.io; today it builds the
+//!   `no_std` parts, such as `ZenohGrammar`
 //! - `transport-tls`, `transport-quic`, `transport-ws`: further Zenoh
 //!   transports for the `std` backend
 //!

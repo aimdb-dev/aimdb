@@ -282,13 +282,13 @@ async fn main(_spawner: Spawner) {
 
 ## Using Connectors
 
-AimDB connectors enable integration with external protocols and systems. All connectors support both Tokio and Embassy runtimes.
+AimDB connectors enable integration with external protocols and systems. KNX and MQTT run on both Tokio and Embassy; the Zenoh connector is `std` only for now.
 
 ---
 
 ## Using Connectors
 
-AimDB connectors enable integration with external protocols and systems. All connectors support both Tokio and Embassy runtimes.
+AimDB connectors enable integration with external protocols and systems. KNX and MQTT run on both Tokio and Embassy; the Zenoh connector is `std` only for now.
 
 ### KNX Connector
 
@@ -428,6 +428,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [tokio-mqtt-connector-demo](../examples/tokio-mqtt-connector-demo) - Full Tokio example
 - [embassy-mqtt-connector-demo](../examples/embassy-mqtt-connector-demo) - Full Embassy example
 
+### Zenoh Connector and ROS 2
+
+The Zenoh connector serves `zenoh://` links, and `ros2://` links that make
+records ROS 2 topics through rmw_zenoh, with no ROS installation on the AimDB
+side.
+
+**Add to Cargo.toml:**
+```toml
+aimdb-zenoh-connector = { version = "0.1", features = ["std"] }
+aimdb-data-contracts = { version = "0.2", features = ["ros2"] }   # #[derive(RosMessage)]
+```
+
+```rust
+use aimdb_zenoh_connector::{Ros2Connector, Ros2Node, ZenohConnector};
+
+// Plain Zenoh
+let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
+builder.configure::<MachineState>("cell4.state", |reg| {
+    reg.buffer(BufferCfg::SingleLatest)
+        .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
+});
+
+// ROS 2, on the same session
+let ros2 = zenoh.ros2(Ros2Node::new("cell4_gateway")).register::<Temperature>();
+builder.configure::<Temperature>("cell4.temperature", |reg| {
+    reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+        .linked_to("ros2://cell4/temperature");
+});
+```
+
+See [AimDB and ROS 2](aimdb-and-ros2.md) for message types, domains, QoS and
+the gateway pattern.
+
 ---
 
 ## Current Status & Limitations
@@ -438,6 +471,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **aimdb-embassy-adapter**: Embassy runtime support (embedded)
 - **aimdb-knx-connector**: KNX/IP tunneling (both runtimes)
 - **aimdb-mqtt-connector**: MQTT (both runtimes)
+- **aimdb-zenoh-connector**: Zenoh, and ROS 2 topics through rmw_zenoh (std)
 - **aimdb-sync**: Synchronous API wrapper
 - **aimdb-client**: Remote database access (AimX protocol)
 
