@@ -16,10 +16,12 @@ use aimdb_data_contracts::{ros2, RosMessage, WireFormat};
 use zenoh::key_expr::KeyExpr;
 use zenoh::qos::CongestionControl;
 use zenoh::sample::{Locality, SampleKind};
+use zenoh::Session;
 
-use crate::connector::{BoxFuture, BuildFuture};
-use crate::native::{config_error, open, session_config};
+use crate::connector::BuildFuture;
+use crate::native::config_error;
 use crate::profile::{self, Attachment, Durability, EntityKind, History, Node, Qos, Reliability};
+use crate::shared::Shared;
 
 /// The URL scheme of ROS 2 topic links.
 pub(crate) const SCHEME: &str = "ros2";
@@ -77,9 +79,11 @@ struct RosType {
 ///     .register::<Temperature>();
 /// builder.with_connector(ros2);
 /// ```
+///
+/// Next to `zenoh://` links, derive it from the [`ZenohConnector`](crate::ZenohConnector)
+/// with `.ros2(node)` instead, so both ride one session.
 pub struct Ros2Connector {
-    endpoint: String,
-    config: Option<zenoh::Config>,
+    shared: Arc<Shared>,
     node: Ros2Node,
     domain: Option<u32>,
     types: Vec<RosType>,
@@ -88,9 +92,14 @@ pub struct Ros2Connector {
 impl Ros2Connector {
     /// Connect to the Zenoh router at `endpoint` (`tcp/host:port`) as `node`.
     pub fn new(endpoint: impl Into<String>, node: Ros2Node) -> Self {
+        Self::on(Shared::new(endpoint.into()), node)
+    }
+
+    /// The view of an existing session.
+    pub(crate) fn on(shared: Arc<Shared>, node: Ros2Node) -> Self {
+        shared.ros2_view_created();
         Self {
-            endpoint: endpoint.into(),
-            config: None,
+            shared,
             node,
             domain: None,
             types: Vec::new(),
@@ -118,8 +127,9 @@ impl Ros2Connector {
 
     /// Start from `config` instead of Zenoh's defaults in client mode; see
     /// [`ZenohConnector::with_zenoh_config`](crate::ZenohConnector::with_zenoh_config).
-    pub fn with_zenoh_config(mut self, config: zenoh::Config) -> Self {
-        self.config = Some(config);
+    /// On a shared session it configures that session.
+    pub fn with_zenoh_config(self, config: zenoh::Config) -> Self {
+        self.shared.set_config(config);
         self
     }
 }
@@ -161,17 +171,14 @@ impl ConnectorBuilder for Ros2Connector {
                 log_warn!("{}", warning);
             }
 
-            let config = session_config(&self.endpoint, self.config.clone())?;
-            let task: BoxFuture = Box::pin(run(
-                config,
+            self.shared.deposit_ros2(Ros2Parts {
                 domain,
-                self.node.clone(),
+                node: self.node.clone(),
                 outbound,
                 publishers,
                 inbound,
                 subscriptions,
-            ));
-            Ok(Vec::from([task]))
+            })
         })
     }
 
@@ -379,129 +386,140 @@ fn qos(options: &[(String, String)]) -> Result<Qos, String> {
     Ok(qos)
 }
 
-/// Open the session; declare the node's, every publisher's and every
-/// subscription's liveliness token; subscribe; then publish each value with
-/// its attachment.
-async fn run(
-    config: zenoh::Config,
+/// What `build()` prepares for the session task.
+pub(crate) struct Ros2Parts {
     domain: u32,
     node: Ros2Node,
-    mut outbound: OutboundRoutes,
+    outbound: OutboundRoutes,
     publishers: Vec<Publisher>,
     inbound: InboundDispatch,
     subscriptions: Subscriptions,
-) {
-    let session = open(config).await;
-    let zid = session.zid().to_string();
-    let identity = Node {
-        domain,
-        zid: &zid,
-        id: 0,
-        enclave: "/",
-        namespace: &node.namespace,
-        name: &node.name,
-    };
-    let token = |link: &Link, kind| {
-        profile::entity_token(
-            &identity,
-            link.entity_id,
-            kind,
-            &link.topic,
-            link.ty.dds_name,
-            link.ty.hash,
-            &link.qos,
-        )
-    };
+}
 
-    let mut tokens = Vec::with_capacity(1 + publishers.len() + subscriptions.links.len());
-    tokens.push(profile::node_token(&identity));
-    let mut gids = Vec::with_capacity(publishers.len());
-    for publisher in &publishers {
-        let token = token(&publisher.link, EntityKind::Publisher);
-        gids.push(profile::gid(&token));
-        tokens.push(token);
-    }
-    for link in &subscriptions.links {
-        tokens.push(token(link, EntityKind::Subscription));
-    }
-    // Declared before the first publish, as rmw_zenoh does.
-    let mut live = Vec::with_capacity(tokens.len());
-    for token in tokens {
-        match session.liveliness().declare_token(token).await {
-            Ok(token) => live.push(token),
-            Err(_e) => log_error!("ROS 2: cannot declare a liveliness token: {}", _e),
+impl Ros2Parts {
+    /// Declare the node's, every publisher's and every subscription's
+    /// liveliness token; subscribe; then publish each value with its
+    /// attachment.
+    pub(crate) async fn serve(self, session: &Session) {
+        let Ros2Parts {
+            domain,
+            node,
+            mut outbound,
+            publishers,
+            inbound,
+            subscriptions,
+        } = self;
+        let zid = session.zid().to_string();
+        let identity = Node {
+            domain,
+            zid: &zid,
+            id: 0,
+            enclave: "/",
+            namespace: &node.namespace,
+            name: &node.name,
+        };
+        let token = |link: &Link, kind| {
+            profile::entity_token(
+                &identity,
+                link.entity_id,
+                kind,
+                &link.topic,
+                link.ty.dds_name,
+                link.ty.hash,
+                &link.qos,
+            )
+        };
+
+        let mut tokens = Vec::with_capacity(1 + publishers.len() + subscriptions.links.len());
+        tokens.push(profile::node_token(&identity));
+        let mut gids = Vec::with_capacity(publishers.len());
+        for publisher in &publishers {
+            let token = token(&publisher.link, EntityKind::Publisher);
+            gids.push(profile::gid(&token));
+            tokens.push(token);
         }
-    }
-
-    let mut subscribers = Vec::with_capacity(subscriptions.subscribers.len());
-    for (key, topic) in subscriptions.subscribers {
-        let inbound = inbound.clone();
-        let declared = session
-            .declare_subscriber(key)
-            .allowed_origin(Locality::Remote)
-            .callback(move |sample| {
-                // A delete has no value; the attachment is not needed.
-                if sample.kind() == SampleKind::Put {
-                    inbound.dispatch(&topic, &sample.payload().to_bytes());
-                }
-            })
-            .await;
-        match declared {
-            Ok(subscriber) => subscribers.push(subscriber),
-            Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", _e),
+        for link in &subscriptions.links {
+            tokens.push(token(link, EntityKind::Subscription));
         }
-    }
-
-    let mut senders = Vec::with_capacity(publishers.len());
-    for publisher in &publishers {
-        let declared = session
-            .declare_publisher(publisher.link.key.clone())
-            .congestion_control(CongestionControl::Drop)
-            .allowed_destination(Locality::Remote)
-            .await;
-        match declared {
-            Ok(sender) => senders.push(Some(sender)),
-            Err(_e) => {
-                log_error!(
-                    "ROS 2: cannot declare a publisher on '{}': {}",
-                    publisher.link.topic,
-                    _e
-                );
-                senders.push(None);
+        // Declared before the first publish, as rmw_zenoh does.
+        let mut live = Vec::with_capacity(tokens.len());
+        for token in tokens {
+            match session.liveliness().declare_token(token).await {
+                Ok(token) => live.push(token),
+                Err(_e) => log_error!("ROS 2: cannot declare a liveliness token: {}", _e),
             }
         }
-    }
 
-    let mut sequence = std::vec![0i64; publishers.len()];
-    while let Some(msg) = outbound.next().await {
-        let id = msg.route.id;
-        let Some(sender) = &senders[id] else {
-            outbound.reject(id);
-            continue;
-        };
-        sequence[id] += 1;
-        let attachment = Attachment {
-            sequence: sequence[id],
-            timestamp_ns: now_ns(),
-            gid: gids[id],
-        };
-        let result = sender
-            .put(msg.payload.into_vec())
-            .attachment(attachment.encode())
-            .await;
-        if let Err(_e) = result {
-            log_error!(
-                "ROS 2: put on '{}' failed: {}",
-                publishers[id].link.topic,
-                _e
-            );
-            outbound.reject(id);
+        let mut subscribers = Vec::with_capacity(subscriptions.subscribers.len());
+        for (key, topic) in subscriptions.subscribers {
+            let inbound = inbound.clone();
+            let declared = session
+                .declare_subscriber(key)
+                .allowed_origin(Locality::Remote)
+                .callback(move |sample| {
+                    // A delete has no value; the attachment is not needed.
+                    if sample.kind() == SampleKind::Put {
+                        inbound.dispatch(&topic, &sample.payload().to_bytes());
+                    }
+                })
+                .await;
+            match declared {
+                Ok(subscriber) => subscribers.push(subscriber),
+                Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", _e),
+            }
         }
+
+        let mut senders = Vec::with_capacity(publishers.len());
+        for publisher in &publishers {
+            let declared = session
+                .declare_publisher(publisher.link.key.clone())
+                .congestion_control(CongestionControl::Drop)
+                .allowed_destination(Locality::Remote)
+                .await;
+            match declared {
+                Ok(sender) => senders.push(Some(sender)),
+                Err(_e) => {
+                    log_error!(
+                        "ROS 2: cannot declare a publisher on '{}': {}",
+                        publisher.link.topic,
+                        _e
+                    );
+                    senders.push(None);
+                }
+            }
+        }
+
+        let mut sequence = std::vec![0i64; publishers.len()];
+        while let Some(msg) = outbound.next().await {
+            let id = msg.route.id;
+            let Some(sender) = &senders[id] else {
+                outbound.reject(id);
+                continue;
+            };
+            sequence[id] += 1;
+            let attachment = Attachment {
+                sequence: sequence[id],
+                timestamp_ns: now_ns(),
+                gid: gids[id],
+            };
+            let result = sender
+                .put(msg.payload.into_vec())
+                .attachment(attachment.encode())
+                .await;
+            if let Err(_e) = result {
+                log_error!(
+                    "ROS 2: put on '{}' failed: {}",
+                    publishers[id].link.topic,
+                    _e
+                );
+                outbound.reject(id);
+            }
+        }
+        // The tokens keep the node in the ROS graph, and the subscribers deliver,
+        // for the life of the database.
+        let _alive = (live, subscribers);
+        core::future::pending::<()>().await;
     }
-    // The tokens keep the node in the ROS graph, and the subscribers deliver,
-    // for the life of the database.
-    let _alive = (live, subscribers);
-    core::future::pending::<()>().await;
 }
 
 fn now_ns() -> i64 {

@@ -34,6 +34,10 @@ pub use connector::{Native, ZenohConnector};
 #[cfg(feature = "std")]
 mod native;
 
+// The session a `ZenohConnector` and its `Ros2Connector` share.
+#[cfg(feature = "std")]
+mod shared;
+
 // `ros2://` links, on the `zenoh` crate backend.
 #[cfg(feature = "std")]
 mod ros2;
