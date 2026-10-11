@@ -137,6 +137,13 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
   subscription on the session; one that panics drops its sample, logged.
 - **Keys are at most 65,535 bytes**, the Zenoh wire format's limit: a longer
   fixed key fails the build, a longer written key is skipped.
+- **An inner `**` is exposed to
+  [zenoh#2836](https://github.com/eclipse-zenoh/zenoh/issues/2836).** Zenoh
+  checks each delivered sample against every subscription with `intersects`,
+  which recurses once per chunk under a `**` that more chunks follow. On an
+  inbound link such as `zenoh://site/{path..}/state`, one sample with a long
+  matching key (about 64 KB) overflows a stack and aborts the process. A `**`
+  or `{name..}` at the end of a link is not affected.
 - **Transport compression stays off.** zenoh 1.10.1 decompresses through
   `lz4_flex` 0.10.0, which has RUSTSEC-2026-0041; this crate never enables it.
   An application whose own dependencies enable `zenoh`'s compression, for

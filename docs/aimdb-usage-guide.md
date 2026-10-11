@@ -443,15 +443,18 @@ aimdb-data-contracts = { version = "0.2", features = ["ros2"] }   # #[derive(Ros
 ```rust
 use aimdb_zenoh_connector::{Ros2Connector, Ros2Node, ZenohConnector};
 
-// Plain Zenoh
+// Plain Zenoh, and ROS 2 on the same session: register both
 let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
+let ros2 = zenoh.ros2(Ros2Node::new("cell4_gateway")).register::<Temperature>();
+let mut builder = AimDbBuilder::new()
+    .runtime(runtime)
+    .with_connector(zenoh)
+    .with_connector(ros2);
+
 builder.configure::<MachineState>("cell4.state", |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
 });
-
-// ROS 2, on the same session
-let ros2 = zenoh.ros2(Ros2Node::new("cell4_gateway")).register::<Temperature>();
 builder.configure::<Temperature>("cell4.temperature", |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");

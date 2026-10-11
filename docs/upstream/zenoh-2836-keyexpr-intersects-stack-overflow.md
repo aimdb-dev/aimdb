@@ -7,11 +7,29 @@
 
 ## Why it matters to AimDB
 
-`ZenohGrammar` does its own matching and does not call `intersects`, so the
-connector is not affected (053 §4.3). Its matcher handles a 64 KB key in about
-a millisecond (`long_keys_match_in_linear_time`). The issue matters if the
-connector ever delegates matching to `zenoh-keyexpr`, and for the grammar
-oracle, whose corpus keeps keys short.
+`ZenohGrammar` does its own matching and does not call `intersects`; it
+handles a 64 KB key in about a millisecond (`long_keys_match_in_linear_time`).
+zenoh calls it, though: `Session` matches every sample it delivers against
+each subscriber's key expression with `intersects` (`subscriber_callbacks` in
+`zenoh/src/api/session.rs`, 1.10.1). So an inbound `zenoh://` link whose
+filter has a `**` that other chunks follow, such as
+`zenoh://site/{path..}/state`, is reachable from the network: any client that
+can publish a matching key through the router can abort the process.
+
+Measured on zenoh 1.10.1, release build. A client subscribed to `a/**/b`
+through a router received one `put` on a matching key of 32,000 chunks
+(64,001 bytes, inside the wire format's limit). Its receive thread (`rx-0`)
+overflowed its stack and the process aborted; the router survived. Peer to
+peer, `**/b` and `a/*/**/b` aborted the same way. A trailing `**` is not
+affected: `a/**` received a key of 32,000 chunks, because `intersects`
+returns at once when the `**` is last.
+
+The connector has no guard yet; its README lists this under Limits. A guard
+could declare such a filter only up to its first `**` and match the filter
+itself in the callback, except a filter with a verbatim chunk after that
+`**`, which no wider key covers. The issue also matters if the connector ever
+delegates matching to `zenoh-keyexpr`, and for the grammar oracle, whose
+corpus keeps keys short.
 
 ## Issue as filed
 
