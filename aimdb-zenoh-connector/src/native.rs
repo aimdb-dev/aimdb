@@ -63,6 +63,11 @@ pub(crate) struct ZenohParts {
     keys: Vec<KeyExpr<'static>>,
 }
 
+/// The longest key the Zenoh wire format carries: its length is a `u16`. A
+/// longer key panics zenoh-transport while it holds its pipeline lock, which
+/// aborts the process.
+pub(crate) const KEY_MAX: usize = u16::MAX as usize;
+
 pub(crate) fn config_error(message: String) -> DbError {
     DbError::runtime_error(format!("Failed to build Zenoh connector: {message}"))
 }
@@ -72,6 +77,12 @@ pub(crate) fn config_error(message: String) -> DbError {
 /// samples.
 fn route_key(route: &RouteInfo) -> DbResult<KeyExpr<'static>> {
     let topic = &*route.default_topic;
+    if topic.len() > KEY_MAX {
+        return Err(config_error(format!(
+            "outbound key of {} bytes is longer than {KEY_MAX}",
+            topic.len()
+        )));
+    }
     let key = KeyExpr::try_from(topic.to_string())
         .map_err(|e| config_error(format!("'{topic}' is not a key expression: {e}")))?;
     if topic.contains('*') {
@@ -118,6 +129,12 @@ fn subscriptions(
         .subscriptions()
         .iter()
         .map(|filter| {
+            if filter.len() > KEY_MAX {
+                return Err(config_error(format!(
+                    "filter of {} bytes is longer than {KEY_MAX}",
+                    filter.len()
+                )));
+            }
             let key = KeyExpr::try_from(filter.to_string())
                 .map_err(|e| config_error(format!("filter '{filter}': {e}")))?;
             let compiled = TopicPattern::parse(filter)
@@ -196,10 +213,19 @@ impl ZenohParts {
 }
 
 /// Open a session, retrying with a back-off while no router answers.
+///
+/// Each attempt runs on a task of its own: zenoh's `open` blocks its thread
+/// until it connects or times out (up to `open_timeout`, 10 s by default),
+/// which would stall every other future of the database.
 pub(crate) async fn open(config: zenoh::Config) -> Session {
     let mut wait = OPEN_RETRY;
     let session = loop {
-        match zenoh::open(config.clone()).await {
+        let attempt = config.clone();
+        let opened = tokio::spawn(async move { zenoh::open(attempt).await })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|opened| opened.map_err(|e| e.to_string()));
+        match opened {
             Ok(session) => break session,
             Err(_e) => {
                 log_warn!(
@@ -216,9 +242,39 @@ pub(crate) async fn open(config: zenoh::Config) -> Session {
     session
 }
 
-/// A key written by a topic writer, if it is a valid key without wildcards.
+/// A key written by a topic writer, if it is a valid key without wildcards
+/// that the wire format can carry.
 fn written_key(topic: &str) -> Option<&keyexpr> {
-    keyexpr::new(topic).ok().filter(|_| !topic.contains('*'))
+    if topic.len() > KEY_MAX || topic.contains('*') {
+        return None;
+    }
+    keyexpr::new(topic).ok()
+}
+
+/// The zenoh runtime refuses Tokio's current-thread scheduler: every open
+/// would panic. One worker thread is enough.
+pub(crate) fn check_runtime() -> DbResult<()> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
+            Err(config_error(String::from(
+                "zenoh needs Tokio's multi-thread scheduler; one worker thread is enough \
+                 (`#[tokio::main(flavor = \"multi_thread\", worker_threads = 1)]`)",
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Dispatches a sample, so that a panicking deserializer drops the sample
+/// instead of unwinding out of zenoh's receive task, which would end every
+/// subscription on the session for good.
+pub(crate) fn dispatch_guarded(inbound: &InboundDispatch, topic: &str, payload: &[u8]) {
+    let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        inbound.dispatch(topic, payload)
+    }));
+    if dispatched.is_err() {
+        log_error!("Zenoh: ingest panicked on '{}'; sample dropped", topic);
+    }
 }
 
 /// One subscriber per filter. A sample matching several filters reaches
@@ -259,7 +315,7 @@ async fn subscribe(
                 if shadows.iter().any(|f| f.matches(key, &mut spans)) {
                     return;
                 }
-                inbound.dispatch(key, &sample.payload().to_bytes());
+                dispatch_guarded(&inbound, key, &sample.payload().to_bytes());
             })
             .await;
         match declared {

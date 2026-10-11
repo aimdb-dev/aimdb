@@ -45,8 +45,10 @@ pub struct ZenohConnector<B = Native> {
 
 impl ZenohConnector<Native> {
     /// Connect to a Zenoh router at `endpoint`, in Zenoh's locator syntax
-    /// (`tcp/host:port`). An empty endpoint connects nowhere, for a session
-    /// whose `with_zenoh_config` (with `std`) says where to go.
+    /// (`tcp/host:port`). An empty endpoint adds none: the session then
+    /// follows its config, whose defaults scout the LAN by multicast and
+    /// connect to whatever answers. Pair it with `with_zenoh_config` (with
+    /// `std`).
     pub fn new(endpoint: impl Into<String>) -> Self {
         let endpoint = endpoint.into();
         Self {
@@ -65,7 +67,8 @@ impl ZenohConnector<Native> {
     }
 
     /// `ros2://` links on this connector's session: one router connection for
-    /// both schemes. Register both connectors.
+    /// both schemes. Register both connectors on the same `AimDbBuilder`:
+    /// the session belongs to the first of them to build.
     ///
     /// ```rust,ignore
     /// let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");

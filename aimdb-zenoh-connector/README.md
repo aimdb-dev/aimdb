@@ -18,8 +18,12 @@ aimdb-data-contracts = { version = "0.2", features = ["ros2"] }
 |---|---|
 | `std` | The `zenoh` crate backend: `zenoh://` and `ros2://`, over TCP and UDP |
 | `transport-tls`, `transport-quic`, `transport-ws` | Further Zenoh transports for `with_zenoh_config` |
+| `auth-usrpwd` | Zenoh user/password authentication; without it `transport/auth/usrpwd` in a config is ignored. Pubkey auth is left out: it pulls in `rsa` (RUSTSEC-2023-0071); use mutual TLS instead |
 | `tracing`, `log` | Logging through aimdb-core's facade |
 | `embedded` | Reserved for the `zenoh-nostd` backend, which follows once zenoh-nostd is on crates.io |
+
+The `std` backend needs Tokio's multi-thread scheduler (one worker thread is
+enough); `build()` fails on the current-thread scheduler.
 
 ## ROS 2 topics
 
@@ -68,8 +72,8 @@ builder.configure::<SpindleCommand>("cell4.spindle.cmd", |reg| {
   ```
 
 - `build()` fails for a type that is not registered, a codec other than CDR,
-  a topic writer, a `{…}` pattern, two types on one topic, an invalid ROS name
-  and a domain above 232.
+  a topic writer, a `{…}` pattern, two ROS types on one topic, and an invalid
+  ROS name or `ROS_DOMAIN_ID`. A domain above 232 warns.
 
 See [AimDB and ROS 2](https://github.com/aimdb-dev/aimdb/blob/main/docs/aimdb-and-ros2.md) for the type mapping, the
 gateway pattern and how to check the result with the ROS 2 CLI.
@@ -106,7 +110,8 @@ builder.configure::<MachineState>("cells.state", |reg| {
 ## Both on one session
 
 A gateway bridges devices on plain Zenoh to ROS 2. Derive the ROS view from
-the Zenoh connector so both share one router connection:
+the Zenoh connector so both share one router connection, and register both
+on the same `AimDbBuilder`:
 
 ```rust,ignore
 let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
@@ -128,6 +133,10 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
   its token but is sent on Zenoh's default reliable path, because zenoh 1.10's
   publisher reliability is still an unstable API.
 - **No services, actions or `TRANSIENT_LOCAL`** yet.
+- **Deserializers run on Zenoh's receive thread.** A slow one delays every
+  subscription on the session; one that panics drops its sample, logged.
+- **Keys are at most 65,535 bytes**, the Zenoh wire format's limit: a longer
+  fixed key fails the build, a longer written key is skipped.
 - **Transport compression stays off.** zenoh 1.10.1 decompresses through
   `lz4_flex` 0.10.0, which has RUSTSEC-2026-0041; this crate never enables it.
   An application whose own dependencies enable `zenoh`'s compression, for

@@ -34,7 +34,7 @@ MQTT_DEPENDENCY_FORBIDDEN := embedded-io|embedded-hal|tokio
 # The `zenoh` crate (not `zenoh-nostd`/`zenoh-keyexpr`) and tokio are std-only.
 ZENOH_EMBEDDED_FORBIDDEN := (^|[^-])zenoh v[0-9]|tokio
 # `cargo deny check` sees default features only, which leave `zenoh` out.
-ZENOH_DENY := cargo deny --features "std,transport-tls,transport-quic,transport-ws" --manifest-path aimdb-zenoh-connector/Cargo.toml
+ZENOH_DENY := cargo deny --features "std,transport-tls,transport-quic,transport-ws,auth-usrpwd" --manifest-path aimdb-zenoh-connector/Cargo.toml
 # The guards below grep `cargo tree`'s stdout only — never `2>&1`. Cargo writes
 # progress to stderr, so on a cold cache "Downloaded embedded-hal-nb v1.0.0"
 # matches these patterns and fails the build.
@@ -391,7 +391,7 @@ clippy:
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (std)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --features "std" --all-targets -- -D warnings
-	cargo clippy --package aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws" -- -D warnings
+	cargo clippy --package aimdb-zenoh-connector --features "std,tracing,transport-tls,transport-quic,transport-ws,auth-usrpwd" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on Zenoh connector (embedded, no_std+alloc)$(NC)\n"
 	cargo clippy --package aimdb-zenoh-connector --no-default-features --features "embedded" --all-targets -- -D warnings
 	cargo clippy --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -- -D warnings

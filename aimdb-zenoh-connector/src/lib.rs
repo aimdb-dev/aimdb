@@ -11,6 +11,10 @@
 //!   `no_std` parts, such as `ZenohGrammar`
 //! - `transport-tls`, `transport-quic`, `transport-ws`: further Zenoh
 //!   transports for the `std` backend
+//! - `auth-usrpwd`: Zenoh user/password authentication for the `std` backend
+//!
+//! The `std` backend needs Tokio's multi-thread scheduler; one worker thread
+//! is enough. `build()` fails on the current-thread scheduler.
 //!
 //! ## Zenoh transport compression
 //!

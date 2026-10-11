@@ -73,9 +73,9 @@ let ros2 = Ros2Connector::new("tcp/192.168.10.5:7447",
     .register::<SpindleCommand>();
 ```
 
-- **Domain:** `domain_id(n)`; without it `ROS_DOMAIN_ID`, as `rcl` reads it;
-  without that 0. It must be 0 to 232. Like a wrong hash, a wrong domain fails
-  silently.
+- **Domain:** `domain_id(n)`; without it `ROS_DOMAIN_ID`, read as `rcl`
+  reads it (`010` is 8, `0xA` is 10); without that 0. Above 232, the highest
+  ROS 2 documents, it warns. Like a wrong hash, a wrong domain fails silently.
 - **Namespace:** the node's identity in `ros2 node list`. It does not prefix
   topics: `ros2://cell4/spindle_cmd` is always `/cell4/spindle_cmd`.
 - **Links:** `linked_to("ros2://…")` makes a record a ROS publisher,
@@ -84,8 +84,8 @@ let ros2 = Ros2Connector::new("tcp/192.168.10.5:7447",
   override it. Reliability is advertised only: the data travels on Zenoh's
   reliable default.
 - **Mistakes fail `build()`:** an unregistered type, a codec other than CDR, a
-  topic writer, a `{…}` pattern, two types on one topic, an invalid ROS name or
-  domain. A custom serializer is allowed and logs a warning, since nothing can
+  topic writer, a `{…}` pattern, two ROS types on one topic (publisher or
+  subscription), an invalid ROS name or `ROS_DOMAIN_ID`. A custom serializer is allowed and logs a warning, since nothing can
   check that it writes CDR.
 
 ## Microcontrollers: the gateway

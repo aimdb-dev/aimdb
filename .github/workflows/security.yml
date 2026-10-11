@@ -58,4 +58,4 @@ jobs:
 
     # `cargo deny check` sees default features only, which leave `zenoh` out.
     - name: Run cargo-deny on the Zenoh connector's std graph
-      run: cargo deny --features "std,transport-tls,transport-quic,transport-ws" --manifest-path aimdb-zenoh-connector/Cargo.toml check
+      run: cargo deny --features "std,transport-tls,transport-quic,transport-ws,auth-usrpwd" --manifest-path aimdb-zenoh-connector/Cargo.toml check

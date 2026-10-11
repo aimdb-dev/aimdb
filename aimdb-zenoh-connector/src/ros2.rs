@@ -19,7 +19,7 @@ use zenoh::sample::{Locality, SampleKind};
 use zenoh::Session;
 
 use crate::connector::BuildFuture;
-use crate::native::config_error;
+use crate::native::{config_error, dispatch_guarded};
 use crate::profile::{self, Attachment, Durability, EntityKind, History, Node, Qos, Reliability};
 use crate::shared::Shared;
 
@@ -139,6 +139,9 @@ impl ConnectorBuilder for Ros2Connector {
         Box::pin(async move {
             let domain = resolve_domain(self.domain, std::env::var(DOMAIN_ENV).ok().as_deref())
                 .map_err(config_error)?;
+            if let Some(warning) = domain_warning(domain) {
+                log_warn!("{}", warning);
+            }
             let node = &self.node;
             profile::validate_node_name(&node.name)
                 .map_err(|e| config_error(format!("node name '{}' {e}", node.name)))?;
@@ -161,6 +164,14 @@ impl ConnectorBuilder for Ros2Connector {
             let first_id = publishers.len() as u32 + 1;
             let subscriptions =
                 subscriptions(&inbound, &self.types, domain, first_id).map_err(config_error)?;
+
+            one_type_per_topic(
+                publishers
+                    .iter()
+                    .map(|p| &p.link)
+                    .chain(subscriptions.links.iter()),
+            )
+            .map_err(config_error)?;
 
             for warning in publishers
                 .iter()
@@ -192,26 +203,41 @@ impl ConnectorBuilder for Ros2Connector {
 }
 
 /// The domain `rcl` would use: the explicit one, else `ROS_DOMAIN_ID` unless
-/// it is empty, else 0. ROS 2 documents domains 0 to 232; a higher one would
-/// put the node where no other node is.
+/// it is empty, else 0. `ROS_DOMAIN_ID` is read as `strtoul(.., 0)` reads it:
+/// `0x` is hex and a leading `0` octal, so `010` is domain 8.
 fn resolve_domain(explicit: Option<u32>, env: Option<&str>) -> Result<u32, String> {
     let env = env.map(str::trim).filter(|v| !v.is_empty());
-    let (domain, source) = match (explicit, env) {
-        (Some(domain), _) => (domain, "domain_id(..)"),
+    match (explicit, env) {
+        (Some(domain), _) => Ok(domain),
         (None, Some(value)) => {
-            let domain = value
-                .parse()
-                .map_err(|_| format!("{DOMAIN_ENV}='{value}' is not a domain id"))?;
-            (domain, DOMAIN_ENV)
+            parse_domain(value).ok_or_else(|| format!("{DOMAIN_ENV}='{value}' is not a domain id"))
         }
-        (None, None) => return Ok(0),
-    };
-    if domain > DOMAIN_MAX {
-        return Err(format!(
-            "domain {domain} from {source} is above {DOMAIN_MAX}, the highest ROS 2 domain"
-        ));
+        (None, None) => Ok(0),
     }
-    Ok(domain)
+}
+
+/// An unsigned integer in C's base-0 notation: decimal, `0x…` hex, `0…` octal.
+fn parse_domain(value: &str) -> Option<u32> {
+    let (digits, radix) = match value.as_bytes() {
+        [b'0', b'x' | b'X', rest @ ..] if !rest.is_empty() => (&value[2..], 16),
+        [b'0', rest @ ..] if !rest.is_empty() => (&value[1..], 8),
+        _ => (value, 10),
+    };
+    if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, radix).ok()
+}
+
+/// ROS 2 documents domains 0 to 232, the range DDS can map to ports. rmw_zenoh
+/// accepts any, but a node there is out of reach of DDS-based ROS 2.
+fn domain_warning(domain: u32) -> Option<String> {
+    (domain > DOMAIN_MAX).then(|| {
+        format!(
+            "ROS 2 domain {domain} is above {DOMAIN_MAX}, the highest ROS 2 documents; \
+             rmw_zenoh accepts it, DDS-based ROS 2 does not"
+        )
+    })
 }
 
 /// A registered type's own claims: it is CDR, and its names are well formed.
@@ -293,6 +319,28 @@ fn codec_warning(resource: &str, options: &[(String, String)]) -> Result<Option<
     }
 }
 
+/// A ROS topic has one type: every link on a topic, publisher or
+/// subscription, names the same ROS type and hash. Two Rust types that mirror
+/// one ROS type may share a topic.
+fn one_type_per_topic<'a>(links: impl Iterator<Item = &'a Link>) -> Result<(), String> {
+    let mut seen: Vec<&Link> = Vec::new();
+    for link in links {
+        match seen.iter().find(|l| l.topic == link.topic) {
+            Some(other)
+                if (other.ty.dds_name, other.ty.hash) != (link.ty.dds_name, link.ty.hash) =>
+            {
+                return Err(format!(
+                    "ros2:/{} is linked as {} ({}) and as {} ({}); a ROS topic has one type",
+                    link.topic, other.ty.dds_name, other.ty.hash, link.ty.dds_name, link.ty.hash
+                ));
+            }
+            Some(_) => {}
+            None => seen.push(link),
+        }
+    }
+    Ok(())
+}
+
 /// An outbound link: a ROS publisher.
 struct Publisher {
     link: Link,
@@ -348,14 +396,7 @@ fn subscriptions(
             domain,
             first_id + i as u32,
         )?;
-        if let Some(other) = links.iter().find(|l| l.topic == link.topic) {
-            if other.ty.type_id != link.ty.type_id {
-                return Err(format!(
-                    "ros2://{resource} is linked as {} and as {}; a ROS topic has one type",
-                    other.ty.dds_name, link.ty.dds_name
-                ));
-            }
-        } else {
+        if !links.iter().any(|l| l.topic == link.topic) {
             subscribers.push((link.key.clone(), route.topic.clone()));
         }
         links.push(link);
@@ -459,7 +500,7 @@ impl Ros2Parts {
                 .callback(move |sample| {
                     // A delete has no value; the attachment is not needed.
                     if sample.kind() == SampleKind::Put {
-                        inbound.dispatch(&topic, &sample.payload().to_bytes());
+                        dispatch_guarded(&inbound, &topic, &sample.payload().to_bytes());
                     }
                 })
                 .await;
@@ -545,13 +586,27 @@ mod tests {
         assert_eq!(resolve_domain(None, None), Ok(0), "then 0");
         assert_eq!(resolve_domain(None, Some("")), Ok(0), "empty is unset");
         assert_eq!(resolve_domain(None, Some("  ")), Ok(0), "blank is unset");
-        assert_eq!(resolve_domain(Some(232), None), Ok(232));
-        assert_eq!(resolve_domain(None, Some("232")), Ok(232));
-        let high = resolve_domain(Some(233), None).unwrap_err();
-        assert!(high.contains("233 from domain_id(..)"), "{high}");
-        let high = resolve_domain(None, Some("233")).unwrap_err();
-        assert!(high.contains("233 from ROS_DOMAIN_ID"), "{high}");
-        assert!(resolve_domain(None, Some("4294967295")).is_err());
+        // As `strtoul(.., 0)`: octal and hex.
+        assert_eq!(resolve_domain(None, Some("010")), Ok(8));
+        assert_eq!(resolve_domain(None, Some("0xA")), Ok(10));
+        assert_eq!(resolve_domain(None, Some("0X1f")), Ok(31));
+        assert_eq!(resolve_domain(None, Some("0")), Ok(0));
+        assert!(resolve_domain(None, Some("08")).is_err(), "not octal");
+        assert!(resolve_domain(None, Some("0x")).is_err());
+        assert!(resolve_domain(None, Some("1a")).is_err());
+        // Above 232 warns: rmw_zenoh accepts it.
+        assert_eq!(resolve_domain(Some(233), None), Ok(233));
+        assert_eq!(resolve_domain(None, Some("233")), Ok(233));
+        assert_eq!(domain_warning(232), None);
+        let warning = domain_warning(233).expect("a warning");
+        assert!(
+            warning.contains("233") && warning.contains("rmw_zenoh"),
+            "{warning}"
+        );
+        assert!(
+            resolve_domain(None, Some("4294967296")).is_err(),
+            "beyond u32"
+        );
         let bad = resolve_domain(None, Some("seven")).unwrap_err();
         assert!(bad.contains("ROS_DOMAIN_ID='seven'"), "{bad}");
         assert!(resolve_domain(None, Some("-1")).is_err());

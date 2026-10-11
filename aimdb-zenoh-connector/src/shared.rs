@@ -15,7 +15,7 @@ use std::vec::Vec;
 use aimdb_core::{log_warn, DbResult};
 
 use crate::connector::BoxFuture;
-use crate::native::{open, session_config, ZenohParts};
+use crate::native::{check_runtime, open, session_config, ZenohParts};
 use crate::ros2::Ros2Parts;
 
 /// The session the views share, and what each view left for it.
@@ -69,6 +69,7 @@ impl Shared {
             .clone();
         // Validated by every view, so a bad endpoint fails whichever builds.
         let config = session_config(&self.endpoint, config)?;
+        check_runtime()?;
         if self.task_taken.swap(true, Ordering::AcqRel) {
             return Ok(Vec::new());
         }

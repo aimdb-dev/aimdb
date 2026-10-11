@@ -25,6 +25,10 @@ std = [
 transport-tls = ["std", "zenoh/transport_tls"]
 transport-quic = ["std", "zenoh/transport_quic"]
 transport-ws = ["std", "zenoh/transport_ws"]
+# User/password authentication for the `std` backend. Without it,
+# `transport/auth/usrpwd` in a config is ignored. Pubkey auth pulls in `rsa`
+# (RUSTSEC-2023-0071) and is left out.
+auth-usrpwd = ["std", "zenoh/auth_usrpwd"]
 # Log through aimdb-core's facade.
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]

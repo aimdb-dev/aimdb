@@ -22,11 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Remote-only: the connector never receives its own publications. Deletes
     and samples on wildcard keys are dropped.
   - `with_zenoh_config` for peer mode, TLS, QUIC and the rest
-    (`transport-tls`, `transport-quic`, `transport-ws`). Transport
-    compression stays off; see the crate docs.
+    (`transport-tls`, `transport-quic`, `transport-ws`) and authentication
+    (`auth-usrpwd`). Transport compression stays off; see the
+    crate docs.
+  - Opening the session never stalls the database: each attempt runs on a
+    task of its own. Needs Tokio's multi-thread scheduler.
+  - A deserializer that panics drops its sample; keys longer than the wire
+    format's 65,535 bytes are refused.
 - **`Ros2Connector`** for `ros2://` links, as a ROS 2 node (`Ros2Node`, with
-  a namespace) in a domain (`domain_id`, else `ROS_DOMAIN_ID`, else 0; 0 to
-  232). Types are registered with `.register::<T: RosMessage>()`.
+  a namespace) in a domain (`domain_id`, else `ROS_DOMAIN_ID` read as `rcl`
+  reads it, else 0; above 232 warns). Types are registered with
+  `.register::<T: RosMessage>()`.
   - Outbound links are publishers: rmw_zenoh data keys, node and publisher
     liveliness tokens, and the attachment (sequence, timestamp, GID).
   - Inbound links are subscriptions: one subscriber per topic, dispatched to
@@ -35,8 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (default `KEEP_LAST` 10, `RELIABLE`, `VOLATILE`); reliability is not yet
     applied on the wire.
   - `build()` refuses an unregistered type, a non-CDR codec, a topic writer,
-    a pattern, two types on one topic, invalid ROS names and a bad domain; a
-    custom (de)serializer warns.
+    a pattern, two ROS types on one topic, invalid ROS names and a bad
+    `ROS_DOMAIN_ID`; a custom (de)serializer warns.
 - **`zenoh.ros2(node)`**: a `Ros2Connector` on the `ZenohConnector`'s session,
   so a gateway (`zenoh://` from devices, `ros2://` to robots) keeps one
   router connection.

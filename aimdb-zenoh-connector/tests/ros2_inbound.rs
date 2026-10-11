@@ -220,7 +220,7 @@ async fn build_refuses_inbound_links_ros_could_not_serve() {
     assert!(e.contains("not registered"), "unregistered: {e}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_custom_deserializer_builds() {
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
@@ -238,4 +238,52 @@ async fn a_custom_deserializer_builds() {
     .await;
     assert_eq!(built, Ok(()), "the escape hatch warns, it does not refuse");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// A second Rust mirror of `test_msgs/msg/Command`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, RosMessage)]
+#[ros(
+    type = "test_msgs/msg/Command",
+    hash = "RIHS01_00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+)]
+struct CommandMirror {
+    rpm: f64,
+    enabled: bool,
+}
+
+/// One ROS type per topic, across publishers and subscriptions, compared by
+/// ROS type and hash rather than by Rust type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn one_ros_type_per_topic_across_both_directions() {
+    let build = |mirror: bool| async move {
+        let mut builder = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter::new().unwrap()))
+            .with_connector(ros2("").register::<CommandMirror>());
+        builder.configure::<Command>("out", |reg| {
+            reg.buffer(BufferCfg::SingleLatest);
+            reg.linked_to("ros2://cell4/spindle_cmd");
+        });
+        if mirror {
+            builder.configure::<CommandMirror>("in", |reg| {
+                reg.buffer(BufferCfg::SingleLatest);
+                reg.linked_from("ros2://cell4/spindle_cmd");
+            });
+        } else {
+            builder.configure::<Other>("in", |reg| {
+                reg.buffer(BufferCfg::SingleLatest);
+                reg.linked_from("ros2://cell4/spindle_cmd");
+            });
+        }
+        builder.build().await.map(|_| ()).map_err(|e| e.to_string())
+    };
+    let e = build(false).await.unwrap_err();
+    assert!(
+        e.contains("one type") && e.contains("Other_"),
+        "publisher vs subscription: {e}"
+    );
+    assert_eq!(
+        build(true).await,
+        Ok(()),
+        "two Rust mirrors of one ROS type"
+    );
 }

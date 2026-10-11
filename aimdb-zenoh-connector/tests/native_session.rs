@@ -428,3 +428,176 @@ async fn a_remote_delete_is_not_ingested() {
         "the delete reached the deserializer"
     );
 }
+
+/// zenoh's `open` blocks its thread while it waits for a router. On a task of
+/// its own it does not stall the rest of the database: here a router that
+/// accepts TCP but never answers held every other future for 10 s at a time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opening_the_session_does_not_stall_the_database() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("tcp/127.0.0.1:{}", silent.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            held.push(socket);
+        }
+    });
+
+    let (db, runner) = build(&endpoint, |b| {
+        b.configure::<u32>("ticks", |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 1024 })
+                .source(|ctx, producer| async move {
+                    let mut n = 0u32;
+                    loop {
+                        producer.produce(n);
+                        n += 1;
+                        ctx.time().sleep_millis(10).await;
+                    }
+                });
+        });
+        b.configure::<u32>("out", |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_to("zenoh://aimdb/stall")
+                .with_serializer(le)
+                .finish();
+        });
+    })
+    .await;
+    let mut ticks = db.subscribe::<u32>("ticks").unwrap();
+    tokio::spawn(runner.run());
+
+    let mut seen = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(500), ticks.recv()).await {
+            seen += 1;
+        }
+    }
+    // A 10 ms source runs about 300 times in 3 s; a stalled runner, never.
+    assert!(
+        seen > 100,
+        "{seen} ticks in 3 s while the session was opening"
+    );
+}
+
+/// A deserializer that panics drops its own sample; zenoh keeps delivering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_panicking_deserializer_drops_only_its_sample() {
+    let endpoint = format!("tcp/127.0.0.1:{}", free_port());
+    let _router = router(&endpoint).await;
+    let remote = client(&endpoint).await;
+    let good = Arc::new(AtomicUsize::new(0));
+    let g = good.clone();
+    let (_db, runner) = build(&endpoint, move |b| {
+        b.configure::<u32>("decoded", move |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+                .link_from("zenoh://aimdb/decode")
+                .with_deserializer(move |_ctx, bytes: &[u8]| {
+                    let value = u32::from_le_bytes(bytes.try_into().unwrap());
+                    g.fetch_add(1, Ordering::SeqCst);
+                    Ok(value)
+                })
+                .finish();
+        });
+    })
+    .await;
+    tokio::spawn(runner.run());
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while good.load(Ordering::SeqCst) == 0 {
+        remote
+            .put("aimdb/decode", 1u32.to_le_bytes().to_vec())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "subscriber never ready"
+        );
+    }
+    remote.put("aimdb/decode", vec![0u8; 2]).await.unwrap();
+    let before = good.load(Ordering::SeqCst);
+    for n in 0..20u32 {
+        remote
+            .put("aimdb/decode", n.to_le_bytes().to_vec())
+            .await
+            .unwrap();
+    }
+    eventually("valid samples after the panic", || {
+        good.load(Ordering::SeqCst) >= before + 20
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keys_longer_than_the_wire_format_are_refused() {
+    // A fixed key fails the build.
+    let long = "k".repeat(65_536);
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter::new().unwrap()))
+        .with_connector(connector("tcp/127.0.0.1:1"));
+    let url = format!("zenoh://{long}");
+    builder.configure::<u32>("out", move |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_to(&url)
+            .with_serializer(le)
+            .finish();
+    });
+    let error = builder.build().await.err().expect("refused").to_string();
+    assert!(error.contains("longer than 65535"), "{error}");
+
+    // A written key is skipped; the next value still goes out.
+    let endpoint = format!("tcp/127.0.0.1:{}", free_port());
+    let _router = router(&endpoint).await;
+    let remote = client(&endpoint).await;
+    let ok = remote.declare_subscriber("aimdb/long/ok").await.unwrap();
+    let (db, runner) = build(&endpoint, |b| {
+        b.configure::<u32>("long", |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+                .link_to("zenoh://aimdb/long/ok")
+                .with_topic_fn(70_000, |v: &u32, out| {
+                    use core::fmt::Write;
+                    if *v == 0 {
+                        out.push_str("aimdb/long/")?;
+                        out.push_str(&"k".repeat(66_000))?;
+                        Ok(true)
+                    } else {
+                        write!(out, "aimdb/long/ok")?;
+                        Ok(true)
+                    }
+                })
+                .with_serializer(le)
+                .finish();
+        });
+    })
+    .await;
+    tokio::spawn(runner.run());
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        db.produce("long", 0u32).unwrap();
+        db.produce("long", 1u32).unwrap();
+        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(200), ok.recv_async()).await {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the valid key never arrived"
+        );
+    }
+}
+
+/// zenoh refuses Tokio's current-thread scheduler; `build()` says so.
+#[tokio::test]
+async fn a_current_thread_runtime_fails_the_build() {
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter::new().unwrap()))
+        .with_connector(connector("tcp/127.0.0.1:1"));
+    builder.configure::<u32>("out", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_to("zenoh://aimdb/out")
+            .with_serializer(le)
+            .finish();
+    });
+    let error = builder.build().await.err().expect("refused").to_string();
+    assert!(error.contains("multi-thread"), "{error}");
+}
