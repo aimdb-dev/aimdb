@@ -441,6 +441,13 @@ from a Zenoh or rmw_zenoh config work unchanged. The native backend also accepts
     subscriber. Subscriber `i`'s callback therefore dispatches only if no
     earlier subscription matches the key, so each route still sees it once
     (s08, tested). 055 §5.7's MQTT 5 duplicate does not occur on Zenoh.
+  - zenoh's `Session` still checks each delivered sample against every
+    subscriber's key with `intersects`, which recurses once per chunk of the
+    sample's key under a `**` that chunks follow (zenoh#2836). A filter
+    such as `aimdb/{path..}/state` is therefore exposed: one long matching
+    key aborts the process. **[verified]** on zenoh 1.10.1 with a
+    64,001-byte key and a client subscribed to `a/**/b` through a router.
+    A trailing `**` is not affected.
   - An inbound `with_topic_resolver` is honoured: its result goes through
     the same grammar.
 - **`ZenohGrammar`** implements `TopicGrammar` (055 §5.1). `{name}` compiles

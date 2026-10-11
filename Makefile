@@ -834,10 +834,7 @@ bench-gate:
 	@printf "$(GREEN)Checking connector allocation counts...$(NC)\n"
 	cargo bench --package aimdb-bench --bench b0_alloc_connector
 
-## Drift guards
-# The README quickstart is compiled as examples/readme-quickstart; this target
-# fails when the README code block and the example diverge, or when the
-# example no longer compiles (design 038 §2.6/§3.13).
+## Interop
 # ros2:// against a real ROS 2 distribution (rmw_zenohd and the ros2 CLI in
 # Docker, host networking). DISTRO is a ros:<distro> image tag.
 DISTRO ?= lyrical
@@ -846,6 +843,10 @@ ros2-interop:
 	cargo build --package aimdb-zenoh-connector --features "std" --examples
 	./aimdb-zenoh-connector/tests/interop/ros2_interop.sh $(DISTRO)
 
+## Drift guards
+# The README quickstart is compiled as examples/readme-quickstart; this target
+# fails when the README code block and the example diverge, or when the
+# example no longer compiles (design 038 §2.6/§3.13).
 readme-check:
 	@printf "$(GREEN)Checking README quickstart against examples/readme-quickstart...$(NC)\n"
 	@awk '/^```rust$$/{f=1;next} f&&/^```$$/{exit} f' README.md \
