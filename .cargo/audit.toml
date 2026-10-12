@@ -46,4 +46,5 @@ ignore = [
     # a zenoh release takes it.
     "RUSTSEC-2026-0041", # lz4_flex: uninitialized memory in decompression
     "RUSTSEC-2024-0436", # paste unmaintained (via zenoh-keyexpr/token-cell)
+    "RUSTSEC-2024-0449", # unsafe-libyaml unmaintained (via serde_yaml from zenoh-config; the connector builds Config in code, never from YAML)
 ]

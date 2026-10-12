@@ -30,6 +30,7 @@ ignore = [
     "RUSTSEC-2026-0173", # TEMP: proc-macro-error2 unmaintained (transitive via defmt-macros/tabled_derive)
     "RUSTSEC-2024-0436", # paste unmaintained: proc-macro only, via zenoh-keyexpr/token-cell (zenoh connector)
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc and zenoh-link-commons)
+    "RUSTSEC-2024-0449", # unsafe-libyaml unmaintained, via serde_yaml from zenoh-config (zenoh connector never parses YAML config) and aimdb-cli's optional yaml feature
     "RUSTSEC-2026-0041", # lz4_flex decompression, via zenoh-transport: compiled only with transport_compression, which the zenoh connector never enables (see .cargo/audit.toml)
 ]
 
