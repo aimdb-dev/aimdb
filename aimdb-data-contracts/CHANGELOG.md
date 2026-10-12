@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`WireFormat`** (`Unspecified`, `Json`, `Postcard`, `Cdr`) and the defaulted
+  constants `Linkable::WIRE_FORMAT` and `LinkCodec::WIRE_FORMAT`. The codec
+  verbs (`linked_to`, `linked_from`, `linked_*_with`, `with_link_codec`)
+  record the codec's format on the link under core's `WIRE_FORMAT_KEY`;
+  `WireFormat::recorded_in` reads it back. Existing impls compile unchanged.
+- **`ros2` feature: `RosMessage`**, a `Linkable` whose encoding is the type's
+  ROS 2 CDR form, with `ROS_TYPE_NAME` (DDS form, `pkg::msg::dds_::Name_`)
+  and `ROS_TYPE_HASH` (`RIHS01_…`). `ros2::dds_type_name`,
+  `ros2::validate_dds_type_name` and `ros2::validate_type_hash` check the
+  names (`RosNameError`); `#[derive(RosMessage)]` is re-exported. Implies
+  `linkable-cdr`.
+- **`linkable-cdr` feature: `link_codecs::Cdr<N>`**, CDR (XCDR1) through
+  `aimdb-cdr` on any link: a bounded encode into an `N`-byte scratch
+  (default 256), both byte orders on decode, `cdr` recorded on the link.
+
 ## [0.2.0] - 2026-09-18
 
 ### Changed (breaking) — Design 041: capability traits as first-class verbs

@@ -1,0 +1,5 @@
+error: RosMessage can only be derived for a struct
+ --> tests/compile-fail-ros/enum_type.rs:6:6
+  |
+6 | enum NotAStruct { A }
+  |      ^^^^^^^^^^

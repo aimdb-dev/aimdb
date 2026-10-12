@@ -201,7 +201,7 @@ docker compose up
 | Containers / Kubernetes | Tokio | `aimdb-tokio-adapter` | ~10 MB+ |
 | Browser | WASM | `aimdb-wasm-adapter` | ~2 MB+ |
 
-**Connectors today:** MQTT · KNX · WebSocket · TCP · Serial · Unix sockets. Kafka and Modbus are planned. A new connector is one trait impl.
+**Connectors today:** MQTT · KNX · Zenoh and ROS 2 · WebSocket · TCP · Serial · Unix sockets. Kafka and Modbus are planned. A new connector is one trait impl.
 
 ## Under the hood
 

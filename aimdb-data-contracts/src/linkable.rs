@@ -7,10 +7,9 @@
 //! escape hatch for per-link options (QoS, topic providers/resolvers), while
 //! [`LinkCodecRegistrarExt`] selects a different codec for an individual link.
 
-use aimdb_core::connector::SerializeError;
 use aimdb_core::typed_api::RecordRegistrar;
 
-use crate::{LinkCodec, LinkCodecBuilderExt, Linkable};
+use crate::{link_codecs, LinkCodec, LinkCodecBuilderExt, Linkable};
 
 /// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
 /// [`Linkable`] types.
@@ -36,21 +35,14 @@ where
 {
     fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
         self.link_from(url)
-            .with_deserializer(|_ctx, bytes| T::from_bytes(bytes))
+            .with_link_codec(link_codecs::Default)
             .finish()
     }
 
     fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
-        let builder = self.link_to(url).with_serializer(|_ctx, value: &T| {
-            value.to_bytes().map_err(|_| SerializeError::InvalidData)
-        });
-
-        match T::ENCODE_BUFFER_CAPACITY {
-            Some(capacity) => builder
-                .with_serializer_into(capacity, |_ctx, value: &T, out| value.encode_into(out))
-                .finish(),
-            None => builder.finish(),
-        }
+        self.link_to(url)
+            .with_link_codec(link_codecs::Default)
+            .finish()
     }
 }
 

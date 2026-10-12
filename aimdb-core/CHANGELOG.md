@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to commit a message only once it has room) and receives an `OutboundMessage`
   borrowing the route's topic and payload buffers, so a message allocates
   nothing on a scratch serializer. `routes()` lists `RouteInfo` (default topic,
-  `ConnectorConfig` with `record_index`, topic and payload capacities);
+  the record's `type_id`, `ConnectorConfig` with `record_index`, topic and
+  payload capacities);
   `stats(id)` reports `RouteStats` (`sent`, `rejected`, `lagged`,
   `topic_overflow`, `serialize_failed`). Lag, serialize failures and a closed
   buffer are handled and counted inside; `next` ends when every route has
@@ -44,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dispatch(topic, payload)` deserializes and produces, logging failures, and
   `subscriptions()` lists the filters to subscribe. It is `Clone`, so the
   session task, the event loop and the inbound pumps share one.
+  `routes()` lists an `InboundRouteInfo` per link (resolved topic, the
+  record's `type_id`, `ConnectorConfig` with `record_index`), for parsing a
+  connector's per-link options once at build; a topic resolver runs once per
+  route.
+- **`connector::WIRE_FORMAT_KEY` (`aimdb.wire_format`)**, a reserved link
+  config key naming the codec's wire format. Codec verbs record it;
+  `with_serializer`, `with_serializer_into`, `with_deserializer` and
+  `with_match_deserializer` remove it, so a link carries a format exactly when
+  a known codec installed its current (de)serializer. Keys prefixed `aimdb.`
+  are reserved.
 - **`with_topic_writer(capacity, writer)` and `with_topic_fn(capacity, f)`**
   replace `with_topic_provider`. The writer receives the value and a
   `TopicBuf` (`push_str`, `write!`) of `capacity` bytes and returns

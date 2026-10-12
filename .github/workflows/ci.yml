@@ -162,6 +162,27 @@ jobs:
         cargo +nightly miri test -p aimdb-embassy-adapter \
           --no-default-features --features "alloc,embassy-sync,embassy-time"
 
+  # ros2:// against real ROS 2 distributions: rmw_zenohd and the ros2 CLI
+  ros2-interop:
+    name: ROS 2 interop (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [jazzy, lyrical]
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v2
+      with:
+        rustflags: ""
+
+    - name: Interop with ROS 2 ${{ matrix.distro }}
+      run: make ros2-interop DISTRO=${{ matrix.distro }}
+
   # Comprehensive validation using Makefile
   comprehensive-check:
     name: Comprehensive Development Check

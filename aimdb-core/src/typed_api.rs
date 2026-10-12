@@ -741,12 +741,22 @@ where
         self
     }
 
+    /// Drops any recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY):
+    /// a newly installed codec closure has no known format until a codec verb
+    /// records one.
+    fn clear_wire_format(mut self) -> Self {
+        self.config
+            .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
+        self
+    }
+
     /// Sets the serialization callback
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the typed value being
     /// serialized. Ignore the context parameter (`|_ctx, value| …`) when it is
-    /// not needed.
+    /// not needed. Removes any recorded
+    /// [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_serializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
@@ -755,7 +765,7 @@ where
             + 'static,
     {
         self.context_serializer = Some(Arc::new(f));
-        self
+        self.clear_wire_format()
     }
 
     /// Adds an into-slice fast path beside the required owned serializer.
@@ -769,6 +779,7 @@ where
     ///
     /// This method is an optimization only: callers must still install the
     /// owned serializer so oversized and legacy values retain their old behavior.
+    /// Removes any recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_serializer_into<F>(mut self, capacity: usize, f: F) -> Self
     where
         F: Fn(
@@ -781,7 +792,7 @@ where
             + 'static,
     {
         self.context_serializer_into = Some((capacity, Arc::new(f)));
-        self
+        self.clear_wire_format()
     }
 
     /// Removes a previously installed into-slice serializer.
@@ -1093,23 +1104,34 @@ where
         self
     }
 
+    /// Drops any recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY):
+    /// a newly installed codec closure has no known format until a codec verb
+    /// records one.
+    fn clear_wire_format(mut self) -> Self {
+        self.config
+            .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
+        self
+    }
+
     /// Sets the deserialization callback
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext) for
     /// platform-independent timestamps and logging, plus the raw bytes from
     /// the external system. Ignore the context parameter (`|_ctx, data| …`)
-    /// when it is not needed.
+    /// when it is not needed. Removes any recorded
+    /// [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
         F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
     {
         self.context_deserializer = Some(Arc::new(f));
-        self
+        self.clear_wire_format()
     }
 
     /// Like [`with_deserializer`](Self::with_deserializer), also receiving the
     /// topic the message arrived on, its captures and its key. The context is
-    /// borrowed, so no reference count changes per message.
+    /// borrowed, so no reference count changes per message. Removes any
+    /// recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_match_deserializer<F>(mut self, f: F) -> Self
     where
         F: Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
@@ -1118,7 +1140,7 @@ where
             + 'static,
     {
         self.match_deserializer = Some(Arc::new(f));
-        self
+        self.clear_wire_format()
     }
 
     /// Assigns each value of capture `name` a [`KeyId`](crate::KeyId), up to
@@ -2478,5 +2500,116 @@ mod tests {
         assert_eq!(route.config.record_index, Some(0));
         assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 5, false)));
         assert_eq!(pull(&mut o).await, None);
+    }
+
+    #[test]
+    fn serializer_setters_clear_recorded_wire_format() {
+        use crate::connector::WIRE_FORMAT_KEY;
+
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.link_to("mqtt://a")
+            .with_config(WIRE_FORMAT_KEY, "cdr")
+            .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .finish();
+        reg.link_to("mqtt://b")
+            .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .with_config(WIRE_FORMAT_KEY, "cdr")
+            .with_serializer_into(4, |_ctx, _r: &TestRecord, _out| Ok(0))
+            .finish();
+        reg.link_from("mqtt://c")
+            .with_config(WIRE_FORMAT_KEY, "cdr")
+            .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+        reg.link_from("mqtt://e")
+            .with_config(WIRE_FORMAT_KEY, "cdr")
+            .with_match_deserializer(|_ctx, _m, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+            .finish();
+        reg.link_to("mqtt://d")
+            .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec()))
+            .with_config(WIRE_FORMAT_KEY, "cdr")
+            .finish();
+
+        let has_format =
+            |config: &[(String, String)]| config.iter().any(|(k, _)| k == WIRE_FORMAT_KEY);
+        let outbound = rec.outbound_connectors();
+        assert!(!has_format(&outbound[0].config));
+        assert!(!has_format(&outbound[1].config));
+        assert!(has_format(&outbound[2].config), "recorded after the setter");
+        let inbound = rec.inbound_connectors();
+        assert!(!has_format(&inbound[0].config));
+        assert!(!has_format(&inbound[1].config));
+    }
+
+    /// Connectors read each route's record type and options from its info;
+    /// a topic writer shows as a non-zero `topic_capacity`.
+    #[tokio::test]
+    async fn route_infos_carry_type_config_and_resolved_topic() {
+        use core::any::TypeId;
+
+        let (_db, outbound) = outbound(
+            || values(&[]),
+            |reg| {
+                reg.link_to("mqtt://tele/fixed")
+                    .with_serializer(le)
+                    .with_config("qos", "1")
+                    .finish();
+                reg.link_to("mqtt://tele/written")
+                    .with_topic_fn(16, |_v, _out| Ok(false))
+                    .with_serializer(le)
+                    .finish();
+            },
+        )
+        .await;
+        let routes = outbound.routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes
+            .iter()
+            .all(|r| r.type_id == TypeId::of::<TestRecord>()));
+        assert_eq!(
+            routes[0].config.protocol_options,
+            vec![("qos".to_string(), "1".to_string())]
+        );
+        assert_eq!(routes[0].topic_capacity, 0);
+        assert_eq!(routes[1].topic_capacity, 16);
+
+        let resolved = Arc::new(AtomicUsize::new(0));
+        let calls = resolved.clone();
+        let (db, _last, _count) = inbound_db(move |reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_topic_resolver(move || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Some("cmd/resolved".to_string())
+                })
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 }))
+                .with_config("qos", "2")
+                .finish();
+            reg.link_from("mqtt://dev/{id}")
+                .with_match_deserializer(key_deser)
+                .finish();
+        })
+        .await;
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(resolved.load(Ordering::SeqCst), 1, "resolved once");
+
+        let infos = inbound.routes();
+        assert_eq!(infos.len(), inbound.route_count());
+        let topics: Vec<&str> = infos.iter().map(|i| &*i.topic).collect();
+        assert_eq!(topics, ["cmd/resolved", "dev/{id}"]);
+        assert!(infos
+            .iter()
+            .all(|i| i.type_id == TypeId::of::<TestRecord>()));
+        assert!(infos.iter().all(|i| i.config.record_index == Some(0)));
+        assert_eq!(
+            infos[0].config.protocol_options,
+            vec![("qos".to_string(), "2".to_string())]
+        );
     }
 }

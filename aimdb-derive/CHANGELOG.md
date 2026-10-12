@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`#[derive(RosMessage)]`** for a struct mirroring a ROS 2 message: emits
+  `SchemaType` (`NAME` = the ROS type), a CDR `Linkable` through `aimdb-cdr`
+  with a bounded `encode_into`, and `RosMessage`.
+  `#[ros(type = "pkg/msg/Name", hash = "RIHS01_…")]` is required and checked
+  at compile time; `#[ros(encode_capacity = N)]` sizes the scratch (default
+  256); `#[ros(max_len = N)]` bounds a `String` or `Vec` field, refused on
+  encode past it. Generic types, enums, and tuple or unit structs are refused.
+
+### Changed
+
+- **`#[derive(Linkable)]` sets `WIRE_FORMAT = Json`.**
+
 ## [0.2.0] - 2026-09-18
 
 ### Added
