@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use aimdb_core::connector::ConnectorBuilder;
+use aimdb_core::LogDisplay;
 use aimdb_core::{
     log_error, log_warn, AimDb, ExactGrammar, InboundDispatch, OutboundRoutes, RouteInfo,
 };
@@ -487,7 +488,10 @@ impl Ros2Parts {
         for token in tokens {
             match session.liveliness().declare_token(token).await {
                 Ok(token) => live.push(token),
-                Err(_e) => log_error!("ROS 2: cannot declare a liveliness token: {}", _e),
+                Err(_e) => log_error!(
+                    "ROS 2: cannot declare a liveliness token: {}",
+                    LogDisplay(&_e)
+                ),
             }
         }
 
@@ -506,7 +510,7 @@ impl Ros2Parts {
                 .await;
             match declared {
                 Ok(subscriber) => subscribers.push(subscriber),
-                Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", _e),
+                Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", LogDisplay(&_e)),
             }
         }
 
@@ -523,7 +527,7 @@ impl Ros2Parts {
                     log_error!(
                         "ROS 2: cannot declare a publisher on '{}': {}",
                         publisher.link.topic,
-                        _e
+                        LogDisplay(&_e)
                     );
                     senders.push(None);
                 }
@@ -551,7 +555,7 @@ impl Ros2Parts {
                 log_error!(
                     "ROS 2: put on '{}' failed: {}",
                     publishers[id].link.topic,
-                    _e
+                    LogDisplay(&_e)
                 );
                 outbound.reject(id);
             }

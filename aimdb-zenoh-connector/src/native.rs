@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::Vec;
 
+use aimdb_core::LogDisplay;
 use aimdb_core::{
     log_debug, log_error, log_info, log_warn, AimDb, DbError, DbResult, InboundDispatch,
     OutboundRoutes, RouteInfo, TopicFilter, TopicGrammar, TopicPattern, MAX_CAPTURES,
@@ -171,7 +172,7 @@ impl ZenohParts {
             {
                 Ok(publisher) => publishers.push(Some(publisher)),
                 Err(_e) => {
-                    log_error!("Zenoh: cannot declare a publisher: {}", _e);
+                    log_error!("Zenoh: cannot declare a publisher: {}", LogDisplay(&_e));
                     publishers.push(None);
                 }
             }
@@ -200,7 +201,7 @@ impl ZenohParts {
                 log_error!(
                     "Zenoh: put on route '{}' failed: {}",
                     outbound.routes()[id].default_topic,
-                    _e
+                    LogDisplay(&_e)
                 );
                 outbound.reject(id);
             }
@@ -238,7 +239,7 @@ pub(crate) async fn open(config: zenoh::Config) -> Session {
             }
         }
     };
-    log_info!("Zenoh: session {} open", session.zid());
+    log_info!("Zenoh: session {} open", LogDisplay(&session.zid()));
     session
 }
 
@@ -323,7 +324,7 @@ async fn subscribe(
                 subscribers.push(subscriber);
                 earlier.push(Arc::from(compiled));
             }
-            Err(_e) => log_error!("Zenoh: cannot declare a subscriber: {}", _e),
+            Err(_e) => log_error!("Zenoh: cannot declare a subscriber: {}", LogDisplay(&_e)),
         }
     }
     subscribers

@@ -66,3 +66,8 @@ libc = { version = "0.2", default-features = false, optional = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# `aimdb-core`'s log macros carry a `#[cfg(feature = "defmt")]` arm that
+# expands here; this crate never builds with defmt, so it only names it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }
