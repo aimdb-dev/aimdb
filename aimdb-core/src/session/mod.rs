@@ -479,7 +479,7 @@ pub trait Session: Send {
     /// new session. Defaulted to `false`.
     ///
     /// When a handshake arrives on a connection that already had one,
-    /// [`run_session`](server::run_session) treats it as a new client: it
+    /// [`run_session`] treats it as a new client: it
     /// cancels every subscription, discards their queued events and opens a
     /// fresh session before answering. A transport that carries one peer for
     /// its whole life (a serial line) has no other way to tell that the client

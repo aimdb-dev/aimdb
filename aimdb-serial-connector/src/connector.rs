@@ -134,6 +134,10 @@ impl SerialClient {
 }
 
 /// Serves AimX over a moved-in serial stream.
+///
+/// One session for the line's lifetime; a client's `hello` starts a new one,
+/// ending the previous client's subscriptions (see the crate docs, "Sessions
+/// on a line that never closes").
 pub struct SerialServer<S> {
     stream: OneShot<S>,
     config: AimxConfig,

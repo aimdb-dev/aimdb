@@ -129,6 +129,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never got a value, a join ran without that input, and with default
   features nothing was logged.
 
+### Fixed
+
+- **Every client on a serial line gets its events, not every other one (#328).**
+  A UART never closes, so the AimX session engine saw every client behind it
+  as one session: a departed client's subscriptions kept streaming and held
+  their buffer subscriber slots, and the next client's subscribe collided with
+  them by id. Three changes in `run_session`:
+  - **A second handshake starts a new session.** `Session::starts_session`
+    (new, default `false`; `AimxSession`: `hello`) names a client's handshake.
+    When one arrives on a connection that already had one, the engine drops
+    every subscription pump (releasing its buffer subscriber), discards their
+    queued events and opens a fresh session before answering. This applies
+    to every transport; elsewhere a second `hello` on one connection does not
+    happen with a well-behaved client.
+  - **An ended pump only removes its own subscription.** Subscriptions carry
+    a generation, so a pump ending late (after `unsub`, then `sub` with the
+    same id) no longer cancels the newer subscription. A `sub` whose id is
+    still live is refused with `Denied` instead of silently replacing it.
+  - **A subscription whose stream ends on its own is reported.** When its
+    source closes, or never opened (an Embassy SPMC ring with no subscriber
+    slot left), the client gets the remaining events and then an `Internal`
+    error under the subscribe id, which it turns into a terminal error,
+    instead of an acknowledged subscription that never delivers. An
+    unsubscribed subscription, or the previous client's after a new
+    handshake, still ends in silence.
+
+  A client that leaves without another one connecting is still invisible:
+  its subscriptions run until the next handshake, since the engine has no
+  timer to detect a silent peer.
+
 ## [2.0.0] - 2026-09-18
 
 ### Added

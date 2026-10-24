@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A subscription the server ended no longer reads as a transport failure
+  (#328).** A subscription stream's terminal `Internal` error now says "the
+  server ended the subscription (its source closed or could not be opened)";
+  it used to say "engine/transport failure", although a dropped connection
+  ends a subscription stream without an error. Calls keep the old text, which
+  fits them: for a call, the client engine raises `Internal` itself when the
+  connection drops.
+
 ## [0.7.0] - 2026-09-18
 
 ### Changed

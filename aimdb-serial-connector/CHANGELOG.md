@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reconnecting over serial works every time (#328).** Every other client
+  that connected to a `SerialServer` without a board reset got no events: the
+  previous client's subscriptions lived on in the one session a UART carries.
+  A client's `hello` now starts a new session, ending the previous client's
+  subscriptions (see `aimdb-core`). A client that leaves without another one
+  connecting keeps its subscriptions streaming into the UART until the next
+  `hello`.
+
 ## [0.1.0] - 2026-09-18
 
 ### Changed

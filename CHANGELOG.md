@@ -76,6 +76,14 @@ is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
 
 ### Fixed
 
+- **AimX over serial: every reconnect gets its events.** A client's `hello`
+  on a live connection starts a new session, an ended subscription no longer
+  cancels a newer one with the same id, and a subscription whose source ended
+  is reported instead of staying silent (#328).
+  ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-serial-connector](aimdb-serial-connector/CHANGELOG.md),
+  [aimdb-client](aimdb-client/CHANGELOG.md))
+
 - **The embedded MQTT backend advertises the largest packet it receives**
   (`Maximum Packet Size` 3,328 in CONNECT), so an oversized retained message is
   withheld by the broker instead of reconnecting the client forever.
