@@ -115,8 +115,13 @@ The global `--connect` option does not apply to `join`.
 | 3 | Network, TLS, redirect, or unexpected response (discovery or join), malformed profile |
 | 4 | Device flow failed: denied, expired, or an unknown error from GitHub |
 
-The CLI's `main` currently exits with 1 for every error. `CliError` gains an
-`exit_code()` (1 for all existing variants) and `main` uses it.
+These codes follow the taxonomy every `aimdb` command shares (#334): 1
+rejected, 2 usage, 3 environment, 4 and up command-specific. `CliError::exit_code()`
+maps the existing variants onto it (connection, discovery, protocol, I/O and
+unparsable replies → 3; unsupported endpoint and invalid command-line JSON →
+2; record not found, write-protected, server and other errors → 1), and
+`main` exits with it. `join` adds its own variants for the table above,
+reusing the `EXIT_*` constants in `tools/aimdb-cli/src/error.rs`.
 
 ## 6. Build and dependencies
 
@@ -169,7 +174,7 @@ internet.
 
 ## 9. Sequencing
 
-1. `CliError::exit_code()` and its use in `main`.
+1. `CliError::exit_code()` and its use in `main` (done in #334).
 2. `join` feature, dependencies, `cargo deny`.
 3. Discovery, input checks, claim-token join, profile writing (§3, §4),
    with tests 1–4 and 6–10.

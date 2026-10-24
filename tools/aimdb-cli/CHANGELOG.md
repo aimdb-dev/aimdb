@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The `yaml` feature builds again.** `instance list --format yaml` serialized `aimdb_client::InstanceInfo`, which does not implement `Serialize`, so `aimdb-cli` never compiled with `--features yaml`. YAML now uses the same serializable form as JSON, with the same field names (`socket_path`, …). `make test` and `make clippy` now also build the CLI with `--features yaml`.
 
+### Changed (breaking)
+
+- **Exit codes per failure class (Issue #334).** `aimdb` exited with 1 for every error; it now exits with 1 when the instance or a remote service refused the request (record not found, write-protected, server error), 2 for usage errors (clap's, an unsupported `--connect` endpoint, invalid JSON on the command line) and 3 for environment failures worth retrying (connection failed, no instance found, protocol mismatch, I/O, a reply that does not parse). Codes 4 and up are left to individual commands. Scripts that treated 1 as "unreachable" must check for 3.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added

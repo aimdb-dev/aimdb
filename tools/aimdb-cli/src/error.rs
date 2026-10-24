@@ -8,6 +8,14 @@ use thiserror::Error;
 /// Result type for CLI operations
 pub type CliResult<T> = Result<T, CliError>;
 
+/// Exit code: the instance or a remote service refused the request.
+pub const EXIT_REJECTED: i32 = 1;
+/// Exit code: bad arguments or malformed input (also clap's usage errors).
+pub const EXIT_USAGE: i32 = 2;
+/// Exit code: network or TLS failure, unreachable instance, incompatible
+/// peer, I/O. Worth retrying.
+pub const EXIT_ENVIRONMENT: i32 = 3;
+
 /// CLI-specific errors with helpful messages and hints
 #[derive(Debug, Error)]
 #[allow(dead_code)] // Some variants are for future use
@@ -91,6 +99,28 @@ impl From<aimdb_client::ClientError> for CliError {
     }
 }
 
+impl CliError {
+    /// Process exit code for this error's failure class, so scripts can tell
+    /// a retryable failure from a rejection. Codes 4 and up are left to
+    /// individual commands.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::ConnectionFailed { .. }
+            | Self::NoInstancesFound
+            | Self::ProtocolMismatch { .. }
+            | Self::Io(_)
+            // A reply or file that does not parse.
+            | Self::Json(_) => EXIT_ENVIRONMENT,
+            // `InvalidJson` is JSON given on the command line.
+            Self::UnsupportedEndpoint { .. } | Self::InvalidJson { .. } => EXIT_USAGE,
+            Self::RecordNotFound { .. }
+            | Self::WriteProtected { .. }
+            | Self::ServerError { .. }
+            | Self::Other(_) => EXIT_REJECTED,
+        }
+    }
+}
+
 #[allow(dead_code)] // Helper methods for future use
 impl CliError {
     /// Create a connection failed error
@@ -145,6 +175,45 @@ impl CliError {
             code: code.into(),
             message: message.into(),
             details,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_codes_follow_failure_classes() {
+        let environment = [
+            CliError::connection_failed("unix:///x", "refused"),
+            CliError::NoInstancesFound,
+            CliError::protocol_mismatch("m", "2", "1"),
+            CliError::Io(std::io::Error::other("io")),
+            CliError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
+        ];
+        let usage = [
+            CliError::UnsupportedEndpoint {
+                endpoint: "bogus://x".into(),
+                reason: "unknown scheme".into(),
+            },
+            CliError::invalid_json("{", "eof"),
+        ];
+        let rejected = [
+            CliError::record_not_found("r"),
+            CliError::write_protected("set", "r"),
+            CliError::server_error("denied", "no", None),
+            CliError::Other(anyhow::anyhow!("other")),
+        ];
+
+        for e in &environment {
+            assert_eq!(e.exit_code(), EXIT_ENVIRONMENT, "{e:?}");
+        }
+        for e in &usage {
+            assert_eq!(e.exit_code(), EXIT_USAGE, "{e:?}");
+        }
+        for e in &rejected {
+            assert_eq!(e.exit_code(), EXIT_REJECTED, "{e:?}");
         }
     }
 }
