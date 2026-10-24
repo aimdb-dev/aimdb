@@ -69,7 +69,9 @@ recommendations:
 
 - **MQTT**: Enable TLS and use strong credentials in production deployments.
 - **KNX**: Restrict network access to trusted KNX/IP segments.
-- **MCP server**: Only expose the Unix socket to trusted local processes.
+- **MCP server**: Only expose the Unix socket to trusted local processes. Start
+  `aimdb-mcp` with `--allow-writes` only where an agent should be able to change
+  a running instance; use `--public` for untrusted, internet-facing endpoints.
 - **WebSocket connector**: Always run behind a TLS-terminating reverse proxy in
   production.
 - Keep AimDB and its dependencies up to date. Run `cargo audit` regularly to
