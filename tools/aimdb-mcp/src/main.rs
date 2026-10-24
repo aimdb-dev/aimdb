@@ -22,6 +22,13 @@ struct Cli {
     #[arg(long)]
     public: bool,
 
+    /// Also offer the tools that change a running instance: set_record,
+    /// reset_stage_profiling and reset_buffer_metrics. Off by default so an
+    /// agent connected for introspection cannot write to a live system.
+    /// Ignored with --public.
+    #[arg(long)]
+    allow_writes: bool,
+
     /// Default endpoint for AimDB connections: a `scheme://` URL (`unix://PATH`,
     /// `serial://DEVICE?baud=N`) or a bare path. Tools use this instead of
     /// requiring an explicit `endpoint` argument. Equivalent to setting the
@@ -52,13 +59,17 @@ async fn main() {
     info!("🔌 Transport: stdio (NDJSON)");
     if cli.public {
         info!("🔒 Public mode: only read-only tools are available");
+    } else if cli.allow_writes {
+        info!("✏️  Write tools enabled (--allow-writes)");
     }
     if let Some(ref endpoint) = cli.connect {
         info!("📎 Default endpoint: {}", endpoint);
     }
 
     // Create server and transport
-    let server = McpServer::new().with_public_mode(cli.public);
+    let server = McpServer::new()
+        .with_public_mode(cli.public)
+        .with_allow_writes(cli.allow_writes);
     let mut transport = StdioTransport::new();
 
     info!("✅ Server ready, waiting for initialize request...");

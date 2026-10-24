@@ -20,6 +20,15 @@ use tracing::debug;
 /// Tools exposed in public mode (read-only, safe for untrusted clients).
 const PUBLIC_TOOLS: &[&str] = &["discover_instances", "list_records", "get_record"];
 
+/// Tools that change a running instance. Advertised and callable only with
+/// `--allow-writes`, so an agent connected for introspection cannot write to
+/// a live system on its own initiative.
+const WRITE_TOOLS: &[&str] = &[
+    "set_record",
+    "reset_stage_profiling",
+    "reset_buffer_metrics",
+];
+
 /// MCP server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
@@ -37,6 +46,8 @@ pub struct McpServer {
     connection_pool: ConnectionPool,
     /// When true, only PUBLIC_TOOLS are advertised and callable.
     public_mode: bool,
+    /// When true, WRITE_TOOLS are advertised and callable (ignored in public mode).
+    allow_writes: bool,
 }
 
 impl McpServer {
@@ -46,6 +57,7 @@ impl McpServer {
             state: Arc::new(Mutex::new(ServerState::Uninitialized)),
             connection_pool: ConnectionPool::new(),
             public_mode: false,
+            allow_writes: false,
         }
     }
 
@@ -58,6 +70,18 @@ impl McpServer {
     /// Returns true if the server is in public (restricted) mode.
     pub fn is_public(&self) -> bool {
         self.public_mode
+    }
+
+    /// Offer the tools that change a running instance (`WRITE_TOOLS`).
+    /// Public mode still wins: it never offers them.
+    pub fn with_allow_writes(mut self, enabled: bool) -> Self {
+        self.allow_writes = enabled;
+        self
+    }
+
+    /// Returns true if the tools that change a running instance are offered.
+    pub fn allows_writes(&self) -> bool {
+        self.allow_writes && !self.public_mode
     }
 
     /// Get the connection pool
@@ -854,6 +878,11 @@ impl McpServer {
             tools.retain(|t| PUBLIC_TOOLS.contains(&t.name.as_str()));
         }
 
+        // Tools that change a running instance are opt-in
+        if !self.allows_writes() {
+            tools.retain(|t| !WRITE_TOOLS.contains(&t.name.as_str()));
+        }
+
         Ok(ToolsListResult { tools })
     }
 
@@ -871,6 +900,16 @@ impl McpServer {
         if self.public_mode && !PUBLIC_TOOLS.contains(&params.name.as_str()) {
             return Err(McpError::MethodNotFound(format!(
                 "Unknown tool: {}",
+                params.name
+            )));
+        }
+
+        // Reject tools that change a running instance unless opted in, naming
+        // the flag so the user knows how to enable them.
+        if !self.allows_writes() && WRITE_TOOLS.contains(&params.name.as_str()) {
+            return Err(McpError::MethodNotFound(format!(
+                "Tool '{}' changes the running instance and is not offered; \
+                 start aimdb-mcp with --allow-writes to enable it",
                 params.name
             )));
         }
@@ -1067,6 +1106,9 @@ mod tests {
             "remove_binary",
             "validate_against_instance",
             "get_buffer_metrics",
+            "reset_buffer_metrics",
+            "get_stage_profiling",
+            "reset_stage_profiling",
             "save_memory",
             "reset_session",
         ];
@@ -1076,6 +1118,92 @@ mod tests {
                 "PUBLIC_TOOLS contains unknown tool: {tool}"
             );
         }
+        for tool in WRITE_TOOLS {
+            assert!(
+                known_tools.contains(tool),
+                "WRITE_TOOLS contains unknown tool: {tool}"
+            );
+        }
+    }
+
+    async fn tool_names(server: &McpServer) -> Vec<String> {
+        server.set_state(ServerState::Ready).await;
+        let result = server.handle_tools_list().await.unwrap();
+        result.tools.into_iter().map(|t| t.name).collect()
+    }
+
+    #[tokio::test]
+    async fn default_mode_offers_reads_but_no_writes() {
+        let names = tool_names(&McpServer::new()).await;
+        for tool in WRITE_TOOLS {
+            assert!(
+                !names.iter().any(|n| n == tool),
+                "{tool} offered by default"
+            );
+        }
+        for tool in [
+            "get_record",
+            "graph_nodes",
+            "get_buffer_metrics",
+            "drain_record",
+        ] {
+            assert!(names.iter().any(|n| n == tool), "{tool} missing by default");
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_writes_offers_write_tools() {
+        let names = tool_names(&McpServer::new().with_allow_writes(true)).await;
+        for tool in WRITE_TOOLS {
+            assert!(
+                names.iter().any(|n| n == tool),
+                "{tool} missing with --allow-writes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn default_mode_rejects_write_tool_naming_the_flag() {
+        let server = McpServer::new();
+        server.set_state(ServerState::Ready).await;
+        for tool in WRITE_TOOLS {
+            let params = ToolCallParams {
+                name: tool.to_string(),
+                arguments: None,
+            };
+            let err = server.handle_tools_call(params).await.unwrap_err();
+            let McpError::MethodNotFound(message) = err else {
+                panic!("expected MethodNotFound for {tool}, got: {err:?}");
+            };
+            assert!(message.contains("--allow-writes"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_writes_passes_write_tool_to_its_handler() {
+        // No endpoint configured: the handler itself refuses with
+        // InvalidParams, which shows the gate let the call through.
+        std::env::remove_var("AIMDB_CONNECT");
+        let server = McpServer::new().with_allow_writes(true);
+        server.set_state(ServerState::Ready).await;
+        let params = ToolCallParams {
+            name: "set_record".to_string(),
+            arguments: Some(json!({ "record_name": "r", "value": 1 })),
+        };
+        let result = server.handle_tools_call(params).await;
+        assert!(
+            !matches!(result, Err(McpError::MethodNotFound(_))),
+            "set_record blocked despite --allow-writes: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_mode_wins_over_allow_writes() {
+        let server = McpServer::new()
+            .with_public_mode(true)
+            .with_allow_writes(true);
+        assert!(!server.allows_writes());
+        assert_eq!(tool_names(&server).await, PUBLIC_TOOLS);
     }
 
     #[test]
