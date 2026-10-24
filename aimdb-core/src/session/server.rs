@@ -70,9 +70,9 @@ enum Step {
     Closed,
     /// A subscription update to encode and forward to the peer.
     Event(SubEvent),
-    /// A subscription pump finished on its own (stream exhausted) — reap it and
-    /// prune its `cancels` entry by the carried sub id.
-    SubDrained(String),
+    /// A subscription pump finished — reap it and prune its `cancels` entry,
+    /// but only while that entry is still the pump's own (same generation).
+    SubDrained(String, u64),
 }
 
 /// Drive one accepted [`Connection`] until it closes.
@@ -116,11 +116,15 @@ pub async fn run_session<C, D>(
     // it without limit — pumps drop on overflow (events carry a monotonic `seq`).
     let (event_tx, event_rx) = async_channel::bounded::<SubEvent>(EVENT_BUFFER);
     // Per-connection subscription pumps; the engine future is their sole owner.
-    // Each resolves to its own sub id, so the loop can prune the matching
-    // `cancels` entry (a no-op if Unsubscribe already removed it).
-    let mut subs: FuturesUnordered<BoxFut<'static, String>> = FuturesUnordered::new();
-    // sub-id → cancel handle; dropping/firing the oneshot cancels the pump.
-    let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    // Each resolves to its own sub id and generation, so the loop can prune the
+    // matching `cancels` entry (a no-op if Unsubscribe already removed it).
+    let mut subs: FuturesUnordered<BoxFut<'static, (String, u64)>> = FuturesUnordered::new();
+    // sub-id → (generation, cancel handle); dropping/firing the oneshot cancels
+    // the pump. The generation tells a pump's own entry from a later
+    // subscription that reuses its id after an Unsubscribe: a pump that ends
+    // late must not remove that one.
+    let mut cancels: HashMap<String, (u64, oneshot::Sender<()>)> = HashMap::new();
+    let mut next_generation: u64 = 0;
     // Reused encode scratch buffer.
     let mut out = Vec::new();
 
@@ -148,17 +152,22 @@ pub async fn run_session<C, D>(
                     Err(_) => Step::Closed,
                 },
                 // ---- drain finished subscription pumps ---------------------
-                sub_id = subs.select_next_some() => Step::SubDrained(sub_id),
+                (sub_id, generation) = subs.select_next_some() => {
+                    Step::SubDrained(sub_id, generation)
+                }
             }
         };
 
         match step {
             Step::Closed => break,
-            // A pump finished on its own (stream exhausted), not via Unsubscribe;
-            // drop its cancel handle so the ended subscription neither leaks nor
-            // keeps counting against `max_subs_per_connection`.
-            Step::SubDrained(sub_id) => {
-                cancels.remove(&sub_id);
+            // A pump finished; drop its cancel handle so the ended subscription
+            // neither leaks nor keeps counting against
+            // `max_subs_per_connection` — unless the id now belongs to a newer
+            // subscription (Unsubscribe, then Subscribe with the same id).
+            Step::SubDrained(sub_id, generation) => {
+                if cancels.get(&sub_id).is_some_and(|(g, _)| *g == generation) {
+                    cancels.remove(&sub_id);
+                }
             }
 
             Step::Event(ev) => {
@@ -202,6 +211,13 @@ pub async fn run_session<C, D>(
                         // The opening request id is the subscription's routing key;
                         // events carry it back as `Outbound::Event.sub`.
                         let sub_id = id.to_string();
+                        // An id that still names a live subscription is refused:
+                        // replacing it would cancel the live one without a word.
+                        if cancels.contains_key(&sub_id) {
+                            log_warn!("subscribe refused: id {} is still live", sub_id);
+                            send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
+                            continue;
+                        }
                         if cancels.len() >= config.limits.max_subs_per_connection {
                             send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
                             continue;
@@ -275,9 +291,12 @@ pub async fn run_session<C, D>(
                                     break;
                                 }
                                 let (cancel_tx, cancel_rx) = oneshot::channel();
-                                cancels.insert(sub_id.clone(), cancel_tx);
+                                let generation = next_generation;
+                                next_generation += 1;
+                                cancels.insert(sub_id.clone(), (generation, cancel_tx));
                                 subs.push(Box::pin(pump_subscription(
                                     sub_id,
+                                    generation,
                                     stream,
                                     event_tx.clone(),
                                     cancel_rx,
@@ -348,16 +367,18 @@ async fn send_reply_err<C: EnvelopeCodec + ?Sized>(
 /// snapshot lost at the tail of the burst still shows up as a gap on the first
 /// event.
 ///
-/// Returns its `sub_id` so [`run_session`] can prune the `cancels` entry for a
-/// pump that ended on its own; the Unsubscribe path already removed it, so that
-/// later prune is a no-op.
+/// Returns its `sub_id` and `generation` so [`run_session`] can prune the
+/// `cancels` entry for a pump that ended on its own; the Unsubscribe path
+/// already removed it, and a newer subscription under the same id has another
+/// generation, so that later prune leaves both alone.
 async fn pump_subscription(
     sub_id: String,
+    generation: u64,
     mut stream: BoxStream<'static, SubUpdate>,
     tx: Sender<SubEvent>,
     cancel: oneshot::Receiver<()>,
     start_seq: u64,
-) -> String {
+) -> (String, u64) {
     // Fuse the cancel receiver: a bare `oneshot::Receiver` reports
     // `is_terminated()` once its sender drops, and `select_biased!` skips
     // terminated arms — so the cancel would never fire. `Fuse` keeps the arm
@@ -389,7 +410,7 @@ async fn pump_subscription(
             Err(_) => break,            // funnel disconnected — connection gone
         }
     }
-    sub_id
+    (sub_id, generation)
 }
 
 /// Accept connections from `listener` and serve each with [`run_session`],
