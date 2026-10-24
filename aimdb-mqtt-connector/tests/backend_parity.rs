@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::AimDbBuilder;
-use aimdb_mqtt_connector::MqttConnector;
+use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
 use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
@@ -299,6 +299,87 @@ async fn pattern_link_covers_exact_link_on_both_backends() {
         ["parity/+/in", "parity/+/in"],
         "each backend subscribes only the covering filter"
     );
+}
+
+/// Three inbound links: a pattern, an exact link it covers asking for
+/// `qos=2`, and a link of its own asking for `qos=0`.
+fn build_qos_db(
+    connector: impl aimdb_core::ConnectorBuilder + 'static,
+) -> impl std::future::Future<Output = (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner)> {
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector);
+    for (key, topic, qos) in [
+        ("readings", "mqtt://parity/{device}/in", None),
+        ("kitchen", "mqtt://parity/kitchen/in", Some(2)),
+        ("telemetry", "mqtt://parity/telemetry", Some(0)),
+    ] {
+        builder.configure::<u64>(key, move |reg| {
+            let mut link = reg
+                .buffer(BufferCfg::SingleLatest)
+                .link_from(topic)
+                .with_deserializer(|_ctx, data: &[u8]| parse(data));
+            if let Some(qos) = qos {
+                link = link.with_qos(qos);
+            }
+            link.finish();
+        });
+    }
+    async move { builder.build().await.expect("build db") }
+}
+
+/// What one backend subscribes, against a broker of its own, so each SUBSCRIBE
+/// is known to come from that backend.
+async fn subscribed_qos<C: aimdb_core::ConnectorBuilder + 'static>(
+    connector: impl FnOnce(String) -> C,
+) -> Vec<(String, u8)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let (_db, runner) = build_qos_db(connector(format!("mqtt://127.0.0.1:{port}"))).await;
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+    tokio::select! {
+        _ = runner.run() => panic!("the runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            while seen_for_wait.lock().unwrap().subscribed_qos.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            panic!("watchdog: subscribed {:?}", seen.lock().unwrap().subscribed_qos);
+        }
+    }
+
+    let mut subscribed = seen.lock().unwrap().subscribed_qos.clone();
+    subscribed.sort();
+    subscribed
+}
+
+/// Each filter is subscribed at the highest `qos` among the links it covers:
+/// the covered exact link's `qos=2` lifts its covering pattern. The native
+/// backend honours 2; the embedded one has no QoS 2 and subscribes at 1. A
+/// link asking for `qos=0` alone is subscribed at 0 on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inbound_qos_reaches_the_subscribe_on_both_backends() {
+    let native = subscribed_qos(|url| MqttConnector::new(url).with_client_id("qos-native")).await;
+    let embedded = subscribed_qos(|url| {
+        MqttConnector::new(url)
+            .transport(TokioNet::tcp())
+            .with_client_id("qos-embedded")
+    })
+    .await;
+
+    let expected = |covering| {
+        vec![
+            ("parity/+/in".to_string(), covering),
+            ("parity/telemetry".to_string(), 0),
+        ]
+    };
+    assert_eq!(native, expected(2), "native honours qos=2");
+    assert_eq!(embedded, expected(1), "embedded caps qos=2 at 1");
 }
 
 /// `with_credentials` reaches the wire on both backends.

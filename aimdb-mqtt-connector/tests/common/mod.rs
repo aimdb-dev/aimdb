@@ -25,6 +25,8 @@ pub struct Seen {
     /// The keep-alive each CONNECT promised, in seconds.
     pub keep_alives: Vec<u16>,
     pub subscribes: Vec<Vec<String>>,
+    /// Every (topic, requested QoS) subscribed on any connection.
+    pub subscribed_qos: Vec<(String, u8)>,
     pub published: Vec<(String, Vec<u8>)>,
     /// The Maximum Packet Size each MQTT 5 CONNECT advertised, when it did.
     pub max_packet_sizes: Vec<u32>,
@@ -179,8 +181,9 @@ fn connect_identity(body: &[u8], v5: bool) -> Option<(String, Option<(String, St
     Some((client_id, credentials))
 }
 
-/// Collect the topics from a SUBSCRIBE body and build the matching SUBACK.
-fn suback(body: &[u8], v5: bool, topics: &mut Vec<String>) -> Vec<u8> {
+/// Collect the topics and their requested QoS from a SUBSCRIBE body and build
+/// the SUBACK granting each the QoS it asked for.
+fn suback(body: &[u8], v5: bool, topics: &mut Vec<(String, u8)>) -> Vec<u8> {
     let packet_id = [body[0], body[1]];
     let mut i = 2;
     if v5 {
@@ -196,9 +199,12 @@ fn suback(body: &[u8], v5: bool, topics: &mut Vec<String>) -> Vec<u8> {
         if i + len > body.len() {
             break;
         }
-        topics.push(String::from_utf8_lossy(&body[i..i + len]).into_owned());
+        let topic = String::from_utf8_lossy(&body[i..i + len]).into_owned();
+        // The low two bits of the subscription options byte are the QoS.
+        let qos = body.get(i + len).map_or(0, |options| options & 0x03);
+        topics.push((topic, qos));
         i += len + 1; // topic + subscription options byte
-        granted.push(0x01);
+        granted.push(qos);
     }
 
     let mut rest = Vec::new();
@@ -329,11 +335,16 @@ where
                     return;
                 }
             }
-            // SUBSCRIBE -> SUBACK granting QoS 1 for each requested topic.
+            // SUBSCRIBE -> SUBACK granting each requested topic its QoS.
             8 => {
                 let mut topics = Vec::new();
                 let ack = suback(&body, v5, &mut topics);
-                seen.lock().unwrap().subscribes.push(topics);
+                {
+                    let mut seen = seen.lock().unwrap();
+                    seen.subscribes
+                        .push(topics.iter().map(|(t, _)| t.clone()).collect());
+                    seen.subscribed_qos.extend(topics);
+                }
                 if socket.write_all(&ack).await.is_err() || after.hang_up {
                     return;
                 }
@@ -744,7 +755,7 @@ async fn serve_echo(mut socket: TcpStream) {
     let _ = socket.set_nodelay(true);
     let mut buf = Vec::new();
     let mut v5 = true;
-    let mut subscribed: Vec<String> = Vec::new();
+    let mut subscribed: Vec<(String, u8)> = Vec::new();
     let mut next_id: u16 = 0;
     loop {
         let Some((first, body)) = read_packet(&mut socket, &mut buf).await else {
@@ -768,7 +779,7 @@ async fn serve_echo(mut socket: TcpStream) {
                 if let Some(id) = packet_id {
                     reply.extend_from_slice(&[0x40, 0x02, id[0], id[1]]);
                 }
-                if subscribed.iter().any(|t| t == &topic) {
+                if subscribed.iter().any(|(t, _)| t == &topic) {
                     next_id = next_id.wrapping_add(1).max(1);
                     reply.extend_from_slice(&publish_qos1_for(&topic, &payload, next_id, v5));
                 }

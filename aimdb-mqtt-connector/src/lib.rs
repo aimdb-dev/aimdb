@@ -129,6 +129,8 @@ pub mod embedded;
 
 #[cfg(any(feature = "std", feature = "embedded"))]
 pub(crate) mod publish_opts;
+#[cfg(any(feature = "std", feature = "embedded"))]
+pub(crate) mod subscribe_qos;
 
 // SNTP wire codec — pure and feature-independent so it is unit-tested on the
 // host; only the TLS I/O task consumes it.

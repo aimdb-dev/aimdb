@@ -50,7 +50,7 @@ pub(crate) async fn run_sessions<D>(
     dialer: D,
     host: alloc::string::String,
     port: u16,
-    topics: alloc::vec::Vec<alloc::string::String>,
+    topics: alloc::vec::Vec<crate::subscribe_qos::Subscription>,
     connection_settings: mountain_mqtt::client::ConnectionSettings<'static>,
     settings: crate::embedded::manager::Settings,
     inbound: aimdb_core::InboundDispatch,
@@ -71,7 +71,7 @@ where
     // Built once and borrowed for the loop; re-sent on every connection.
     let subscribe_topics: alloc::vec::Vec<(&str, QualityOfService)> = topics
         .iter()
-        .map(|topic| (topic.as_str(), QualityOfService::Qos1))
+        .map(|s| (s.filter.as_str(), crate::embedded::mountain_qos(s.qos)))
         .collect();
 
     // Allocated once and reused by every session.

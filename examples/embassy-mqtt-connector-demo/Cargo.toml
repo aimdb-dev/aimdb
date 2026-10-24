@@ -26,6 +26,8 @@ aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features
 ] }
 aimdb-mqtt-connector = { path = "../../aimdb-mqtt-connector", default-features = false, features = [
     "embassy-runtime",
+    # The connector's own warnings (e.g. a `qos=2` route capped at QoS 1).
+    "defmt",
 ] }
 # Serial remote-access server — serves this db's records over a UART (ST-LINK VCP)
 # so a host can read them with `aimdb --features transport-serial --connect serial://…`.

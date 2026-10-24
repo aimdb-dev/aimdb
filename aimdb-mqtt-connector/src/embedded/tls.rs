@@ -318,7 +318,7 @@ pub(crate) async fn run_tls<D>(
     options: TlsOptions,
     host: String,
     port: u16,
-    topics: Vec<String>,
+    topics: Vec<crate::subscribe_qos::Subscription>,
     connection_settings: ConnectionSettings<'static>,
     settings: Settings,
     inbound: aimdb_core::InboundDispatch,
@@ -343,7 +343,7 @@ where
     // routing survives reconnects. Built once — borrows `topics` for the loop.
     let subscribe_topics: Vec<(&str, QualityOfService)> = topics
         .iter()
-        .map(|topic| (topic.as_str(), QualityOfService::Qos1))
+        .map(|s| (s.filter.as_str(), crate::embedded::mountain_qos(s.qos)))
         .collect();
 
     // Allocated once and reused by every session.

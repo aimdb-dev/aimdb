@@ -28,8 +28,16 @@ use core::fmt::Debug;
 pub trait MqttLinkExt: Sized {
     /// Sets the MQTT Quality of Service level (0, 1, or 2).
     ///
-    /// Outbound: the publish QoS, defaulting to 1. Inbound: not applied yet;
-    /// both backends subscribe at QoS 1.
+    /// Outbound: the publish QoS, defaulting to 1.
+    ///
+    /// Inbound: the subscribe QoS, defaulting to 1. One subscribed filter can
+    /// stand for several inbound links (a pattern covering an exact topic);
+    /// it is subscribed at the highest QoS among them, so every link receives
+    /// at least what it asked for.
+    ///
+    /// The `embedded` backend has no QoS 2: it publishes and subscribes a
+    /// `qos=2` link at QoS 1 and warns once per such route at build. A value
+    /// other than 0, 1 or 2 fails the build on both backends.
     fn with_qos(self, qos: u8) -> Self;
 }
 
