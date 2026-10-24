@@ -1098,3 +1098,295 @@ hello",
         "serve must keep waiting on the parked accept, not return"
     );
 }
+
+// ===========================================================================
+// Subscription ids (#328) — a raw peer against `serve`, so the test decides
+// exactly which ids go on the wire.
+// ===========================================================================
+
+/// Every subscription follows one live feed until it is cancelled.
+struct FeedDispatch {
+    feed: tokio::sync::broadcast::Sender<SubUpdate>,
+}
+
+impl Dispatch for FeedDispatch {
+    fn authenticate<'a>(
+        &'a self,
+        _peer: &'a PeerInfo,
+        _first: Option<&'a [u8]>,
+    ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
+        Box::pin(async { Ok(SessionCtx::default()) })
+    }
+
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(FeedSession {
+            feed: self.feed.clone(),
+        })
+    }
+}
+
+struct FeedSession {
+    feed: tokio::sync::broadcast::Sender<SubUpdate>,
+}
+
+impl Session for FeedSession {
+    fn starts_session(&self, method: &str) -> bool {
+        method == "hello"
+    }
+
+    fn call<'a>(
+        &'a mut self,
+        _method: &'a str,
+        params: Payload,
+    ) -> BoxFut<'a, Result<Payload, RpcError>> {
+        Box::pin(async move { Ok(params) })
+    }
+
+    fn subscribe<'a>(
+        &'a mut self,
+        _topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
+        let rx = self.feed.subscribe();
+        Box::pin(async move {
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.ok().map(|u| (u, rx))
+            });
+            Ok(Box::pin(stream) as BoxStream<'static, SubUpdate>)
+        })
+    }
+
+    fn write<'a>(
+        &'a mut self,
+        _topic: &'a str,
+        _payload: Payload,
+    ) -> BoxFut<'a, Result<(), RpcError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A `serve` over [`FeedDispatch`] and a raw connection to it. The dialer is
+/// returned so it stays alive: dropping it closes the listener.
+async fn feed_session() -> (
+    Box<dyn Connection>,
+    tokio::sync::broadcast::Sender<SubUpdate>,
+    tokio::task::JoinHandle<()>,
+    ChannelDialer,
+) {
+    let (listener, dialer) = transport_pair();
+    let (feed, _) = tokio::sync::broadcast::channel(16);
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        Arc::new(FeedDispatch { feed: feed.clone() }),
+        SessionConfig {
+            limits: SessionLimits {
+                max_connections: 1,
+                max_subs_per_connection: 8,
+            },
+            reads_hello: false,
+            acks_subscribe: false,
+        },
+    ));
+    let conn = dialer.connect().await.expect("connect");
+    (conn, feed, server, dialer)
+}
+
+/// Every frame the server sends within `window`, as text.
+async fn frames_within(conn: &mut Box<dyn Connection>, window: Duration) -> Vec<String> {
+    let mut frames = Vec::new();
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Ok(Some(frame))) = tokio::time::timeout_at(deadline, conn.recv()).await {
+        frames.push(String::from_utf8(frame).expect("utf-8 frame"));
+    }
+    frames
+}
+
+/// Publishes `value` once the server's subscriptions are registered, and
+/// returns what arrived for it.
+async fn publish(
+    conn: &mut Box<dyn Connection>,
+    feed: &tokio::sync::broadcast::Sender<SubUpdate>,
+    value: &str,
+) -> Vec<String> {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = feed.send(SubUpdate::new(payload_from(value)));
+    frames_within(conn, Duration::from_millis(200)).await
+}
+
+/// A subscribe whose id names a live subscription is refused; the live one
+/// keeps delivering, once per update. Before, the new entry replaced the live
+/// one, which cancelled it, and the cleanup of the cancelled pump then removed
+/// the new entry too: the id went silent.
+#[tokio::test]
+async fn a_subscribe_reusing_a_live_id_is_refused() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let first = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(first, ["EVENT\n2\n1\n-\nv1"]);
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let refused = frames_within(&mut conn, Duration::from_millis(200)).await;
+    assert_eq!(refused, ["REPLY\n2\nERR\ndenied"]);
+
+    let after = publish(&mut conn, &feed, "v2").await;
+    assert_eq!(
+        after,
+        ["EVENT\n2\n2\n-\nv2"],
+        "the live subscription keeps delivering"
+    );
+    server.abort();
+}
+
+/// An id reused after an Unsubscribe belongs to the new subscription: the old
+/// pump, ending late, must not remove the new entry.
+#[tokio::test]
+async fn an_id_reused_after_unsubscribe_keeps_delivering() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    assert_eq!(
+        publish(&mut conn, &feed, "v1").await,
+        ["EVENT\n2\n1\n-\nv1"]
+    );
+
+    // Back to back: the old pump is cancelled but not yet reaped when the new
+    // subscription registers under the same id.
+    conn.send(b"UNSUB\n2").await.unwrap();
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+
+    for (n, value) in ["v2", "v3"].into_iter().enumerate() {
+        let got = publish(&mut conn, &feed, value).await;
+        assert_eq!(
+            got,
+            [format!("EVENT\n2\n{}\n-\n{value}", n + 1)],
+            "the reused id must keep delivering"
+        );
+    }
+    server.abort();
+}
+
+/// A second handshake on a connection that never closed (a serial line) is a
+/// new client: the old client's subscriptions end and release their source,
+/// and the new client's subscription under the same id delivers once per
+/// update. Before, the old subscriptions lived on, kept their sources, and the
+/// new subscribe collided with them.
+#[tokio::test]
+async fn a_second_handshake_starts_a_new_session() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    // Client A: handshake, two subscriptions.
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"SUB\n3\nfeed").await.unwrap();
+    let a = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(a.len(), 3, "A's reply and two events: {a:?}");
+    assert_eq!(feed.receiver_count(), 2);
+
+    // Client B on the same connection: its handshake ends A's session.
+    conn.send(b"REQ\n1\nhello\nB").await.unwrap();
+    let reply = frames_within(&mut conn, Duration::from_millis(200)).await;
+    assert_eq!(reply, ["REPLY\n1\nOK\nB"]);
+    assert_eq!(
+        feed.receiver_count(),
+        0,
+        "A's subscriptions released their source"
+    );
+
+    // No event of A's subscriptions reaches B.
+    let quiet = publish(&mut conn, &feed, "v2").await;
+    assert!(
+        quiet.is_empty(),
+        "nothing for B before it subscribes: {quiet:?}"
+    );
+
+    // B subscribes under A's id: delivered once per update.
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let b = publish(&mut conn, &feed, "v3").await;
+    assert_eq!(b, ["EVENT\n2\n1\n-\nv3"]);
+    assert_eq!(feed.receiver_count(), 1);
+    server.abort();
+}
+
+/// The first handshake on a connection changes nothing: subscriptions opened
+/// before it stay.
+#[tokio::test]
+async fn the_first_handshake_keeps_earlier_subscriptions() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    let got = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(got, ["REPLY\n1\nOK\nA", "EVENT\n2\n1\n-\nv1"]);
+    server.abort();
+}
+
+/// A subscription whose source ends on its own (here after three updates; on
+/// a device, a buffer that had no subscriber slot left) is reported: the
+/// client gets its events, then a terminal `Internal` error, then the end.
+/// Before, the stream just stopped, so an acknowledged subscription that
+/// never delivered looked like a quiet record.
+#[tokio::test]
+async fn a_subscription_that_ends_on_its_own_is_reported() {
+    let (listener, dialer) = transport_pair();
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        Arc::new(EchoDispatch {
+            writes: Arc::new(Mutex::new(Vec::new())),
+        }),
+        SessionConfig::default(),
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: 1024,
+            sends_hello: false,
+        },
+        Arc::new(TestClock),
+    );
+    let client = tokio::spawn(client_fut);
+
+    let mut stream = handle.subscribe("temp").unwrap();
+    let mut items = Vec::new();
+    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        items.push(item.map(|u| String::from_utf8(u.data.to_vec()).unwrap()));
+    }
+    assert_eq!(
+        items,
+        [
+            Ok("temp#1".to_string()),
+            Ok("temp#2".to_string()),
+            Ok("temp#3".to_string()),
+            Err(RpcError::Internal),
+        ]
+    );
+
+    drop(stream);
+    drop(handle);
+    let _ = client.await;
+    server.abort();
+}
+
+/// Only a subscription the client still holds is reported when it ends: an
+/// unsubscribed one, and the previous client's after a new handshake, end in
+/// silence.
+#[tokio::test]
+async fn an_ended_subscription_the_client_dropped_is_not_reported() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"UNSUB\n2").await.unwrap();
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    conn.send(b"SUB\n3\nfeed").await.unwrap();
+    conn.send(b"REQ\n4\nhello\nB").await.unwrap();
+    let frames = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(frames, ["REPLY\n1\nOK\nA", "REPLY\n4\nOK\nB"]);
+    server.abort();
+}

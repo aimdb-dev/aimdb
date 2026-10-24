@@ -22,6 +22,21 @@
 //! host) and this crate contributes only the COBS framer. A UART is
 //! point-to-point, so the stream is moved in and served once.
 //!
+//! # Sessions on a line that never closes
+//!
+//! A UART has no connect or disconnect: the server serves one connection for
+//! the firmware's lifetime and cannot see a client leave. A client's `hello`
+//! is what marks a new one: the session engine then ends the previous
+//! client's session (its subscriptions stop and release their buffer slots)
+//! and answers the new client from a fresh one. So every client that connects
+//! gets its events, however often clients come and go.
+//!
+//! Until the next `hello`, a client that left keeps its subscriptions: they
+//! go on streaming into the UART and hold their buffer slots. Size the
+//! subscriber slots of a record with remote access for the subscribers a
+//! client opens (one per record it watches) on top of the record's own taps
+//! and links.
+//!
 //! Both speak the `serial://` scheme by default ([`DEFAULT_SCHEME`]).
 
 #![cfg_attr(not(feature = "std"), no_std)]

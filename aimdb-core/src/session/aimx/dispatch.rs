@@ -102,6 +102,12 @@ impl DispatchReply {
 }
 
 impl Session for AimxSession {
+    /// `hello` opens every AimX session; a second one on a connection comes
+    /// from a new client (a serial line never closes between clients).
+    fn starts_session(&self, method: &str) -> bool {
+        method == "hello"
+    }
+
     fn call<'a>(
         &'a mut self,
         method: &'a str,
