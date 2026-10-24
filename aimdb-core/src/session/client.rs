@@ -927,13 +927,6 @@ async fn inbound_pump(handle: ClientHandle, inbound: crate::InboundDispatch, id:
                         id.as_ref(),
                         update.skipped
                     );
-
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!(
-                        "mirror gap on '{}': {} update(s) lost (latest-state, no resync)",
-                        id.as_ref(),
-                        update.skipped
-                    );
                 }
                 inbound.dispatch(id.as_ref(), &update.data);
             }
