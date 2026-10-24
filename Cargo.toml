@@ -120,7 +120,7 @@ embassy-stm32 = { version = "0.6.0", features = [
     "unstable-pac",
     "low-power",
 ] }
-embassy-sync = { version = "0.8.0", path = "./_external/embassy/embassy-sync", features = [
+embassy-sync = { version = "0.8.0", features = [
     "defmt",
 ] }
 embassy-executor = { version = "0.10.0", features = [
@@ -173,13 +173,15 @@ stm32-fmc = "0.3.0"
 # The adapter needs `poll_next_message` / `poll_changed` — merged upstream, not
 # in embassy-sync 0.8.0. Patches aren't published, so this blocks publishing
 # `aimdb-embassy-adapter` (008 §6); drop it once a release carries those APIs.
+# Pinned to an upstream commit and fetched by cargo, so a plain `git clone`
+# builds without submodules (#341).
 [patch.crates-io]
-embassy-sync = { path = "./_external/embassy/embassy-sync" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "03c826f2544220cb44b2dec05f5d636a80d39382" }
 # Published embassy-net-driver-channel 0.4.0 calls the pre-guard
 # `zerocopy_channel` API the patch above no longer has, and its driver trait
 # must be the same instance embassy-net sees — so both follow embassy-sync.
-embassy-net-driver-channel = { path = "./_external/embassy/embassy-net-driver-channel" }
-embassy-net-driver = { path = "./_external/embassy/embassy-net-driver" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "03c826f2544220cb44b2dec05f5d636a80d39382" }
+embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "03c826f2544220cb44b2dec05f5d636a80d39382" }
 
 [workspace.metadata.docs.rs]
 all-features = true
