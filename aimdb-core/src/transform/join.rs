@@ -1,4 +1,4 @@
-use core::any::Any;
+use core::any::{type_name, Any, TypeId};
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
@@ -135,6 +135,8 @@ type JoinInputFactory = Box<
 /// Obtain via [`RecordRegistrar::transform_join`](crate::RecordRegistrar::transform_join).
 pub struct JoinBuilder<O> {
     inputs: Vec<(String, JoinInputFactory)>,
+    /// Type each input is read as, parallel to `inputs`.
+    input_types: Vec<(TypeId, &'static str)>,
     _phantom: PhantomData<O>,
 }
 
@@ -145,6 +147,7 @@ where
     pub(crate) fn new() -> Self {
         Self {
             inputs: Vec::new(),
+            input_types: Vec::new(),
             _phantom: PhantomData,
         }
     }
@@ -205,6 +208,7 @@ where
         );
 
         self.inputs.push((key_str, factory));
+        self.input_types.push((TypeId::of::<I>(), type_name::<I>()));
         self
     }
 
@@ -241,12 +245,14 @@ where
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         let inputs = self.inputs;
+        let input_types = self.input_types;
         let input_keys_for_descriptor: Vec<String> =
             inputs.iter().map(|(k, _)| k.clone()).collect();
 
         JoinPipeline {
             spawn_factory: Box::new(move |_| TransformDescriptor {
                 input_keys: input_keys_for_descriptor,
+                input_types,
                 build_fn: Box::new(move |producer, db, output_key, _profiling| {
                     build_join_collected(db, inputs, producer, handler, output_key)
                 }),

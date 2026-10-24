@@ -1674,6 +1674,7 @@ mod tests {
     fn dummy_transform_descriptor() -> crate::transform::TransformDescriptor<TestRecord> {
         crate::transform::TransformDescriptor::<TestRecord> {
             input_keys: vec![],
+            input_types: vec![],
             build_fn: Box::new(|_p, _db, _output_key, _profiling| {
                 crate::transform::CollectedTransform {
                     task_future: Box::pin(async {}),
