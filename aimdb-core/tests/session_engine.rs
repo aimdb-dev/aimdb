@@ -1390,3 +1390,67 @@ async fn an_ended_subscription_the_client_dropped_is_not_reported() {
     assert_eq!(frames, ["REPLY\n1\nOK\nA", "REPLY\n4\nOK\nB"]);
     server.abort();
 }
+
+// ===========================================================================
+// Accept errors (#351) — a listener that hands out one connection, then fails
+// every further accept.
+// ===========================================================================
+
+/// Hands out `first`, then answers every accept with `error`, at once.
+struct ScriptedListener {
+    first: Option<Box<dyn Connection>>,
+    error: TransportError,
+}
+
+impl Listener for ScriptedListener {
+    fn accept(&mut self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
+        Box::pin(async move {
+            match self.first.take() {
+                Some(conn) => Ok(conn),
+                None => Err(self.error.clone()),
+            }
+        })
+    }
+}
+
+/// `serve` over a [`ScriptedListener`] failing with `error`, and the peer of
+/// its one connection.
+fn scripted_serve(error: TransportError) -> (Box<dyn Connection>, tokio::task::JoinHandle<()>) {
+    let (server_side, client) = conn_pair();
+    let (feed, _) = tokio::sync::broadcast::channel(16);
+    let server = tokio::spawn(serve(
+        ScriptedListener {
+            first: Some(Box::new(server_side)),
+            error,
+        },
+        Arc::new(LineCodec),
+        Arc::new(FeedDispatch { feed }),
+        SessionConfig::default(),
+    ));
+    (Box::new(client), server)
+}
+
+/// A listener that reports `Closed` hands out no more connections; `serve`
+/// keeps serving the open one. Before, it called `accept` again at once,
+/// forever, and the open connection never got a turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_listener_still_serves_its_open_connections() {
+    let (mut conn, server) = scripted_serve(TransportError::Closed);
+
+    conn.send(b"PING").await.unwrap();
+    let frames = frames_within(&mut conn, Duration::from_secs(1)).await;
+    assert_eq!(frames, ["PONG"]);
+    server.abort();
+}
+
+/// Once the listener is closed and its last connection ends, `serve` returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_returns_once_a_closed_listeners_connections_end() {
+    let (conn, server) = scripted_serve(TransportError::Closed);
+
+    drop(conn);
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .expect("serve returns after its last connection ends")
+        .expect("serve does not panic");
+}
