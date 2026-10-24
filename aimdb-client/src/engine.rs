@@ -399,7 +399,7 @@ fn decode_updates(
             }),
             Err(e) => {
                 *terminated = true;
-                Err(rpc_err(e))
+                Err(sub_err(e))
             }
         };
         futures::future::ready(Some(out))
@@ -431,6 +431,24 @@ fn rpc_err(e: RpcError) -> ClientError {
         RpcError::Denied => ClientError::server_error("denied", "permission denied", None),
         // `Internal` today, plus any future non-exhaustive variant.
         _ => ClientError::server_error("internal", "engine/transport failure", None),
+    }
+}
+
+/// Map the terminal error of a subscription stream onto a [`ClientError`].
+///
+/// Unlike a call's error it always comes from the server: a dropped
+/// connection ends the stream without one. So `Internal` here is not a
+/// transport failure but the server ending the subscription, because its
+/// source closed or could not be opened (a record buffer with no subscriber
+/// slot left, for example).
+fn sub_err(e: RpcError) -> ClientError {
+    match e {
+        RpcError::NotFound | RpcError::Denied => rpc_err(e),
+        _ => ClientError::server_error(
+            "internal",
+            "the server ended the subscription (its source closed or could not be opened)",
+            None,
+        ),
     }
 }
 
@@ -541,5 +559,43 @@ mod tests {
             matches!(err, ClientError::ServerError { code, .. } if code == "denied"),
             "unexpected terminal error: {err}"
         );
+    }
+
+    /// A subscription the server ended (`Internal` as its terminal item) says
+    /// so, rather than blaming the transport: a dropped connection would have
+    /// ended the stream without an error.
+    #[tokio::test]
+    async fn a_subscription_the_server_ended_says_so() {
+        let raw = raw_stream(vec![ok_update("1", 0), Err(RpcError::Internal)]);
+        let out: Vec<_> = decode_updates(raw).collect().await;
+
+        assert_eq!(out.len(), 2);
+        let err = out[1].as_ref().expect_err("the end reaches the caller");
+        assert!(
+            matches!(
+                err,
+                ClientError::ServerError { code, message, .. }
+                    if code == "internal" && message.contains("ended the subscription")
+            ),
+            "unexpected terminal error: {err}"
+        );
+    }
+
+    /// A call's `Internal` keeps naming the engine or transport: for calls the
+    /// client engine raises it itself when the connection drops.
+    #[test]
+    fn a_calls_internal_error_still_names_the_transport() {
+        let err = rpc_err(RpcError::Internal);
+        assert!(
+            matches!(
+                &err,
+                ClientError::ServerError { message, .. } if message == "engine/transport failure"
+            ),
+            "{err}"
+        );
+        assert!(matches!(
+            sub_err(RpcError::Denied),
+            ClientError::ServerError { code, .. } if code == "denied"
+        ));
     }
 }
