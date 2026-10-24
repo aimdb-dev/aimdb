@@ -402,8 +402,10 @@ impl StreamDialer for EmbassyTcpDialer {
                 Err(_) => {
                     // Dropping `guard` aborts the socket and returns it to the slot.
                     drop(guard);
-                    // A synchronously-failing `connect()` gives the caller no
-                    // yield point before it retries; see `arm` below.
+                    // `connect()` can fail synchronously, and a caller that
+                    // retries at once (a reconnect loop) would then spin on the
+                    // single-core cooperative executor, starving every other
+                    // task. Yield so a misconfig retries instead of hanging.
                     yield_now().await;
                     Err(TransportError::Io)
                 }
@@ -459,14 +461,10 @@ impl<const N: usize> EmbassyTcpListener<N> {
                 Ok(()) => Ok(guard.into_socket()),
                 Err(_) => {
                     // Dropping `guard` aborts the socket and returns it to the slot.
+                    // A synchronous failure (e.g. port-0 `InvalidPort`) needs no
+                    // yield here: core's `serve` yields before the accept after
+                    // an error.
                     drop(guard);
-                    // `accept()` can fail synchronously (e.g. port-0
-                    // `InvalidPort`), and core's `serve` loop logs an accept
-                    // error and re-enters `accept()` immediately. Without a
-                    // yield point that spins forever on the single-core
-                    // cooperative executor, starving every other task. Yield so
-                    // a misconfig warn-loops instead of hanging the device.
-                    yield_now().await;
                     Err(TransportError::Io)
                 }
             }

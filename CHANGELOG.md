@@ -76,6 +76,13 @@ is unchanged. ([aimdb-core](aimdb-core/CHANGELOG.md))
 
 ### Fixed
 
+- **A failing listener no longer stalls a session server.** `session::serve`
+  stops accepting once its listener reports `Closed`, yields before the
+  accept after any other error so open connections keep being served, and
+  summarizes repeated failures in the log instead of one line per retry
+  (#351). ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md))
+
 - **AimX over serial: every reconnect gets its events.** A client's `hello`
   on a live connection starts a new session, an ended subscription no longer
   cancels a newer one with the same id, and a subscription whose source ended

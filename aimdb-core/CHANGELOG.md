@@ -131,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`session::serve` no longer spins on a failing listener (#351).** It
+  logged a failed `accept` and called `accept` again at once, and its select
+  is biased toward `accept`: a listener whose `accept` failed at once, every
+  time, kept it spinning (millions of retries a second) without polling the
+  open connections, and the task could not be aborted. Now:
+  - **`TransportError::Closed` ends accepting.** `serve` serves its open
+    connections to their end and then returns; a listener that never closes
+    keeps it running, as before.
+  - **The `accept` after any other error yields once first**, so the open
+    connections get their turn and the task stays cancellable. Listeners no
+    longer need their own guard (`aimdb-embassy-adapter` dropped its yield).
+  - **Repeated failures are summarized.** The first failure of a series is
+    logged with its error, then a summary at 10, 100, 1000, … attempts in a
+    row, and the next success logs how long the series was.
+
+  A listener whose `accept` keeps failing still retries without a pause:
+  `serve` is timer-free. Tokio's UDS and TCP listeners do not spin on a
+  persistent error such as `EMFILE`: their readiness is edge-triggered, so
+  they wait for the next connection attempt.
+
 - **Every client on a serial line gets its events, not every other one (#328).**
   A UART never closes, so the AimX session engine saw every client behind it
   as one session: a departed client's subscriptions kept streaming and held
