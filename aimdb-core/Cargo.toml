@@ -52,7 +52,7 @@ connector-session = ["alloc"]
 
 # Observability features (available on both std/no_std)
 tracing = ["dep:tracing"] # Works in both std and no_std environments
-defmt = ["dep:defmt"]     # Embedded logging via probe (no_std)
+defmt = ["dep:defmt", "defmt/alloc"]     # Embedded logging via probe (no_std)
 # A second facade destination, for hosts that cannot be handed a global
 # `tracing` subscriber (design 050). Not in `default`: 66 call sites on an MCU
 # should not each grow a level check because an FFI layer wanted one.

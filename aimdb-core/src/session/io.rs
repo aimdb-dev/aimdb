@@ -196,6 +196,7 @@ pub trait Delay {
 /// none, so nothing tells payload bytes from the next header. Only the framer
 /// knows which case it is in, so it says, rather than the connection guessing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FrameFault {
     /// Bad frame, good link: skip it and keep reading.
     Recoverable,

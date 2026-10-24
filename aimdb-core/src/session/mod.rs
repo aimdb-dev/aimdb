@@ -224,6 +224,7 @@ impl Default for SessionLimits {
 
 /// Transport-layer failure (Layer 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum TransportError {
     /// The connection was closed or reset by the peer.
@@ -239,6 +240,7 @@ pub enum TransportError {
 
 /// Envelope-codec failure — a frame could not be decoded/encoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum CodecError {
     /// The frame was not valid for this envelope format.
@@ -262,6 +264,7 @@ pub enum RpcError {
 
 /// Authentication failure raised by [`Dispatch::authenticate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum AuthError {
     /// Credentials were missing or rejected.

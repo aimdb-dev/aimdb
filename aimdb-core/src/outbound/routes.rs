@@ -126,6 +126,15 @@ pub(crate) enum SerializeFailure {
     InvalidLength { len: usize, capacity: usize },
 }
 
+// Through `Display`: the variants carry a `SerializeError` and lengths, and
+// one rendering keeps the defmt line identical to the tracing/log one.
+#[cfg(feature = "defmt")]
+impl defmt::Format for SerializeFailure {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{}", defmt::Display2Format(self))
+    }
+}
+
 impl core::fmt::Display for SerializeFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
