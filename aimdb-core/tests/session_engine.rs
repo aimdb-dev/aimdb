@@ -1098,3 +1098,166 @@ hello",
         "serve must keep waiting on the parked accept, not return"
     );
 }
+
+// ===========================================================================
+// Subscription ids (#328) — a raw peer against `serve`, so the test decides
+// exactly which ids go on the wire.
+// ===========================================================================
+
+/// Every subscription follows one live feed until it is cancelled.
+struct FeedDispatch {
+    feed: tokio::sync::broadcast::Sender<SubUpdate>,
+}
+
+impl Dispatch for FeedDispatch {
+    fn authenticate<'a>(
+        &'a self,
+        _peer: &'a PeerInfo,
+        _first: Option<&'a [u8]>,
+    ) -> BoxFut<'a, Result<SessionCtx, AuthError>> {
+        Box::pin(async { Ok(SessionCtx::default()) })
+    }
+
+    fn open(&self, _ctx: &SessionCtx) -> Box<dyn Session> {
+        Box::new(FeedSession {
+            feed: self.feed.clone(),
+        })
+    }
+}
+
+struct FeedSession {
+    feed: tokio::sync::broadcast::Sender<SubUpdate>,
+}
+
+impl Session for FeedSession {
+    fn call<'a>(
+        &'a mut self,
+        _method: &'a str,
+        params: Payload,
+    ) -> BoxFut<'a, Result<Payload, RpcError>> {
+        Box::pin(async move { Ok(params) })
+    }
+
+    fn subscribe<'a>(
+        &'a mut self,
+        _topic: &'a str,
+    ) -> BoxFut<'a, Result<BoxStream<'static, SubUpdate>, RpcError>> {
+        let rx = self.feed.subscribe();
+        Box::pin(async move {
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.ok().map(|u| (u, rx))
+            });
+            Ok(Box::pin(stream) as BoxStream<'static, SubUpdate>)
+        })
+    }
+
+    fn write<'a>(
+        &'a mut self,
+        _topic: &'a str,
+        _payload: Payload,
+    ) -> BoxFut<'a, Result<(), RpcError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A `serve` over [`FeedDispatch`] and a raw connection to it. The dialer is
+/// returned so it stays alive: dropping it closes the listener.
+async fn feed_session() -> (
+    Box<dyn Connection>,
+    tokio::sync::broadcast::Sender<SubUpdate>,
+    tokio::task::JoinHandle<()>,
+    ChannelDialer,
+) {
+    let (listener, dialer) = transport_pair();
+    let (feed, _) = tokio::sync::broadcast::channel(16);
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        Arc::new(FeedDispatch { feed: feed.clone() }),
+        SessionConfig {
+            limits: SessionLimits {
+                max_connections: 1,
+                max_subs_per_connection: 8,
+            },
+            reads_hello: false,
+            acks_subscribe: false,
+        },
+    ));
+    let conn = dialer.connect().await.expect("connect");
+    (conn, feed, server, dialer)
+}
+
+/// Every frame the server sends within `window`, as text.
+async fn frames_within(conn: &mut Box<dyn Connection>, window: Duration) -> Vec<String> {
+    let mut frames = Vec::new();
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Ok(Some(frame))) = tokio::time::timeout_at(deadline, conn.recv()).await {
+        frames.push(String::from_utf8(frame).expect("utf-8 frame"));
+    }
+    frames
+}
+
+/// Publishes `value` once the server's subscriptions are registered, and
+/// returns what arrived for it.
+async fn publish(
+    conn: &mut Box<dyn Connection>,
+    feed: &tokio::sync::broadcast::Sender<SubUpdate>,
+    value: &str,
+) -> Vec<String> {
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = feed.send(SubUpdate::new(payload_from(value)));
+    frames_within(conn, Duration::from_millis(200)).await
+}
+
+/// A subscribe whose id names a live subscription is refused; the live one
+/// keeps delivering, once per update. Before, the new entry replaced the live
+/// one, which cancelled it, and the cleanup of the cancelled pump then removed
+/// the new entry too: the id went silent.
+#[tokio::test]
+async fn a_subscribe_reusing_a_live_id_is_refused() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let first = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(first, ["EVENT\n2\n1\n-\nv1"]);
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let refused = frames_within(&mut conn, Duration::from_millis(200)).await;
+    assert_eq!(refused, ["REPLY\n2\nERR\ndenied"]);
+
+    let after = publish(&mut conn, &feed, "v2").await;
+    assert_eq!(
+        after,
+        ["EVENT\n2\n2\n-\nv2"],
+        "the live subscription keeps delivering"
+    );
+    server.abort();
+}
+
+/// An id reused after an Unsubscribe belongs to the new subscription: the old
+/// pump, ending late, must not remove the new entry.
+#[tokio::test]
+async fn an_id_reused_after_unsubscribe_keeps_delivering() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    assert_eq!(
+        publish(&mut conn, &feed, "v1").await,
+        ["EVENT\n2\n1\n-\nv1"]
+    );
+
+    // Back to back: the old pump is cancelled but not yet reaped when the new
+    // subscription registers under the same id.
+    conn.send(b"UNSUB\n2").await.unwrap();
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+
+    for (n, value) in ["v2", "v3"].into_iter().enumerate() {
+        let got = publish(&mut conn, &feed, value).await;
+        assert_eq!(
+            got,
+            [format!("EVENT\n2\n{}\n-\n{value}", n + 1)],
+            "the reused id must keep delivering"
+        );
+    }
+    server.abort();
+}
