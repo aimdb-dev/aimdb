@@ -280,15 +280,32 @@ MQTT Quality of Service levels are configured using integers:
 .with_qos(2)  // ExactlyOnce - Assured delivery
 ```
 
+On an outbound link this is the publish QoS. On an inbound link it is the
+subscribe QoS, and the broker delivers each message at the lower of the
+publish and subscribe QoS:
+
+```rust
+reg.link_from("mqtt://sensors/{room}/temp")
+   .with_qos(0)          // high-rate telemetry: no acknowledgements
+   .with_deserializer(|_ctx, data: &[u8]| parse(data))
+   .finish();
+```
+
+When a pattern link covers an exact one (`sensors/+/temp` covers
+`sensors/kitchen/temp`), only the covering filter is subscribed, at the highest
+QoS among the links it stands for: with `.with_qos(2)` on the exact link, the
+filter is subscribed at 2. A QoS other than 0, 1 or 2 fails the build.
+
 **Recommendations:**
 - **QoS 0**: High-frequency sensor data, low-priority logs
 - **QoS 1**: Commands, important events (default)
 - **QoS 2**: Critical state changes, financial transactions
 
 > **Backend note:** only the `std` (`rumqttc`) backend implements QoS 2. On the
-> `embedded` backend a `qos=2` route publishes at QoS 1 (at-least-once) and logs
-> a warning naming that route at startup, so the same route gives a weaker
-> guarantee there. Design for at-least-once if the route has to run on both.
+> `embedded` backend a `qos=2` route publishes, or subscribes, at QoS 1
+> (at-least-once) and logs a warning naming that route at startup, so the same
+> route gives a weaker guarantee there. Design for at-least-once if the route
+> has to run on both.
 >
 > Set QoS with `.with_qos(n)` on the link — a `?qos=` query in the link URL is
 > stripped during parsing and has no effect.

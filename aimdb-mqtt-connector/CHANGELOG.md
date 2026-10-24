@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inbound `with_qos` is the subscribe QoS (#268).** Each subscribed filter
+  is subscribed at the highest `qos` among the inbound links it stands for
+  (a pattern covering an exact link included), default 1, on both backends.
+  Before, both subscribed every filter at QoS 1 and ignored inbound `with_qos`.
+  The `Embedded` backends cap at QoS 1 and warn once per inbound route asking
+  for `qos=2`, as they already did for outbound routes.
+
 - **`MqttGrammar`**: MQTT 3.1.1 §4.7 topic filters for inbound links. `+` and
   `{name}` match one level, `#` and `{name..}` the rest (last only, including
   the parent level); a leading wildcard does not match a `$…` topic.
@@ -21,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime is skipped and counted as rejected in the route's `RouteStats`.
 
 ### Changed
+
+- **An invalid inbound `qos` fails `build()` (#268).** A value other than 0,
+  1 or 2 on an inbound link is reported, naming the route, like on an outbound
+  link. It used to be ignored.
 
 - **No core pumps.** Each backend's own task drives both
   directions: it dispatches inbound publishes through an `InboundDispatch` and

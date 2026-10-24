@@ -65,6 +65,8 @@ Two facts make a small change sufficient:
 - An index (trie) over pattern routes. Routes are scanned linearly (§5.4).
 - Inbound subscribe QoS. Both MQTT backends subscribe at QoS 1 and ignore
   `with_qos` on inbound links, today and after this design (§5.7).
+  *Since done in #268: each filter is subscribed at the highest `qos` among
+  the links it covers.*
 
 ## 3. Evaluation
 
@@ -387,6 +389,10 @@ the connector, so it is uncontended.
 - **Subscribe QoS** stays 1 for every filter, as today. Covering drops a
   filter only where another delivers the same messages at the same QoS, so
   nothing is lost. Inbound `with_qos` stays unapplied; its doc says so.
+  *Superseded by #268: the MQTT connector subscribes each filter at the
+  highest `qos` among the links it covers (decided with `MqttGrammar::covers`,
+  from `InboundDispatch::routes()`), so a covered link still gets at least its
+  own QoS. The embedded backend caps at 1.*
 - Outbound links reject patterns at `build()`: you cannot publish to a
   filter.
 
