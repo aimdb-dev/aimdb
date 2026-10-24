@@ -441,8 +441,11 @@ async fn main(spawner: Spawner) {
     // Using compile-time safe SensorKey enum - typos caught at compile time!
     // ========================================================================
 
+    // Three subscriber slots per sensor: the logger tap, the MQTT link and one
+    // remote-access subscriber (`aimdb watch` over the serial port). With two,
+    // a remote subscribe finds no slot left.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
-        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .source(indoor_temp_producer)
             .tap(temperature_logger)
@@ -452,7 +455,7 @@ async fn main(spawner: Spawner) {
     });
 
     builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
-        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .source(outdoor_temp_producer)
             .tap(temperature_logger)
@@ -462,7 +465,7 @@ async fn main(spawner: Spawner) {
     });
 
     builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
-        reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
+        reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .source(server_room_temp_producer)
             .tap(temperature_logger)
