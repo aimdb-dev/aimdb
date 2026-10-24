@@ -118,6 +118,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overridden by the stamped one, which is appended last. `OutboundRoutes`
   now stamps it, in `RouteInfo::config`.
 
+### Changed
+
+- **`build()` checks transform and join input types** (#330). An input read as
+  a type other than the one its record holds — `.transform::<Pascal, _>("temp", …)`
+  on a `Celsius` record, or `JoinBuilder::input::<I>` likewise — is reported
+  in `DbError::InvalidConfiguration`, keyed by the output record and naming
+  the input key and both types. Such a configuration used to build, and the
+  transform's consumer then failed to resolve at runtime: the output record
+  never got a value, a join ran without that input, and with default
+  features nothing was logged.
+
 ## [2.0.0] - 2026-09-18
 
 ### Added
