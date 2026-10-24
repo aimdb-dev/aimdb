@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Issue #333 — `TokioAdapter::now_nanos` ignores paused Tokio time.** It anchored a `std::time::Instant`, which keeps advancing in real time even while `tokio::time::pause()` (or `start_paused = true`) freezes the virtual clock that `sleep` uses. `now_nanos` now anchors a `tokio::time::Instant` instead, so it tracks whichever clock Tokio is actually running.
+
 ## [0.7.0] - 2026-09-18
 
 ### Changed (breaking)

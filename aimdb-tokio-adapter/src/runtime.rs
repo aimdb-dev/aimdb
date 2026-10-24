@@ -4,7 +4,6 @@
 //! on top of `std::time` and `tokio::time`.
 
 use aimdb_core::{DbResult, LogLevel, RuntimeOps};
-use std::time::Instant;
 
 /// Tokio runtime adapter for std environments
 ///
@@ -52,11 +51,15 @@ impl RuntimeOps for TokioAdapter {
     }
 
     fn now_nanos(&self) -> u64 {
-        // std `Instant` has no public epoch, so anchor the first reading and
-        // report nanoseconds elapsed since it (monotonic, arbitrary epoch).
-        static ANCHOR: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        // `tokio::time::Instant` has no public epoch, so anchor the first
+        // reading and report nanoseconds elapsed since it (monotonic,
+        // arbitrary epoch). Unlike `std::time::Instant`, it tracks Tokio's
+        // clock: the real monotonic clock normally, and the virtual clock
+        // when time is paused (`tokio::time::pause`, `start_paused = true`
+        // under the `test-util` feature), so sleeps and `now_nanos` agree.
+        static ANCHOR: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
         ANCHOR
-            .get_or_init(Instant::now)
+            .get_or_init(tokio::time::Instant::now)
             .elapsed()
             .as_nanos()
             .min(u64::MAX as u128) as u64
