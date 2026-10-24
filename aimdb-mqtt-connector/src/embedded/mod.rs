@@ -185,11 +185,6 @@ fn inbound_topics(
                 "MQTT: inbound route '{}' asks for qos=2; this backend subscribes at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
                 route.topic
             );
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "MQTT: inbound route '{}' asks qos=2; subscribing at QoS 1 (at-least-once)",
-                &*route.topic
-            );
         }
     }
 
@@ -226,11 +221,6 @@ fn prepare_outbound(
                     aimdb_core::log_warn!(
                         "MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
                         route.default_topic
-                    );
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!(
-                        "MQTT: route '{}' asks qos=2; publishing at QoS 1 (at-least-once)",
-                        &*route.default_topic
                     );
                 }
                 opts.push(opt);

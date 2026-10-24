@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`defmt` feature (#352)** for the embedded build: the connector's log lines
+  reach `defmt` through core's `log_*!` macros.
+
 - **First release: Zenoh links, and AimDB records as ROS 2 topics** through
   rmw_zenoh, on the `zenoh` crate (`std` feature). The `zenoh-nostd` backend
   for microcontrollers follows once zenoh-nostd is on crates.io.

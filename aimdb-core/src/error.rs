@@ -223,6 +223,16 @@ pub enum DbError {
     },
 }
 
+// Through `Display` (`thiserror`), not a derive: the `std`-only variants carry
+// `io::Error` / `serde_json::Error`, which do not implement `defmt::Format`,
+// and docs.rs builds with every feature on, `std` and `defmt` together.
+#[cfg(feature = "defmt")]
+impl defmt::Format for DbError {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{}", defmt::Display2Format(self))
+    }
+}
+
 // ===== DbError Implementation =====
 impl DbError {
     /// Builds a [`RuntimeError`](DbError::RuntimeError).

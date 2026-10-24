@@ -47,9 +47,10 @@ critical-section-std-impl = []
 # where it expands, so without them this crate would emit nothing.
 tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
-defmt = ["aimdb-core/defmt", "knx-pico/defmt"]
+defmt = ["dep:defmt", "defmt/ip_in_core", "aimdb-core/defmt", "knx-pico/defmt"]
 
 [dependencies]
+defmt = { workspace = true, optional = true }
 aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
 
 # aimdb-dev fork: upstream 0.3.0 panics on an npdu_length=1 telegram. A patch

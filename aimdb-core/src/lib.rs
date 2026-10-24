@@ -75,6 +75,22 @@ pub mod __private {
     pub use ::tracing;
 }
 
+// Every type the `log_*!` macros format must implement `defmt::Format` when
+// `defmt` is on (#352); this fails the build if one stops doing so.
+#[cfg(all(feature = "defmt", feature = "connector-session"))]
+const _: () = {
+    fn format<T: defmt::Format + ?Sized>() {}
+    let _ = format::<DbError>;
+    let _ = format::<outbound::SerializeFailure>;
+    let _ = format::<session::TransportError>;
+    let _ = format::<session::CodecError>;
+    let _ = format::<session::AuthError>;
+    let _ = format::<session::FrameFault>;
+    let _ = format::<alloc::string::String>;
+    let _ = format::<alloc::vec::Vec<alloc::string::String>>;
+    let _ = format::<alloc::sync::Arc<str>>;
+};
+
 pub mod buffer;
 pub mod builder;
 #[cfg(feature = "remote")]
@@ -107,6 +123,7 @@ pub mod typed_record;
 pub use context::RuntimeContext;
 pub use error::{ConfigError, DbError, DbErrorKind, DbResult};
 pub use extensions::Extensions;
+pub use log::{LogDebug, LogDisplay};
 
 // Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
 // the one trait an adapter implements.

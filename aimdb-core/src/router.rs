@@ -154,13 +154,6 @@ impl Router {
                     }
                     Err(_e) => {
                         log_warn!("Failed to ingest message on '{}': {}", resource_id, _e);
-
-                        #[cfg(feature = "defmt")]
-                        defmt::warn!(
-                            "Failed to ingest message on '{}': {}",
-                            resource_id,
-                            _e.as_str()
-                        );
                     }
                 }
             }
@@ -172,14 +165,8 @@ impl Router {
                     "Route matched for '{}' but message was not produced (ingest errors)",
                     resource_id
                 );
-
-                #[cfg(feature = "defmt")]
-                defmt::debug!("Route matched for '{}' but not produced", resource_id);
             } else {
                 log_debug!("No route found for resource: '{}'", resource_id);
-
-                #[cfg(feature = "defmt")]
-                defmt::debug!("No route found for resource: '{}'", resource_id);
             }
         }
 

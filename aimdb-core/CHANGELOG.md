@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Core log lines reach `defmt` (#352).** `log_trace!` … `log_error!` forward
+  to `defmt` under the calling crate's `defmt` feature, as a third destination
+  next to `tracing` and `log`. On an Embassy device every core log line now
+  reaches the probe log, including the session engine's (session reset,
+  refused and ended subscriptions, `serve`'s accept-failure summary), which
+  had no `defmt` output.
+- **`LogDisplay` / `LogDebug`** wrap a type that does not implement
+  `defmt::Format` in a log call (`log_warn!("… {}", LogDisplay(&e))`): through
+  `Display` / `Debug` everywhere, `defmt::Display2Format` / `Debug2Format`
+  under `defmt`. `tracing`/`log` output is unchanged.
+- **`defmt::Format` under `defmt`** for `TransportError`, `CodecError`,
+  `AuthError`, `FrameFault` (derived) and `DbError` (through its `Display`
+  text, since its `std`-only variants carry `io::Error`). Core's `defmt`
+  feature enables `defmt/alloc`, for `String`, `Vec<String>` and `Arc<str>`.
+
 - **Topic patterns on inbound links.** `{name}` captures one
   level, `{name..}` the rest; the syntax is checked at `build()`, and the
   connector's `TopicGrammar` compiles each pattern into a `TopicFilter` when it
@@ -119,6 +134,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now stamps it, in `RouteInfo::config`.
 
 ### Changed
+
+- **The `log_*!` macros carry a `defmt` arm (#352).** A crate forwarding its
+  `defmt` feature to the facade needs `dep:defmt` itself
+  (`defmt = ["dep:defmt", "aimdb-core/defmt"]`; `defmt`'s macros expand to
+  absolute paths), and every argument must implement `defmt::Format` (or be
+  wrapped in `LogDisplay` / `LogDebug`). A crate that never builds with
+  `defmt` names the feature through `check-cfg`, or `unexpected_cfgs` fires
+  at every call. The router's and the session client's hand-written `defmt`
+  mirrors are gone; the device shows the `log_*!` text.
 
 - **`build()` checks transform and join input types** (#330). An input read as
   a type other than the one its record holds — `.transform::<Pascal, _>("temp", …)`

@@ -36,3 +36,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # For the crate-level doc example (a mirrored record needs a JSON shape)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0" 
+
+# `aimdb-core`'s log macros carry a `#[cfg(feature = "defmt")]` arm that
+# expands here; this crate never builds with defmt, so it only names it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }
