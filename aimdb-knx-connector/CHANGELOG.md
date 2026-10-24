@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumers keep building. Nothing here needs a `critical-section`
   implementation any more.
 
+### Changed
+
+- **The `defmt` feature depends on `defmt` directly (#352)**, and enables
+  `defmt/ip_in_core`: core's `log_*!` macros now forward to `defmt`, and the
+  gateway address (`core::net::SocketAddr`) is formatted there.
+
 ## [0.5.0] - 2026-09-18
 
 ### Changed

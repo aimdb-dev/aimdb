@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **No duplicate `defmt` lines (#352).** Core's `log_*!` macros forward to
+  `defmt` now, so the embedded backend's hand-written mirrors of its
+  `log_warn!` lines (qos=2 caps, oversized publish) are gone; the device shows
+  the full `log_*!` text. Its `defmt`-only lines (connect, TLS, SNTP) stay. The
+  native backend logs `rumqttc` errors through `LogDisplay` / `LogDebug`, so an
+  all-features build (`std` with `defmt`) compiles.
+
 - **An invalid inbound `qos` fails `build()` (#268).** A value other than 0,
   1 or 2 on an inbound link is reported, naming the route, like on an outbound
   link. It used to be ignored.

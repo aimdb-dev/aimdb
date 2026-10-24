@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — core log lines reach defmt
+
+- **Every core log line reaches the probe log on an Embassy device (#352).**
+  The `log_*!` macros forward to `defmt` under the `defmt` feature, next to
+  `tracing` and `log`; `LogDisplay` / `LogDebug` wrap types without
+  `defmt::Format`, and the hand-written `defmt` mirrors that duplicated log
+  lines are gone. ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-zenoh-connector](aimdb-zenoh-connector/CHANGELOG.md),
+  [aimdb-knx-connector](aimdb-knx-connector/CHANGELOG.md),
+  [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
+
 ### Added — Zenoh connector and ROS 2 topics
 
 - **AimDB records as ROS 2 topics, with no ROS install on the AimDB side.**
