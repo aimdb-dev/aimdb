@@ -475,6 +475,20 @@ pub trait Session: Send {
         Vec::new()
     }
 
+    /// Whether a request for `method` is a client's handshake, which starts a
+    /// new session. Defaulted to `false`.
+    ///
+    /// When a handshake arrives on a connection that already had one,
+    /// [`run_session`](server::run_session) treats it as a new client: it
+    /// cancels every subscription, discards their queued events and opens a
+    /// fresh session before answering. A transport that carries one peer for
+    /// its whole life (a serial line) has no other way to tell that the client
+    /// behind it changed.
+    fn starts_session(&self, method: &str) -> bool {
+        let _ = method;
+        false
+    }
+
     /// Fire-and-forget write: no reply. Routes through the producer/arbiter path,
     /// so single-writer-per-key stays intact.
     fn write<'a>(

@@ -1130,6 +1130,10 @@ struct FeedSession {
 }
 
 impl Session for FeedSession {
+    fn starts_session(&self, method: &str) -> bool {
+        method == "hello"
+    }
+
     fn call<'a>(
         &'a mut self,
         _method: &'a str,
@@ -1259,5 +1263,60 @@ async fn an_id_reused_after_unsubscribe_keeps_delivering() {
             "the reused id must keep delivering"
         );
     }
+    server.abort();
+}
+
+/// A second handshake on a connection that never closed (a serial line) is a
+/// new client: the old client's subscriptions end and release their source,
+/// and the new client's subscription under the same id delivers once per
+/// update. Before, the old subscriptions lived on, kept their sources, and the
+/// new subscribe collided with them.
+#[tokio::test]
+async fn a_second_handshake_starts_a_new_session() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    // Client A: handshake, two subscriptions.
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"SUB\n3\nfeed").await.unwrap();
+    let a = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(a.len(), 3, "A's reply and two events: {a:?}");
+    assert_eq!(feed.receiver_count(), 2);
+
+    // Client B on the same connection: its handshake ends A's session.
+    conn.send(b"REQ\n1\nhello\nB").await.unwrap();
+    let reply = frames_within(&mut conn, Duration::from_millis(200)).await;
+    assert_eq!(reply, ["REPLY\n1\nOK\nB"]);
+    assert_eq!(
+        feed.receiver_count(),
+        0,
+        "A's subscriptions released their source"
+    );
+
+    // No event of A's subscriptions reaches B.
+    let quiet = publish(&mut conn, &feed, "v2").await;
+    assert!(
+        quiet.is_empty(),
+        "nothing for B before it subscribes: {quiet:?}"
+    );
+
+    // B subscribes under A's id: delivered once per update.
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    let b = publish(&mut conn, &feed, "v3").await;
+    assert_eq!(b, ["EVENT\n2\n1\n-\nv3"]);
+    assert_eq!(feed.receiver_count(), 1);
+    server.abort();
+}
+
+/// The first handshake on a connection changes nothing: subscriptions opened
+/// before it stay.
+#[tokio::test]
+async fn the_first_handshake_keeps_earlier_subscriptions() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    let got = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(got, ["REPLY\n1\nOK\nA", "EVENT\n2\n1\n-\nv1"]);
     server.abort();
 }

@@ -114,7 +114,7 @@ pub async fn run_session<C, D>(
     // Event funnel: every per-subscription pump sends updates here; the main loop
     // is the sole writer to the connection. Bounded, so a slow client cannot grow
     // it without limit — pumps drop on overflow (events carry a monotonic `seq`).
-    let (event_tx, event_rx) = async_channel::bounded::<SubEvent>(EVENT_BUFFER);
+    let (mut event_tx, mut event_rx) = async_channel::bounded::<SubEvent>(EVENT_BUFFER);
     // Per-connection subscription pumps; the engine future is their sole owner.
     // Each resolves to its own sub id and generation, so the loop can prune the
     // matching `cancels` entry (a no-op if Unsubscribe already removed it).
@@ -125,6 +125,9 @@ pub async fn run_session<C, D>(
     // late must not remove that one.
     let mut cancels: HashMap<String, (u64, oneshot::Sender<()>)> = HashMap::new();
     let mut next_generation: u64 = 0;
+    // Whether this connection has seen a handshake; a second one starts a new
+    // session (see `Session::starts_session`).
+    let mut greeted = false;
     // Reused encode scratch buffer.
     let mut out = Vec::new();
 
@@ -195,6 +198,25 @@ pub async fn run_session<C, D>(
                 };
                 match msg {
                     Inbound::Request { id, method, params } => {
+                        if session.starts_session(&method) {
+                            if greeted {
+                                // A new client on a connection that never closed
+                                // (a serial line): nothing of the old session
+                                // may reach it or outlive it. Dropping the pumps
+                                // releases their buffer subscribers; a fresh
+                                // funnel discards their queued events.
+                                log_info!(
+                                    "new handshake on a live connection: ending {} subscription(s) of the previous client",
+                                    cancels.len()
+                                );
+                                subs = FuturesUnordered::new();
+                                cancels.clear();
+                                (event_tx, event_rx) =
+                                    async_channel::bounded::<SubEvent>(EVENT_BUFFER);
+                                session = dispatch.open(&ctx);
+                            }
+                            greeted = true;
+                        }
                         let result = session.call(&method, params).await;
                         out.clear();
                         if codec
