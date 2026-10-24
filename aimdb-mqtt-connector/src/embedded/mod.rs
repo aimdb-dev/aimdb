@@ -37,11 +37,13 @@ use core::pin::Pin;
 use aimdb_embassy_adapter::connectors::into_box_future;
 
 use mountain_mqtt::client::ConnectionSettings;
+use mountain_mqtt::data::quality_of_service::QualityOfService;
 
 use crate::embedded::manager::Settings;
 use crate::embedded::session_loop::{connect_packet, publish_frame_len, subscribe_len};
 use crate::embedded::write_ring::{encoded_len, fits_ring, CONTROL_RESERVE};
 use crate::publish_opts::PublishOpts;
+use crate::subscribe_qos::Subscription;
 
 pub(crate) use crate::embedded::write_ring::DEFAULT_WRITE_BUFFER;
 
@@ -87,7 +89,7 @@ where
 {
     Box::pin(async move {
         let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
-        let topics = inbound_topics(&inbound);
+        let topics = inbound_topics(&inbound)?;
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
             return Err(build_err("mqtts:// broker URLs require .tls(...)"));
@@ -133,7 +135,7 @@ where
 {
     Box::pin(async move {
         let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
-        let topics = inbound_topics(&inbound);
+        let topics = inbound_topics(&inbound)?;
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
             return Err(build_err(".tls(...) requires an mqtts:// broker URL"));
@@ -169,18 +171,32 @@ where
     })
 }
 
-/// The inbound topics the session must subscribe on every connection.
-fn inbound_topics(inbound: &aimdb_core::InboundDispatch) -> Vec<String> {
-    let topics: Vec<String> = inbound
-        .subscriptions()
-        .iter()
-        .map(|t| t.to_string())
-        .collect();
+/// The inbound filters the session must subscribe on every connection, each
+/// at the highest `qos` among the links it covers. Warns once per route
+/// asking for `qos=2`, which this client subscribes at QoS 1.
+fn inbound_topics(
+    inbound: &aimdb_core::InboundDispatch,
+) -> Result<Vec<Subscription>, aimdb_core::DbError> {
+    let topics = crate::subscribe_qos::subscriptions(inbound).map_err(|e| build_err(&e))?;
+
+    for route in inbound.routes() {
+        if crate::subscribe_qos::route_qos(route) == Ok(2) {
+            aimdb_core::log_warn!(
+                "MQTT: inbound route '{}' asks for qos=2; this backend subscribes at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
+                route.topic
+            );
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "MQTT: inbound route '{}' asks qos=2; subscribing at QoS 1 (at-least-once)",
+                &*route.topic
+            );
+        }
+    }
 
     #[cfg(feature = "defmt")]
     defmt::info!("MQTT: subscribing to {} inbound topics", topics.len());
 
-    topics
+    Ok(topics)
 }
 
 /// Build the outbound routes and parse each route's options, and check that
@@ -194,7 +210,7 @@ fn prepare_outbound(
     write_buffer: usize,
     settings: &Settings,
     connection_settings: &ConnectionSettings<'static>,
-    topics: &[String],
+    topics: &[Subscription],
 ) -> Result<(aimdb_core::OutboundRoutes, Vec<PublishOpts>), aimdb_core::DbError> {
     let outbound = aimdb_core::OutboundRoutes::new(db, "mqtt")?;
     let size = |len: Result<usize, crate::embedded::manager::Error>| {
@@ -239,7 +255,7 @@ fn prepare_outbound(
             2 * connect
         ));
     }
-    for topic in topics {
+    for Subscription { filter: topic, .. } in topics {
         let subscribe = size(subscribe_len(topic))?;
         if !fits_ring(write_buffer, subscribe, 0) {
             problems.push(format!(
@@ -253,6 +269,16 @@ fn prepare_outbound(
         return Err(build_err(&problems.join("; ")));
     }
     Ok((outbound, opts))
+}
+
+/// The `mountain-mqtt` QoS for a parsed `qos`, publishing and subscribing. It
+/// has no QoS 2, so 2 becomes 1 (`build()` warns once per route asking for it).
+pub(crate) fn mountain_qos(qos: u8) -> QualityOfService {
+    if qos == 0 {
+        QualityOfService::Qos0
+    } else {
+        QualityOfService::Qos1
+    }
 }
 
 /// Parsed broker endpoint: transport + authority.
@@ -343,7 +369,7 @@ fn setup_manager<D>(
     broker: &BrokerUrl,
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
-    topics: Vec<String>,
+    topics: Vec<Subscription>,
     inbound: aimdb_core::InboundDispatch,
     outbound: aimdb_core::OutboundRoutes,
     opts: Vec<PublishOpts>,
@@ -403,7 +429,7 @@ fn setup_tls_manager<D>(
     options: TlsOptions,
     connection_settings: ConnectionSettings<'static>,
     dialer: D,
-    topics: Vec<String>,
+    topics: Vec<Subscription>,
     inbound: aimdb_core::InboundDispatch,
     outbound: aimdb_core::OutboundRoutes,
     opts: Vec<PublishOpts>,

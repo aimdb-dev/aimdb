@@ -435,11 +435,7 @@ async fn publish_staged(
         retain: false,
     });
     // QoS 2 is not supported by this client; build() warned once per route.
-    let qos = if opt.qos == 0 {
-        QualityOfService::Qos0
-    } else {
-        QualityOfService::Qos1
-    };
+    let qos = crate::embedded::mountain_qos(opt.qos);
     let rejected = {
         let Some(msg) = outbound.take_staged() else {
             return Ok(());

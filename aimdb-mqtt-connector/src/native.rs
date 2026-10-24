@@ -11,10 +11,10 @@ use aimdb_core::{InboundDispatch, OutboundRoutes};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::publish_opts::PublishOpts;
+use crate::subscribe_qos::Subscription;
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -30,7 +30,9 @@ pub(crate) fn build<'a>(
     Box::pin(async move {
         // One dispatcher both subscribes (here) and routes (the event loop).
         let inbound = InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
-        let topics = inbound.subscriptions();
+        let subscriptions = crate::subscribe_qos::subscriptions(&inbound).map_err(|e| {
+            aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {e}"))
+        })?;
 
         // Routes are subscribed now, so nothing produced before the publish
         // loop first runs is missed; options are parsed once, here.
@@ -44,7 +46,7 @@ pub(crate) fn build<'a>(
                 aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {e}"))
             })?;
 
-        log_info!("MQTT subscribing to {} topics", topics.len());
+        log_info!("MQTT subscribing to {} topics", subscriptions.len());
 
         // Connect, subscribe, and hand back the raw event loop.
         let (client, event_loop) = MqttConnectorImpl::build_internal(
@@ -52,7 +54,7 @@ pub(crate) fn build<'a>(
             client_id,
             credentials,
             keep_alive_secs,
-            &topics,
+            &subscriptions,
         )
         .await
         .map_err(|e| {
@@ -71,8 +73,8 @@ pub(crate) fn build<'a>(
 pub struct MqttConnectorImpl;
 
 impl MqttConnectorImpl {
-    /// Connect to the broker and subscribe to `topics`, sizing the send
-    /// channel from their count.
+    /// Connect to the broker and subscribe each of `subscriptions` at its
+    /// QoS, sizing the send channel from their count.
     ///
     /// Returns the client (for the publish loop) plus the raw event loop.
     /// A `None` `client_id` generates a UUID-based one.
@@ -81,7 +83,7 @@ impl MqttConnectorImpl {
         client_id: Option<&str>,
         credentials: Option<&(String, String)>,
         keep_alive_secs: u16,
-        topics: &[Arc<str>],
+        subscriptions: &[Subscription],
     ) -> Result<(AsyncClient, EventLoop), String> {
         // Parse the broker URL - we accept it with or without a topic
         let mut url = broker_url.to_string();
@@ -150,7 +152,7 @@ impl MqttConnectorImpl {
             return Err(no_tls_backend());
         }
 
-        let topic_count = topics.len();
+        let topic_count = subscriptions.len();
 
         // Dynamic channel capacity: scales with topic count.
         //
@@ -173,15 +175,15 @@ impl MqttConnectorImpl {
         // Create client and event loop with dynamic capacity
         let (client, event_loop) = AsyncClient::new(mqtt_opts, channel_capacity);
 
-        log_info!("Subscribing to {} MQTT topics...", topics.len());
+        log_info!("Subscribing to {} MQTT topics...", subscriptions.len());
 
-        for topic in topics {
-            log_debug!("Subscribing to MQTT topic: {}", topic);
+        for Subscription { filter, qos } in subscriptions {
+            log_debug!("Subscribing to MQTT topic: {} (QoS {})", filter, qos);
 
             client
-                .subscribe(topic.as_ref(), rumqttc::QoS::AtLeastOnce)
+                .subscribe(filter.as_str(), rumqtt_qos(*qos))
                 .await
-                .map_err(|e| format!("Failed to subscribe to topic '{}': {}", topic, e))?;
+                .map_err(|e| format!("Failed to subscribe to topic '{}': {}", filter, e))?;
         }
 
         log_info!("MQTT subscriptions complete");
@@ -217,6 +219,15 @@ async fn run_event_loop(mut event_loop: EventLoop, inbound: InboundDispatch, _br
     }
 }
 
+/// `rumqttc`'s QoS for a parsed `qos` (0, 1 or 2).
+fn rumqtt_qos(qos: u8) -> rumqttc::QoS {
+    match qos {
+        0 => rumqttc::QoS::AtMostOnce,
+        2 => rumqttc::QoS::ExactlyOnce,
+        _ => rumqttc::QoS::AtLeastOnce,
+    }
+}
+
 /// Pull outbound messages and hand each to `rumqttc` with its route's QoS and
 /// retain flag. `publish` takes an owned topic and payload, so the topic is
 /// copied and a borrowed payload copied (an owned one is moved). It waits for
@@ -234,11 +245,7 @@ async fn run_publish_loop(
             qos: 1,
             retain: false,
         });
-        let qos = match opt.qos {
-            0 => rumqttc::QoS::AtMostOnce,
-            2 => rumqttc::QoS::ExactlyOnce,
-            _ => rumqttc::QoS::AtLeastOnce,
-        };
+        let qos = rumqtt_qos(opt.qos);
         let topic = msg.topic.to_string();
         let payload = msg.payload.into_vec();
 
@@ -302,7 +309,7 @@ fn tls_configuration() -> Result<rumqttc::TlsConfiguration, String> {
             .to_string());
     }
 
-    Ok(rumqttc::TlsConfiguration::Rustls(Arc::new(
+    Ok(rumqttc::TlsConfiguration::Rustls(std::sync::Arc::new(
         ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth(),
@@ -320,6 +327,7 @@ fn no_tls_backend() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_connector_creation_with_router() {
@@ -424,6 +432,39 @@ mod tests {
         assert!(native_db(1, &[("qos", "2"), ("retain", "true")])
             .await
             .is_ok());
+    }
+
+    /// An inbound `qos` that does not parse fails the build too, instead of
+    /// being ignored; every such route is named.
+    #[tokio::test]
+    async fn an_invalid_inbound_qos_fails_the_build() {
+        use aimdb_core::buffer::BufferCfg;
+        use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+        let mut builder = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(crate::MqttConnector::new("mqtt://127.0.0.1:1"));
+        for (key, topic, qos) in [("a", "cmd/{id}", "3"), ("b", "status/in", "x")] {
+            builder.configure::<u64>(key, move |reg| {
+                reg.buffer(BufferCfg::SingleLatest)
+                    .link_from(&format!("mqtt://{topic}"))
+                    .with_config("qos", qos)
+                    .with_deserializer(|_ctx, _b: &[u8]| Ok(0u64))
+                    .finish();
+            });
+        }
+        let Err(err) = builder.build().await else {
+            panic!("an invalid inbound qos must fail the build");
+        };
+        let err = err.to_string();
+        assert!(
+            err.contains("route 'cmd/{id}': qos must be 0, 1 or 2, got '3'"),
+            "{err}"
+        );
+        assert!(
+            err.contains("route 'status/in': qos must be 0, 1 or 2, got 'x'"),
+            "{err}"
+        );
     }
 
     /// One event loop and one publish loop, however many routes: no
