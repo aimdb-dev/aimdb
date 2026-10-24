@@ -35,8 +35,11 @@ log = ["aimdb-core/log"]
 # Reserved for the `zenoh-nostd` backend (`zenoh://` only), once zenoh-nostd is
 # on crates.io; today the `no_std` parts such as `ZenohGrammar`.
 embedded = ["aimdb-core/alloc"]
+# The log lines reach defmt (core's `log_*!` macros), for the embedded build.
+defmt = ["dep:defmt", "aimdb-core/defmt"]
 
 [dependencies]
+defmt = { workspace = true, optional = true }
 aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
 zenoh = { version = "1.10.1", default-features = false, features = [
     "transport_tcp",

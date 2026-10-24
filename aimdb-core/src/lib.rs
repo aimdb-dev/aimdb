@@ -123,6 +123,7 @@ pub mod typed_record;
 pub use context::RuntimeContext;
 pub use error::{ConfigError, DbError, DbErrorKind, DbResult};
 pub use extensions::Extensions;
+pub use log::{LogDebug, LogDisplay};
 
 // Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
 // the one trait an adapter implements.

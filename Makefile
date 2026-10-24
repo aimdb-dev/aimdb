@@ -415,6 +415,10 @@ clippy:
 	cargo clippy --package aimdb-mqtt-connector --target thumbv7em-none-eabihf --no-default-features --features "embassy-runtime,embassy-tls,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on KNX connector (neutral + defmt)$(NC)\n"
 	cargo clippy --package aimdb-knx-connector --target thumbv7em-none-eabihf --no-default-features --features "connector,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + defmt log destination)$(NC)\n"
+	cargo clippy --package aimdb-core --target thumbv7em-none-eabihf --no-default-features --features "alloc,connector-session,remote,defmt" -- -D warnings
+	@printf "$(YELLOW)  → Clippy on Zenoh connector (embedded + defmt)$(NC)\n"
+	cargo clippy --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded,defmt" -- -D warnings
 	@printf "$(YELLOW)  → Clippy on WebSocket connector$(NC)\n"
 	cargo clippy --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on UDS connector$(NC)\n"
@@ -558,6 +562,10 @@ test-embedded:
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + log destination) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,log"
+	@printf "$(YELLOW)  → Checking aimdb-core (no_std + defmt log destination) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,defmt"
+	@printf "$(YELLOW)  → Checking aimdb-core (full no_std AimX server + defmt log destination) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "alloc,connector-session,remote,defmt"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embassy-runtime"
 	@printf "$(YELLOW)  → Checking aimdb-embassy-adapter with network support on thumbv7em-none-eabihf target$(NC)\n"
@@ -597,6 +605,8 @@ test-embedded:
 	@printf "$(BLUE)✓ mountain-mqtt is the codec alone$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-zenoh-connector (embedded backend) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded"
+	@printf "$(YELLOW)  → Checking aimdb-zenoh-connector (embedded backend + defmt) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-zenoh-connector --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features "embedded,defmt"
 	@printf "$(YELLOW)  → Asserting no std-only Zenoh crates in the embedded Zenoh backend$(NC)\n"
 	@err=$$(mktemp); \
 	out=$$(cargo tree -p aimdb-zenoh-connector --target thumbv7em-none-eabihf --no-default-features --features "embedded" -e features,no-dev 2>$$err) || { \
