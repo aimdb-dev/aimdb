@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs its own task and pulls from `OutboundRoutes`. The `into_box_future`
   helper and `NetStack` remain.
 
+### Changed
+
+- **`EmbassyTcpListener` no longer yields before returning an accept error
+  (#351).** It did so because core's `serve` retried a failed accept at once,
+  which spun the single-core executor; `serve` now yields before the accept
+  after an error itself, for every listener. The dial-side yield (a
+  synchronously failing `connect`) stays, for the client's reconnect loop.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added
