@@ -456,17 +456,6 @@ async fn publish_staged(
                     "write ring's"
                 }
             );
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "MQTT: skipping publish to {}: {} bytes exceed the {} limit",
-                msg.topic,
-                len,
-                if over_broker {
-                    "broker's"
-                } else {
-                    "write ring's"
-                }
-            );
             true
         } else {
             ring.put_sized(&packet, len, CONTROL_RESERVE).await?;
