@@ -46,7 +46,6 @@ members = [
     # Benchmarking infrastructure — host-only, excluded from default-members
     "aimdb-bench", 
 ]
-exclude = ["_external"]
 resolver = "2"
 # Note: build aimdb-core only by default. Use make all to build the full workspace!
 default-members = ["aimdb-core"]

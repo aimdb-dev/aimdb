@@ -23,8 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -42,8 +40,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2

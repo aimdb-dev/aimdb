@@ -16,8 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
 
     # A text comparison, so it needs no toolchain and can fail before we spend
     # one. `make check` runs it again in comprehensive-check, which gates on
@@ -42,8 +40,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -74,8 +70,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
 
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -91,8 +85,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -108,8 +100,6 @@ jobs:
     timeout-minutes: 15
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
 
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -140,8 +130,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
 
     - name: Install Rust nightly with Miri
       uses: dtolnay/rust-toolchain@nightly
@@ -172,8 +160,6 @@ jobs:
         distro: [jazzy, lyrical]
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
 
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -190,8 +176,6 @@ jobs:
     needs: [format-and-lint, makefile-build, embedded-targets, bench-gate]
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2
