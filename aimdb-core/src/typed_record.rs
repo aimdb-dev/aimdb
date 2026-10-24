@@ -300,6 +300,14 @@ pub trait AnyRecord: Send + Sync {
     /// Returns the transform input keys (if a transform is registered)
     fn transform_input_keys(&self) -> Option<Vec<String>>;
 
+    /// Returns each transform input's key and the type it is read as (empty
+    /// if no transform is registered). `build()` checks them against the
+    /// input records' types.
+    fn transform_input_types(&self) -> Vec<(String, core::any::TypeId, &'static str)>;
+
+    /// Returns the name of the record's value type, for error messages.
+    fn type_name(&self) -> &'static str;
+
     /// Collects metadata for this record
     #[cfg(feature = "remote")]
     fn collect_metadata(
@@ -735,6 +743,23 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Used during build-time validation to check that all input records exist.
     pub fn transform_input_keys(&self) -> Option<Vec<String>> {
         lock(&self.transform).as_ref().map(|t| t.input_keys.clone())
+    }
+
+    /// Returns each transform input's key and the type it is read as.
+    ///
+    /// Used during build-time validation to check that every input record
+    /// holds the type the transform reads. Empty if no transform is registered.
+    pub fn transform_input_types(&self) -> Vec<(String, core::any::TypeId, &'static str)> {
+        lock(&self.transform)
+            .as_ref()
+            .map(|t| {
+                t.input_keys
+                    .iter()
+                    .zip(&t.input_types)
+                    .map(|(key, &(type_id, type_name))| (key.clone(), type_id, type_name))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Collects the transform task future and any fan-in forwarder futures.
@@ -1236,6 +1261,14 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
     fn transform_input_keys(&self) -> Option<Vec<String>> {
         TypedRecord::transform_input_keys(self)
+    }
+
+    fn transform_input_types(&self) -> Vec<(String, core::any::TypeId, &'static str)> {
+        TypedRecord::transform_input_types(self)
+    }
+
+    fn type_name(&self) -> &'static str {
+        core::any::type_name::<T>()
     }
 
     #[cfg(feature = "remote")]

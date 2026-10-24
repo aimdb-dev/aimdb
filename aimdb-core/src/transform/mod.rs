@@ -10,6 +10,7 @@
 //! - Single-input: `.transform()` with `TransformBuilder`
 //! - Multi-input: `.transform_join()` with `JoinBuilder`
 
+use core::any::TypeId;
 use core::fmt::Debug;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
@@ -50,6 +51,10 @@ where
     T: Send + 'static + Debug + Clone,
 {
     pub input_keys: Vec<String>,
+
+    /// Type each input is read as, parallel to `input_keys`. `build()` checks
+    /// that every input record holds this type.
+    pub input_types: Vec<(TypeId, &'static str)>,
 
     /// Build the transform's futures.
     ///

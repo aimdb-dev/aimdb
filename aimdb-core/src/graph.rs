@@ -6,7 +6,8 @@
 //!
 //! The graph is constructed once during `build()` and is immutable thereafter.
 //! It enables:
-//! - Build-time validation (cycle detection, missing inputs)
+//! - Build-time validation (cycle detection, missing inputs; input types are
+//!   checked by `AimDbBuilder::build()` against the record registry)
 //! - Spawn ordering (topological sort)
 //! - Runtime introspection (AimX protocol, MCP tools, CLI)
 

@@ -1,3 +1,4 @@
+use core::any::{type_name, TypeId};
 use core::fmt::Debug;
 use core::marker::PhantomData;
 
@@ -124,6 +125,7 @@ where
 
     TransformDescriptor {
         input_keys,
+        input_types: vec![(TypeId::of::<I>(), type_name::<I>())],
         build_fn: Box::new(
             move |producer, db, output_key, profiling| CollectedTransform {
                 task_future: Box::pin(run_single_transform::<I, O, S>(

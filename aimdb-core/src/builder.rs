@@ -579,7 +579,8 @@ impl AimDbBuilder {
     /// recorded during configuration (conflicting `.source()`/`.transform()`/
     /// `.link_from()`, missing serializers, unregistered schemes, …) plus the
     /// build-time checks here (record validation, linked records without a
-    /// buffer, duplicate keys, dependency-graph cycles) is collected and
+    /// buffer, duplicate keys, transform inputs that are unregistered or hold
+    /// another type, dependency-graph cycles) is collected and
     /// returned as one [`DbError::InvalidConfiguration`] carrying **all**
     /// findings — one run surfaces every mistake.
     pub async fn build(mut self) -> DbResult<(AimDb, AimDbRunner)> {
@@ -689,6 +690,31 @@ impl AimDbBuilder {
                 key_table: key_capacity.map(|c| Arc::new(crate::inbound_key::KeyTable::new(c))),
             });
             by_key.insert(key, id);
+        }
+
+        // Every transform input must hold the type the transform reads it as;
+        // otherwise its consumer fails to resolve at runtime and the transform
+        // silently never runs. Unregistered inputs are left to the graph.
+        for entry in &storages {
+            for (input_key, type_id, type_name) in entry.record.transform_input_types() {
+                let Some(input) = by_key
+                    .get(input_key.as_str())
+                    .and_then(|id| storages.get(id.index()))
+                else {
+                    continue;
+                };
+                if input.type_id != type_id {
+                    errors.push(ConfigError::new(
+                        entry.key.as_str(),
+                        None,
+                        alloc::format!(
+                            "transform reads input '{input_key}' as {type_name}, \
+                             but that record holds {}",
+                            input.record.type_name()
+                        ),
+                    ));
+                }
+            }
         }
 
         // Build dependency graph nodes straight from the records.
