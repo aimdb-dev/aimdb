@@ -19,6 +19,9 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use async_channel::Sender;
 use futures_channel::oneshot;
@@ -506,12 +509,18 @@ where
     D: Dispatch + 'static + ?Sized,
 {
     let mut conns: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
+    // Set by a failed accept: the next one yields once before it starts.
+    let mut after_error = false;
 
     loop {
         // Extract the accept result first, then act (keeps the `listener` and
         // `conns` borrows apart).
         let accept = {
-            let mut accept = listener.accept().fuse();
+            // After an error, the next accept first returns `Pending` once, so
+            // this select falls through to the connections: a listener that
+            // fails at once, every time, cannot starve them, and the task
+            // stays cancellable.
+            let mut accept = PendingOnce::new(listener.accept(), after_error).fuse();
             select_biased! {
                 a = accept => a,
                 // Parks on the empty set, so the accept arm keeps the select alive.
@@ -519,6 +528,7 @@ where
             }
         };
 
+        after_error = accept.is_err();
         match accept {
             Ok(conn) => {
                 // Soft cap; `len()` counts finished-but-not-yet-reaped futures, so
@@ -552,8 +562,36 @@ where
             }
             Err(_e) => {
                 log_error!("accept failed: {:?}", _e);
-                // Keep serving existing connections despite a transient accept error.
+                // Keep serving existing connections despite a transient accept
+                // error; the next accept yields first (`after_error`).
             }
         }
+    }
+}
+
+/// `inner`, but when `yield_first` is set, its first poll returns `Pending`
+/// (waking itself) without polling `inner`. Runtime-neutral: one turn back to
+/// the executor and to the sibling arms of a select.
+struct PendingOnce<F> {
+    inner: F,
+    yield_first: bool,
+}
+
+impl<F> PendingOnce<F> {
+    fn new(inner: F, yield_first: bool) -> Self {
+        Self { inner, yield_first }
+    }
+}
+
+impl<F: Future + Unpin> Future for PendingOnce<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.yield_first {
+            self.yield_first = false;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll(cx)
     }
 }
