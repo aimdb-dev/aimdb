@@ -511,6 +511,9 @@ where
     let mut conns: FuturesUnordered<BoxFut<'static, ()>> = FuturesUnordered::new();
     // Set by a failed accept: the next one yields once before it starts.
     let mut after_error = false;
+    // Consecutive failed accepts, so a listener that keeps failing logs a
+    // summary now and then instead of one line per attempt.
+    let mut failures = AcceptFailures::default();
 
     loop {
         // Extract the accept result first, then act (keeps the `listener` and
@@ -531,6 +534,9 @@ where
         after_error = accept.is_err();
         match accept {
             Ok(conn) => {
+                if let Some(_failed) = failures.on_success() {
+                    log_info!("accept recovered after {} failed attempt(s)", _failed);
+                }
                 // Soft cap; `len()` counts finished-but-not-yet-reaped futures, so
                 // under an accept flood (the biased `accept` arm starves the reap
                 // arm) it may read high transiently — acceptable for a soft cap.
@@ -561,12 +567,69 @@ where
                 return;
             }
             Err(_e) => {
-                log_error!("accept failed: {:?}", _e);
+                match failures.on_error() {
+                    AcceptReport::First => log_error!(
+                        "accept failed: {:?}; retrying, further failures are summarized",
+                        _e
+                    ),
+                    AcceptReport::Summary(_n) => {
+                        log_warn!(
+                            "accept still failing: {} attempts in a row, last: {:?}",
+                            _n,
+                            _e
+                        )
+                    }
+                    AcceptReport::Quiet => {}
+                }
                 // Keep serving existing connections despite a transient accept
                 // error; the next accept yields first (`after_error`).
             }
         }
     }
+}
+
+/// Counts consecutive failed accepts and decides which of them to log: the
+/// first of a series, then a summary at 10, 100, 1000, … failures, so a
+/// listener that keeps failing grows the log by one line per decade instead
+/// of one per attempt.
+#[derive(Default)]
+struct AcceptFailures {
+    consecutive: u64,
+}
+
+/// What [`AcceptFailures::on_error`] asks the caller to log.
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptReport {
+    /// The first failure of a series: log the error.
+    First,
+    /// A summary: this many failures in a row.
+    Summary(u64),
+    /// Nothing.
+    Quiet,
+}
+
+impl AcceptFailures {
+    fn on_error(&mut self) -> AcceptReport {
+        self.consecutive = self.consecutive.saturating_add(1);
+        match self.consecutive {
+            1 => AcceptReport::First,
+            n if is_power_of_ten(n) => AcceptReport::Summary(n),
+            _ => AcceptReport::Quiet,
+        }
+    }
+
+    /// The length of the series a success ends, if there was one.
+    fn on_success(&mut self) -> Option<u64> {
+        let failed = core::mem::take(&mut self.consecutive);
+        (failed > 0).then_some(failed)
+    }
+}
+
+fn is_power_of_ten(mut n: u64) -> bool {
+    while n >= 10 && n.is_multiple_of(10) {
+        n /= 10;
+    }
+    n == 1
 }
 
 /// `inner`, but when `yield_first` is set, its first poll returns `Pending`
@@ -593,5 +656,49 @@ impl<F: Future + Unpin> Future for PendingOnce<F> {
             return Poll::Pending;
         }
         Pin::new(&mut self.inner).poll(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failing_series_logs_its_first_failure_then_once_per_decade() {
+        let mut failures = AcceptFailures::default();
+        let logged: Vec<(u64, AcceptReport)> = (1..=1000)
+            .map(|n| (n, failures.on_error()))
+            .filter(|(_, r)| *r != AcceptReport::Quiet)
+            .collect();
+        assert_eq!(
+            logged,
+            [
+                (1, AcceptReport::First),
+                (10, AcceptReport::Summary(10)),
+                (100, AcceptReport::Summary(100)),
+                (1000, AcceptReport::Summary(1000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_success_ends_the_series_and_reports_its_length() {
+        let mut failures = AcceptFailures::default();
+        assert_eq!(failures.on_success(), None, "no series, nothing to report");
+        for _ in 0..12 {
+            failures.on_error();
+        }
+        assert_eq!(failures.on_success(), Some(12));
+        assert_eq!(
+            failures.on_error(),
+            AcceptReport::First,
+            "a new series starts"
+        );
+    }
+
+    #[test]
+    fn powers_of_ten() {
+        let found: Vec<u64> = (0..=10_000).filter(|&n| is_power_of_ten(n)).collect();
+        assert_eq!(found, [1, 10, 100, 1000, 10_000]);
     }
 }
