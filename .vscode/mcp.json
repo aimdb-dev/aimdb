@@ -13,7 +13,8 @@
                 "${workspaceFolder}/tools/aimdb-mcp/Cargo.toml",
                 "--",
                 "--connect",
-                "unix:///tmp/aimdb-demo.sock"
+                "unix:///tmp/aimdb-demo.sock",
+                "--allow-writes"
             ]
         }
     }

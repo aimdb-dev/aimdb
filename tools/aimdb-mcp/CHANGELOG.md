@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Tools that change a running instance are opt-in: `--allow-writes` (Issue #335).** Without flags, `aimdb-mcp` no longer offers `set_record`, `reset_stage_profiling` or `reset_buffer_metrics`, so an agent connected for introspection cannot write to a live system on its own initiative. `--allow-writes` adds them back. The tool list reflects the mode, and a call to a write tool that is not offered is refused with `MethodNotFound` naming the flag. `--public` is unchanged and wins over `--allow-writes`. All read-only tools, including `drain_record`, and the architecture-agent tools stay available by default. Configurations that rely on the write tools must add `--allow-writes`.
+
 ## [0.9.0] - 2026-09-18
 
 ### Changed (breaking)

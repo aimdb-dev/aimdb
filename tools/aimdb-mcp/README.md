@@ -138,6 +138,32 @@ In `--public` mode any client-supplied `endpoint` is stripped, so tools fall bac
 to the server-pinned `--connect` / `AIMDB_CONNECT` and clients cannot probe
 arbitrary paths on the host.
 
+### Tool Modes
+
+| Mode | Offered tools |
+|---|---|
+| default | All read-only tools and the architecture agent; none that change a running instance |
+| `--allow-writes` | Also `set_record`, `reset_stage_profiling` and `reset_buffer_metrics` |
+| `--public` | Only `discover_instances`, `list_records` and `get_record` (for untrusted, internet-facing endpoints; wins over `--allow-writes`) |
+
+The tool list a client sees reflects the mode. Calling a write tool without
+`--allow-writes` is refused with a message naming the flag. Enable it only where
+an agent should be able to change a live system:
+
+```json
+{
+  "mcpServers": {
+    "aimdb": {
+      "command": "/path/to/aimdb-mcp",
+      "args": ["--connect", "unix:///tmp/aimdb-demo.sock", "--allow-writes"]
+    }
+  }
+}
+```
+
+The instance's own AimX security policy still applies: an instance running
+`SecurityPolicy::read_only()` refuses writes even with `--allow-writes`.
+
 The serial transport is **off by default** (it pulls `tokio-serial` → libudev on
 Linux); build with `cargo build -p aimdb-mcp --features transport-serial` to dial
 `serial://` endpoints.
@@ -171,8 +197,11 @@ This creates an instance at `/tmp/aimdb-demo.sock` with sample records.
 
 30 tools in total: 14 introspection & operations tools (below) and 16
 architecture-agent tools (see [Architecture Agent Tools](#architecture-agent-tools)).
-In `--public` mode only `discover_instances`, `list_records`, and `get_record` are
-advertised.
+The three tools that change a running instance (`set_record`,
+`reset_stage_profiling`, `reset_buffer_metrics`) are offered only with
+`--allow-writes`, so 27 tools are advertised by default. In `--public` mode only
+`discover_instances`, `list_records`, and `get_record` are advertised (see
+[Tool Modes](#tool-modes)).
 
 ### 1. discover_instances
 
@@ -216,7 +245,7 @@ Result: JSON value of server::Temperature record
 
 ### 5. set_record
 
-Set value of a writable record:
+Set value of a writable record (requires `--allow-writes`):
 
 ```
 Query: "Set the config log_level to debug"
@@ -294,7 +323,8 @@ Stage names come from `.with_name("...")` on the registrar; unnamed stages show 
 ### 12. reset_stage_profiling
 
 Reset stage profiling counters for every record on the target instance (requires
-write permission and the `profiling` feature). Useful for windowed measurements.
+`--allow-writes`, write permission on the instance and the `profiling` feature).
+Useful for windowed measurements.
 
 ```
 Query: "Reset the stage profiling counters."
@@ -318,8 +348,8 @@ Result: Per-record produced/consumed/dropped counts and current (used, capacity)
 ### 14. reset_buffer_metrics
 
 Reset buffer introspection counters for every record on the target instance
-(requires write permission and the `metrics` feature). Useful for windowed
-measurements.
+(requires `--allow-writes`, write permission on the instance and the `metrics`
+feature). Useful for windowed measurements.
 
 ```
 Query: "Reset the buffer metrics counters."
@@ -421,7 +451,7 @@ The server provides 4 helper prompts (not available in `--public` mode):
 - **Format**: NDJSON (newline-delimited JSON)
 
 ### Capabilities
-- **Tools**: ✓ (30 tools; only 3 advertised in `--public` mode)
+- **Tools**: ✓ (30 tools; 27 advertised by default, all 30 with `--allow-writes`, 3 in `--public` mode)
 - **Resources**: ✓ (instances + architecture families)
 - **Prompts**: ✓ (4 prompts)
 - **Sampling**: ✗ (not supported)
@@ -481,6 +511,8 @@ LLM:
 ```
 
 ### Configuration Update
+
+Requires `--allow-writes`:
 
 ```
 User: "Set the log level to debug"
@@ -568,8 +600,10 @@ pub fn my_new_tool() -> Tool {
 - Future: Token-based auth planned
 
 ### Permissions
-- Read-only by default (list, get, drain, graph)
-- Write operations (set) require writable records
+- Read-only by default (list, get, drain, graph): tools that change a running
+  instance (`set_record`, `reset_stage_profiling`, `reset_buffer_metrics`) are
+  offered only with `--allow-writes`
+- Write operations (set) also require writable records on the instance
 - Architecture-editing tools are disabled in `--public` mode
 - No shell access or arbitrary code execution
 
