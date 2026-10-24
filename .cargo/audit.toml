@@ -7,6 +7,20 @@
 # viable replacement in the workspace today.
 ignore = [
     "RUSTSEC-2023-0071", # rsa timing sidechannel via embedded-tls; no fixed upgrade available
+
+    # crypto-bigint 0.5.5, via embedded-tls 0.19.0 (latest) -> p256/p384 0.13
+    # -> elliptic-curve 0.13. Only 0.7.6+ is patched, which needs
+    # elliptic-curve 0.14; embedded-tls has no release on it (its main branch
+    # moved to embassy-crypto, unreleased).
+    #
+    # Reachable, unlike the entries below: embedded-tls runs the TLS ECDHE
+    # with a secret ephemeral P-256 scalar (and signs with a client key when
+    # one is configured), so the non-constant-time arithmetic touches secrets.
+    # Exposure is limited to aimdb-mqtt-connector's `embedded-tls` feature
+    # (off by default; embedded `mqtts://`) and needs an attacker who can time
+    # the device. Drop this as soon as an embedded-tls release moves off
+    # elliptic-curve 0.13.
+    "RUSTSEC-2026-0387", # crypto-bigint: timing variability in constant-time ops
     "RUSTSEC-2026-0110", # bare-metal deprecated via cortex-m (embedded-only transitive)
     "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via defmt/tabled_derive)
 
@@ -28,6 +42,7 @@ ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki: URI name constraints
     "RUSTSEC-2026-0099", # rustls-webpki: name constraints vs wildcard names
     "RUSTSEC-2026-0104", # rustls-webpki: panic in CRL parsing
+    "RUSTSEC-2026-0382", # rustls-webpki: distrusted emSign intermediates (path verification; the patched 0.103.16 does it)
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc and zenoh-link-commons)
 
     # lz4_flex 0.10.0, a required dependency of zenoh-transport 1.10.1 (the
