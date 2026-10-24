@@ -62,7 +62,7 @@ async fn list_instances(format: OutputFormat) -> CliResult<()> {
         OutputFormat::Json => json::format_instances_json(&instances, true)?,
         OutputFormat::JsonCompact => json::format_instances_json(&instances, false)?,
         #[cfg(feature = "yaml")]
-        OutputFormat::Yaml => serde_yaml::to_string(&instances)
+        OutputFormat::Yaml => serde_yaml::to_string(&json::instances_value(&instances))
             .map_err(|e| anyhow::anyhow!("YAML serialization error: {}", e))?,
     };
 

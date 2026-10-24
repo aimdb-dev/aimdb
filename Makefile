@@ -231,6 +231,8 @@ test:
 	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
 	cargo test --package aimdb-cli
+	@printf "$(YELLOW)  → Testing CLI tools (YAML output)$(NC)\n"
+	cargo test --package aimdb-cli --features yaml
 	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
 	cargo test --package aimdb-mcp
 	@printf "$(YELLOW)  → Testing persistence backend$(NC)\n"
@@ -377,6 +379,8 @@ clippy:
 	cargo clippy --package aimdb-cli --features "transport-serial" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools (TCP transport)$(NC)\n"
 	cargo clippy --package aimdb-cli --features "transport-tcp" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on CLI tools (YAML output)$(NC)\n"
+	cargo clippy --package aimdb-cli --features yaml --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MCP server$(NC)\n"
 	cargo clippy --package aimdb-mcp --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on MCP server (serial transport)$(NC)\n"

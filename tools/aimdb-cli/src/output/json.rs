@@ -14,13 +14,11 @@ pub fn format_json_compact<T: Serialize + ?Sized>(data: &T) -> Result<String, se
     serde_json::to_string(data)
 }
 
-/// Format instances as JSON
-pub fn format_instances_json(
-    instances: &[InstanceInfo],
-    pretty: bool,
-) -> Result<String, serde_json::Error> {
-    // Convert to serializable format
-    let data: Vec<_> = instances
+/// Serializable form of discovered instances, shared by the JSON and YAML
+/// output so both use the same field names (`InstanceInfo` itself does not
+/// implement `Serialize`).
+pub fn instances_value(instances: &[InstanceInfo]) -> Vec<serde_json::Value> {
+    instances
         .iter()
         .map(|i| {
             serde_json::json!({
@@ -33,7 +31,15 @@ pub fn format_instances_json(
                 "authenticated": i.authenticated,
             })
         })
-        .collect();
+        .collect()
+}
+
+/// Format instances as JSON
+pub fn format_instances_json(
+    instances: &[InstanceInfo],
+    pretty: bool,
+) -> Result<String, serde_json::Error> {
+    let data = instances_value(instances);
 
     if pretty {
         format_json_pretty(&data)
@@ -95,5 +101,31 @@ mod tests {
 
         let compact = format_records_json(&records, false).unwrap();
         assert!(!compact.contains('\n')); // Compact is one line
+    }
+
+    fn instance() -> InstanceInfo {
+        InstanceInfo {
+            endpoint: "/tmp/aimdb.sock".into(),
+            server_version: "aimdb/2.0.0".to_string(),
+            protocol_version: "2".to_string(),
+            permissions: vec!["read".to_string()],
+            writable_records: vec![],
+            max_subscriptions: Some(8),
+            authenticated: false,
+        }
+    }
+
+    #[test]
+    fn instances_value_names_the_endpoint_socket_path() {
+        let value = instances_value(&[instance()]);
+        assert_eq!(value[0]["socket_path"], "/tmp/aimdb.sock");
+        assert_eq!(value[0]["server_version"], "aimdb/2.0.0");
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn instances_yaml_uses_the_json_field_names() {
+        let yaml = serde_yaml::to_string(&instances_value(&[instance()])).unwrap();
+        assert!(yaml.contains("socket_path: /tmp/aimdb.sock"), "{yaml}");
     }
 }

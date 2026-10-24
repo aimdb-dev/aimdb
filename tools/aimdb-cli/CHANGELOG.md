@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `yaml` feature builds again.** `instance list --format yaml` serialized `aimdb_client::InstanceInfo`, which does not implement `Serialize`, so `aimdb-cli` never compiled with `--features yaml`. YAML now uses the same serializable form as JSON, with the same field names (`socket_path`, …). `make test` and `make clippy` now also build the CLI with `--features yaml`.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added
