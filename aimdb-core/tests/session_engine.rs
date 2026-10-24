@@ -1320,3 +1320,73 @@ async fn the_first_handshake_keeps_earlier_subscriptions() {
     assert_eq!(got, ["REPLY\n1\nOK\nA", "EVENT\n2\n1\n-\nv1"]);
     server.abort();
 }
+
+/// A subscription whose source ends on its own (here after three updates; on
+/// a device, a buffer that had no subscriber slot left) is reported: the
+/// client gets its events, then a terminal `Internal` error, then the end.
+/// Before, the stream just stopped, so an acknowledged subscription that
+/// never delivered looked like a quiet record.
+#[tokio::test]
+async fn a_subscription_that_ends_on_its_own_is_reported() {
+    let (listener, dialer) = transport_pair();
+    let server = tokio::spawn(serve(
+        listener,
+        Arc::new(LineCodec),
+        Arc::new(EchoDispatch {
+            writes: Arc::new(Mutex::new(Vec::new())),
+        }),
+        SessionConfig::default(),
+    ));
+    let (handle, client_fut) = run_client(
+        dialer,
+        LineCodec,
+        ClientConfig {
+            reconnect: false,
+            reconnect_delay: 10,
+            max_reconnect_delay: 10,
+            max_reconnect_attempts: 0,
+            keepalive_interval: None,
+            max_offline_queue: 1024,
+            sends_hello: false,
+        },
+        Arc::new(TestClock),
+    );
+    let client = tokio::spawn(client_fut);
+
+    let mut stream = handle.subscribe("temp").unwrap();
+    let mut items = Vec::new();
+    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        items.push(item.map(|u| String::from_utf8(u.data.to_vec()).unwrap()));
+    }
+    assert_eq!(
+        items,
+        [
+            Ok("temp#1".to_string()),
+            Ok("temp#2".to_string()),
+            Ok("temp#3".to_string()),
+            Err(RpcError::Internal),
+        ]
+    );
+
+    drop(stream);
+    drop(handle);
+    let _ = client.await;
+    server.abort();
+}
+
+/// Only a subscription the client still holds is reported when it ends: an
+/// unsubscribed one, and the previous client's after a new handshake, end in
+/// silence.
+#[tokio::test]
+async fn an_ended_subscription_the_client_dropped_is_not_reported() {
+    let (mut conn, feed, server, _dialer) = feed_session().await;
+
+    conn.send(b"SUB\n2\nfeed").await.unwrap();
+    conn.send(b"UNSUB\n2").await.unwrap();
+    conn.send(b"REQ\n1\nhello\nA").await.unwrap();
+    conn.send(b"SUB\n3\nfeed").await.unwrap();
+    conn.send(b"REQ\n4\nhello\nB").await.unwrap();
+    let frames = publish(&mut conn, &feed, "v1").await;
+    assert_eq!(frames, ["REPLY\n1\nOK\nA", "REPLY\n4\nOK\nB"]);
+    server.abort();
+}
