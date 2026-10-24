@@ -357,6 +357,28 @@ Error: Permission denied: record.set
   Hint: Check 'writable' column in 'aimdb record list'
 ```
 
+### Exit codes
+
+Every command shares one exit-code taxonomy, so a script can retry an
+unreachable instance without retrying a rejected request:
+
+| Code | Class | Examples |
+|---|---|---|
+| 0 | Success | |
+| 1 | Rejected: the instance or a remote service refused the request | record not found, record not writable, server error |
+| 2 | Usage: bad arguments or malformed input | unknown subcommand or flag, unsupported `--connect` endpoint, invalid JSON for `record set` |
+| 3 | Environment: worth retrying | connection failed, no instance found, protocol mismatch, I/O error, a reply that does not parse |
+| 4+ | Command-specific | |
+
+```bash
+aimdb instance ping
+case $? in
+    0) echo "up" ;;
+    3) echo "unreachable, retry later" ;;
+    *) echo "failed" ;;
+esac
+```
+
 ## Examples
 
 ### Health Check Workflow
