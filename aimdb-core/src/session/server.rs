@@ -28,7 +28,7 @@ use hashbrown::HashMap;
 
 use super::{
     BoxFut, BoxStream, Connection, Dispatch, EnvelopeCodec, Inbound, Listener, Outbound, Payload,
-    RpcError, SessionLimits, SubUpdate,
+    RpcError, SessionLimits, SubUpdate, TransportError,
 };
 
 /// Per-session engine knobs.
@@ -494,6 +494,10 @@ async fn pump_subscription(
 /// Accept connections from `listener` and serve each with [`run_session`],
 /// bounded by [`SessionLimits::max_connections`]. The accept loop and all
 /// per-connection futures share one [`FuturesUnordered`] — spawn-free.
+///
+/// Runs until the listener reports [`TransportError::Closed`] (no more
+/// connections will come) and every open connection has ended, then returns.
+/// A listener that never closes keeps it running.
 pub async fn serve<L, C, D>(mut listener: L, codec: Arc<C>, dispatch: Arc<D>, config: SessionConfig)
 where
     L: Listener,
@@ -534,6 +538,17 @@ where
                 conns.push(Box::pin(async move {
                     run_session(conn, codec.as_ref(), dispatch.as_ref(), &cfg).await;
                 }));
+            }
+            // The listener hands out no more connections: stop accepting, and
+            // serve the open ones to their end. Calling `accept` again would
+            // only fail again, at once — a spin that starves those connections.
+            Err(TransportError::Closed) => {
+                log_info!(
+                    "listener closed; serving {} open connection(s) to their end",
+                    conns.len()
+                );
+                while conns.next().await.is_some() {}
+                return;
             }
             Err(_e) => {
                 log_error!("accept failed: {:?}", _e);
