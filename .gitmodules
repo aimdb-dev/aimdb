@@ -1,3 +1,0 @@
-[submodule "_external/embassy"]
-	path = _external/embassy
-	url = https://github.com/embassy-rs/embassy.git

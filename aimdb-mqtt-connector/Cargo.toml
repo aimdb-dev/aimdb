@@ -152,10 +152,10 @@ rumqttc = { version = "0.25", optional = true, default-features = false }
 # a panic on the connect path is what an FFI consumer cannot afford.
 rustls-native-certs = { version = "0.8", optional = true }
 
-# Embassy runtime dependencies (no_std). Only embassy-sync still comes from the
-# local checkout — see the workspace `[patch.crates-io]` for why.
+# Embassy runtime dependencies (no_std). embassy-sync is replaced by an
+# upstream commit — see the workspace `[patch.crates-io]` for why.
 embassy-time = { version = "0.5.1", optional = true }
-embassy-sync = { version = "0.8.0", path = "../_external/embassy/embassy-sync", optional = true }
+embassy-sync = { version = "0.8.0", optional = true }
 embassy-futures = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 # Byte ring the embedded session encodes outbound packets into. `AtomicCoord`

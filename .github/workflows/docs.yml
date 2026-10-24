@@ -18,8 +18,6 @@ jobs:
     environment: ${{ github.ref == 'refs/heads/main' && 'github-pages' || null }}
     steps:
     - uses: actions/checkout@v7
-      with:
-        submodules: recursive
     
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v2

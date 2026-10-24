@@ -1738,12 +1738,13 @@ checksum = "2fc328bf943af66b80b98755db9106bf7e7471b0cf47dc8559cd9a6be504cc9c"
 [[package]]
 name = "embassy-futures"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
 
 [[package]]
 name = "embassy-futures"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
+source = "git+https://github.com/embassy-rs/embassy?rev=03c826f2544220cb44b2dec05f5d636a80d39382#03c826f2544220cb44b2dec05f5d636a80d39382"
 
 [[package]]
 name = "embassy-hal-internal"
@@ -1853,6 +1854,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=03c826f2544220cb44b2dec05f5d636a80d39382#03c826f2544220cb44b2dec05f5d636a80d39382"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1860,8 +1862,9 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver-channel"
 version = "0.4.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=03c826f2544220cb44b2dec05f5d636a80d39382#03c826f2544220cb44b2dec05f5d636a80d39382"
 dependencies = [
- "embassy-futures 0.1.2",
+ "embassy-futures 0.1.2 (git+https://github.com/embassy-rs/embassy?rev=03c826f2544220cb44b2dec05f5d636a80d39382)",
  "embassy-net-driver",
  "embassy-sync",
 ]
@@ -1946,6 +1949,7 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.8.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=03c826f2544220cb44b2dec05f5d636a80d39382#03c826f2544220cb44b2dec05f5d636a80d39382"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -2197,7 +2201,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2894,7 +2898,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -3115,7 +3119,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4229,7 +4233,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -4269,9 +4273,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4702,7 +4706,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4770,7 +4774,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5554,7 +5558,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6736,7 +6740,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
