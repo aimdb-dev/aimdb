@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: ros2-interop help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
+.PHONY: ros2-interop help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm test-freebsd wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -9,6 +9,9 @@
 # files that break the next cargo check run (E0786).  Clean it with
 # `make clean-embedded`.
 EMBEDDED_CHECK_TARGET_DIR := target/embedded-check
+
+# The non-Linux std host that `test-freebsd` lints for.
+FREEBSD_TARGET := x86_64-unknown-freebsd
 
 # Disable incremental compilation to avoid "Stale file handle" linker errors
 # on Docker overlay filesystems when many cargo invocations run in sequence
@@ -58,6 +61,7 @@ help:
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
+	@printf "    test-freebsd         Lint the std crates for x86_64-unknown-freebsd\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    ros2-interop         ros2:// against a ROS 2 distribution in Docker (DISTRO=lyrical)\n"
 	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
@@ -531,6 +535,42 @@ test-wasm:
 	cargo check --package aimdb-wasm-adapter --target wasm32-unknown-unknown --features "wasm-runtime"
 	@printf "$(GREEN)✓ WASM target compatibility verified!$(NC)\n"
 
+# FreeBSD is a std host like Linux, so this lints the host feature sets from
+# `clippy` for the other OS: a `cfg(target_os = "linux")` that should have been
+# `cfg(unix)` fails here, not on a user's machine. Lint rather than check so
+# an import that is only dead off-Linux fails too. Two crates are left out:
+# - aimdb-mqtt-connector: rumqttc's TLS backends build aws-lc-sys/openssl-sys
+#   from C, which needs a FreeBSD sysroot a Linux runner does not have.
+# - aimdb-zenoh-connector: zenoh-util 1.10.1 defines
+#   `set_bind_to_device_{tcp,udp}_socket` for Linux, Android, macOS, iOS and
+#   Windows only, so zenoh-link-commons does not compile for any BSD.
+test-freebsd:
+	@printf "$(BLUE)Linting std crates for $(FREEBSD_TARGET)...$(NC)\n"
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-derive --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-cdr --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-core --features "std,tracing,observability" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-core --features "std,connector-session" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-core --features "std,log" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tokio-adapter --features "net" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-sync --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-sync --features "data-contracts,log" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-client --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-client --no-default-features --features "transport-serial" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-client --no-default-features --features "transport-tcp" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-codegen --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-cli --features "transport-serial,transport-tcp,yaml" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-mcp --features "transport-serial" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-persistence --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-persistence-sqlite --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-knx-connector --no-default-features --features "std" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-uds-connector --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-serial-connector --no-default-features --features "std" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tcp-connector --no-default-features --features "_test-tokio" --all-targets -- -D warnings
+	@printf "$(GREEN)✓ FreeBSD target compatibility verified!$(NC)\n"
+
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
 	@printf "$(YELLOW)  → Checking aimdb-cdr (alloc, no_std) on thumbv7em-none-eabihf target$(NC)\n"
@@ -997,13 +1037,14 @@ check-toolchain-pin:
 	printf "$(GREEN)✓ Devcontainer and rust-toolchain.toml agree$(NC)\n"
 
 ## Convenience commands
-check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim check-no-globals
+check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm test-freebsd deny readme-check codegen-drift check-no-sim check-no-globals
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
 	@printf "$(BLUE)✓ All valid feature combinations tested$(NC)\n"
 	@printf "$(BLUE)✓ Embedded target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ WASM target compatibility verified$(NC)\n"
+	@printf "$(BLUE)✓ FreeBSD target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
 	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
 	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"

@@ -94,6 +94,20 @@ jobs:
     - name: Test embedded cross-compilation
       run: make test-embedded
 
+  freebsd-target:
+    name: FreeBSD Cross-check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v2
+      with:
+        rustflags: ""
+
+    - name: Lint std crates for x86_64-unknown-freebsd
+      run: make test-freebsd
+
   wasm-browser-tests:
     name: WASM Browser Tests
     runs-on: ubuntu-latest

@@ -96,12 +96,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       -c rustfmt -c clippy
 ENV PATH="/home/$USERNAME/.cargo/bin:${PATH}"
 
-# The first two mirror rust-toolchain.toml's `targets` so the image needs no
+# The first four mirror rust-toolchain.toml's `targets` so the image needs no
 # download on first use; the thumbv6m/thumbv7m pair is a devcontainer-only
 # convenience for MCU work outside what the workspace builds.
 RUN rustup target add thumbv7em-none-eabihf \
     && rustup target add thumbv8m.main-none-eabihf \
     && rustup target add wasm32-unknown-unknown \
+    && rustup target add x86_64-unknown-freebsd \
     && rustup target add thumbv6m-none-eabi \
     && rustup target add thumbv7m-none-eabi
 

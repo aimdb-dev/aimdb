@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — FreeBSD cross-check
+
+- **CI lints the std crates for `x86_64-unknown-freebsd`.** `make test-freebsd`
+  (also part of `make check`) runs clippy on the host feature sets for FreeBSD,
+  so a Linux-only `cfg` fails in CI. The MQTT connector is left out because its
+  TLS backends build C code that needs a FreeBSD sysroot. The Zenoh connector is
+  left out because `zenoh-util` 1.10.1 does not compile for any BSD.
+
 ### Added — core log lines reach defmt
 
 - **Every core log line reaches the probe log on an Embassy device (#352).**
