@@ -536,9 +536,12 @@ test-wasm:
 	@printf "$(GREEN)✓ WASM target compatibility verified!$(NC)\n"
 
 # FreeBSD is a std host like Linux, so this lints the host feature sets from
-# `clippy` for the other OS: a `cfg(target_os = "linux")` that should have been
+# `clippy` and `build` for the other OS: a `cfg(target_os = "linux")` that should have been
 # `cfg(unix)` fails here, not on a user's machine. Lint rather than check so
-# an import that is only dead off-Linux fails too. Two crates are left out:
+# an import that is only dead off-Linux fails too, and so that the binaries
+# (aimdb-cli, aimdb-mcp, aimdb-bench), which cannot link without FreeBSD's
+# libkvm, libdevstat and libexecinfo, still get compiled. Two crates are left
+# out:
 # - aimdb-mqtt-connector: rumqttc's TLS backends build aws-lc-sys/openssl-sys
 #   from C, which needs a FreeBSD sysroot a Linux runner does not have.
 # - aimdb-zenoh-connector: zenoh-util 1.10.1 defines
@@ -554,6 +557,7 @@ test-freebsd:
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-core --features "std,log" --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tokio-adapter --features "tokio-runtime,tracing,observability" --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tokio-adapter --features "net" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tokio-adapter --features "embedded-io" -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-sync --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-sync --features "data-contracts,log" --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-client --all-targets -- -D warnings
@@ -566,9 +570,13 @@ test-freebsd:
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-persistence-sqlite --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-knx-connector --no-default-features --features "std" --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-websocket-connector --features "tokio-runtime,client" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-websocket-connector --features "server,client" -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-uds-connector --all-targets -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-serial-connector --no-default-features --features "std" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-serial-connector --no-default-features --features "connector" -- -D warnings
 	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tcp-connector --no-default-features --features "_test-tokio" --all-targets -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-tcp-connector --no-default-features --features "tokio-runtime" -- -D warnings
+	cargo clippy --target $(FREEBSD_TARGET) --package aimdb-bench --all-targets -- -D warnings
 	@printf "$(GREEN)✓ FreeBSD target compatibility verified!$(NC)\n"
 
 test-embedded:
