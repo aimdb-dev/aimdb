@@ -6,7 +6,7 @@ those records through `Extension<AimDb>` and `AimDb::latest`, without taps or
 mirrored state. Record types need no serde derives or remote-access registration.
 
 ```sh
-cargo run -p http-current-values
+cargo run -p serve-records-http-demo
 ```
 
 In another terminal:

@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not protected by the connector's `AuthHandler`; this is now documented
   alongside a typed-read handler example.
 - **Generic HTTP polling example** in
-  [`examples/http-current-values`](../examples/http-current-values/README.md),
+  [`examples/serve-records-http-demo`](../examples/serve-records-http-demo/README.md),
   serving simulated temperature, humidity, and window-contact values as plain
   text without taps or mirrored state.
 

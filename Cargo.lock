@@ -2812,17 +2812,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-current-values"
-version = "2.0.0"
-dependencies = [
- "aimdb-core",
- "aimdb-tokio-adapter",
- "aimdb-websocket-connector",
- "axum",
- "tokio",
-]
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5153,6 +5142,17 @@ dependencies = [
  "scopeguard",
  "unescaper",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "serve-records-http-demo"
+version = "2.0.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "aimdb-websocket-connector",
+ "axum",
+ "tokio",
 ]
 
 [[package]]

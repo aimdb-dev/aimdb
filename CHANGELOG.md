@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custom HTTP routes can read current record values directly (#363).**
   `AimDb::latest::<T>(key)` returns a typed value without consuming it, and
   WebSocket connector additional routes can extract `Extension<AimDb>`.
-  The generic [HTTP polling example](examples/http-current-values/README.md)
+  The generic [HTTP polling example](examples/serve-records-http-demo/README.md)
   serves simulated temperature, humidity, and window-contact values as plain
   text, without taps or mirrored state. Additional routes remain outside the
   connector's `AuthHandler`.
