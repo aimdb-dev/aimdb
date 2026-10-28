@@ -43,6 +43,7 @@ members = [
     "examples/hello-spmc-ring",
     "examples/hello-spmc-ring-async",
     "examples/readme-quickstart",
+    "examples/http-current-values",
     # Benchmarking infrastructure — host-only, excluded from default-members
     "aimdb-bench", 
 ]
