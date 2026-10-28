@@ -2,7 +2,7 @@
 //! inbound samples from the subscriber callbacks, and pulls outbound
 //! messages.
 
-use crate::events::{report, Detail, ZenohEvent};
+use crate::events::{report, ZenohEvent};
 
 use std::boxed::Box;
 use std::format;
@@ -173,9 +173,7 @@ impl ZenohParts {
             {
                 Ok(publisher) => publishers.push(Some(publisher)),
                 Err(_e) => {
-                    report(ZenohEvent::PublisherDeclarationFailed {
-                        error: Detail::display(&_e),
-                    });
+                    report(ZenohEvent::PublisherDeclarationFailed { error: &_e });
                     publishers.push(None);
                 }
             }
@@ -203,7 +201,7 @@ impl ZenohParts {
             if let Err(_e) = result {
                 report(ZenohEvent::PublishFailed {
                     route: &outbound.routes()[id].default_topic,
-                    error: Detail::display(&_e),
+                    error: &_e,
                 });
                 outbound.reject(id);
             }
@@ -241,7 +239,7 @@ pub(crate) async fn open(config: zenoh::Config) -> Session {
         }
     };
     report(ZenohEvent::SessionOpened {
-        session: Detail::display(&session.zid()),
+        session: session.zid(),
     });
     session
 }
@@ -327,9 +325,7 @@ async fn subscribe(
                 subscribers.push(subscriber);
                 earlier.push(Arc::from(compiled));
             }
-            Err(_e) => report(ZenohEvent::SubscriberDeclarationFailed {
-                error: Detail::display(&_e),
-            }),
+            Err(_e) => report(ZenohEvent::SubscriberDeclarationFailed { error: &_e }),
         }
     }
     subscribers

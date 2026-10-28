@@ -1,45 +1,18 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
-pub(crate) enum Detail<'a> {
-    Display(&'a dyn core::fmt::Display),
-}
-impl<'a> Detail<'a> {
-    pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
-        Self::Display(value)
-    }
-}
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Display(value) => core::fmt::Display::fmt(value, f),
-        }
-    }
-}
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-#[cfg(feature = "defmt")]
-impl defmt::Format for Detail<'_> {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "{}", defmt::Display2Format(self));
-    }
-}
+use aimdb_core::LogDisplay;
 
 #[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ZenohEvent<'a> {
     PublisherDeclarationFailed {
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     InvalidPublishKey {
         topic: &'a str,
     },
     PublishFailed {
         route: &'a str,
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     OutboundClosed,
     SessionOpenFailed {
@@ -47,7 +20,7 @@ pub(crate) enum ZenohEvent<'a> {
         reason: &'a str,
     },
     SessionOpened {
-        session: Detail<'a>,
+        session: zenoh::session::ZenohId,
     },
     IngestPanicked {
         topic: &'a str,
@@ -56,7 +29,7 @@ pub(crate) enum ZenohEvent<'a> {
         key: &'a str,
     },
     SubscriberDeclarationFailed {
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     Ros2CodecUnchecked {
         topic: &'a str,
@@ -65,18 +38,18 @@ pub(crate) enum ZenohEvent<'a> {
         domain: u32,
     },
     Ros2LivelinessDeclarationFailed {
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     Ros2SubscriberDeclarationFailed {
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     Ros2PublisherDeclarationFailed {
         topic: &'a str,
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     Ros2PublishFailed {
         topic: &'a str,
-        error: Detail<'a>,
+        error: &'a zenoh::Error,
     },
     Ros2RegistrationMissing,
 }
@@ -86,13 +59,17 @@ pub(crate) fn report(event: ZenohEvent<'_>) {
     capture::record(&event);
     match event {
         ZenohEvent::PublisherDeclarationFailed { error } => {
-            aimdb_core::log_error!("Zenoh: cannot declare a publisher: {}", error)
+            aimdb_core::log_error!("Zenoh: cannot declare a publisher: {}", LogDisplay(error))
         }
         ZenohEvent::InvalidPublishKey { topic } => {
             aimdb_core::log_error!("Zenoh: '{}' is not a key without wildcards", topic)
         }
         ZenohEvent::PublishFailed { route, error } => {
-            aimdb_core::log_error!("Zenoh: put on route '{}' failed: {}", route, error)
+            aimdb_core::log_error!(
+                "Zenoh: put on route '{}' failed: {}",
+                route,
+                LogDisplay(error)
+            )
         }
         ZenohEvent::OutboundClosed => {
             aimdb_core::log_info!("Zenoh: every outbound route has closed")
@@ -100,13 +77,15 @@ pub(crate) fn report(event: ZenohEvent<'_>) {
         ZenohEvent::SessionOpenFailed {
             retry_after,
             reason,
-        } => aimdb_core::log_warn!(
-            "Zenoh: cannot open the session, retrying in {:?}: {}",
-            retry_after,
-            reason
-        ),
+        } => {
+            aimdb_core::log_warn!(
+                "Zenoh: cannot open the session, retrying in {:?}: {}",
+                retry_after,
+                reason
+            );
+        }
         ZenohEvent::SessionOpened { session } => {
-            aimdb_core::log_info!("Zenoh: session {} open", session)
+            aimdb_core::log_info!("Zenoh: session {} open", LogDisplay(&session))
         }
         ZenohEvent::IngestPanicked { topic } => {
             aimdb_core::log_error!("Zenoh: ingest panicked on '{}'; sample dropped", topic)
@@ -115,26 +94,32 @@ pub(crate) fn report(event: ZenohEvent<'_>) {
             aimdb_core::log_warn!("Zenoh: dropping samples on wildcard keys, first '{}'", key)
         }
         ZenohEvent::SubscriberDeclarationFailed { error } => {
-            aimdb_core::log_error!("Zenoh: cannot declare a subscriber: {}", error)
+            aimdb_core::log_error!("Zenoh: cannot declare a subscriber: {}", LogDisplay(error))
         }
-        ZenohEvent::Ros2CodecUnchecked { topic } => aimdb_core::log_warn!("ros2://{}: a custom serializer or deserializer is installed; nothing checks that it speaks CDR", topic.strip_prefix('/').unwrap_or(topic)),
-        ZenohEvent::Ros2DomainWarning { domain } => aimdb_core::log_warn!(
-            "ROS 2 domain {} is above {}, the highest ROS 2 documents; rmw_zenoh accepts it, DDS-based ROS 2 does not",
-            domain, crate::ros2::DOMAIN_MAX
-        ),
+        ZenohEvent::Ros2CodecUnchecked { topic } => {
+            aimdb_core::log_warn!("ros2://{}: a custom serializer or deserializer is installed; nothing checks that it speaks CDR", topic.strip_prefix('/').unwrap_or(topic));
+        }
+        ZenohEvent::Ros2DomainWarning { domain } => {
+            aimdb_core::log_warn!("ROS 2 domain {} is above {}, the highest ROS 2 documents; rmw_zenoh accepts it, DDS-based ROS 2 does not", domain, crate::ros2::DOMAIN_MAX);
+        }
         ZenohEvent::Ros2LivelinessDeclarationFailed { error } => {
-            aimdb_core::log_error!("ROS 2: cannot declare a liveliness token: {}", error)
+            aimdb_core::log_error!(
+                "ROS 2: cannot declare a liveliness token: {}",
+                LogDisplay(error)
+            )
         }
         ZenohEvent::Ros2SubscriberDeclarationFailed { error } => {
-            aimdb_core::log_error!("ROS 2: cannot declare a subscriber: {}", error)
+            aimdb_core::log_error!("ROS 2: cannot declare a subscriber: {}", LogDisplay(error))
         }
-        ZenohEvent::Ros2PublisherDeclarationFailed { topic, error } => aimdb_core::log_error!(
-            "ROS 2: cannot declare a publisher on '{}': {}",
-            topic,
-            error
-        ),
+        ZenohEvent::Ros2PublisherDeclarationFailed { topic, error } => {
+            aimdb_core::log_error!(
+                "ROS 2: cannot declare a publisher on '{}': {}",
+                topic,
+                LogDisplay(error)
+            );
+        }
         ZenohEvent::Ros2PublishFailed { topic, error } => {
-            aimdb_core::log_error!("ROS 2: put on '{}' failed: {}", topic, error)
+            aimdb_core::log_error!("ROS 2: put on '{}' failed: {}", topic, LogDisplay(error))
         }
         ZenohEvent::Ros2RegistrationMissing => {
             aimdb_core::log_warn!("Zenoh: a Ros2Connector on this session was never registered")
