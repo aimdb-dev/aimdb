@@ -158,7 +158,7 @@ build:
 	@printf "$(YELLOW)  → Building benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
 	cargo build --package aimdb-bench --benches
 
-test:
+test: test-operational-events
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo test --package aimdb-cdr
@@ -310,7 +310,7 @@ fmt-check:
 	fi
 	@printf "$(GREEN)✓ All packages properly formatted!$(NC)\n"
 
-clippy:
+clippy: clippy-operational-events
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
@@ -1073,3 +1073,26 @@ wasm-test-deps:
 
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
+
+# Library destination combinations for the internal operational reporters.
+# Run separately from embedded bundles: Cargo feature unification across a
+# workspace-wide all-features invocation would mix std and Embassy runtimes.
+.PHONY: test-operational-events
+test-operational-events:
+	cargo test -p aimdb-persistence -p aimdb-persistence-sqlite --features aimdb-persistence/tracing,aimdb-persistence/log,aimdb-persistence-sqlite/tracing,aimdb-persistence-sqlite/log
+	cargo test -p aimdb-websocket-connector --features server,client,tracing,log
+	cargo test -p aimdb-mqtt-connector --features std,tracing,log
+	cargo test -p aimdb-knx-connector --features std,tracing,log
+	cargo test -p aimdb-zenoh-connector --features std,tracing,log
+	cargo test -p aimdb-sync --features tracing,log
+	cargo test -p aimdb-embassy-adapter --no-default-features --features alloc,embassy-sync,embassy-time,log,tracing --lib
+
+.PHONY: clippy-operational-events
+clippy-operational-events:
+	cargo clippy -p aimdb-persistence -p aimdb-persistence-sqlite --all-targets --features aimdb-persistence/tracing,aimdb-persistence/log,aimdb-persistence-sqlite/tracing,aimdb-persistence-sqlite/log -- -D warnings
+	cargo clippy -p aimdb-websocket-connector --all-targets --features server,client,tracing,log -- -D warnings
+	cargo clippy -p aimdb-mqtt-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-knx-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-zenoh-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-sync --all-targets --features tracing,log -- -D warnings
+	cargo clippy -p aimdb-embassy-adapter --no-default-features --features alloc,embassy-sync,embassy-time,log,tracing --lib -- -D warnings

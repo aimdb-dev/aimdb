@@ -319,6 +319,7 @@ dependencies = [
 name = "aimdb-persistence-sqlite"
 version = "0.2.0"
 dependencies = [
+ "aimdb-core",
  "aimdb-persistence",
  "rusqlite",
  "serde_json",
