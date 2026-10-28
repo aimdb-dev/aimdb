@@ -66,17 +66,14 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
                     _ => {
                         report(MqttEvent::ClockImplausible {
                             unix_seconds: unix_secs,
-                            server: &server,
+                            server,
                         });
                         Timer::after(RETRY_INTERVAL).await;
                     }
                 }
             }
             Err(error) => {
-                report(MqttEvent::ClockSyncFailed {
-                    server: &server,
-                    error,
-                });
+                report(MqttEvent::ClockSyncFailed { server, error });
                 #[cfg(not(feature = "defmt"))]
                 let _ = error;
                 Timer::after(RETRY_INTERVAL).await;

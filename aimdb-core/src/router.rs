@@ -158,7 +158,7 @@ impl Router {
                     }
                     Err(_e) => {
                         report(RouterEvent::IngestFailed {
-                            topic: &resource_id,
+                            topic: resource_id,
                             reason: &_e,
                         });
                     }

@@ -282,7 +282,7 @@ struct BrokerUrl {
 }
 
 fn build_err(msg: &str) -> aimdb_core::DbError {
-    report(MqttEvent::BuildFailed { reason: &msg });
+    report(MqttEvent::BuildFailed { reason: msg });
     aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", msg))
 }
 

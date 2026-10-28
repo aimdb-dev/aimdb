@@ -953,8 +953,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
         if self.has_producer() || self.has_transform() {
             report(RemoteWriteEvent::Rejected {
-                operation: &operation,
-                record_type: &core::any::type_name::<T>(),
+                operation,
+                record_type: core::any::type_name::<T>(),
             });
 
             return Err(DbError::permission_denied(alloc::format!(

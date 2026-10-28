@@ -192,7 +192,7 @@ impl ZenohParts {
                             .await
                     }
                     None => {
-                        report(ZenohEvent::InvalidPublishKey { topic: &msg.topic });
+                        report(ZenohEvent::InvalidPublishKey { topic: msg.topic });
                         outbound.reject(id);
                         continue;
                     }
@@ -275,7 +275,7 @@ pub(crate) fn dispatch_guarded(inbound: &InboundDispatch, topic: &str, payload: 
         inbound.dispatch(topic, payload)
     }));
     if dispatched.is_err() {
-        report(ZenohEvent::IngestPanicked { topic: &topic });
+        report(ZenohEvent::IngestPanicked { topic });
     }
 }
 
@@ -308,7 +308,7 @@ async fn subscribe(
                 }
                 if key.contains('*') {
                     if !warned.swap(true, Ordering::Relaxed) {
-                        report(ZenohEvent::WildcardSampleDropped { key: &key });
+                        report(ZenohEvent::WildcardSampleDropped { key });
                     }
                     log_debug!("Zenoh: dropped a sample on wildcard key '{}'", key);
                     return;

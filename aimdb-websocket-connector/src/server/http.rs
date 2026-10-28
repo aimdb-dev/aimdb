@@ -205,8 +205,8 @@ async fn ws_upgrade_handler(
     if !version_compatible(client_version) {
         report(WebSocketEvent::VersionRejected {
             peer: remote_addr,
-            client_version: &client_version,
-            server_version: &PROTOCOL_VERSION,
+            client_version,
+            server_version: PROTOCOL_VERSION,
         });
         return (
             StatusCode::UPGRADE_REQUIRED,

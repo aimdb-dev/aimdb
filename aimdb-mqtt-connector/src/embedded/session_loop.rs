@@ -447,7 +447,7 @@ async fn publish_staged(
         let over_broker = broker_max.is_some_and(|max| len > max);
         if !ring.fits(len, CONTROL_RESERVE) || over_broker {
             report(MqttEvent::PublishTooLarge {
-                topic: &msg.topic,
+                topic: msg.topic,
                 bytes: len,
                 broker_limit: over_broker,
             });

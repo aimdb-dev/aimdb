@@ -170,7 +170,7 @@ where
                         Err(_e) => {
                             report(TransformEvent::JoinConsumerResolutionFailed {
                                 input: &key_for_factory,
-                                index: index,
+                                index,
                                 error: &_e,
                             });
                             return;
@@ -188,7 +188,7 @@ where
                             Err(crate::DbError::BufferLagged { .. }) => {
                                 report(TransformEvent::JoinLagged {
                                     input: &key_for_factory,
-                                    index: index,
+                                    index,
                                 });
                                 continue;
                             }
