@@ -25,7 +25,7 @@
 
 mod events;
 
-use crate::events::{report, Detail, SqliteEvent};
+use crate::events::{report, SqliteEvent};
 
 use std::path::Path;
 
@@ -247,9 +247,7 @@ fn query_sync(
                 Ok(StoredValue {
                     record_name: row.get(0)?,
                     value: serde_json::from_str(&value_str).unwrap_or_else(|e| {
-                        report(SqliteEvent::CorruptJson {
-                            error: Detail::display(&e),
-                        });
+                        report(SqliteEvent::CorruptJson { error: &e });
                         #[cfg(not(feature = "tracing"))]
                         let _ = e;
                         Value::Null
