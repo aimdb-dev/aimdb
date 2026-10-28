@@ -137,6 +137,9 @@
 // The shared tunnel engine uses `alloc` types on both runtimes.
 extern crate alloc;
 
+#[cfg(feature = "connector")]
+mod events;
+
 // Re-export knx-pico types for user convenience
 pub use knx_pico::GroupAddress;
 

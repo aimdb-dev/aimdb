@@ -9,6 +9,8 @@
 //! from an [`OutboundRoutes`] while the tunnel is connected. `embassy-futures`'
 //! select is executor-independent, so the task runs on either runtime.
 
+use crate::events::{report, Detail, KnxEvent};
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
@@ -19,7 +21,7 @@ use core::time::Duration;
 
 use aimdb_core::connector::TopicBuf;
 use aimdb_core::session::{Datagram, DatagramBinder, Delay, TransportError, TransportResult};
-use aimdb_core::{log_debug, log_error, log_warn, OutboundRoutes, RouteId, RuntimeOps};
+use aimdb_core::{log_debug, OutboundRoutes, RouteId, RuntimeOps};
 
 use crate::tunnel::{
     drain_actions, GroupWrite, LocalEndpoint, Millis, TunnelConfig, TunnelEngine, TunnelIo,
@@ -72,7 +74,7 @@ where
         match self.socket.send_to(frame, self.gateway).await {
             Ok(()) => true,
             Err(_) => {
-                log_error!("KNX send failed");
+                report(KnxEvent::SendFailed);
                 false
             }
         }
@@ -88,7 +90,7 @@ where
     }
 
     fn warn_ack_timeout(&mut self, _seq: u8) {
-        log_warn!("KNX outbound: no ACK for sequence {}", _seq);
+        report(KnxEvent::AckTimedOut { sequence: _seq });
     }
 }
 
@@ -107,11 +109,10 @@ fn send_staged(engine: &mut TunnelEngine, outbound: &mut OutboundRoutes, id: Rou
             let _ = engine.handle_command(command, now);
         }
         Err(_e) => {
-            log_warn!(
-                "KNX outbound: skipping a value for route '{}': {:?}",
-                outbound.routes()[id].default_topic,
-                _e
-            );
+            report(KnxEvent::OutboundRejected {
+                route: &outbound.routes()[id].default_topic,
+                error: Detail::debug(&_e),
+            });
             outbound.reject(id);
         }
     }
@@ -252,15 +253,12 @@ pub async fn connection_task<B, D, S>(
             // holder drops), but the log has to say which, or the misuse reads
             // as an endless unexplained bind failure.
             Err(TransportError::Busy) => {
-                log_error!(
-                    "KNX bind failed: the binder's socket is held by another handle \
-                     (a clone of a single-socket binder?); retrying"
-                );
+                report(KnxEvent::BinderBusy);
                 delay.sleep(BIND_RETRY).await;
                 continue;
             }
             Err(_) => {
-                log_error!("KNX bind failed; retrying");
+                report(KnxEvent::BindFailed);
                 delay.sleep(BIND_RETRY).await;
                 continue;
             }
@@ -681,15 +679,27 @@ mod tests {
         let gateway_addr = gateway.local_addr().expect("gateway addr");
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let task = tokio::spawn(connection_task(
-            BusyThenFreeBinder {
-                attempts: attempts.clone(),
-            },
-            gateway_addr,
-            runtime(),
-            TokioDelay,
-            VecSink::default(),
-            no_outbound().await,
+        let busy = Arc::new(AtomicUsize::new(0));
+        let observer = {
+            let busy = busy.clone();
+            Arc::new(move |event: &KnxEvent<'_>| {
+                if matches!(event, KnxEvent::BinderBusy) {
+                    busy.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let task = tokio::spawn(crate::events::capture::future(
+            observer,
+            connection_task(
+                BusyThenFreeBinder {
+                    attempts: attempts.clone(),
+                },
+                gateway_addr,
+                runtime(),
+                TokioDelay,
+                VecSink::default(),
+                no_outbound().await,
+            ),
         ));
 
         // Must exceed the two `BIND_RETRY` sleeps the task waits out. `RECV_TIMEOUT`
@@ -713,6 +723,7 @@ mod tests {
             "two Busy binds, then the one that succeeded"
         );
 
+        assert_eq!(busy.load(Ordering::Relaxed), 2);
         task.abort();
     }
 
