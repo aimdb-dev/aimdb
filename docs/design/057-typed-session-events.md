@@ -1,4 +1,4 @@
-# Typed session operational events
+# Typed operational events
 
 Issue: [#357](https://github.com/aimdb-dev/aimdb/issues/357).
 
@@ -39,10 +39,10 @@ reporting events. The callback is invoked outside the slot's `RefCell` borrow.
 
 ## Follow-up boundaries
 
-Other core subsystems remain unchanged. This pilot adds neither public observer
-configuration nor metrics counters, `StageMetrics` integration, or AimX metadata.
-Those need a separate decision about event frequency, ownership, and observation
-lifetime before extending this internal reporting seam.
+The initial pilot left other core subsystems for the workspace rollout below.
+Neither phase adds public observer configuration, metrics counters,
+`StageMetrics` integration, or AimX metadata. Public consumption needs a separate
+decision about event frequency, ownership, and observation lifetime.
 
 ## Workspace rollout
 
@@ -126,3 +126,13 @@ No local event enum is needed in TCP, UDS, serial, the client, Tokio/Wasm,
 serialization/contracts/derive/codegen, CLI, or examples: their remaining logs
 are initialization, generic forwarding, user-facing output, or generated text.
 Transport/session operations already reported by core are not reported again.
+
+### Validation with limited disk space
+
+`make test-operational-events` and `make clippy-operational-events` cover the
+library facade feature combinations. They run packages sequentially rather than
+mixing all runtime bundles in one build. To reduce local artifact size, invoke
+these targets with `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
+CARGO_PROFILE_TEST_DEBUG=0`. These settings do not alter production profiles or
+the event behavior being checked. Socket-based integration tests need loopback
+network access.
