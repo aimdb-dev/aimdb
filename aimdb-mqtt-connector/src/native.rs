@@ -5,10 +5,11 @@
 //! dispatches inbound publishes into their records, and the publish loop,
 //! which pulls outbound messages and hands them to `rumqttc`.
 
+use crate::events::{report, Detail, MqttEvent};
+
 use aimdb_core::connector::ConnectorUrl;
-use aimdb_core::{log_debug, log_error, log_info};
+use aimdb_core::{log_debug, log_info};
 use aimdb_core::{InboundDispatch, OutboundRoutes};
-use aimdb_core::{LogDebug, LogDisplay};
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet};
 use std::future::Future;
 use std::pin::Pin;
@@ -213,11 +214,10 @@ async fn run_event_loop(mut event_loop: EventLoop, inbound: InboundDispatch, _br
             }
             Ok(_) => {}
             Err(_e) => {
-                log_error!(
-                    "MQTT event loop error for {}: {:?}",
-                    _broker_key,
-                    LogDebug(&_e)
-                );
+                report(MqttEvent::NativeEventLoopFailed {
+                    broker: &_broker_key,
+                    error: Detail::debug(&_e),
+                });
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -257,15 +257,14 @@ async fn run_publish_loop(
         log_debug!("Publishing to topic: {}", topic);
         if let Err(_e) = client.publish(topic, qos, opt.retain, payload).await {
             // The topic moved into `publish`; the route's default names it.
-            log_error!(
-                "MQTT publish on route '{}' failed: {}",
-                outbound.routes()[id].default_topic,
-                LogDisplay(&_e)
-            );
+            report(MqttEvent::NativePublishFailed {
+                route: &outbound.routes()[id].default_topic,
+                error: Detail::display(&_e),
+            });
             outbound.reject(id);
         }
     }
-    log_info!("MQTT publish loop: every outbound route has closed");
+    report(MqttEvent::OutboundClosed);
 }
 
 /// `url` with the password in its authority masked, as `ConnectorUrl`'s

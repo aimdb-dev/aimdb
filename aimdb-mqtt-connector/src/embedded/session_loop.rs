@@ -11,6 +11,8 @@
 //! needs no second packet-sized buffer. Outbound packets are encoded straight
 //! into the connector's [`WriteRing`].
 
+use crate::events::{report, MqttEvent};
+
 use core::convert::Infallible;
 use core::future::poll_fn;
 use core::task::Poll;
@@ -197,8 +199,7 @@ async fn client_loop<D: Delay>(
         // --- deadlines, checked before anything parks ----------------------
 
         if now.saturating_sub(last_ack_ms) > max_silence {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("MQTT: broker unresponsive");
+            report(MqttEvent::BrokerUnresponsive);
             return Err(Error::MqttServerUnresponsive);
         }
 
@@ -218,8 +219,7 @@ async fn client_loop<D: Delay>(
             // window closes the session. Parking on a ping would leave the
             // loop that has to notice a dead link stuck.
             if !ring.try_put(&ping)? {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("MQTT: write ring full, ping dropped");
+                report(MqttEvent::PingDropped);
             }
         }
 
@@ -446,16 +446,11 @@ async fn publish_staged(
         let len = encoded_len(&packet)?;
         let over_broker = broker_max.is_some_and(|max| len > max);
         if !ring.fits(len, CONTROL_RESERVE) || over_broker {
-            aimdb_core::log_warn!(
-                "MQTT: skipping publish to '{}': {} bytes exceed the {} limit",
-                msg.topic,
-                len,
-                if over_broker {
-                    "broker's"
-                } else {
-                    "write ring's"
-                }
-            );
+            report(MqttEvent::PublishTooLarge {
+                topic: &msg.topic,
+                bytes: len,
+                broker_limit: over_broker,
+            });
             true
         } else {
             ring.put_sized(&packet, len, CONTROL_RESERVE).await?;
@@ -898,9 +893,28 @@ mod proofs {
         let ring = WriteRing::new(DEFAULT_WRITE_BUFFER);
         let mut state = connected();
         let (_db, mut outbound, id) = staged(payload_for(1985)).await;
-        publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, None)
-            .await
-            .unwrap();
+        let seen = alloc::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let observer = {
+            let seen = seen.clone();
+            alloc::sync::Arc::new(move |event: &MqttEvent<'_>| match event {
+                MqttEvent::PublishTooLarge {
+                    bytes,
+                    broker_limit,
+                    ..
+                } => {
+                    assert_eq!((*bytes, *broker_limit), (1985, false));
+                    seen.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+                other => panic!("unexpected {other:?}"),
+            })
+        };
+        crate::events::capture::future(
+            observer,
+            publish_staged(&mut outbound, id, &QOS1, &mut state, &ring, None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seen.load(core::sync::atomic::Ordering::Relaxed), 1);
         assert!(ring.has_room(DEFAULT_WRITE_BUFFER), "nothing was queued");
         assert!(!state.waiting_for_responses(), "nothing in flight");
         let stats = outbound.stats(id).unwrap();

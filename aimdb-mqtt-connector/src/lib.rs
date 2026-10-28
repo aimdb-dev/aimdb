@@ -108,6 +108,9 @@
 
 extern crate alloc;
 
+#[cfg(any(feature = "std", feature = "embedded"))]
+mod events;
+
 // One `MqttConnector` over the `Native` and `Embedded` protocol backends.
 pub mod connector;
 

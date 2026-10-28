@@ -24,6 +24,8 @@ pub mod tls;
 
 extern crate alloc;
 
+use crate::events::{report, MqttEvent};
+
 use aimdb_core::connector::ConnectorUrl;
 use alloc::boxed::Box;
 use alloc::format;
@@ -181,10 +183,9 @@ fn inbound_topics(
 
     for route in inbound.routes() {
         if crate::subscribe_qos::route_qos(route) == Ok(2) {
-            aimdb_core::log_warn!(
-                "MQTT: inbound route '{}' asks for qos=2; this backend subscribes at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
-                route.topic
-            );
+            report(MqttEvent::SubscribeQosDowngraded {
+                topic: &route.topic,
+            });
         }
     }
 
@@ -218,10 +219,9 @@ fn prepare_outbound(
         match PublishOpts::parse(route) {
             Ok(opt) => {
                 if opt.qos == 2 {
-                    aimdb_core::log_warn!(
-                        "MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.",
-                        route.default_topic
-                    );
+                    report(MqttEvent::PublishQosDowngraded {
+                        topic: &route.default_topic,
+                    });
                 }
                 opts.push(opt);
             }
@@ -282,8 +282,7 @@ struct BrokerUrl {
 }
 
 fn build_err(msg: &str) -> aimdb_core::DbError {
-    #[cfg(feature = "defmt")]
-    defmt::error!("Failed to build MQTT connector: {}", msg);
+    report(MqttEvent::BuildFailed { reason: &msg });
     aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {}", msg))
 }
 
@@ -386,8 +385,7 @@ where
     let manager_task: EmbassyBoxFuture = Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
             async move {
-                #[cfg(feature = "defmt")]
-                defmt::info!("MQTT background task starting");
+                report(MqttEvent::BackgroundStarting);
 
                 crate::embedded::session::run_sessions(
                     dialer,
@@ -444,10 +442,7 @@ where
         Some(core::net::IpAddr::V4(_)) => {
             // Verifies only via the certificate's CN — private-CA bench
             // setups pin the IP there; public CAs won't issue such certs.
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "MQTT-TLS: broker host is an IP literal; the certificate must carry it in CN — prefer a hostname"
-            );
+            report(MqttEvent::TlsIpLiteral);
         }
         None => {}
     }
@@ -475,8 +470,7 @@ where
     let mut tasks: Vec<EmbassyBoxFuture> = alloc::vec![Box::pin(unsafe {
         crate::embedded::session::SendSession::new({
             async move {
-                #[cfg(feature = "defmt")]
-                defmt::info!("MQTT-TLS background task starting");
+                report(MqttEvent::TlsBackgroundStarting);
 
                 #[allow(unreachable_code)]
                 {
@@ -513,4 +507,28 @@ where
     }
 
     Ok(tasks)
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    #[test]
+    fn build_failure_reports_the_reason_without_a_destination() {
+        let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &MqttEvent<'_>| {
+                assert!(matches!(
+                    event,
+                    MqttEvent::BuildFailed {
+                        reason: "bad packet size"
+                    }
+                ));
+                seen.store(true, core::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let error = crate::events::capture::with(observer, || build_err("bad packet size"));
+        assert!(alloc::format!("{error}").contains("bad packet size"));
+        assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
+    }
 }

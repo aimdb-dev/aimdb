@@ -4,6 +4,8 @@
 //! have no battery-backed RTC. Each sync feeds both [`unix_now`] and the TLS
 //! handshake clock. Opt in with `TlsOptions::with_sntp`.
 
+use crate::events::{report, Detail, MqttEvent};
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_net::dns::DnsQueryType;
@@ -56,24 +58,25 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
                         // The TLS handshake reads the certificate-validity
                         // clock, which a board with no RTC has only from here.
                         crate::embedded::tls::WallClock::set_unix_secs(unix_secs as u32);
-                        #[cfg(feature = "defmt")]
-                        defmt::info!("SNTP: synced, unix time {}", unix_secs);
+                        report(MqttEvent::ClockSynced {
+                            unix_seconds: unix_secs,
+                        });
                         Timer::after(RESYNC_INTERVAL).await;
                     }
                     _ => {
-                        #[cfg(feature = "defmt")]
-                        defmt::warn!(
-                            "SNTP: implausible time {} from {}, retrying",
-                            unix_secs,
-                            server
-                        );
+                        report(MqttEvent::ClockImplausible {
+                            unix_seconds: unix_secs,
+                            server: &server,
+                        });
                         Timer::after(RETRY_INTERVAL).await;
                     }
                 }
             }
             Err(error) => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("SNTP: sync with {} failed: {}, retrying", server, error);
+                report(MqttEvent::ClockSyncFailed {
+                    server: &server,
+                    error: Detail::display(&error),
+                });
                 #[cfg(not(feature = "defmt"))]
                 let _ = error;
                 Timer::after(RETRY_INTERVAL).await;
