@@ -1,39 +1,16 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
-pub(crate) enum Detail<'a> {
-    Debug(&'a dyn core::fmt::Debug),
-}
-impl<'a> Detail<'a> {
-    pub(crate) fn debug(value: &'a impl core::fmt::Debug) -> Self {
-        Self::Debug(value)
-    }
-}
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Debug(value) => core::fmt::Debug::fmt(value, f),
-        }
-    }
-}
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-#[cfg(feature = "defmt")]
-impl defmt::Format for Detail<'_> {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "{}", defmt::Display2Format(self));
-    }
-}
-
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum KnxEvent<'a> {
     SendFailed,
-    AckTimedOut { sequence: u8 },
-    OutboundRejected { route: &'a str, error: Detail<'a> },
+    AckTimedOut {
+        sequence: u8,
+    },
+    OutboundRejected {
+        route: &'a str,
+        error: aimdb_core::transport::PublishError,
+    },
     BinderBusy,
     BindFailed,
 }

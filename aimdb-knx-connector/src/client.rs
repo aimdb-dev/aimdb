@@ -9,7 +9,7 @@
 //! from an [`OutboundRoutes`] while the tunnel is connected. `embassy-futures`'
 //! select is executor-independent, so the task runs on either runtime.
 
-use crate::events::{report, Detail, KnxEvent};
+use crate::events::{report, KnxEvent};
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -111,7 +111,7 @@ fn send_staged(engine: &mut TunnelEngine, outbound: &mut OutboundRoutes, id: Rou
         Err(_e) => {
             report(KnxEvent::OutboundRejected {
                 route: &outbound.routes()[id].default_topic,
-                error: Detail::debug(&_e),
+                error: _e,
             });
             outbound.reject(id);
         }
