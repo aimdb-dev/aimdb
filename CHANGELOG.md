@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — current record values over HTTP
+
+- **Custom HTTP routes can read current record values directly (#363).**
+  `AimDb::latest::<T>(key)` returns a typed value without consuming it, and
+  WebSocket connector additional routes can extract `Extension<AimDb>`.
+  The generic [HTTP polling example](examples/http-current-values/README.md)
+  serves simulated temperature, humidity, and window-contact values as plain
+  text, without taps or mirrored state. Additional routes remain outside the
+  connector's `AuthHandler`.
+  ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-websocket-connector](aimdb-websocket-connector/CHANGELOG.md))
+
 ### Added — core log lines reach defmt
 
 - **Every core log line reaches the probe log on an Embassy device (#352).**
