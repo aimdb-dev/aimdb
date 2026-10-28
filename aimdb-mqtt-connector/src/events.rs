@@ -1,47 +1,11 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
 #[cfg(any(feature = "std", feature = "embedded-tls"))]
-pub(crate) enum Detail<'a> {
-    #[cfg(feature = "std")]
-    Display(&'a dyn core::fmt::Display),
-    Debug(&'a dyn core::fmt::Debug),
-}
-#[cfg(any(feature = "std", feature = "embedded-tls"))]
-impl<'a> Detail<'a> {
-    #[cfg(feature = "std")]
-    pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
-        Self::Display(value)
-    }
-    pub(crate) fn debug(value: &'a impl core::fmt::Debug) -> Self {
-        Self::Debug(value)
-    }
-}
-#[cfg(any(feature = "std", feature = "embedded-tls"))]
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            #[cfg(feature = "std")]
-            Self::Display(value) => core::fmt::Display::fmt(value, f),
-            Self::Debug(value) => core::fmt::Debug::fmt(value, f),
-        }
-    }
-}
-#[cfg(any(feature = "std", feature = "embedded-tls"))]
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-#[cfg(all(feature = "defmt", any(feature = "std", feature = "embedded-tls")))]
-impl defmt::Format for Detail<'_> {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "{}", defmt::Display2Format(self));
-    }
-}
+use aimdb_core::LogDebug;
+#[cfg(feature = "std")]
+use aimdb_core::LogDisplay;
 
 #[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum MqttEvent<'a> {
     #[cfg(feature = "embedded")]
     SubscribeQosDowngraded { topic: &'a str },
@@ -85,7 +49,7 @@ pub(crate) enum MqttEvent<'a> {
     #[cfg(feature = "embedded-tls")]
     TlsConnectFailed,
     #[cfg(feature = "embedded-tls")]
-    TlsHandshakeFailed { error: Detail<'a> },
+    TlsHandshakeFailed { error: embedded_tls::TlsError },
     #[cfg(feature = "embedded-tls")]
     TlsEstablished,
     #[cfg(feature = "embedded-tls")]
@@ -93,9 +57,15 @@ pub(crate) enum MqttEvent<'a> {
         error: crate::embedded::manager::Error,
     },
     #[cfg(feature = "std")]
-    NativeEventLoopFailed { broker: &'a str, error: Detail<'a> },
+    NativeEventLoopFailed {
+        broker: &'a str,
+        error: &'a rumqttc::ConnectionError,
+    },
     #[cfg(feature = "std")]
-    NativePublishFailed { route: &'a str, error: Detail<'a> },
+    NativePublishFailed {
+        route: &'a str,
+        error: &'a rumqttc::ClientError,
+    },
     #[cfg(feature = "std")]
     OutboundClosed,
 }
@@ -190,7 +160,10 @@ pub(crate) fn report(event: MqttEvent<'_>) {
         }
         #[cfg(feature = "embedded-tls")]
         MqttEvent::TlsHandshakeFailed { error } => {
-            aimdb_core::log_warn!("MQTT-TLS: handshake failed, will retry: {:?}", error);
+            aimdb_core::log_warn!(
+                "MQTT-TLS: handshake failed, will retry: {:?}",
+                LogDebug(&error)
+            );
         }
         #[cfg(feature = "embedded-tls")]
         MqttEvent::TlsEstablished => {
@@ -202,11 +175,19 @@ pub(crate) fn report(event: MqttEvent<'_>) {
         }
         #[cfg(feature = "std")]
         MqttEvent::NativeEventLoopFailed { broker, error } => {
-            aimdb_core::log_error!("MQTT event loop error for {}: {:?}", broker, error);
+            aimdb_core::log_error!(
+                "MQTT event loop error for {}: {:?}",
+                broker,
+                LogDebug(error)
+            );
         }
         #[cfg(feature = "std")]
         MqttEvent::NativePublishFailed { route, error } => {
-            aimdb_core::log_error!("MQTT publish on route '{}' failed: {}", route, error);
+            aimdb_core::log_error!(
+                "MQTT publish on route '{}' failed: {}",
+                route,
+                LogDisplay(error)
+            );
         }
         #[cfg(feature = "std")]
         MqttEvent::OutboundClosed => {

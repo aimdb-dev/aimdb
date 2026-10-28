@@ -7,7 +7,7 @@
 //! ([`TlsOptions::new`]). The dialer resolves the host, so there is no network
 //! stack here.
 
-use crate::events::{report, Detail, MqttEvent};
+use crate::events::{report, MqttEvent};
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -393,9 +393,7 @@ where
         // The handshake reads and writes sequentially through one connection,
         // so it needs no split and takes neither lock twice.
         if let Err(e) = tls.open(TlsContext::new(&tls_config, provider)).await {
-            report(MqttEvent::TlsHandshakeFailed {
-                error: Detail::debug(&e),
-            });
+            report(MqttEvent::TlsHandshakeFailed { error: e });
             #[cfg(not(feature = "defmt"))]
             let _ = e;
             aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;

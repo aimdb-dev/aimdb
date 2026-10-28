@@ -5,7 +5,7 @@
 //! dispatches inbound publishes into their records, and the publish loop,
 //! which pulls outbound messages and hands them to `rumqttc`.
 
-use crate::events::{report, Detail, MqttEvent};
+use crate::events::{report, MqttEvent};
 
 use aimdb_core::connector::ConnectorUrl;
 use aimdb_core::{log_debug, log_info};
@@ -216,7 +216,7 @@ async fn run_event_loop(mut event_loop: EventLoop, inbound: InboundDispatch, _br
             Err(_e) => {
                 report(MqttEvent::NativeEventLoopFailed {
                     broker: &_broker_key,
-                    error: Detail::debug(&_e),
+                    error: &_e,
                 });
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -259,7 +259,7 @@ async fn run_publish_loop(
             // The topic moved into `publish`; the route's default names it.
             report(MqttEvent::NativePublishFailed {
                 route: &outbound.routes()[id].default_topic,
-                error: Detail::display(&_e),
+                error: &_e,
             });
             outbound.reject(id);
         }
