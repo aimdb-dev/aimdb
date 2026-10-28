@@ -1,6 +1,6 @@
 //! AimDB handle for managing the sync API runtime thread.
 
-use crate::events::{report, Detail, SyncEvent};
+use crate::events::{report, SyncEvent};
 
 use crate::runtime::{Runtime, ShutdownSignal};
 use crate::{SyncError, SyncResult};
@@ -267,9 +267,7 @@ impl AimDbHandle {
                         // Report the reason before dying. Dropping the sender
                         // would already unblock the caller; this is what gives
                         // it something to print.
-                        report(SyncEvent::RuntimeStartFailed {
-                            error: Detail::display(&e),
-                        });
+                        report(SyncEvent::RuntimeStartFailed { error: &e });
                         let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
                             "Failed to create Tokio runtime: {}",
                             e
@@ -588,9 +586,7 @@ impl AimDbHandle {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                report(SyncEvent::RuntimeStartFailed {
-                    error: Detail::display(&e),
-                });
+                report(SyncEvent::RuntimeStartFailed { error: &e });
                 let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
                     "Failed to create Tokio runtime: {}",
                     e
@@ -611,9 +607,7 @@ impl AimDbHandle {
                 Ok(d) => (Arc::new(d.0), d.1),
                 Err(e) => {
                     // Sent as-is: this is the error whose kind is worth keeping.
-                    report(SyncEvent::DatabaseBuildFailed {
-                        error: Detail::display(&e),
-                    });
+                    report(SyncEvent::DatabaseBuildFailed { error: &e });
                     let _ = db_tx.send(Err(e)).await;
                     return;
                 }

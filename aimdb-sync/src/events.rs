@@ -1,32 +1,10 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
-pub(crate) enum Detail<'a> {
-    Display(&'a dyn core::fmt::Display),
-}
-impl<'a> Detail<'a> {
-    pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
-        Self::Display(value)
-    }
-}
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Display(value) => core::fmt::Display::fmt(value, f),
-        }
-    }
-}
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum SyncEvent<'a> {
-    RuntimeStartFailed { error: Detail<'a> },
+    RuntimeStartFailed { error: &'a std::io::Error },
     RuntimeHandoffFailed,
-    DatabaseBuildFailed { error: Detail<'a> },
+    DatabaseBuildFailed { error: &'a aimdb_core::DbError },
     DatabaseHandoffFailed,
     ImplicitShutdown,
     ShutdownSignalled,
