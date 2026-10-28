@@ -16,6 +16,8 @@
 //! The traits are deliberately not `dyn`-compatible. Connectors are generic
 //! over them; the `dyn` boundary stays at `Box<dyn Connection>` per frame.
 
+use crate::session::events::{report, SessionEvent};
+
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -290,7 +292,7 @@ where
                     // No boundary left to resync on: reading on would reinterpret
                     // payload bytes as headers for the life of the connection.
                     Some(Err(FrameFault::Fatal)) => {
-                        log_warn!("framed recv: unrecoverable framing error, closing connection");
+                        report(SessionEvent::ReceiveFramingFailed);
                         return Err(TransportError::Framing);
                     }
                     None => {}
@@ -309,11 +311,10 @@ where
         Box::pin(async move {
             let mut out = Vec::new();
             if let Err(_fault) = self.framer.encode(frame, &mut out) {
-                log_warn!(
-                    "framed send: framer rejected a {}-byte frame ({:?}), closing connection",
-                    frame.len(),
-                    _fault
-                );
+                report(SessionEvent::SendFrameRejected {
+                    bytes: frame.len(),
+                    fault: _fault,
+                });
                 return Err(TransportError::Framing);
             }
             for chunk in out.chunks(WC) {
@@ -834,8 +835,26 @@ mod tests {
         // The bytes after the bad header are unreadable, so the connection ends
         // rather than reinterpreting them as the next header forever.
         let mut conn = framed(MockStream::with_reads(vec![vec![0xFE, 2, b'o', b'k']]));
+        #[cfg(feature = "std")]
+        let received = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "std")]
+        let result = crate::session::events::capture::future(
+            {
+                let received = received.clone();
+                Arc::new(move |event| {
+                    assert!(matches!(event, SessionEvent::ReceiveFramingFailed));
+                    received.store(true, core::sync::atomic::Ordering::Relaxed);
+                })
+            },
+            conn.recv(),
+        )
+        .await;
+        #[cfg(not(feature = "std"))]
+        let result = conn.recv().await;
+        #[cfg(feature = "std")]
+        assert!(received.load(core::sync::atomic::Ordering::Relaxed));
         assert_eq!(
-            conn.recv().await,
+            result,
             Err(TransportError::Framing),
             "a fatal fault ends the connection, it is not skipped"
         );
@@ -847,8 +866,32 @@ mod tests {
         let mut conn = framed(stream.clone());
         let oversized = vec![b'x'; 0xFE];
 
+        #[cfg(feature = "std")]
+        let received = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "std")]
+        let result = crate::session::events::capture::future(
+            {
+                let received = received.clone();
+                Arc::new(move |event| {
+                    assert!(matches!(
+                        event,
+                        SessionEvent::SendFrameRejected {
+                            bytes: 0xFE,
+                            fault: FrameFault::Recoverable
+                        }
+                    ));
+                    received.store(true, core::sync::atomic::Ordering::Relaxed);
+                })
+            },
+            conn.send(&oversized),
+        )
+        .await;
+        #[cfg(not(feature = "std"))]
+        let result = conn.send(&oversized).await;
+        #[cfg(feature = "std")]
+        assert!(received.load(core::sync::atomic::Ordering::Relaxed));
         assert_eq!(
-            conn.send(&oversized).await,
+            result,
             Err(TransportError::Framing),
             "a dropped frame is an error, never a silent Ok"
         );
