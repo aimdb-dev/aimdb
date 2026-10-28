@@ -71,9 +71,13 @@ The session API and its existing event capture remain unchanged.
 ### Payloads and observation
 
 Strings and diagnostics are borrowed only during synchronous reporting. Concrete
-core error types retain their types. Foreign diagnostics use local borrowed
-`Detail` wrappers that preserve the original Display/Debug formatting policy;
-there is no eager conversion to an owned message. Events retain domain fields
+core error types retain their types. Events retain concrete borrowed or small owned error types, without eagerly
+converting them to messages. MCP's heterogeneous processing failure borrows a
+standard `dyn Error`. Logging adapters such as `LogDisplay` and `LogDebug` live
+only inside reporters. Zenoh retains `zenoh::Error` and `ZenohId`; MQTT retains
+its native and TLS error types. These event enums implement `Debug`, without
+requiring `defmt::Format` on foreign payloads; the reporters still support the
+enabled facade destinations. Events retain domain fields
 such as sequence numbers, topics, counts, limits and ROS domains. Feature gates
 on backend-specific variants follow the backend, not the enabled log destination.
 
