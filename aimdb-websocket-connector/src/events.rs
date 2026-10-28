@@ -1,47 +1,25 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
-pub(crate) enum Detail<'a> {
-    Display(&'a dyn core::fmt::Display),
-}
-impl<'a> Detail<'a> {
-    pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
-        Self::Display(value)
-    }
-}
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Display(value) => core::fmt::Display::fmt(value, f),
-        }
-    }
-}
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum WebSocketEvent<'a> {
     QueryHandlerFailed {
-        error: Detail<'a>,
+        error: &'a str,
     },
     PersistenceQueryFailed {
-        error: Detail<'a>,
+        error: &'a str,
     },
     MalformedQueryResult {
-        error: Detail<'a>,
+        error: &'a serde_json::Error,
     },
     BindFailed {
         address: core::net::SocketAddr,
-        error: Detail<'a>,
+        error: &'a std::io::Error,
     },
     Listening {
         address: core::net::SocketAddr,
     },
     ServerFailed {
-        error: Detail<'a>,
+        error: &'a std::io::Error,
     },
     ConnectionLimitReached {
         peer: core::net::SocketAddr,
@@ -62,16 +40,42 @@ pub(crate) fn report(event: WebSocketEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-WebSocketEvent::QueryHandlerFailed { error } => aimdb_core::log_warn!("record.query handler failed: {}", error),
-WebSocketEvent::PersistenceQueryFailed { error } => aimdb_core::log_warn!("record.query persistence handler failed: {}", error),
-WebSocketEvent::MalformedQueryResult { error } => aimdb_core::log_warn!("record.query handler returned malformed records: {}", error),
-WebSocketEvent::BindFailed { address, error } => aimdb_core::log_error!("WebSocket connector failed to bind {}: {}", address, error),
-WebSocketEvent::Listening { address } => aimdb_core::log_info!("WebSocket connector listening on {}", address),
-WebSocketEvent::ServerFailed { error } => aimdb_core::log_error!("WebSocket server error: {}", error),
-WebSocketEvent::ConnectionLimitReached { peer, limit } => aimdb_core::log_warn!("WebSocket upgrade from {} refused: {} clients connected", peer, limit),
-WebSocketEvent::VersionRejected { peer, client_version, server_version } => aimdb_core::log_warn!("WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})", peer, client_version, server_version),
-WebSocketEvent::AuthenticationRejected { peer, reason } => aimdb_core::log_warn!("WebSocket auth rejected from {}: {}", peer, reason),
-}
+        WebSocketEvent::QueryHandlerFailed { error } => {
+            aimdb_core::log_warn!("record.query handler failed: {}", error);
+        }
+        WebSocketEvent::PersistenceQueryFailed { error } => {
+            aimdb_core::log_warn!("record.query persistence handler failed: {}", error);
+        }
+        WebSocketEvent::MalformedQueryResult { error } => {
+            aimdb_core::log_warn!("record.query handler returned malformed records: {}", error);
+        }
+        WebSocketEvent::BindFailed { address, error } => {
+            aimdb_core::log_error!("WebSocket connector failed to bind {}: {}", address, error);
+        }
+        WebSocketEvent::Listening { address } => {
+            aimdb_core::log_info!("WebSocket connector listening on {}", address);
+        }
+        WebSocketEvent::ServerFailed { error } => {
+            aimdb_core::log_error!("WebSocket server error: {}", error);
+        }
+        WebSocketEvent::ConnectionLimitReached { peer, limit } => {
+            aimdb_core::log_warn!(
+                "WebSocket upgrade from {} refused: {} clients connected",
+                peer,
+                limit
+            );
+        }
+        WebSocketEvent::VersionRejected {
+            peer,
+            client_version,
+            server_version,
+        } => {
+            aimdb_core::log_warn!("WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})", peer, client_version, server_version);
+        }
+        WebSocketEvent::AuthenticationRejected { peer, reason } => {
+            aimdb_core::log_warn!("WebSocket auth rejected from {}: {}", peer, reason);
+        }
+    }
 }
 
 /// Test-only poll-scoped observation. Spawned work must be wrapped explicitly.
@@ -181,7 +185,7 @@ mod backend_tests {
             capture::with(observer, || {
                 report(WebSocketEvent::BindFailed {
                     address: "127.0.0.1:1234".parse().unwrap(),
-                    error: Detail::display(&error),
+                    error: &error,
                 })
             });
         };

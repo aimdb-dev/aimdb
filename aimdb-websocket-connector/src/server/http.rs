@@ -34,7 +34,7 @@
 //! indistinguishable from JavaScript. A browser client fetches this route
 //! before dialing and can then name both versions in its error.
 
-use crate::events::{report, Detail, WebSocketEvent};
+use crate::events::{report, WebSocketEvent};
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
@@ -129,7 +129,7 @@ pub(crate) fn build_server_future(
             Err(_e) => {
                 report(WebSocketEvent::BindFailed {
                     address: bind_addr,
-                    error: Detail::display(&_e),
+                    error: &_e,
                 });
                 return;
             }
@@ -143,9 +143,7 @@ pub(crate) fn build_server_future(
         )
         .await
         {
-            report(WebSocketEvent::ServerFailed {
-                error: Detail::display(&_e),
-            });
+            report(WebSocketEvent::ServerFailed { error: &_e });
         }
     })
 }
