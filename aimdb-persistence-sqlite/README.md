@@ -169,7 +169,12 @@ out-of-range values (> `i64::MAX`) are rejected with
 
 | Feature | Default | Description |
 |---|---|---|
+| `log` | no | Forward operational events through the `log` facade |
 | `tracing` | no | Emit structured log events (corrupted rows, writer thread lifecycle) |
+
+Operational failures are reported as internal typed events. Enable `tracing`
+or `log` to forward them to the corresponding facade destination; both may
+be enabled together. Their log target is `aimdb_persistence_sqlite::events`.
 
 ## Testing
 

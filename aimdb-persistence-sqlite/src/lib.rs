@@ -23,6 +23,10 @@
 //! # }
 //! ```
 
+mod events;
+
+use crate::events::{report, Detail, SqliteEvent};
+
 use std::path::Path;
 
 use aimdb_persistence::backend::{BoxFuture, PersistenceBackend, QueryParams, StoredValue};
@@ -243,11 +247,9 @@ fn query_sync(
                 Ok(StoredValue {
                     record_name: row.get(0)?,
                     value: serde_json::from_str(&value_str).unwrap_or_else(|e| {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            "SQLite: corrupted JSON in record_history row, \
-                             substituting null: {e}"
-                        );
+                        report(SqliteEvent::CorruptJson {
+                            error: Detail::display(&e),
+                        });
                         #[cfg(not(feature = "tracing"))]
                         let _ = e;
                         Value::Null
@@ -529,5 +531,26 @@ mod tests {
             .unwrap();
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn corrupted_json_reports_before_substituting_null_on_a_worker_thread() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observer = {
+            let seen = seen.clone();
+            std::sync::Arc::new(move |event: &SqliteEvent<'_>| {
+                let SqliteEvent::CorruptJson { error } = event;
+                assert!(error.to_string().contains("expected"));
+                seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let rows = std::thread::spawn(move || events::capture::with(observer, || {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch("CREATE TABLE record_history (id INTEGER PRIMARY KEY, record_name TEXT, value_json TEXT, stored_at INTEGER); INSERT INTO record_history VALUES (1, 'broken', 'invalid', 7);").unwrap();
+            query_sync(&conn, "#", QueryParams::default()).unwrap()
+        })).join().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, Value::Null);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
