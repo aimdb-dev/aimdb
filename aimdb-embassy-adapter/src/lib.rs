@@ -20,6 +20,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "embassy-sync")]
+mod events;
+
 // Only include the implementation when std feature is not enabled
 // Embassy adapter is designed exclusively for no_std environments
 #[cfg(all(not(feature = "std"), feature = "embassy-sync"))]

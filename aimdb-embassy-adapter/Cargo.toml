@@ -12,7 +12,7 @@ categories = ["embedded", "asynchronous", "no-std"]
 build = "build.rs"
 
 [features]
-default = ["alloc"]
+default = ["alloc", "defmt"]
 
 # Heap allocation support (required for Arc-based readers)
 alloc = []
@@ -42,6 +42,8 @@ net = [
 
 # Observability features (no_std compatible)
 tracing = ["aimdb-core/tracing", "dep:tracing"]
+log = ["aimdb-core/log"]
+defmt = ["aimdb-core/defmt"]
 
 # Note: std feature is intentionally kept but will cause build.rs to fail if enabled
 # This provides clear error messages when accidentally enabled
