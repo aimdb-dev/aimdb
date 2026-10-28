@@ -274,8 +274,9 @@ where
     /// - Each `transform_join` that lists this record as an input: +1
     ///
     /// Exhausting the slot count is a silent failure at runtime (the subscriber exits
-    /// immediately, producing no output). A `defmt::error!` is emitted, but set
-    /// `CONSUMERS` high enough to avoid it altogether.
+    /// immediately, producing no values). An operational event is reported through
+    /// the enabled destinations (`defmt` by default). Set `CONSUMERS` high enough
+    /// to avoid exhaustion altogether.
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &mut self,
         buffer_type: EmbassyBufferType,
