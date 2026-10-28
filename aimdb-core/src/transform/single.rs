@@ -1,3 +1,5 @@
+use crate::transform::events::{report, TransformEvent};
+
 use core::any::{type_name, TypeId};
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -169,12 +171,11 @@ pub(crate) async fn run_single_transform<I, O, S>(
     let consumer = match db.consumer::<I>(&input_key) {
         Ok(c) => c,
         Err(_e) => {
-            log_error!(
-                "🔄 Transform '{}' → '{}' FATAL: failed to resolve consumer: {:?}",
-                input_key,
-                output_key,
-                _e
-            );
+            report(TransformEvent::ConsumerResolutionFailed {
+                input: &input_key,
+                output: &output_key,
+                error: &_e,
+            });
             return;
         }
     };
@@ -208,21 +209,62 @@ pub(crate) async fn run_single_transform<I, O, S>(
                 }
             }
             Err(crate::DbError::BufferLagged { .. }) => {
-                log_warn!(
-                    "🔄 Transform '{}' → '{}' lagged behind, some values skipped",
-                    input_key,
-                    output_key
-                );
+                report(TransformEvent::Lagged {
+                    input: &input_key,
+                    output: &output_key,
+                });
                 continue;
             }
             Err(_) => {
-                log_warn!(
-                    "🔄 Transform '{}' → '{}' input closed, task exiting",
-                    input_key,
-                    output_key
-                );
+                report(TransformEvent::InputClosed {
+                    input: &input_key,
+                    output: &output_key,
+                });
                 break;
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod event_tests {
+    use super::*;
+    #[tokio::test]
+    async fn missing_input_reports_a_typed_fatal_event() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        builder.configure::<u32>("output", |_| {});
+        let (db, _runner) = builder.build().await.unwrap();
+        let producer = db.producer::<u32>("output").unwrap();
+        let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &TransformEvent<'_>| match event {
+                TransformEvent::ConsumerResolutionFailed {
+                    input,
+                    output,
+                    error,
+                } => {
+                    assert_eq!((*input, *output), ("missing", "output"));
+                    assert!(matches!(error, crate::DbError::RecordKeyNotFound { .. }));
+                    seen.store(true, core::sync::atomic::Ordering::Relaxed);
+                }
+                other => panic!("unexpected {other:?}"),
+            })
+        };
+        super::super::events::capture::future(
+            observer,
+            run_single_transform::<u32, u32, ()>(
+                Arc::new(db),
+                "missing".into(),
+                "output".into(),
+                producer,
+                (),
+                |_, _| None,
+                Default::default(),
+            ),
+        )
+        .await;
+        assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
     }
 }

@@ -18,6 +18,12 @@
 //! Without `remote`, use `record.latest()` + `Deref` for value access and
 //! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
 
+#[cfg(feature = "remote")]
+mod events;
+
+#[cfg(feature = "remote")]
+use crate::typed_record::events::{report, RemoteWriteEvent};
+
 use core::any::Any;
 use core::fmt::Debug;
 #[cfg(feature = "remote")]
@@ -946,11 +952,10 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         use crate::DbError;
 
         if self.has_producer() || self.has_transform() {
-            log_warn!(
-                "Rejected {} for '{}': has active producer or transform",
-                operation,
-                core::any::type_name::<T>()
-            );
+            report(RemoteWriteEvent::Rejected {
+                operation: &operation,
+                record_type: &core::any::type_name::<T>(),
+            });
 
             return Err(DbError::permission_denied(alloc::format!(
                 "Cannot set record '{}' - has active producer or transform. \
@@ -1541,5 +1546,28 @@ mod tests {
 
         assert_eq!(record.latest_json(), Some(serde_json::json!(17)));
         assert_eq!(tree_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn remote_write_rejection_is_typed() {
+        use events::{capture, RemoteWriteEvent};
+        let mut record = TypedRecord::<u32>::new();
+        record.with_remote_access();
+        record.set_producer(|_, _| async {});
+        let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &RemoteWriteEvent<'_>| {
+                let RemoteWriteEvent::Rejected {
+                    operation,
+                    record_type,
+                } = event;
+                assert_eq!(*operation, "set_from_json");
+                assert_eq!(*record_type, core::any::type_name::<u32>());
+                seen.store(true, core::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        assert!(capture::with(observer, || record.set_from_json(serde_json::json!(7))).is_err());
+        assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
     }
 }

@@ -13,6 +13,10 @@
 //! connection's `FuturesUnordered` is the sole owner of the subscription's
 //! lifecycle.
 
+mod events;
+
+use crate::remote::stream::events::{report, RecordStreamEvent};
+
 use alloc::string::ToString;
 
 use crate::{AimDb, DbError, DbResult};
@@ -62,9 +66,15 @@ pub(crate) fn stream_record_updates(
     // `skipped` accumulates `BufferLagged.lag_count` across consecutive lag
     // events so it can ride the next successfully-read value; it resets to 0
     // once a value is yielded.
-    let state = (reader, record_key.to_string(), 0_u64);
+    Ok(record_updates(reader, record_key.to_string()))
+}
 
-    Ok(unfold(state, |(mut reader, key, mut skipped)| async move {
+fn record_updates(
+    reader: crate::buffer::JsonReader,
+    key: alloc::string::String,
+) -> impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static {
+    let state = (reader, key, 0_u64);
+    unfold(state, |(mut reader, key, mut skipped)| async move {
         loop {
             match reader.recv_json_bytes().await {
                 Ok(bytes) => {
@@ -72,26 +82,24 @@ pub(crate) fn stream_record_updates(
                     return Some(((data, skipped), (reader, key, 0)));
                 }
                 Err(DbError::BufferLagged { lag_count, .. }) => {
-                    log_warn!(
-                        "stream_record_updates: record '{}' subscription lagged by {} messages",
-                        key,
-                        lag_count
-                    );
+                    report(RecordStreamEvent::Lagged {
+                        record: &key,
+                        skipped: lag_count,
+                    });
                     skipped = skipped.saturating_add(lag_count);
                     continue;
                 }
                 Err(DbError::BufferClosed { .. }) => return None,
                 Err(e) => {
-                    log_error!(
-                        "stream_record_updates: record '{}' terminating on error: {:?}",
-                        key,
-                        e
-                    );
+                    report(RecordStreamEvent::Terminated {
+                        record: &key,
+                        error: &e,
+                    });
                     return None;
                 }
             }
         }
-    }))
+    })
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -140,24 +148,24 @@ mod tests {
             step: Arc::new(AtomicUsize::new(0)),
         }));
 
-        // Mirrors `stream_record_updates`'s unfold: read owned JSON *bytes*
-        // (not a `Value` tree), accumulate `lag_count` into `skipped`, and let
-        // it ride the next yielded value.
-        let stream = unfold((reader, 0_u64), |(mut reader, mut skipped)| async move {
-            loop {
-                match reader.recv_json_bytes().await {
-                    Ok(bytes) => return Some(((bytes, skipped), (reader, 0))),
-                    Err(DbError::BufferLagged { lag_count, .. }) => {
-                        skipped = skipped.saturating_add(lag_count);
-                        continue;
+        let seen = Arc::new(AtomicUsize::new(0));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &RecordStreamEvent<'_>| {
+                assert!(matches!(
+                    event,
+                    RecordStreamEvent::Lagged {
+                        record: "record",
+                        skipped: 7
                     }
-                    Err(DbError::BufferClosed { .. }) => return None,
-                    Err(_) => return None,
-                }
-            }
-        });
-
-        let values: Vec<(Vec<u8>, u64)> = stream.collect().await;
+                ));
+                seen.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        let values: Vec<_> =
+            events::capture::future(observer, record_updates(reader, "record".into()).collect())
+                .await;
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
         assert_eq!(values.len(), 2);
         // First value delivered cleanly; the Lagged(7) between the two folds
         // into the second value's `skipped`, not swallowed. The value rides as

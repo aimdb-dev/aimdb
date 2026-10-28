@@ -1,6 +1,8 @@
 //! [`OutboundRoutes`]: every outbound link of one scheme, pulled by the
 //! connector's transport task.
 
+use crate::outbound::events::{report, OutboundEvent};
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -114,6 +116,7 @@ pub(crate) enum StagedPayload {
 
 /// Why a value that was taken could not be serialized. The caller logs it
 /// with its route.
+#[derive(Debug)]
 pub(crate) enum SerializeFailure {
     /// The owned serializer (`with_serializer`) failed.
     Owned(SerializeError),
@@ -298,29 +301,33 @@ impl OutboundRoutes {
                 }
                 Poll::Ready(RouteOutcome::Lagged(n)) => {
                     stats.lagged += n;
-                    log_warn!("outbound route '{}' lagged by {}", info.default_topic, n);
+                    report(OutboundEvent::Lagged {
+                        topic: &info.default_topic,
+                        skipped: n,
+                    });
                     Polled::Skipped
                 }
                 Poll::Ready(RouteOutcome::TopicOverflow) => {
                     stats.topic_overflow += 1;
-                    log_warn!(
-                        "outbound route '{}': topic does not fit in {} bytes, value skipped",
-                        info.default_topic,
-                        info.topic_capacity
-                    );
+                    report(OutboundEvent::TopicOverflow {
+                        topic: &info.default_topic,
+                        capacity: info.topic_capacity,
+                    });
                     Polled::Skipped
                 }
                 Poll::Ready(RouteOutcome::SerializeFailed(_failure)) => {
                     stats.serialize_failed += 1;
-                    log_error!(
-                        "outbound route '{}': {}, value skipped",
-                        info.default_topic,
-                        _failure
-                    );
+                    report(OutboundEvent::SerializeFailed {
+                        topic: &info.default_topic,
+                        error: &_failure,
+                    });
                     Polled::Skipped
                 }
                 Poll::Ready(RouteOutcome::Closed(_e)) => {
-                    log_info!("outbound route '{}' closed: {:?}", info.default_topic, _e);
+                    report(OutboundEvent::Closed {
+                        topic: &info.default_topic,
+                        error: &_e,
+                    });
                     Polled::Closed
                 }
             }

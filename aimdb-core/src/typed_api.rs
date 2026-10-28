@@ -2313,10 +2313,33 @@ mod tests {
         )
         .await;
 
-        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 1, true)));
-        assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 2, true)));
-        assert_eq!(o.stats(0).unwrap().lagged, 1);
-        assert_eq!(pull(&mut o).await, None);
+        use crate::outbound::events::{capture, OutboundEvent};
+        let seen = Arc::new(spin::Mutex::new(Vec::new()));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &OutboundEvent<'_>| {
+                seen.lock().push(match event {
+                    OutboundEvent::Lagged { topic, skipped } => {
+                        assert_eq!((*topic, *skipped), ("tele/out", 1));
+                        "lag"
+                    }
+                    OutboundEvent::Closed { topic, error } => {
+                        assert_eq!(*topic, "tele/out");
+                        assert!(matches!(error, crate::DbError::BufferClosed { .. }));
+                        "closed"
+                    }
+                    other => panic!("unexpected {other:?}"),
+                });
+            })
+        };
+        capture::future(observer, async {
+            assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 1, true)));
+            assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 2, true)));
+            assert_eq!(o.stats(0).unwrap().lagged, 1);
+            assert_eq!(pull(&mut o).await, None);
+        })
+        .await;
+        assert_eq!(*seen.lock(), ["lag", "closed"]);
     }
 
     fn lagged() -> crate::DbError {

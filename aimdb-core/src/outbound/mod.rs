@@ -1,5 +1,7 @@
 //! Outbound path: connectors pull serialized messages from their routes.
 
+pub(crate) mod events;
+
 mod ready;
 mod routes;
 

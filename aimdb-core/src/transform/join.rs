@@ -1,3 +1,5 @@
+use crate::transform::events::{report, TransformEvent};
+
 use core::any::{type_name, Any, TypeId};
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -166,12 +168,11 @@ where
                     let consumer = match db.consumer::<I>(&key_for_factory) {
                         Ok(c) => c,
                         Err(_e) => {
-                            log_error!(
-                                "🔄 Join input '{}' (index {}) consumer resolution failed: {:?}",
-                                key_for_factory,
-                                index,
-                                _e
-                            );
+                            report(TransformEvent::JoinConsumerResolutionFailed {
+                                input: &key_for_factory,
+                                index: index,
+                                error: &_e,
+                            });
                             return;
                         }
                     };
@@ -185,11 +186,10 @@ where
                             // lag must not permanently silence this input —
                             // same policy as every other recv loop in core.
                             Err(crate::DbError::BufferLagged { .. }) => {
-                                log_warn!(
-                                    "🔄 Join input '{}' (index {}) lagged behind, some values skipped",
-                                    key_for_factory,
-                                    index
-                                );
+                                report(TransformEvent::JoinLagged {
+                                    input: &key_for_factory,
+                                    index: index,
+                                });
                                 continue;
                             }
                             // Buffer closed / fatal — the input record is gone.
@@ -328,7 +328,9 @@ where
 
         handler(JoinEventRx::new(rx), producer).await;
 
-        log_warn!("🔄 Join transform '{}' user task exited", output_key);
+        report(TransformEvent::JoinTaskExited {
+            output: &output_key,
+        });
     });
 
     CollectedTransform {
