@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Database access from additional HTTP routes (#363).** Routers supplied
+  to `with_additional_routes` receive `axum::Extension<AimDb>` at connector
+  build time, preserving their existing application state. Handlers can use
+  `AimDb::latest::<T>(key)` to serve current values directly. Additional routes
+  are not protected by the connector's `AuthHandler`; this is now documented
+  alongside a typed-read handler example.
+- **Generic HTTP polling example** in
+  [`examples/http-current-values`](../examples/http-current-values/README.md),
+  serving simulated temperature, humidity, and window-contact values as plain
+  text without taps or mirrored state.
+
 ### Changed
 
 - **The server dispatches client writes and pulls broadcasts itself.**
