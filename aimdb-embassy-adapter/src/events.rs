@@ -10,12 +10,14 @@ pub(crate) fn report(event: AdapterEvent) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-        AdapterEvent::SubscriberSlotsExhausted { capacity } => aimdb_core::log_error!(
-            "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
+        AdapterEvent::SubscriberSlotsExhausted { capacity } => {
+            aimdb_core::log_error!(
+                "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
              Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
              Count one slot per .tap(), .link_to() connector, and each transform_join input.",
-            capacity
-        ),
+                capacity
+            );
+        }
     }
 }
 

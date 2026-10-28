@@ -93,51 +93,115 @@ pub(crate) fn report(event: MqttEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-#[cfg(feature = "embedded")]
-MqttEvent::SubscribeQosDowngraded { topic } => aimdb_core::log_warn!("MQTT: inbound route '{}' asks for qos=2; this backend subscribes at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.", topic),
-#[cfg(feature = "embedded")]
-MqttEvent::PublishQosDowngraded { topic } => aimdb_core::log_warn!("MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.", topic),
-#[cfg(feature = "embedded")]
-MqttEvent::BuildFailed { reason } => aimdb_core::log_error!("Failed to build MQTT connector: {}", reason),
-#[cfg(feature = "embedded")]
-MqttEvent::BackgroundStarting => aimdb_core::log_info!("MQTT background task starting"),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsIpLiteral => aimdb_core::log_warn!("MQTT-TLS: broker host is an IP literal; the certificate must carry it in CN — prefer a hostname"),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsBackgroundStarting => aimdb_core::log_info!("MQTT-TLS background task starting"),
-#[cfg(feature = "embedded")]
-MqttEvent::ConnectFailed => aimdb_core::log_warn!("MQTT: connect failed, will retry"),
-#[cfg(feature = "embedded")]
-MqttEvent::SessionFailed { error } => aimdb_core::log_warn!("MQTT: session errored: {:?}", error),
-#[cfg(feature = "embedded")]
-MqttEvent::BrokerUnresponsive => aimdb_core::log_warn!("MQTT: broker unresponsive"),
-#[cfg(feature = "embedded")]
-MqttEvent::PingDropped => aimdb_core::log_warn!("MQTT: write ring full, ping dropped"),
-#[cfg(feature = "embedded")]
-MqttEvent::PublishTooLarge { topic, bytes, broker_limit } => aimdb_core::log_warn!("MQTT: skipping publish to '{}': {} bytes exceed the {} limit", topic, bytes, if broker_limit { "broker's" } else { "write ring's" }),
-#[cfg(feature = "embassy-tls")]
-MqttEvent::ClockSynced { unix_seconds } => aimdb_core::log_info!("SNTP: synced, unix time {}", unix_seconds),
-#[cfg(feature = "embassy-tls")]
-MqttEvent::ClockImplausible { unix_seconds, server } => aimdb_core::log_warn!("SNTP: implausible time {} from {}, retrying", unix_seconds, server),
-#[cfg(feature = "embassy-tls")]
-MqttEvent::ClockSyncFailed { server, error } => aimdb_core::log_warn!("SNTP: sync with {} failed: {}, retrying", server, error),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsWaitingForClock => aimdb_core::log_info!("MQTT-TLS: waiting for a wall-clock reading..."),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsConnectFailed => aimdb_core::log_warn!("MQTT-TLS: connect failed, will retry"),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsHandshakeFailed { error } => aimdb_core::log_warn!("MQTT-TLS: handshake failed, will retry: {:?}", error),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsEstablished => aimdb_core::log_info!("MQTT-TLS: session established"),
-#[cfg(feature = "embedded-tls")]
-MqttEvent::TlsSessionFailed { error } => aimdb_core::log_warn!("MQTT-TLS: session errored: {:?}", error),
-#[cfg(feature = "std")]
-MqttEvent::NativeEventLoopFailed { broker, error } => aimdb_core::log_error!("MQTT event loop error for {}: {:?}", broker, error),
-#[cfg(feature = "std")]
-MqttEvent::NativePublishFailed { route, error } => aimdb_core::log_error!("MQTT publish on route '{}' failed: {}", route, error),
-#[cfg(feature = "std")]
-MqttEvent::OutboundClosed => aimdb_core::log_info!("MQTT publish loop: every outbound route has closed"),
-}
+        #[cfg(feature = "embedded")]
+        MqttEvent::SubscribeQosDowngraded { topic } => {
+            aimdb_core::log_warn!("MQTT: inbound route '{}' asks for qos=2; this backend subscribes at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.", topic);
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::PublishQosDowngraded { topic } => {
+            aimdb_core::log_warn!("MQTT: route '{}' asks for qos=2; this backend publishes it at QoS 1 (at-least-once). The std backend honours qos=2 on the same URL.", topic);
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::BuildFailed { reason } => {
+            aimdb_core::log_error!("Failed to build MQTT connector: {}", reason);
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::BackgroundStarting => {
+            aimdb_core::log_info!("MQTT background task starting");
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsIpLiteral => {
+            aimdb_core::log_warn!("MQTT-TLS: broker host is an IP literal; the certificate must carry it in CN — prefer a hostname");
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsBackgroundStarting => {
+            aimdb_core::log_info!("MQTT-TLS background task starting");
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::ConnectFailed => {
+            aimdb_core::log_warn!("MQTT: connect failed, will retry");
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::SessionFailed { error } => {
+            aimdb_core::log_warn!("MQTT: session errored: {:?}", error);
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::BrokerUnresponsive => {
+            aimdb_core::log_warn!("MQTT: broker unresponsive");
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::PingDropped => {
+            aimdb_core::log_warn!("MQTT: write ring full, ping dropped");
+        }
+        #[cfg(feature = "embedded")]
+        MqttEvent::PublishTooLarge {
+            topic,
+            bytes,
+            broker_limit,
+        } => {
+            aimdb_core::log_warn!(
+                "MQTT: skipping publish to '{}': {} bytes exceed the {} limit",
+                topic,
+                bytes,
+                if broker_limit {
+                    "broker's"
+                } else {
+                    "write ring's"
+                }
+            );
+        }
+        #[cfg(feature = "embassy-tls")]
+        MqttEvent::ClockSynced { unix_seconds } => {
+            aimdb_core::log_info!("SNTP: synced, unix time {}", unix_seconds);
+        }
+        #[cfg(feature = "embassy-tls")]
+        MqttEvent::ClockImplausible {
+            unix_seconds,
+            server,
+        } => {
+            aimdb_core::log_warn!(
+                "SNTP: implausible time {} from {}, retrying",
+                unix_seconds,
+                server
+            );
+        }
+        #[cfg(feature = "embassy-tls")]
+        MqttEvent::ClockSyncFailed { server, error } => {
+            aimdb_core::log_warn!("SNTP: sync with {} failed: {}, retrying", server, error);
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsWaitingForClock => {
+            aimdb_core::log_info!("MQTT-TLS: waiting for a wall-clock reading...");
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsConnectFailed => {
+            aimdb_core::log_warn!("MQTT-TLS: connect failed, will retry");
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsHandshakeFailed { error } => {
+            aimdb_core::log_warn!("MQTT-TLS: handshake failed, will retry: {:?}", error);
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsEstablished => {
+            aimdb_core::log_info!("MQTT-TLS: session established");
+        }
+        #[cfg(feature = "embedded-tls")]
+        MqttEvent::TlsSessionFailed { error } => {
+            aimdb_core::log_warn!("MQTT-TLS: session errored: {:?}", error);
+        }
+        #[cfg(feature = "std")]
+        MqttEvent::NativeEventLoopFailed { broker, error } => {
+            aimdb_core::log_error!("MQTT event loop error for {}: {:?}", broker, error);
+        }
+        #[cfg(feature = "std")]
+        MqttEvent::NativePublishFailed { route, error } => {
+            aimdb_core::log_error!("MQTT publish on route '{}' failed: {}", route, error);
+        }
+        #[cfg(feature = "std")]
+        MqttEvent::OutboundClosed => {
+            aimdb_core::log_info!("MQTT publish loop: every outbound route has closed");
+        }
+    }
 }
 
 /// Test-only poll-scoped observation. Spawned work must be wrapped explicitly.

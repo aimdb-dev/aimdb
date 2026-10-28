@@ -42,20 +42,28 @@ pub(crate) fn report(event: KnxEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-        KnxEvent::SendFailed => aimdb_core::log_error!("KNX send failed"),
+        KnxEvent::SendFailed => {
+            aimdb_core::log_error!("KNX send failed");
+        }
         KnxEvent::AckTimedOut { sequence } => {
             aimdb_core::log_warn!("KNX outbound: no ACK for sequence {}", sequence)
         }
-        KnxEvent::OutboundRejected { route, error } => aimdb_core::log_warn!(
-            "KNX outbound: skipping a value for route '{}': {:?}",
-            route,
-            error
-        ),
-        KnxEvent::BinderBusy => aimdb_core::log_error!(
-            "KNX bind failed: the binder's socket is held by another handle \
+        KnxEvent::OutboundRejected { route, error } => {
+            aimdb_core::log_warn!(
+                "KNX outbound: skipping a value for route '{}': {:?}",
+                route,
+                error
+            );
+        }
+        KnxEvent::BinderBusy => {
+            aimdb_core::log_error!(
+                "KNX bind failed: the binder's socket is held by another handle \
                      (a clone of a single-socket binder?); retrying"
-        ),
-        KnxEvent::BindFailed => aimdb_core::log_error!("KNX bind failed; retrying"),
+            );
+        }
+        KnxEvent::BindFailed => {
+            aimdb_core::log_error!("KNX bind failed; retrying");
+        }
     }
 }
 
