@@ -2,6 +2,8 @@
 //! inbound samples from the subscriber callbacks, and pulls outbound
 //! messages.
 
+use crate::events::{report, Detail, ZenohEvent};
+
 use std::boxed::Box;
 use std::format;
 use std::string::{String, ToString};
@@ -10,10 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec::Vec;
 
-use aimdb_core::LogDisplay;
 use aimdb_core::{
-    log_debug, log_error, log_info, log_warn, AimDb, DbError, DbResult, InboundDispatch,
-    OutboundRoutes, RouteInfo, TopicFilter, TopicGrammar, TopicPattern, MAX_CAPTURES,
+    log_debug, log_info, AimDb, DbError, DbResult, InboundDispatch, OutboundRoutes, RouteInfo,
+    TopicFilter, TopicGrammar, TopicPattern, MAX_CAPTURES,
 };
 use zenoh::key_expr::{keyexpr, KeyExpr};
 use zenoh::pubsub::Publisher;
@@ -172,7 +173,9 @@ impl ZenohParts {
             {
                 Ok(publisher) => publishers.push(Some(publisher)),
                 Err(_e) => {
-                    log_error!("Zenoh: cannot declare a publisher: {}", LogDisplay(&_e));
+                    report(ZenohEvent::PublisherDeclarationFailed {
+                        error: Detail::display(&_e),
+                    });
                     publishers.push(None);
                 }
             }
@@ -191,23 +194,22 @@ impl ZenohParts {
                             .await
                     }
                     None => {
-                        log_error!("Zenoh: '{}' is not a key without wildcards", msg.topic);
+                        report(ZenohEvent::InvalidPublishKey { topic: &msg.topic });
                         outbound.reject(id);
                         continue;
                     }
                 },
             };
             if let Err(_e) = result {
-                log_error!(
-                    "Zenoh: put on route '{}' failed: {}",
-                    outbound.routes()[id].default_topic,
-                    LogDisplay(&_e)
-                );
+                report(ZenohEvent::PublishFailed {
+                    route: &outbound.routes()[id].default_topic,
+                    error: Detail::display(&_e),
+                });
                 outbound.reject(id);
             }
         }
 
-        log_info!("Zenoh: every outbound route has closed");
+        report(ZenohEvent::OutboundClosed);
         // The subscribers keep delivering for the life of the database.
         core::future::pending::<()>().await;
     }
@@ -229,17 +231,18 @@ pub(crate) async fn open(config: zenoh::Config) -> Session {
         match opened {
             Ok(session) => break session,
             Err(_e) => {
-                log_warn!(
-                    "Zenoh: cannot open the session, retrying in {:?}: {}",
-                    wait,
-                    _e
-                );
+                report(ZenohEvent::SessionOpenFailed {
+                    retry_after: wait,
+                    reason: &_e,
+                });
                 tokio::time::sleep(wait).await;
                 wait = (wait * 2).min(OPEN_RETRY_MAX);
             }
         }
     };
-    log_info!("Zenoh: session {} open", LogDisplay(&session.zid()));
+    report(ZenohEvent::SessionOpened {
+        session: Detail::display(&session.zid()),
+    });
     session
 }
 
@@ -274,7 +277,7 @@ pub(crate) fn dispatch_guarded(inbound: &InboundDispatch, topic: &str, payload: 
         inbound.dispatch(topic, payload)
     }));
     if dispatched.is_err() {
-        log_error!("Zenoh: ingest panicked on '{}'; sample dropped", topic);
+        report(ZenohEvent::IngestPanicked { topic: &topic });
     }
 }
 
@@ -307,7 +310,7 @@ async fn subscribe(
                 }
                 if key.contains('*') {
                     if !warned.swap(true, Ordering::Relaxed) {
-                        log_warn!("Zenoh: dropping samples on wildcard keys, first '{}'", key);
+                        report(ZenohEvent::WildcardSampleDropped { key: &key });
                     }
                     log_debug!("Zenoh: dropped a sample on wildcard key '{}'", key);
                     return;
@@ -324,8 +327,53 @@ async fn subscribe(
                 subscribers.push(subscriber);
                 earlier.push(Arc::from(compiled));
             }
-            Err(_e) => log_error!("Zenoh: cannot declare a subscriber: {}", LogDisplay(&_e)),
+            Err(_e) => report(ZenohEvent::SubscriberDeclarationFailed {
+                error: Detail::display(&_e),
+            }),
         }
     }
     subscribers
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    #[tokio::test]
+    async fn ingest_panics_are_contained_and_typed() {
+        use aimdb_core::ConnectorBuilder;
+        use aimdb_tokio_adapter::TokioRecordRegistrarExt;
+        struct Noop;
+        impl ConnectorBuilder for Noop {
+            fn scheme(&self) -> &str {
+                "zenoh"
+            }
+            fn build<'a>(&'a self, _: &'a AimDb) -> crate::connector::BuildFuture<'a> {
+                Box::pin(async { Ok(Vec::new()) })
+            }
+        }
+        let mut builder = aimdb_core::AimDbBuilder::new()
+            .runtime(Arc::new(aimdb_tokio_adapter::TokioAdapter::new().unwrap()))
+            .with_connector(Noop);
+        builder.configure::<u32>("value", |reg| {
+            reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest);
+            reg.link_from("zenoh://tele")
+                .with_deserializer(|_, _| -> Result<u32, String> { panic!("bad decoder") })
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.unwrap();
+        let inbound = InboundDispatch::new(&db, "zenoh", &ZenohGrammar).unwrap();
+        let seen = Arc::new(AtomicBool::new(false));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &ZenohEvent<'_>| {
+                assert!(matches!(
+                    event,
+                    ZenohEvent::IngestPanicked { topic: "tele" }
+                ));
+                seen.store(true, Ordering::Relaxed);
+            })
+        };
+        crate::events::capture::with(observer, || dispatch_guarded(&inbound, "tele", b"bad"));
+        assert!(seen.load(Ordering::Relaxed));
+    }
 }

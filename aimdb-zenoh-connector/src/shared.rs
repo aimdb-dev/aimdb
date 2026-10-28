@@ -6,13 +6,15 @@
 //! none. `AimDbBuilder` runs every `build()` before it polls any future, so
 //! the task finds every part when it first runs.
 
+use crate::events::{report, ZenohEvent};
+
 use std::boxed::Box;
 use std::string::String;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::vec::Vec;
 
-use aimdb_core::{log_warn, DbResult};
+use aimdb_core::DbResult;
 
 use crate::connector::BoxFuture;
 use crate::native::{check_runtime, open, session_config, ZenohParts};
@@ -90,7 +92,7 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if ros2.is_none() && self.ros2_view.load(Ordering::Relaxed) {
-            log_warn!("Zenoh: a Ros2Connector on this session was never registered");
+            report(ZenohEvent::Ros2RegistrationMissing);
         }
         let session = open(config).await;
         let zenoh = async {

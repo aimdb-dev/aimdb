@@ -1,5 +1,7 @@
 //! `Ros2Connector`: `ros2://` links following rmw_zenoh's conventions.
 
+use crate::events::{report, Detail, ZenohEvent};
+
 use std::any::{type_name, TypeId};
 use std::boxed::Box;
 use std::format;
@@ -9,10 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use aimdb_core::connector::ConnectorBuilder;
-use aimdb_core::LogDisplay;
-use aimdb_core::{
-    log_error, log_warn, AimDb, ExactGrammar, InboundDispatch, OutboundRoutes, RouteInfo,
-};
+use aimdb_core::{AimDb, ExactGrammar, InboundDispatch, OutboundRoutes, RouteInfo};
 use aimdb_data_contracts::{ros2, RosMessage, WireFormat};
 use zenoh::key_expr::KeyExpr;
 use zenoh::qos::CongestionControl;
@@ -36,7 +35,7 @@ pub(crate) const DEPTH_KEY: &str = "ros2.depth";
 pub(crate) const RELIABILITY_KEY: &str = "ros2.reliability";
 
 /// The highest domain id ROS 2 documents.
-const DOMAIN_MAX: u32 = 232;
+pub(crate) const DOMAIN_MAX: u32 = 232;
 
 /// The ROS 2 node AimDB appears as.
 #[derive(Debug, Clone)]
@@ -140,8 +139,8 @@ impl ConnectorBuilder for Ros2Connector {
         Box::pin(async move {
             let domain = resolve_domain(self.domain, std::env::var(DOMAIN_ENV).ok().as_deref())
                 .map_err(config_error)?;
-            if let Some(warning) = domain_warning(domain) {
-                log_warn!("{}", warning);
+            if domain > DOMAIN_MAX {
+                report(ZenohEvent::Ros2DomainWarning { domain });
             }
             let node = &self.node;
             profile::validate_node_name(&node.name)
@@ -174,13 +173,13 @@ impl ConnectorBuilder for Ros2Connector {
             )
             .map_err(config_error)?;
 
-            for warning in publishers
+            for link in publishers
                 .iter()
                 .map(|p| &p.link)
                 .chain(subscriptions.links.iter())
-                .filter_map(|link| link.warning.as_deref())
+                .filter(|link| link.warning.is_some())
             {
-                log_warn!("{}", warning);
+                report(ZenohEvent::Ros2CodecUnchecked { topic: &link.topic });
             }
 
             self.shared.deposit_ros2(Ros2Parts {
@@ -232,6 +231,7 @@ fn parse_domain(value: &str) -> Option<u32> {
 
 /// ROS 2 documents domains 0 to 232, the range DDS can map to ports. rmw_zenoh
 /// accepts any, but a node there is out of reach of DDS-based ROS 2.
+#[cfg(test)]
 fn domain_warning(domain: u32) -> Option<String> {
     (domain > DOMAIN_MAX).then(|| {
         format!(
@@ -488,10 +488,9 @@ impl Ros2Parts {
         for token in tokens {
             match session.liveliness().declare_token(token).await {
                 Ok(token) => live.push(token),
-                Err(_e) => log_error!(
-                    "ROS 2: cannot declare a liveliness token: {}",
-                    LogDisplay(&_e)
-                ),
+                Err(_e) => report(ZenohEvent::Ros2LivelinessDeclarationFailed {
+                    error: Detail::display(&_e),
+                }),
             }
         }
 
@@ -510,7 +509,9 @@ impl Ros2Parts {
                 .await;
             match declared {
                 Ok(subscriber) => subscribers.push(subscriber),
-                Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", LogDisplay(&_e)),
+                Err(_e) => report(ZenohEvent::Ros2SubscriberDeclarationFailed {
+                    error: Detail::display(&_e),
+                }),
             }
         }
 
@@ -524,11 +525,10 @@ impl Ros2Parts {
             match declared {
                 Ok(sender) => senders.push(Some(sender)),
                 Err(_e) => {
-                    log_error!(
-                        "ROS 2: cannot declare a publisher on '{}': {}",
-                        publisher.link.topic,
-                        LogDisplay(&_e)
-                    );
+                    report(ZenohEvent::Ros2PublisherDeclarationFailed {
+                        topic: &publisher.link.topic,
+                        error: Detail::display(&_e),
+                    });
                     senders.push(None);
                 }
             }
@@ -552,11 +552,10 @@ impl Ros2Parts {
                 .attachment(attachment.encode())
                 .await;
             if let Err(_e) = result {
-                log_error!(
-                    "ROS 2: put on '{}' failed: {}",
-                    publishers[id].link.topic,
-                    LogDisplay(&_e)
-                );
+                report(ZenohEvent::Ros2PublishFailed {
+                    topic: &publishers[id].link.topic,
+                    error: Detail::display(&_e),
+                });
                 outbound.reject(id);
             }
         }
