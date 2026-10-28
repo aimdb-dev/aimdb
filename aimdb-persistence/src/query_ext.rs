@@ -1,6 +1,6 @@
 //! Query extensions on [`AimDb`] — `query_latest` and `query_range`.
 
-use crate::events::{report, Detail, PersistenceEvent};
+use crate::events::{report, PersistenceEvent};
 
 use std::sync::Arc;
 
@@ -101,7 +101,7 @@ impl AimDbQueryExt for AimDb {
                         .map_err(|_e| {
                             report(PersistenceEvent::RowDecodeFailed {
                                 record: &_record_name,
-                                error: Detail::display(&_e),
+                                error: &_e,
                             });
                         })
                         .ok()
@@ -144,7 +144,7 @@ impl AimDbQueryExt for AimDb {
                         .map_err(|_e| {
                             report(PersistenceEvent::RowDecodeFailed {
                                 record: &_record_name,
-                                error: Detail::display(&_e),
+                                error: &_e,
                             });
                         })
                         .ok()

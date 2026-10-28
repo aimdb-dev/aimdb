@@ -1,50 +1,53 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
-/// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
-pub(crate) enum Detail<'a> {
-    Display(&'a dyn core::fmt::Display),
-}
-impl<'a> Detail<'a> {
-    pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
-        Self::Display(value)
-    }
-}
-impl core::fmt::Display for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Display(value) => core::fmt::Display::fmt(value, f),
-        }
-    }
-}
-impl core::fmt::Debug for Detail<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(self, f)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum PersistenceEvent<'a> {
-    CleanupFailed { error: Detail<'a> },
-    BackendMissing { record: &'a str },
-    SerializeFailed { record: &'a str, error: Detail<'a> },
-    StoreFailed { record: &'a str, error: Detail<'a> },
-    RowDecodeFailed { record: &'a str, error: Detail<'a> },
+    CleanupFailed {
+        error: &'a crate::error::PersistenceError,
+    },
+    BackendMissing {
+        record: &'a str,
+    },
+    SerializeFailed {
+        record: &'a str,
+        error: &'a serde_json::Error,
+    },
+    StoreFailed {
+        record: &'a str,
+        error: &'a crate::error::PersistenceError,
+    },
+    RowDecodeFailed {
+        record: &'a str,
+        error: &'a serde_json::Error,
+    },
 }
 
 pub(crate) fn report(event: PersistenceEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-PersistenceEvent::CleanupFailed { error } => {
+        PersistenceEvent::CleanupFailed { error } => {
             aimdb_core::log_warn!("Persistence cleanup failed: {}", error);
             #[cfg(not(any(feature = "tracing", feature = "log")))]
             eprintln!("[aimdb-persistence] retention cleanup failed: {error}");
-        },
-PersistenceEvent::BackendMissing { record } => aimdb_core::log_warn!("Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op", record),
-PersistenceEvent::SerializeFailed { record, error } => aimdb_core::log_warn!("Persistence: failed to serialize '{}': {}", record, error),
-PersistenceEvent::StoreFailed { record, error } => aimdb_core::log_warn!("Persistence: failed to store '{}': {}", record, error),
-PersistenceEvent::RowDecodeFailed { record, error } => aimdb_core::log_warn!("Skipping persisted row for '{}': deserialization failed: {}", record, error),
-}
+        }
+        PersistenceEvent::BackendMissing { record } => {
+            aimdb_core::log_warn!("Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op", record);
+        }
+        PersistenceEvent::SerializeFailed { record, error } => {
+            aimdb_core::log_warn!("Persistence: failed to serialize '{}': {}", record, error);
+        }
+        PersistenceEvent::StoreFailed { record, error } => {
+            aimdb_core::log_warn!("Persistence: failed to store '{}': {}", record, error);
+        }
+        PersistenceEvent::RowDecodeFailed { record, error } => {
+            aimdb_core::log_warn!(
+                "Skipping persisted row for '{}': deserialization failed: {}",
+                record,
+                error
+            );
+        }
+    }
 }
 
 /// Test-only poll-scoped observation. Spawned work must be wrapped explicitly.

@@ -1,6 +1,6 @@
 //! Record registration extension: `.persist()` on [`RecordRegistrar`].
 
-use crate::events::{report, Detail, PersistenceEvent};
+use crate::events::{report, PersistenceEvent};
 
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ where
                     Err(e) => {
                         report(PersistenceEvent::SerializeFailed {
                             record: &record_name,
-                            error: Detail::display(&e),
+                            error: &e,
                         });
                         let _ = e;
                         continue;
@@ -79,7 +79,7 @@ where
                 if let Err(e) = backend.store(&record_name, &json, timestamp).await {
                     report(PersistenceEvent::StoreFailed {
                         record: &record_name,
-                        error: Detail::display(&e),
+                        error: &e,
                     });
                     let _ = e;
                 }

@@ -1,6 +1,6 @@
 //! Builder extension: `.with_persistence()` on [`AimDbBuilder`].
 
-use crate::events::{report, Detail, PersistenceEvent};
+use crate::events::{report, PersistenceEvent};
 
 use std::sync::Arc;
 
@@ -117,9 +117,7 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
                         );
                     }
                     Err(e) => {
-                        report(PersistenceEvent::CleanupFailed {
-                            error: Detail::display(&e),
-                        });
+                        report(PersistenceEvent::CleanupFailed { error: &e });
                     }
                 }
 
