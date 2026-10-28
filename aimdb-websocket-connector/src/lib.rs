@@ -2,6 +2,10 @@
 //!
 //! First-class WebSocket connector for AimDB — real-time bidirectional streaming.
 //!
+//! Operational failures use internal typed events, forwarded through optional
+//! `tracing` and `log` destinations. Their target is
+//! `aimdb_websocket_connector::events`; both features forward to core.
+//!
 //! This crate provides two connector modes controlled by feature flags:
 //!
 //! - **`server`** (default) — Accepts incoming WebSocket connections via an
@@ -92,6 +96,9 @@
 // ════════════════════════════════════════════════════════════════════
 // Server modules (feature = "server")
 // ════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "server")]
+mod events;
 
 #[cfg(feature = "server")]
 pub mod server;

@@ -34,6 +34,8 @@
 //! indistinguishable from JavaScript. A browser client fetches this route
 //! before dialing and can then name both versions in its error.
 
+use crate::events::{report, Detail, WebSocketEvent};
+
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
 use aimdb_core::{
@@ -125,14 +127,15 @@ pub(crate) fn build_server_future(
         let listener = match tokio::net::TcpListener::bind(bind_addr).await {
             Ok(l) => l,
             Err(_e) => {
-                #[cfg(feature = "tracing")]
-                tracing::error!("WebSocket connector failed to bind {}: {}", bind_addr, _e);
+                report(WebSocketEvent::BindFailed {
+                    address: bind_addr,
+                    error: Detail::display(&_e),
+                });
                 return;
             }
         };
 
-        #[cfg(feature = "tracing")]
-        tracing::info!("WebSocket connector listening on {}", bind_addr);
+        report(WebSocketEvent::Listening { address: bind_addr });
 
         if let Err(_e) = axum::serve(
             listener,
@@ -140,8 +143,9 @@ pub(crate) fn build_server_future(
         )
         .await
         {
-            #[cfg(feature = "tracing")]
-            tracing::error!("WebSocket server error: {}", _e);
+            report(WebSocketEvent::ServerFailed {
+                error: Detail::display(&_e),
+            });
         }
     })
 }
@@ -177,12 +181,10 @@ async fn ws_upgrade_handler(
     // the server neither pings nor times out idle connections.
     let max_clients = state.max_clients as u64;
     let Some(conn_guard) = state.client_mgr.try_connection_guard(max_clients) else {
-        #[cfg(feature = "tracing")]
-        tracing::warn!(
-            "WebSocket upgrade from {} refused: {} clients connected",
-            remote_addr,
-            max_clients
-        );
+        report(WebSocketEvent::ConnectionLimitReached {
+            peer: remote_addr,
+            limit: max_clients,
+        });
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             format!("maximum connected clients of {} reached", max_clients),
@@ -203,13 +205,11 @@ async fn ws_upgrade_handler(
         .map(String::as_str)
         .unwrap_or_default();
     if !version_compatible(client_version) {
-        #[cfg(feature = "tracing")]
-        tracing::warn!(
-            "WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})",
-            remote_addr,
-            client_version,
-            PROTOCOL_VERSION
-        );
+        report(WebSocketEvent::VersionRejected {
+            peer: remote_addr,
+            client_version: &client_version,
+            server_version: &PROTOCOL_VERSION,
+        });
         return (
             StatusCode::UPGRADE_REQUIRED,
             format!("incompatible AimX protocol version (server speaks {PROTOCOL_VERSION})"),
@@ -221,8 +221,10 @@ async fn ws_upgrade_handler(
     let permissions = match state.auth.authenticate(&auth_req).await {
         Ok(p) => p,
         Err(AuthError { message }) => {
-            #[cfg(feature = "tracing")]
-            tracing::warn!("WebSocket auth rejected from {}: {}", remote_addr, message);
+            report(WebSocketEvent::AuthenticationRejected {
+                peer: remote_addr,
+                reason: &message,
+            });
             return (StatusCode::UNAUTHORIZED, message).into_response();
         }
     };
@@ -299,4 +301,63 @@ async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
         "clients": clients,
         "uptime_secs": uptime_secs,
     }))
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    struct UnusedDispatch;
+    impl Dispatch for UnusedDispatch {
+        fn authenticate<'a>(
+            &'a self,
+            _: &'a PeerInfo,
+            _: Option<&'a [u8]>,
+        ) -> aimdb_core::session::BoxFut<
+            'a,
+            Result<aimdb_core::session::SessionCtx, aimdb_core::session::AuthError>,
+        > {
+            Box::pin(async { Err(aimdb_core::session::AuthError::Unauthorized) })
+        }
+        fn open(
+            &self,
+            _: &aimdb_core::session::SessionCtx,
+        ) -> Box<dyn aimdb_core::session::Session> {
+            unreachable!("bind fails before dispatch")
+        }
+    }
+    #[tokio::test]
+    async fn bind_failure_is_observable_without_a_tracing_subscriber() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &WebSocketEvent<'_>| {
+                match event {
+                    WebSocketEvent::BindFailed {
+                        address: actual, ..
+                    } => assert_eq!(*actual, address),
+                    other => panic!("unexpected {other:?}"),
+                }
+                seen.store(true, core::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let state = ServerState {
+            dispatch: Arc::new(UnusedDispatch),
+            auth: Arc::new(super::super::auth::NoAuth),
+            client_mgr: ClientManager::new(8),
+            auto_subscribe: Arc::new(Vec::new()),
+            max_clients: 1,
+            max_subs_per_connection: 1,
+            started_at: Instant::now(),
+            records: Arc::new(Vec::new()),
+        };
+        crate::events::capture::future(
+            observer,
+            build_server_future(address, "/ws".into(), state, None),
+        )
+        .await;
+        assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
+        drop(listener);
+    }
 }
