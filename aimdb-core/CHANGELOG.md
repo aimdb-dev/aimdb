@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed current-value reads with `AimDb::latest::<T>(key)` (#363).**
+  Returns `DbResult<Option<T>>` without consuming the value or requiring
+  serde traits, the `remote` feature, or remote-access registration. Unknown
+  keys and mismatched types return errors; records without a value or buffer,
+  and buffers without a canonical latest value (`SpmcRing`), return `Ok(None)`.
+  Available on both std and no_std.
+
 - **Core log lines reach `defmt` (#352).** `log_trace!` … `log_error!` forward
   to `defmt` under the calling crate's `defmt` feature, as a third destination
   next to `tracing` and `log`. On an Embassy device every core log line now

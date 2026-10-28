@@ -1,0 +1,13 @@
+[package]
+name = "serve-records-http-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core" }
+aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter" }
+aimdb-websocket-connector = { path = "../../aimdb-websocket-connector" }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }

@@ -1025,6 +1025,24 @@ impl AimDb {
         Ok(())
     }
 
+    /// Reads a record's current value without consuming it.
+    ///
+    /// Returns `Ok(None)` before the first value, for records without a buffer,
+    /// or for buffers without a canonical latest value (notably
+    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)). Use a subscriber to
+    /// read a ring's stream instead.
+    ///
+    /// Unknown keys and mismatched types return the same errors as
+    /// [`produce`](Self::produce). This read needs neither serialization nor
+    /// remote-access registration and is available on both std and no_std.
+    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<T>>
+    where
+        T: Send + 'static + Debug + Clone,
+    {
+        let record = self.inner.get_typed_record_by_key::<T>(key)?;
+        Ok(record.latest().map(|value| value.into_inner()))
+    }
+
     /// Subscribes to a specific record by key
     ///
     /// Uses O(1) key-based lookup to find the correct record.

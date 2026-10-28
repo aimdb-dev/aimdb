@@ -5145,6 +5145,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serve-records-http-demo"
+version = "2.0.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "aimdb-websocket-connector",
+ "axum",
+ "tokio",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

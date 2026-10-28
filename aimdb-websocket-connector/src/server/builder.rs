@@ -195,14 +195,26 @@ impl WebSocketConnectorBuilder {
     ///
     /// The extra routes are merged into the connector's Axum application so that
     /// REST and WebSocket traffic can share a single port.
+    /// Handlers can extract `axum::Extension<aimdb_core::AimDb>` to read the
+    /// database. Existing application state supplied with `with_state` is preserved.
+    ///
+    /// Additional routes are **not** protected by the connector's `AuthHandler`.
+    /// Apply authentication middleware to the supplied router when needed.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// use axum::{routing::get, Router};
+    /// use aimdb_core::AimDb;
+    /// use axum::{routing::get, Extension, Router, http::StatusCode};
     /// # use aimdb_websocket_connector::WebSocketConnector;
     ///
-    /// let rest = Router::new().route("/api/status", get(|| async { "ok" }));
+    /// async fn temperature(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
+    ///     db.latest::<f32>("temperature")
+    ///         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    ///         .map(|value| format!("{value:.1}"))
+    ///         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+    /// }
+    /// let rest = Router::new().route("/temperature", get(temperature));
     /// let connector = WebSocketConnector::new().with_additional_routes(rest);
     /// ```
     pub fn with_additional_routes(mut self, router: AxumRouter) -> Self {
@@ -353,7 +365,10 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 started_at: Instant::now(),
                 records,
             };
-            let additional = self.additional_routes.clone();
+            let additional = self
+                .additional_routes
+                .clone()
+                .map(|router| router.layer(axum::Extension(db.clone())));
             let server_future =
                 build_server_future(self.bind_addr, self.ws_path.clone(), state, additional);
 
