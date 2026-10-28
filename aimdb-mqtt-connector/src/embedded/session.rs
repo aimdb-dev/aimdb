@@ -6,7 +6,7 @@
 //! runtime that can dial a
 //! [`StreamDialer`](aimdb_core::session::StreamDialer) can speak MQTT.
 
-use crate::events::{report, Detail, MqttEvent};
+use crate::events::{report, MqttEvent};
 
 use core::future::Future;
 
@@ -107,9 +107,7 @@ where
         )
         .await;
 
-        report(MqttEvent::SessionFailed {
-            error: Detail::debug(&error),
-        });
+        report(MqttEvent::SessionFailed { error });
         #[cfg(not(feature = "defmt"))]
         let _ = error;
 

@@ -421,9 +421,7 @@ where
         )
         .await;
 
-        report(MqttEvent::TlsSessionFailed {
-            error: Detail::debug(&error),
-        });
+        report(MqttEvent::TlsSessionFailed { error });
         #[cfg(not(feature = "defmt"))]
         let _ = error;
 

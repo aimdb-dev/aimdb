@@ -4,7 +4,7 @@
 //! have no battery-backed RTC. Each sync feeds both [`unix_now`] and the TLS
 //! handshake clock. Opt in with `TlsOptions::with_sntp`.
 
-use crate::events::{report, Detail, MqttEvent};
+use crate::events::{report, MqttEvent};
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -75,7 +75,7 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
             Err(error) => {
                 report(MqttEvent::ClockSyncFailed {
                     server: &server,
-                    error: Detail::display(&error),
+                    error,
                 });
                 #[cfg(not(feature = "defmt"))]
                 let _ = error;
@@ -85,7 +85,7 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum SntpError {
     /// DNS lookup failed or returned no A record.
@@ -96,6 +96,12 @@ pub(crate) enum SntpError {
     Timeout,
     /// The reply was not a plausible SNTP server response.
     InvalidReply,
+}
+
+impl core::fmt::Display for SntpError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self, f)
+    }
 }
 
 /// Best-effort request nonce from the tick counter — the hardware TRNG belongs

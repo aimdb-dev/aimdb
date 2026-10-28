@@ -1,13 +1,15 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
 /// Borrowed foreign diagnostic, retaining the original Display/Debug policy.
+#[cfg(any(feature = "std", feature = "embedded-tls"))]
 pub(crate) enum Detail<'a> {
-    #[cfg(any(feature = "std", feature = "embassy-tls"))]
+    #[cfg(feature = "std")]
     Display(&'a dyn core::fmt::Display),
     Debug(&'a dyn core::fmt::Debug),
 }
+#[cfg(any(feature = "std", feature = "embedded-tls"))]
 impl<'a> Detail<'a> {
-    #[cfg(any(feature = "std", feature = "embassy-tls"))]
+    #[cfg(feature = "std")]
     pub(crate) fn display(value: &'a impl core::fmt::Display) -> Self {
         Self::Display(value)
     }
@@ -15,21 +17,23 @@ impl<'a> Detail<'a> {
         Self::Debug(value)
     }
 }
+#[cfg(any(feature = "std", feature = "embedded-tls"))]
 impl core::fmt::Display for Detail<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            #[cfg(any(feature = "std", feature = "embassy-tls"))]
+            #[cfg(feature = "std")]
             Self::Display(value) => core::fmt::Display::fmt(value, f),
             Self::Debug(value) => core::fmt::Debug::fmt(value, f),
         }
     }
 }
+#[cfg(any(feature = "std", feature = "embedded-tls"))]
 impl core::fmt::Debug for Detail<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::Display::fmt(self, f)
     }
 }
-#[cfg(feature = "defmt")]
+#[cfg(all(feature = "defmt", any(feature = "std", feature = "embedded-tls")))]
 impl defmt::Format for Detail<'_> {
     fn format(&self, f: defmt::Formatter) {
         defmt::write!(f, "{}", defmt::Display2Format(self));
@@ -54,7 +58,9 @@ pub(crate) enum MqttEvent<'a> {
     #[cfg(feature = "embedded")]
     ConnectFailed,
     #[cfg(feature = "embedded")]
-    SessionFailed { error: Detail<'a> },
+    SessionFailed {
+        error: crate::embedded::manager::Error,
+    },
     #[cfg(feature = "embedded")]
     BrokerUnresponsive,
     #[cfg(feature = "embedded")]
@@ -70,7 +76,10 @@ pub(crate) enum MqttEvent<'a> {
     #[cfg(feature = "embassy-tls")]
     ClockImplausible { unix_seconds: u64, server: &'a str },
     #[cfg(feature = "embassy-tls")]
-    ClockSyncFailed { server: &'a str, error: Detail<'a> },
+    ClockSyncFailed {
+        server: &'a str,
+        error: crate::embedded::sntp::SntpError,
+    },
     #[cfg(feature = "embedded-tls")]
     TlsWaitingForClock,
     #[cfg(feature = "embedded-tls")]
@@ -80,7 +89,9 @@ pub(crate) enum MqttEvent<'a> {
     #[cfg(feature = "embedded-tls")]
     TlsEstablished,
     #[cfg(feature = "embedded-tls")]
-    TlsSessionFailed { error: Detail<'a> },
+    TlsSessionFailed {
+        error: crate::embedded::manager::Error,
+    },
     #[cfg(feature = "std")]
     NativeEventLoopFailed { broker: &'a str, error: Detail<'a> },
     #[cfg(feature = "std")]
