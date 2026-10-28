@@ -261,7 +261,10 @@ mod event_tests {
                 producer,
                 (),
                 |_, _| None,
-                Default::default(),
+                #[cfg(feature = "observability")]
+                None,
+                #[cfg(not(feature = "observability"))]
+                (),
             ),
         )
         .await;
