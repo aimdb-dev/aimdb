@@ -344,11 +344,25 @@ mod tests {
                 node("omega", RecordOrigin::Source),
                 node("beta", RecordOrigin::Source),
                 node("kappa", RecordOrigin::Source),
+                // Two transforms on one input, released together when `beta`
+                // is taken: they follow registration order, not key order.
+                node(
+                    "y_half",
+                    RecordOrigin::Transform {
+                        input: "beta".to_string(),
+                    },
+                ),
+                node(
+                    "b_triple",
+                    RecordOrigin::Transform {
+                        input: "beta".to_string(),
+                    },
+                ),
             ]
         };
         // `double` is ready once `zeta` is; `sum` waits for `alpha` as well.
         let expected = [
-            "zeta", "mid", "alpha", "omega", "beta", "kappa", "double", "sum",
+            "zeta", "mid", "alpha", "omega", "beta", "kappa", "double", "sum", "y_half", "b_triple",
         ];
 
         // Each build seeds a fresh map hasher; ask enough times that a
