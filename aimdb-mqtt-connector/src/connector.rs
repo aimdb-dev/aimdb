@@ -20,6 +20,10 @@ use core::time::Duration;
 use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::{AimDb, DbResult};
 
+/// The link scheme a connector registers unless [`MqttConnector::scheme`]
+/// names another.
+pub(crate) const DEFAULT_SCHEME: &str = "mqtt";
+
 /// Keep-alive used when the caller names none.
 pub(crate) const KEEP_ALIVE_DEFAULT_SECS: u16 = 60;
 
@@ -62,6 +66,7 @@ pub struct EmbeddedTls<D> {
 /// An MQTT connector over the backend `B`.
 pub struct MqttConnector<B = Native> {
     pub(crate) broker_url: String,
+    pub(crate) scheme: String,
     pub(crate) client_id: Option<String>,
     pub(crate) credentials: Option<(String, String)>,
     pub(crate) keep_alive: Duration,
@@ -77,6 +82,7 @@ impl MqttConnector<Native> {
     pub fn new(broker_url: impl Into<String>) -> Self {
         Self {
             broker_url: broker_url.into(),
+            scheme: DEFAULT_SCHEME.into(),
             client_id: None,
             credentials: None,
             keep_alive: Duration::from_secs(KEEP_ALIVE_DEFAULT_SECS as u64),
@@ -89,6 +95,7 @@ impl MqttConnector<Native> {
     pub fn transport<D>(self, dialer: D) -> MqttConnector<Embedded<D>> {
         MqttConnector {
             broker_url: self.broker_url,
+            scheme: self.scheme,
             client_id: self.client_id,
             credentials: self.credentials,
             keep_alive: self.keep_alive,
@@ -109,6 +116,7 @@ impl MqttConnector<Native> {
     ) -> MqttConnector<EmbeddedTls<D>> {
         MqttConnector {
             broker_url: self.broker_url,
+            scheme: self.scheme,
             client_id: self.client_id,
             credentials: self.credentials,
             keep_alive: self.keep_alive,
@@ -122,6 +130,24 @@ impl MqttConnector<Native> {
 }
 
 impl<B> MqttConnector<B> {
+    /// Register under `scheme` instead of `mqtt`, so links address this
+    /// connector as `<scheme>://topic`. One connector per scheme, so a db can
+    /// talk to several brokers:
+    ///
+    /// ```rust,ignore
+    /// builder
+    ///     .with_connector(MqttConnector::new("mqtt://plant.local:1883").scheme("mqtt-plant"))
+    ///     .with_connector(MqttConnector::new("mqtts://cloud.example.com:8883").scheme("mqtt-cloud"));
+    /// // reg.link_to("mqtt-cloud://plant/boiler/flow_avg")
+    /// ```
+    ///
+    /// Routing only: the broker URL's own `mqtt://` / `mqtts://` still
+    /// selects plain TCP or TLS.
+    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.scheme = scheme.into();
+        self
+    }
+
     /// Set the MQTT client id (should be unique per device).
     pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
         self.client_id = Some(client_id.into());
@@ -220,6 +246,7 @@ pub trait Backend: sealed::Sealed + Send + Sync {
     fn build<'a>(
         &'a self,
         db: &'a AimDb,
+        scheme: &'a str,
         broker_url: &'a str,
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
@@ -232,12 +259,20 @@ impl Backend for Native {
     fn build<'a>(
         &'a self,
         db: &'a AimDb,
+        scheme: &'a str,
         broker_url: &'a str,
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
         keep_alive_secs: u16,
     ) -> BuildFuture<'a> {
-        crate::native::build(db, broker_url, client_id, credentials, keep_alive_secs)
+        crate::native::build(
+            db,
+            scheme,
+            broker_url,
+            client_id,
+            credentials,
+            keep_alive_secs,
+        )
     }
 }
 
@@ -254,6 +289,7 @@ where
     fn build<'a>(
         &'a self,
         db: &'a AimDb,
+        scheme: &'a str,
         broker_url: &'a str,
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
@@ -261,12 +297,12 @@ where
     ) -> BuildFuture<'a> {
         crate::embedded::build_plain(
             db,
+            scheme,
             broker_url,
             client_id,
             credentials,
             keep_alive_secs,
-            &self.dialer,
-            self.write_buffer,
+            self,
         )
     }
 }
@@ -284,6 +320,7 @@ where
     fn build<'a>(
         &'a self,
         db: &'a AimDb,
+        scheme: &'a str,
         broker_url: &'a str,
         client_id: Option<&'a str>,
         credentials: Option<&'a (String, String)>,
@@ -291,6 +328,7 @@ where
     ) -> BuildFuture<'a> {
         crate::embedded::build_tls(
             db,
+            scheme,
             broker_url,
             client_id,
             credentials,
@@ -310,6 +348,7 @@ impl<B: Backend> ConnectorBuilder for MqttConnector<B> {
         };
         self.backend.build(
             db,
+            &self.scheme,
             &self.broker_url,
             self.client_id.as_deref(),
             self.credentials.as_ref(),
@@ -318,17 +357,16 @@ impl<B: Backend> ConnectorBuilder for MqttConnector<B> {
     }
 
     fn scheme(&self) -> &str {
-        "mqtt"
+        &self.scheme
     }
 
-    /// One MQTT connector per db.
+    /// One MQTT connector per scheme.
     ///
-    /// Not a limit on topics: one connector is one broker connection, and
-    /// every record's `link_from`/`link_to` names its own topic on it. What it
-    /// rules out is a *second broker*, which cannot work today because both
-    /// backends collect every `mqtt://` route regardless of which broker it
-    /// was meant for, so each connector would publish every outbound value and
-    /// subscribe every inbound topic.
+    /// Not a limit on topics or brokers: one connector is one broker
+    /// connection carrying every `<scheme>://` link. Both backends collect
+    /// routes by scheme alone, so a second connector on the same scheme would
+    /// publish every outbound value and subscribe every inbound topic again.
+    /// A second broker takes its own [`scheme`](MqttConnector::scheme).
     fn owns_scheme(&self) -> bool {
         true
     }
@@ -363,6 +401,16 @@ mod tests {
             keep_alive_secs(Duration::from_secs(u64::from(u16::MAX))).unwrap(),
             u16::MAX
         );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn the_scheme_defaults_to_mqtt_and_can_be_named() {
+        let connector = MqttConnector::new("mqtts://cloud.example.com:8883");
+        assert_eq!(ConnectorBuilder::scheme(&connector), "mqtt");
+        let connector = connector.scheme("mqtt-cloud");
+        assert_eq!(ConnectorBuilder::scheme(&connector), "mqtt-cloud");
+        assert_eq!(connector.broker_url, "mqtts://cloud.example.com:8883");
     }
 
     /// #329: a second MQTT connector is a configuration error: each one

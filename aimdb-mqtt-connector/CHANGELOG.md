@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Several brokers in one database: `MqttConnector::scheme(…)` (#327).**
+  A connector registers under a configurable link scheme (default `mqtt`),
+  and both backends collect only that scheme's routes, so
+  `MqttConnector::new("mqtts://cloud.example.com:8883").scheme("mqtt-cloud")`
+  carries exactly the `mqtt-cloud://…` links. The scheme changes routing only;
+  the broker URL's `mqtt://`/`mqtts://` still selects plain TCP or TLS.
+  `owns_scheme` (#329) now guards each scheme on its own: a second connector
+  on the same scheme still fails at `build()`. Existing code with the default
+  scheme behaves as before.
+
 - **Inbound `with_qos` is the subscribe QoS (#268).** Each subscribed filter
   is subscribed at the highest `qos` among the inbound links it stands for
   (a pattern covering an exact link included), default 1, on both backends.

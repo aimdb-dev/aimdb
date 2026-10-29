@@ -665,3 +665,93 @@ async fn a_hostname_is_a_broker_address_on_both_backends() {
         "both backends must reach the broker through a hostname"
     );
 }
+
+/// What one backend, registered under `mqtt-cloud`, subscribes and publishes
+/// for an inbound and an outbound `mqtt-cloud://` link.
+async fn carried_under_scheme<C: aimdb_core::ConnectorBuilder + 'static>(
+    connector: impl FnOnce(String) -> C,
+) -> (Vec<String>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(connector(format!("mqtt://127.0.0.1:{port}")));
+    builder.configure::<u64>("command", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("mqtt-cloud://parity/command")
+            .with_deserializer(|_ctx, data: &[u8]| parse(data))
+            .finish();
+    });
+    builder.configure::<u64>("flow_avg", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .source(|_ctx, producer| async move {
+                loop {
+                    producer.produce(8u64);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .link_to("mqtt-cloud://parity/flow_avg")
+            .with_serializer(|_ctx, v: &u64| Ok(v.to_string().into_bytes()))
+            .finish();
+    });
+    let (_db, runner) = builder.build().await.expect("build db");
+
+    let broker = fake_broker_concurrent(listener, seen.clone(), None);
+    let seen_for_wait = seen.clone();
+    tokio::select! {
+        _ = runner.run() => panic!("the runner returned"),
+        _ = broker => panic!("the broker returned"),
+        _ = async {
+            loop {
+                {
+                    let seen = seen_for_wait.lock().unwrap();
+                    if !seen.subscribes.is_empty() && !seen.published.is_empty() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        } => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            let seen = seen.lock().unwrap();
+            panic!("watchdog: subscribed {:?}, published {:?}", seen.subscribes, seen.published);
+        }
+    }
+
+    let seen = seen.lock().unwrap();
+    let subscribed = seen
+        .subscribed_topics()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    (subscribed, seen.published[0].0.clone())
+}
+
+/// A configured scheme routes on both backends: the `mqtt-cloud://` links
+/// reach the broker, which they could not if either backend still collected
+/// its routes under `mqtt`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_configured_scheme_routes_on_both_backends() {
+    let native = carried_under_scheme(|url| {
+        MqttConnector::new(url)
+            .scheme("mqtt-cloud")
+            .with_client_id("scheme-native")
+    })
+    .await;
+    let embedded = carried_under_scheme(|url| {
+        MqttConnector::new(url)
+            .scheme("mqtt-cloud")
+            .transport(TokioNet::tcp())
+            .with_client_id("scheme-embedded")
+    })
+    .await;
+
+    let expected = (
+        vec!["parity/command".to_string()],
+        "parity/flow_avg".to_string(),
+    );
+    assert_eq!(native, expected, "native");
+    assert_eq!(embedded, expected, "embedded");
+}

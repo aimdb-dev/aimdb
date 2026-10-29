@@ -24,6 +24,7 @@ type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 /// backend.
 pub(crate) fn build<'a>(
     db: &'a aimdb_core::builder::AimDb,
+    scheme: &'a str,
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
@@ -31,14 +32,14 @@ pub(crate) fn build<'a>(
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<BoxFuture>>> + Send + 'a>> {
     Box::pin(async move {
         // One dispatcher both subscribes (here) and routes (the event loop).
-        let inbound = InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let inbound = InboundDispatch::new(db, scheme, &crate::MqttGrammar)?;
         let subscriptions = crate::subscribe_qos::subscriptions(&inbound).map_err(|e| {
             aimdb_core::DbError::runtime_error(format!("Failed to build MQTT connector: {e}"))
         })?;
 
         // Routes are subscribed now, so nothing produced before the publish
         // loop first runs is missed; options are parsed once, here.
-        let outbound = OutboundRoutes::new(db, "mqtt")?;
+        let outbound = OutboundRoutes::new(db, scheme)?;
         let opts = outbound
             .routes()
             .iter()
