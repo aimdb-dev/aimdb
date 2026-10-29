@@ -1,5 +1,14 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
+/// `tracing`/`log` targets: the module that raises each event, as before
+/// logging moved here, so per-module target filters keep matching.
+/// `tests/log_targets.rs` in aimdb-core checks each names a real module.
+#[allow(dead_code)] // some arms are feature-gated
+mod target {
+    pub(super) const DISPATCH: &str = "aimdb_websocket_connector::server::dispatch";
+    pub(super) const HTTP: &str = "aimdb_websocket_connector::server::http";
+}
+
 #[derive(Debug)]
 pub(crate) enum WebSocketEvent<'a> {
     QueryHandlerFailed {
@@ -41,25 +50,47 @@ pub(crate) fn report(event: WebSocketEvent<'_>) {
     capture::record(&event);
     match event {
         WebSocketEvent::QueryHandlerFailed { error } => {
-            aimdb_core::log_warn!("record.query handler failed: {}", error);
+            aimdb_core::log_warn!(
+                target: target::DISPATCH,
+                "record.query handler failed: {}",
+                error
+            );
         }
         WebSocketEvent::PersistenceQueryFailed { error } => {
-            aimdb_core::log_warn!("record.query persistence handler failed: {}", error);
+            aimdb_core::log_warn!(
+                target: target::DISPATCH,
+                "record.query persistence handler failed: {}",
+                error
+            );
         }
         WebSocketEvent::MalformedQueryResult { error } => {
-            aimdb_core::log_warn!("record.query handler returned malformed records: {}", error);
+            aimdb_core::log_warn!(
+                target: target::DISPATCH,
+                "record.query handler returned malformed records: {}",
+                error
+            );
         }
         WebSocketEvent::BindFailed { address, error } => {
-            aimdb_core::log_error!("WebSocket connector failed to bind {}: {}", address, error);
+            aimdb_core::log_error!(
+                target: target::HTTP,
+                "WebSocket connector failed to bind {}: {}",
+                address,
+                error
+            );
         }
         WebSocketEvent::Listening { address } => {
-            aimdb_core::log_info!("WebSocket connector listening on {}", address);
+            aimdb_core::log_info!(
+                target: target::HTTP,
+                "WebSocket connector listening on {}",
+                address
+            );
         }
         WebSocketEvent::ServerFailed { error } => {
-            aimdb_core::log_error!("WebSocket server error: {}", error);
+            aimdb_core::log_error!(target: target::HTTP, "WebSocket server error: {}", error);
         }
         WebSocketEvent::ConnectionLimitReached { peer, limit } => {
             aimdb_core::log_warn!(
+                target: target::HTTP,
                 "WebSocket upgrade from {} refused: {} clients connected",
                 peer,
                 limit
@@ -70,10 +101,21 @@ pub(crate) fn report(event: WebSocketEvent<'_>) {
             client_version,
             server_version,
         } => {
-            aimdb_core::log_warn!("WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})", peer, client_version, server_version);
+            aimdb_core::log_warn!(
+                target: target::HTTP,
+                "WebSocket upgrade from {} refused: incompatible protocol version {:?} (server speaks {})",
+                peer,
+                client_version,
+                server_version
+            );
         }
         WebSocketEvent::AuthenticationRejected { peer, reason } => {
-            aimdb_core::log_warn!("WebSocket auth rejected from {}: {}", peer, reason);
+            aimdb_core::log_warn!(
+                target: target::HTTP,
+                "WebSocket auth rejected from {}: {}",
+                peer,
+                reason
+            );
         }
     }
 }
@@ -155,7 +197,7 @@ mod backend_tests {
         fn event(&self, event: &tracing::Event<'_>) {
             assert_eq!(
                 event.metadata().target(),
-                "aimdb_websocket_connector::events"
+                "aimdb_websocket_connector::server::http"
             );
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -203,7 +245,7 @@ mod backend_tests {
             records,
             [(
                 log::Level::Error,
-                "aimdb_websocket_connector::events".into(),
+                "aimdb_websocket_connector::server::http".into(),
                 "WebSocket connector failed to bind 127.0.0.1:1234: occupied".into()
             )]
         );

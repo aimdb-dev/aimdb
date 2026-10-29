@@ -369,14 +369,14 @@ mod backend_tests {
         fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
         fn event(&self, event: &tracing::Event<'_>) {
-            assert_eq!(event.metadata().target(), "aimdb_core::session::events");
+            assert_eq!(event.metadata().target(), "aimdb_core::session::server");
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         fn enter(&self, _: &tracing::span::Id) {}
         fn exit(&self, _: &tracing::span::Id) {}
     }
     #[test]
-    fn log_backend_preserves_text_and_levels_under_the_events_target() {
+    fn log_backend_preserves_text_levels_and_the_raising_module_target() {
         // Scope collection to this thread so parallel engine tests cannot contaminate it.
         std::thread_local! {
             static RECORDS: std::cell::RefCell<Option<Vec<(log::Level, alloc::string::String, alloc::string::String)>>> = const { std::cell::RefCell::new(None) };
@@ -431,17 +431,17 @@ mod backend_tests {
             [
                 (
                     log::Level::Error,
-                    "aimdb_core::session::events".into(),
+                    "aimdb_core::session::server".into(),
                     "accept failed: Io; retrying, further failures are summarized".into()
                 ),
                 (
                     log::Level::Warn,
-                    "aimdb_core::session::events".into(),
+                    "aimdb_core::session::server".into(),
                     "accept still failing: 10 attempts in a row, last: Busy".into()
                 ),
                 (
                     log::Level::Info,
-                    "aimdb_core::session::events".into(),
+                    "aimdb_core::session::server".into(),
                     "accept recovered after 12 failed attempt(s)".into()
                 ),
             ]
