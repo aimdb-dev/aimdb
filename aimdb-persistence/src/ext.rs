@@ -66,7 +66,6 @@ where
                             record: &record_name,
                             error: &e,
                         });
-                        let _ = e;
                         continue;
                     }
                 };
@@ -81,12 +80,10 @@ where
                         record: &record_name,
                         error: &e,
                     });
-                    let _ = e;
                 }
             }
 
-            #[cfg(feature = "tracing")]
-            tracing::debug!(
+            aimdb_core::log_debug!(
                 "Persistence subscriber for '{}' stopping (buffer closed)",
                 record_name
             );

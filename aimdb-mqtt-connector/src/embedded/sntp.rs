@@ -74,8 +74,6 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
             }
             Err(error) => {
                 report(MqttEvent::ClockSyncFailed { server, error });
-                #[cfg(not(feature = "defmt"))]
-                let _ = error;
                 Timer::after(RETRY_INTERVAL).await;
             }
         }

@@ -290,8 +290,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             // ── Inbound routes ──────────────────────────────────────
             let inbound = InboundDispatch::new(db, "ws", &ExactGrammar)?;
 
-            #[cfg(feature = "tracing")]
-            tracing::info!(
+            aimdb_core::log_info!(
                 "WS connector: {} inbound routes collected",
                 inbound.route_count()
             );

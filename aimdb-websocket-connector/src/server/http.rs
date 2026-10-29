@@ -243,8 +243,7 @@ async fn ws_upgrade_handler(
         record_perms,
     };
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!(
+    aimdb_core::log_debug!(
         "{}: upgrading WebSocket connection from {}",
         id,
         remote_addr
