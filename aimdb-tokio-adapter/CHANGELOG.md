@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time (`tokio::time::pause`, `start_paused`, `test-util`) a 10 s sleep
   advanced `ctx.time().now()` by microseconds. It now reads
   `tokio::time::Instant`, which outside paused time is the same monotonic
-  clock, so normal runs are unchanged.
+  clock, so normal runs are unchanged. The epoch is now per runtime (its first
+  reading), since a paused clock belongs to its runtime: a shared anchor taken
+  after one runtime advanced would pin later runtimes at zero. Requires
+  `tokio` 1.49 (`Handle::id`); the workspace minimum moves from 1.47.1.
 
 ## [0.7.0] - 2026-09-18
 

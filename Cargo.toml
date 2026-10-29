@@ -75,7 +75,7 @@ categories = ["database-implementations", "embedded", "asynchronous"]
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1.47.1", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.49", default-features = false, features = ["macros", "rt-multi-thread"] }
 
 # Serialization (no_std compatible by default)
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
