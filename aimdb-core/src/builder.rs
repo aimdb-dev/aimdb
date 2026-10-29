@@ -308,6 +308,10 @@ pub struct AimDbBuilder {
     /// with the per-record errors — by `build()` via
     /// [`DbError::InvalidConfiguration`].
     config_errors: Vec<crate::error::ConfigError>,
+
+    /// Permutes the record task start order; see [`Self::start_order_seed`].
+    #[cfg(feature = "start-order-seed")]
+    start_order_seed: Option<u64>,
 }
 
 impl AimDbBuilder {
@@ -324,7 +328,25 @@ impl AimDbBuilder {
             start_fns: Vec::new(),
             extensions: Extensions::new(),
             config_errors: Vec::new(),
+            #[cfg(feature = "start-order-seed")]
+            start_order_seed: None,
         }
+    }
+
+    /// Permutes the order in which record tasks start, reproducibly per seed.
+    ///
+    /// Records that are ready at the same time start in an order drawn from
+    /// `seed`; every record still starts after its inputs. Without a seed they
+    /// start in registration order. Run a test under several seeds to find
+    /// results that depend on start order, and replay a failing one by its
+    /// seed. `graph.topo_order` reports the order used.
+    ///
+    /// For tests and simulation only, so it sits behind the
+    /// `start-order-seed` feature.
+    #[cfg(feature = "start-order-seed")]
+    pub fn start_order_seed(mut self, seed: u64) -> Self {
+        self.start_order_seed = Some(seed);
+        self
     }
 
     /// Sets the runtime adapter.
@@ -737,7 +759,11 @@ impl AimDbBuilder {
 
         // Build and validate the dependency graph; fold its findings (cycles,
         // unregistered transform inputs) into the collected errors.
-        let dependency_graph = match DependencyGraph::build_and_validate(graph_nodes) {
+        #[cfg(feature = "start-order-seed")]
+        let seed = self.start_order_seed;
+        #[cfg(not(feature = "start-order-seed"))]
+        let seed = None;
+        let dependency_graph = match DependencyGraph::build_and_validate_seeded(graph_nodes, seed) {
             Ok(graph) => graph,
             Err(e) => {
                 errors.push(ConfigError::new("", None, alloc::format!("{e}")));
