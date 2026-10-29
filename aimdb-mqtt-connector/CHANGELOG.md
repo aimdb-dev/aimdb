@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A second MQTT connector now fails the build instead of silently
+  duplicating every route (#329).** `MqttConnector` declares
+  `ConnectorBuilder::owns_scheme`, so registering two is a configuration
+  error. It never worked: both backends collect every `mqtt://` route
+  regardless of which broker it was meant for, so each connector published
+  every outbound value and subscribed every inbound topic. This is a guard,
+  not a new limit: one connector is one broker connection, with as many
+  topics as records declare. What it rules out is a second *broker*, which
+  the scheme-keyed routing cannot express (several brokers per db is #327).
+  `aimdb-codegen` output with two external MQTT connectors now fails at
+  `build()` too.
+
 ### Added
 
 - **Inbound `with_qos` is the subscribe QoS (#268).** Each subscribed filter
