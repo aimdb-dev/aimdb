@@ -30,7 +30,10 @@ pub struct InboundRouteInfo {
     pub topic: Arc<str>,
     /// `TypeId` of the record the link belongs to.
     pub type_id: core::any::TypeId,
-    /// The link's configuration, with `record_index` set.
+    /// Index of the record the link belongs to, in registration order (the
+    /// record's `RecordId`). Set by core, never from the link's query.
+    pub record_index: usize,
+    /// The link's configuration.
     pub config: ConnectorConfig,
 }
 

@@ -441,12 +441,38 @@ async fn route_info_carries_topic_config_and_record_index() {
     let routes = o.routes();
     assert_eq!(routes.len(), 2);
     assert_eq!(&*routes[0].default_topic, "r1");
-    assert_eq!(routes[0].config.record_index, Some(1));
+    assert_eq!(routes[0].record_index, 1);
     assert_eq!(&*routes[1].default_topic, "two");
-    assert_eq!(routes[1].config.record_index, Some(2));
+    assert_eq!(routes[1].record_index, 2);
     assert_eq!(
         routes[1].config.protocol_options,
         [("qos".to_string(), "1".to_string())]
+    );
+}
+
+/// A link cannot claim another record's index: `record_index` in its config
+/// is an ordinary option, and the route carries the index core assigned.
+#[tokio::test]
+async fn a_configured_record_index_does_not_override_the_routes() {
+    let db = db(vec![
+        Box::new(|reg| {
+            reg.buffer(BufferCfg::SingleLatest);
+        }),
+        Box::new(|reg| {
+            reg.buffer(BufferCfg::Mailbox)
+                .link_to("test://one")
+                .with_config("record_index", "0")
+                .with_serializer(le)
+                .finish();
+        }),
+    ])
+    .await;
+    let o = OutboundRoutes::new(&db, "test").unwrap();
+    let route = &o.routes()[0];
+    assert_eq!(route.record_index, 1);
+    assert_eq!(
+        route.config.protocol_options,
+        [("record_index".to_string(), "0".to_string())]
     );
 }
 

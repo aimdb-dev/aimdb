@@ -97,6 +97,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, API)
 
+- **A route's record index lives on the route, not in `ConnectorConfig`
+  (#264).** `RouteInfo` and `InboundRouteInfo` gain `record_index: usize`,
+  always set by core; `ConnectorConfig::record_index` is removed. Before, core
+  wrote the index into the config it parsed from the link's options, so
+  `record_index` was a reserved key that `from_query` lifted out of every
+  link, and connectors had to unwrap an `Option` that was never `None`.
+  Now a link's `record_index` option is an ordinary protocol option, and a
+  link cannot claim another record's index. `ConnectorConfig` is also
+  `#[non_exhaustive]`, so future fields don't break it again. Migration:
+  read `route.record_index` instead of `route.config.record_index`.
+
 - **Connector SPI: the push pumps are gone.** Removed
   `session::pump_sink`, `session::pump_source`, `Source`, the `Connector`
   trait (with `transport::Connector::publish`), `TopicProvider`,

@@ -299,16 +299,6 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             // Every route carries its record's index, which the broadcast
             // bus checks client permissions against.
             let outbound = OutboundRoutes::new(db, "ws")?;
-            if let Some(route) = outbound
-                .routes()
-                .iter()
-                .find(|r| r.config.record_index.is_none())
-            {
-                return Err(aimdb_core::DbError::runtime_error(format!(
-                    "WS connector: outbound route '{}' has no record index",
-                    route.default_topic
-                )));
-            }
 
             // ── Late-join snapshot cache (only when enabled) ──────
             let snapshot_map: Option<SnapshotCache> =
@@ -392,10 +382,7 @@ async fn run_broadcast(
     snapshot: Option<SnapshotCache>,
 ) {
     while let Some(msg) = outbound.next().await {
-        // Checked for every route at build.
-        let Some(index) = msg.route.config.record_index else {
-            continue;
-        };
+        let index = msg.route.record_index;
         let bytes = msg.payload.as_slice();
         if let Some(map) = &snapshot {
             map.lock()
