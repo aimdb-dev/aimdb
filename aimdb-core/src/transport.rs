@@ -14,7 +14,12 @@ use alloc::{string::String, vec::Vec};
 /// by the connector with its own defaults. Connector crates expose typed
 /// setters as extension traits over the link builders (e.g. the MQTT
 /// connector's `MqttLinkExt`).
+///
+/// The record a route belongs to is not part of it: core sets that on the
+/// route ([`RouteInfo::record_index`](crate::RouteInfo::record_index)), out of
+/// reach of a link's query.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ConnectorConfig {
     /// Optional timeout in milliseconds for the publish/operation, as
     /// interpreted by the connector
@@ -23,11 +28,6 @@ pub struct ConnectorConfig {
     /// Protocol-specific options as key-value pairs
     /// Allows custom configuration without polluting the base struct
     pub protocol_options: Vec<(String, String)>,
-
-    /// The index of the record key that is setup together with the outbound route.
-    /// The record key is unique, and its order in `AimDb::inner.storage` is immutable
-    /// so this `record_index` could be used for `O(1)` lookup.
-    pub record_index: Option<usize>,
 }
 
 impl Default for ConnectorConfig {
@@ -35,7 +35,6 @@ impl Default for ConnectorConfig {
         Self {
             timeout_ms: Some(5000),
             protocol_options: Vec::new(),
-            record_index: None,
         }
     }
 }
@@ -43,9 +42,8 @@ impl Default for ConnectorConfig {
 impl ConnectorConfig {
     /// Build a config from a route's URL-query key/value pairs.
     ///
-    /// Only the protocol-agnostic `timeout_ms` and `record_index` (the last
-    /// occurrence wins) are lifted
-    /// into typed fields; every other key is passed through verbatim in
+    /// Only the protocol-agnostic `timeout_ms` (the last occurrence wins) is
+    /// lifted into a typed field; every other key is passed through verbatim in
     /// [`protocol_options`](ConnectorConfig::protocol_options) for the
     /// connector to interpret with its own defaults.
     pub fn from_query(query: &[(String, String)]) -> ConnectorConfig {
@@ -55,11 +53,6 @@ impl ConnectorConfig {
                 "timeout_ms" => {
                     if let Ok(n) = v.parse::<u32>() {
                         cfg.timeout_ms = Some(n);
-                    }
-                }
-                "record_index" => {
-                    if let Ok(i) = v.parse::<usize>() {
-                        cfg.record_index = Some(i);
                     }
                 }
                 _ => cfg.protocol_options.push((k.clone(), v.clone())),

@@ -182,12 +182,17 @@ async fn outbound_routes_preserve_record_order() {
     let outbound = aimdb_core::OutboundRoutes::new(&server_db, "ws").expect("routes");
     assert_eq!(outbound.routes().len(), keys_topics.len());
 
+    let records = server_db.list_records();
     for (route, (k, t)) in outbound.routes().iter().zip(keys_topics.iter()) {
         assert_eq!(&*route.default_topic, *t);
         assert_eq!(
-            route.config.record_index,
-            Some(*record_keys.get(*k).expect("key must exist")),
+            route.record_index,
+            *record_keys.get(*k).expect("key must exist"),
             "route '{t}' must carry its record's index"
+        );
+        assert_eq!(
+            records[route.record_index].record_key, *k,
+            "route '{t}' must index its own record"
         );
     }
 }
