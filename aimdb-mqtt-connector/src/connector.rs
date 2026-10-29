@@ -320,6 +320,18 @@ impl<B: Backend> ConnectorBuilder for MqttConnector<B> {
     fn scheme(&self) -> &str {
         "mqtt"
     }
+
+    /// One MQTT connector per db.
+    ///
+    /// Not a limit on topics: one connector is one broker connection, and
+    /// every record's `link_from`/`link_to` names its own topic on it. What it
+    /// rules out is a *second broker*, which cannot work today because both
+    /// backends collect every `mqtt://` route regardless of which broker it
+    /// was meant for, so each connector would publish every outbound value and
+    /// subscribe every inbound topic.
+    fn owns_scheme(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +362,29 @@ mod tests {
         assert_eq!(
             keep_alive_secs(Duration::from_secs(u64::from(u16::MAX))).unwrap(),
             u16::MAX
+        );
+    }
+
+    /// #329: a second MQTT connector is a configuration error: each one
+    /// collects *all* `mqtt://` routes, so every value would go out twice.
+    #[cfg(feature = "std")]
+    #[tokio::test]
+    async fn a_second_mqtt_connector_fails_the_build() {
+        use aimdb_core::AimDbBuilder;
+        use aimdb_tokio_adapter::TokioAdapter;
+        use std::sync::Arc;
+
+        let builder = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(MqttConnector::new("mqtt://127.0.0.1:1883").with_client_id("a"))
+            .with_connector(MqttConnector::new("mqtt://127.0.0.2:1883").with_client_id("b"));
+
+        let Err(err) = builder.build().await else {
+            panic!("a second MQTT connector must be rejected");
+        };
+        assert!(
+            format!("{err}").contains("More than one connector registered for scheme 'mqtt'"),
+            "unexpected error: {err}"
         );
     }
 }
