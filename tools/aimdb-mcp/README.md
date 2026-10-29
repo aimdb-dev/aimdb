@@ -280,7 +280,7 @@ List all nodes in the dependency graph:
 ```
 Query: "Show me the record graph nodes"
 
-Result: Per-record origin (source/link/transform/passive), buffer config, and edge counts
+Result: Per-record origin (source/link/transform/passive), schema name and version, buffer config, tap count, and outbound link addresses
 ```
 
 ### 9. graph_edges

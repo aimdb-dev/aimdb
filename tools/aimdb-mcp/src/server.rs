@@ -322,7 +322,7 @@ impl McpServer {
             },
             Tool {
                 name: "graph_nodes".to_string(),
-                description: "Get all nodes in the dependency graph. Returns metadata for all records as graph nodes, including origin (source/link/transform/passive), buffer configuration, and connection counts. Useful for understanding database topology and data flow.".to_string(),
+                description: "Get all nodes in the dependency graph. Returns metadata for all records as graph nodes, including origin (source/link/transform/passive), schema (name and version), buffer configuration, tap count, and the address of each outbound link. Useful for understanding database topology and data flow.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {

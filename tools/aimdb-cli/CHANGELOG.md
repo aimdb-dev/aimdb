@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`graph nodes` shows each record's schema and outbound link addresses
+  (#332).** New "Schema" column (`temperature v2`); "Outbound" lists the
+  link addresses instead of `yes`, and falls back to `yes` for servers that
+  send only `has_outbound_link`.
+
 ### Fixed
 
 - **`graph nodes`, `graph edges` and `graph dot` read origins and edge types

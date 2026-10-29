@@ -44,6 +44,8 @@ struct GraphTopoOrderParams {
 ///   - `buffer_capacity`: Optional buffer capacity
 ///   - `tap_count`: Number of taps attached
 ///   - `has_outbound_link`: Whether an outbound connector is configured
+///   - `outbound_links`: The address of each outbound link (e.g. "mqtt://plant/boiler/flow_avg")
+///   - `schema`: `{ name, version }` of the record's data contract, or null
 pub async fn graph_nodes(args: Option<Value>) -> McpResult<Value> {
     debug!("🔗 graph_nodes called with args: {:?}", args.as_ref());
 
