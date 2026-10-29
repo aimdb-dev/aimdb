@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`AimDbBuilder::start_order_seed(seed)` permutes the record task start
+  order (#325).** Behind the new `start-order-seed` feature, for tests and
+  simulation. With a seed, the topological sort draws the next record from
+  all records ready at that point using a seeded SplitMix64, so different
+  seeds explore different valid start orders and the same seed replays one.
+  Every record still starts after its inputs. Without a seed, records start
+  in registration order (#324). `graph.topo_order` reports the order used.
+  `DependencyGraph::build_and_validate_seeded` exposes the same choice.
+
 - **Typed current-value reads with `AimDb::latest::<T>(key)` (#363).**
   Returns `DbResult<Option<T>>` without consuming the value or requiring
   serde traits, the `remote` feature, or remote-access registration. Unknown

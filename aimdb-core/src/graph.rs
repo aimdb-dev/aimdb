@@ -103,6 +103,26 @@ pub struct DependencyGraph {
     pub topo_order: Vec<String>,
 }
 
+/// SplitMix64: a few lines of seeded PRNG for
+/// [`DependencyGraph::build_and_validate_seeded`]. Not for anything that needs
+/// real randomness.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// An index in `0..len` (`len > 0`).
+    fn below(&mut self, len: usize) -> usize {
+        ((u128::from(self.next()) * len as u128) >> 64) as usize
+    }
+}
+
 impl DependencyGraph {
     /// Construct and validate the dependency graph from registered records.
     ///
@@ -117,6 +137,20 @@ impl DependencyGraph {
     /// * `Err(DbError::TransformInputNotFound)` - If a transform references a missing record
     /// * `Err(DbError::CyclicDependency)` - If the transform edges form a cycle
     pub fn build_and_validate(nodes: Vec<GraphNode>) -> crate::DbResult<Self> {
+        Self::build_and_validate_seeded(nodes, None)
+    }
+
+    /// [`build_and_validate`](Self::build_and_validate), with a seed that
+    /// permutes the start order.
+    ///
+    /// Without a seed, records ready at once are taken in registration order.
+    /// With one, the next record is drawn from all ready records by a seeded
+    /// PRNG, so different seeds explore different valid orders and the same
+    /// seed replays one. Either way every record comes after its inputs.
+    pub fn build_and_validate_seeded(
+        nodes: Vec<GraphNode>,
+        seed: Option<u64>,
+    ) -> crate::DbResult<Self> {
         use alloc::collections::VecDeque;
 
         // Everything in this block borrows `nodes` (&str keys); scoping it
@@ -182,8 +216,16 @@ impl DependencyGraph {
                 .filter(|key| in_degree.get(key) == Some(&0))
                 .collect();
             let mut topo_order = Vec::new();
+            let mut rng = seed.map(SplitMix64);
 
-            while let Some(node) = queue.pop_front() {
+            loop {
+                let next = match rng.as_mut() {
+                    Some(rng) if !queue.is_empty() => {
+                        queue.swap_remove_back(rng.below(queue.len()))
+                    }
+                    _ => queue.pop_front(),
+                };
+                let Some(node) = next else { break };
                 topo_order.push(node.to_string());
                 if let Some(neighbors) = adjacency.get(node) {
                     for &neighbor in neighbors {
@@ -320,46 +362,49 @@ mod tests {
         }
     }
 
+    /// Six sources and a passive record, one join, and three transforms, two
+    /// of which share an input.
+    fn sample_nodes() -> Vec<GraphNode> {
+        vec![
+            node(
+                "sum",
+                RecordOrigin::TransformJoin {
+                    inputs: vec!["zeta".to_string(), "alpha".to_string()],
+                },
+            ),
+            node("zeta", RecordOrigin::Source),
+            node("mid", RecordOrigin::Passive),
+            node("alpha", RecordOrigin::Source),
+            node(
+                "double",
+                RecordOrigin::Transform {
+                    input: "zeta".to_string(),
+                },
+            ),
+            node("omega", RecordOrigin::Source),
+            node("beta", RecordOrigin::Source),
+            node("kappa", RecordOrigin::Source),
+            // Two transforms on one input, released together when `beta`
+            // is taken: they follow registration order, not key order.
+            node(
+                "y_half",
+                RecordOrigin::Transform {
+                    input: "beta".to_string(),
+                },
+            ),
+            node(
+                "b_triple",
+                RecordOrigin::Transform {
+                    input: "beta".to_string(),
+                },
+            ),
+        ]
+    }
+
     /// #324: records ready at once start in registration order, and records
     /// that depend on others still come after their inputs, every build.
     #[test]
     fn topo_order_is_registration_order_among_ready_records() {
-        let nodes = || {
-            vec![
-                node(
-                    "sum",
-                    RecordOrigin::TransformJoin {
-                        inputs: vec!["zeta".to_string(), "alpha".to_string()],
-                    },
-                ),
-                node("zeta", RecordOrigin::Source),
-                node("mid", RecordOrigin::Passive),
-                node("alpha", RecordOrigin::Source),
-                node(
-                    "double",
-                    RecordOrigin::Transform {
-                        input: "zeta".to_string(),
-                    },
-                ),
-                node("omega", RecordOrigin::Source),
-                node("beta", RecordOrigin::Source),
-                node("kappa", RecordOrigin::Source),
-                // Two transforms on one input, released together when `beta`
-                // is taken: they follow registration order, not key order.
-                node(
-                    "y_half",
-                    RecordOrigin::Transform {
-                        input: "beta".to_string(),
-                    },
-                ),
-                node(
-                    "b_triple",
-                    RecordOrigin::Transform {
-                        input: "beta".to_string(),
-                    },
-                ),
-            ]
-        };
         // `double` is ready once `zeta` is; `sum` waits for `alpha` as well.
         let expected = [
             "zeta", "mid", "alpha", "omega", "beta", "kappa", "double", "sum", "y_half", "b_triple",
@@ -368,8 +413,67 @@ mod tests {
         // Each build seeds a fresh map hasher; ask enough times that a
         // map-ordered queue would show.
         for _ in 0..20 {
-            let graph = DependencyGraph::build_and_validate(nodes()).unwrap();
+            let graph = DependencyGraph::build_and_validate(sample_nodes()).unwrap();
             assert_eq!(graph.topo_order(), expected);
         }
+    }
+
+    fn seeded(seed: u64) -> Vec<String> {
+        DependencyGraph::build_and_validate_seeded(sample_nodes(), Some(seed))
+            .unwrap()
+            .topo_order
+    }
+
+    /// A seed replays its order, which still has every record after its
+    /// inputs and every record exactly once.
+    #[test]
+    fn a_seed_replays_a_valid_order() {
+        let pos = |order: &[String], key: &str| order.iter().position(|k| k == key).unwrap();
+        for seed in 0..64 {
+            let order = seeded(seed);
+            assert_eq!(order, seeded(seed), "seed {seed} must replay");
+            assert_eq!(order.len(), sample_nodes().len());
+            for (record, inputs) in [
+                ("sum", &["zeta", "alpha"][..]),
+                ("double", &["zeta"]),
+                ("y_half", &["beta"]),
+                ("b_triple", &["beta"]),
+            ] {
+                for input in inputs {
+                    assert!(
+                        pos(&order, input) < pos(&order, record),
+                        "seed {seed}: {record} before its input {input}: {order:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Different seeds explore different orders, including among records
+    /// released together (`y_half`, `b_triple`), not just the initial queue.
+    #[test]
+    fn seeds_explore_different_orders() {
+        let unseeded = DependencyGraph::build_and_validate(sample_nodes())
+            .unwrap()
+            .topo_order;
+        let orders: Vec<Vec<String>> = (0..64).map(seeded).collect();
+        let distinct: hashbrown::HashSet<&Vec<String>> = orders.iter().collect();
+        assert!(
+            distinct.len() > 32,
+            "only {} distinct orders",
+            distinct.len()
+        );
+        assert!(orders.iter().any(|o| *o != unseeded));
+        let first = |o: &Vec<String>| {
+            o.iter()
+                .find(|k| *k == "y_half" || *k == "b_triple")
+                .cloned()
+        };
+        let firsts: hashbrown::HashSet<_> = orders.iter().map(first).collect();
+        assert_eq!(
+            firsts.len(),
+            2,
+            "both transforms of `beta` must lead sometimes"
+        );
     }
 }

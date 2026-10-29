@@ -68,6 +68,10 @@ observability = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-
 
 # Testing features
 test-utils = ["std"]
+# `AimDbBuilder::start_order_seed`: permute the record task start order per
+# seed, to find and replay start-order-dependent behaviour in tests and
+# simulation. Off in release builds.
+start-order-seed = []
 
 [dependencies]
 # Derive macros (optional)
