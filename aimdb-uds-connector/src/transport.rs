@@ -21,6 +21,10 @@ use aimdb_core::session::{
 pub struct UdsConnection {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    /// The line read so far. It lives here, not in the `recv` future, because
+    /// both session loops drop that future whenever another `select` arm wins
+    /// (#202): a partial line must survive into the next `recv`.
+    pending: Vec<u8>,
     peer: PeerInfo,
 }
 
@@ -32,6 +36,7 @@ impl UdsConnection {
         Self {
             reader: BufReader::new(read_half),
             writer: write_half,
+            pending: Vec::new(),
             peer: PeerInfo::default(),
         }
     }
@@ -40,16 +45,21 @@ impl UdsConnection {
 impl Connection for UdsConnection {
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         Box::pin(async move {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line).await {
-                Ok(0) => Ok(None), // EOF — peer closed
+            // `read_until` appends to `pending` and resumes where a dropped call
+            // stopped, so `recv` is cancel-safe. Not `read_line`: tokio moves the
+            // `String` into its future and a drop loses what was read.
+            match self.reader.read_until(b'\n', &mut self.pending).await {
+                // EOF with nothing buffered — peer closed. A partial line before
+                // EOF is still delivered below, as `read_line` did.
+                Ok(_) if self.pending.is_empty() => Ok(None),
                 Ok(_) => {
+                    let mut line = core::mem::take(&mut self.pending);
                     // Strip the trailing '\n' (and a stray '\r' if present); the
                     // frame is the line content, the codec owns the rest.
-                    while matches!(line.as_bytes().last(), Some(b'\n' | b'\r')) {
+                    while matches!(line.last(), Some(b'\n' | b'\r')) {
                         line.pop();
                     }
-                    Ok(Some(line.into_bytes()))
+                    Ok(Some(line))
                 }
                 Err(_) => Err(TransportError::Io),
             }
@@ -128,5 +138,45 @@ impl Listener for UdsListener {
             let (stream, _addr) = self.inner.accept().await.map_err(|_| TransportError::Io)?;
             Ok(Box::new(UdsConnection::new(stream)) as Box<dyn Connection>)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// #202: a `recv` dropped mid-line (as when another `select` arm wins)
+    /// must not lose the bytes it already read.
+    #[tokio::test]
+    async fn a_dropped_recv_keeps_the_partial_line() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let mut conn = UdsConnection::new(ours);
+
+        theirs.write_all(b"{\"id\":1,").await.unwrap();
+        let dropped = tokio::time::timeout(Duration::from_millis(50), conn.recv()).await;
+        assert!(
+            dropped.is_err(),
+            "no full line yet, so recv must still be pending"
+        );
+
+        theirs.write_all(b"\"m\":\"ping\"}\r\n").await.unwrap();
+        let frame = conn.recv().await.unwrap().unwrap();
+        assert_eq!(frame, b"{\"id\":1,\"m\":\"ping\"}");
+    }
+
+    /// One frame per line, a final unterminated line is still a frame, then
+    /// EOF ends the stream.
+    #[tokio::test]
+    async fn frames_split_on_newlines_until_eof() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let mut conn = UdsConnection::new(ours);
+
+        theirs.write_all(b"a\nb\nc").await.unwrap();
+        drop(theirs);
+        assert_eq!(conn.recv().await.unwrap().unwrap(), b"a");
+        assert_eq!(conn.recv().await.unwrap().unwrap(), b"b");
+        assert_eq!(conn.recv().await.unwrap().unwrap(), b"c");
+        assert_eq!(conn.recv().await.unwrap(), None);
     }
 }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A UDS frame no longer gets lost when `recv` is cancelled (#202).** Both
+  session loops drop the `recv` future whenever another `select` arm wins.
+  `UdsConnection::recv` read with `read_line` into a `String` held by that
+  future, so a line that needed more than one read, arriving while an event,
+  keepalive or command was ready, was cut in half: the first part was
+  dropped, and the rest arrived as a broken frame. The partial line now lives
+  on the connection and is resumed with `read_until`, which tokio documents
+  as cancel-safe. A side effect: a line that isn't valid UTF-8 now reaches
+  the codec, which skips it as malformed and keeps the session, as it already
+  does for invalid JSON. Before, it failed the read with `Io` and ended the
+  connection.
+
 ## [0.1.0] - 2026-09-18
 
 ### Changed
