@@ -4,7 +4,6 @@
 //! on top of `std::time` and `tokio::time`.
 
 use aimdb_core::{DbResult, LogLevel, RuntimeOps};
-use std::time::Instant;
 
 /// Tokio runtime adapter for std environments
 ///
@@ -52,12 +51,15 @@ impl RuntimeOps for TokioAdapter {
     }
 
     fn now_nanos(&self) -> u64 {
-        // std `Instant` has no public epoch, so anchor the first reading and
-        // report nanoseconds elapsed since it (monotonic, arbitrary epoch).
-        static ANCHOR: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        ANCHOR
-            .get_or_init(Instant::now)
-            .elapsed()
+        // Tokio's clock, so paused time (`tokio::time::pause`, `test-util`)
+        // advances it the same way it advances `sleep`; outside paused time it
+        // is the system's monotonic clock. `Instant` has no public epoch, so
+        // anchor the first reading and report nanoseconds elapsed since it
+        // (monotonic, arbitrary epoch).
+        static ANCHOR: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+        let anchor = *ANCHOR.get_or_init(tokio::time::Instant::now);
+        tokio::time::Instant::now()
+            .saturating_duration_since(anchor)
             .as_nanos()
             .min(u64::MAX as u128) as u64
     }
@@ -123,6 +125,21 @@ mod runtime_ops_tests {
         assert!(
             after - before >= 10_000_000,
             "10ms sleep advanced now_nanos by only {}ns",
+            after - before
+        );
+    }
+
+    /// #333: under paused time `sleep` advances Tokio's virtual clock
+    /// instantly; `now_nanos` must follow it, not the real clock.
+    #[tokio::test(start_paused = true)]
+    async fn now_nanos_follows_paused_tokio_time() {
+        let ops: Arc<dyn RuntimeOps> = Arc::new(TokioAdapter);
+        let before = ops.now_nanos();
+        ops.sleep(Duration::from_secs(10)).await;
+        let after = ops.now_nanos();
+        assert!(
+            after - before >= 10_000_000_000,
+            "a paused 10s sleep advanced now_nanos by only {}ns",
             after - before
         );
     }
