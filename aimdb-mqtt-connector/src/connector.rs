@@ -367,7 +367,7 @@ mod tests {
 
     /// #329: a second MQTT connector is a configuration error: each one
     /// collects *all* `mqtt://` routes, so every value would go out twice.
-    #[cfg(feature = "tokio-runtime")]
+    #[cfg(feature = "std")]
     #[tokio::test]
     async fn a_second_mqtt_connector_fails_the_build() {
         use aimdb_core::AimDbBuilder;
