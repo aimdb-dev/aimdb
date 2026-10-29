@@ -189,6 +189,8 @@ test: test-operational-events
 	cargo test --package aimdb-core --features "std,log,tracing" --test log_facade_delivery
 	@printf "$(YELLOW)  → Testing aimdb-core (no_std + alloc + remote)$(NC)\n"
 	cargo test --package aimdb-core --no-default-features --features "alloc,remote"
+	@printf "$(YELLOW)  → Testing aimdb-core (start-order-seed)$(NC)\n"
+	cargo test --package aimdb-core --features "std,start-order-seed" --test start_order_seed
 	@printf "$(YELLOW)  → Testing aimdb-core remote module$(NC)\n"
 	cargo test --package aimdb-core --lib --features "std" remote::
 	@printf "$(YELLOW)  → Testing aimdb-core connector-session (contracts object-safety)$(NC)\n"
@@ -334,6 +336,7 @@ clippy: clippy-operational-events
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc,linkable-cdr --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features alloc --all-targets -- -D warnings
+	cargo clippy --package aimdb-core --no-default-features --features "alloc,start-order-seed" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (no_std + alloc + remote)$(NC)\n"
 	cargo clippy --package aimdb-core --no-default-features --features "alloc,remote" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-core (std)$(NC)\n"
