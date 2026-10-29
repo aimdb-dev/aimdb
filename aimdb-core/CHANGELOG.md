@@ -142,6 +142,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Record tasks start in a stable order (#324).** Among records ready at
+  once, the dependency graph's topological sort now takes them in
+  registration order instead of hash-map order, which was randomly seeded and
+  changed with every `build()`, even within one process. Records that depend
+  on others still start after their inputs. The order is now reproducible:
+  simultaneous updates reach consumers in the same order every run, and
+  `graph.topo_order` over AimX and `aimdb graph order` can be diffed across
+  restarts. No API change; AimDB still promises no order among simultaneous
+  events, only that the one it picks is stable.
+
 - **The `log_*!` macros carry a `defmt` arm (#352).** A crate forwarding its
   `defmt` feature to the facade needs `dep:defmt` itself
   (`defmt = ["dep:defmt", "aimdb-core/defmt"]`; `defmt`'s macros expand to

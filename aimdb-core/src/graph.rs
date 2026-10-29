@@ -171,11 +171,15 @@ impl DependencyGraph {
                 }
             }
 
-            // Kahn's algorithm — topological sort
-            let mut queue: VecDeque<&str> = in_degree
+            // Kahn's algorithm — topological sort. The queue is seeded in
+            // registration order (`nodes`), not map order: the map's hasher is
+            // randomly seeded, and this order is the record task start order,
+            // so it must not change from build to build (#324). Neighbours
+            // below follow `transform_inputs`, which is registration order too.
+            let mut queue: VecDeque<&str> = nodes
                 .iter()
-                .filter(|(_, &deg)| deg == 0)
-                .map(|(&node, _)| node)
+                .map(|info| info.key.as_str())
+                .filter(|key| in_degree.get(key) == Some(&0))
                 .collect();
             let mut topo_order = Vec::new();
 
@@ -195,10 +199,11 @@ impl DependencyGraph {
 
             if topo_order.len() != all_keys.len() {
                 // Find the cycle participants for a helpful error message
-                let cycle_records: Vec<String> = in_degree
+                let cycle_records: Vec<String> = nodes
                     .iter()
-                    .filter(|(_, &deg)| deg > 0)
-                    .map(|(&k, _)| k.to_string())
+                    .map(|info| info.key.as_str())
+                    .filter(|key| in_degree.get(key).is_some_and(|&deg| deg > 0))
+                    .map(|k| k.to_string())
                     .collect();
 
                 return Err(crate::DbError::CyclicDependency {
@@ -296,5 +301,61 @@ impl DependencyGraph {
     /// Get the topological order
     pub fn topo_order(&self) -> &[String] {
         &self.topo_order
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn node(key: &str, origin: RecordOrigin) -> GraphNode {
+        GraphNode {
+            key: key.to_string(),
+            origin,
+            buffer_type: "single_latest".to_string(),
+            buffer_capacity: None,
+            tap_count: 0,
+            has_outbound_link: false,
+        }
+    }
+
+    /// #324: records ready at once start in registration order, and records
+    /// that depend on others still come after their inputs, every build.
+    #[test]
+    fn topo_order_is_registration_order_among_ready_records() {
+        let nodes = || {
+            vec![
+                node(
+                    "sum",
+                    RecordOrigin::TransformJoin {
+                        inputs: vec!["zeta".to_string(), "alpha".to_string()],
+                    },
+                ),
+                node("zeta", RecordOrigin::Source),
+                node("mid", RecordOrigin::Passive),
+                node("alpha", RecordOrigin::Source),
+                node(
+                    "double",
+                    RecordOrigin::Transform {
+                        input: "zeta".to_string(),
+                    },
+                ),
+                node("omega", RecordOrigin::Source),
+                node("beta", RecordOrigin::Source),
+                node("kappa", RecordOrigin::Source),
+            ]
+        };
+        // `double` is ready once `zeta` is; `sum` waits for `alpha` as well.
+        let expected = [
+            "zeta", "mid", "alpha", "omega", "beta", "kappa", "double", "sum",
+        ];
+
+        // Each build seeds a fresh map hasher; ask enough times that a
+        // map-ordered queue would show.
+        for _ in 0..20 {
+            let graph = DependencyGraph::build_and_validate(nodes()).unwrap();
+            assert_eq!(graph.topo_order(), expected);
+        }
     }
 }
