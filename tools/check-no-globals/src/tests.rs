@@ -90,6 +90,21 @@ fn external_modules_inherit_test_exclusion_and_missing_files_fail_closed() {
     scanner.scan_file(&root.join("lib.rs"), root.clone());
     assert_eq!(scanner.failures.len(), 1);
     assert!(scanner.failures[0].contains("tests.rs:1:"));
+    // Like rustc, a `#[path]` file resolves its own `mod x;` next to itself
+    // (`imp/bar.rs`), never in a directory named after it (`imp/foo/bar.rs`).
+    fs::create_dir_all(root.join("imp/foo")).unwrap();
+    fs::write(root.join("lib.rs"), "#[path = \"imp/foo.rs\"] mod foo;").unwrap();
+    fs::write(root.join("imp/foo.rs"), "mod bar;").unwrap();
+    fs::write(
+        root.join("imp/bar.rs"),
+        "fn f() { log::set_logger(&LOGGER); }",
+    )
+    .unwrap();
+    fs::write(root.join("imp/foo/bar.rs"), "fn f() {}").unwrap();
+    scanner.failures.clear();
+    scanner.scan_file(&root.join("lib.rs"), root.clone());
+    assert_eq!(scanner.failures.len(), 1, "{:?}", scanner.failures);
+    assert!(scanner.failures[0].contains("imp/bar.rs:1:"));
     fs::write(root.join("lib.rs"), "mod missing;").unwrap();
     scanner.failures.clear();
     scanner.scan_file(&root.join("lib.rs"), root.clone());

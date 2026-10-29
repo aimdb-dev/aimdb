@@ -49,16 +49,116 @@ fn excluded(attrs: &[Attribute]) -> bool {
     })
 }
 
-// Extract outer attributes uniformly from items, impl members and expressions.
-fn test_only(node: &impl ToTokens) -> bool {
+// Outer attributes of a node syn keeps only as raw tokens (`Verbatim`).
+// Re-tokenising is reserved for these, since doing it for every visited node
+// re-serialises each subtree once per ancestor.
+fn verbatim_test_only(tokens: &TokenStream) -> bool {
     let parser = |input: syn::parse::ParseStream<'_>| {
         let attrs = input.call(Attribute::parse_outer)?;
         let _: TokenStream = input.parse()?;
         Ok(attrs)
     };
     parser
-        .parse2(node.to_token_stream())
+        .parse2(tokens.clone())
         .is_ok_and(|attrs| excluded(&attrs))
+}
+
+fn item_test_only(item: &syn::Item) -> bool {
+    use syn::Item;
+    let attrs = match item {
+        Item::Const(i) => &i.attrs,
+        Item::Enum(i) => &i.attrs,
+        Item::ExternCrate(i) => &i.attrs,
+        Item::Fn(i) => &i.attrs,
+        Item::ForeignMod(i) => &i.attrs,
+        Item::Impl(i) => &i.attrs,
+        Item::Macro(i) => &i.attrs,
+        Item::Mod(i) => &i.attrs,
+        Item::Static(i) => &i.attrs,
+        Item::Struct(i) => &i.attrs,
+        Item::Trait(i) => &i.attrs,
+        Item::TraitAlias(i) => &i.attrs,
+        Item::Type(i) => &i.attrs,
+        Item::Union(i) => &i.attrs,
+        Item::Use(i) => &i.attrs,
+        Item::Verbatim(tokens) => return verbatim_test_only(tokens),
+        _ => return false,
+    };
+    excluded(attrs)
+}
+
+fn impl_item_test_only(item: &syn::ImplItem) -> bool {
+    use syn::ImplItem;
+    let attrs = match item {
+        ImplItem::Const(i) => &i.attrs,
+        ImplItem::Fn(i) => &i.attrs,
+        ImplItem::Type(i) => &i.attrs,
+        ImplItem::Macro(i) => &i.attrs,
+        ImplItem::Verbatim(tokens) => return verbatim_test_only(tokens),
+        _ => return false,
+    };
+    excluded(attrs)
+}
+
+fn trait_item_test_only(item: &syn::TraitItem) -> bool {
+    use syn::TraitItem;
+    let attrs = match item {
+        TraitItem::Const(i) => &i.attrs,
+        TraitItem::Fn(i) => &i.attrs,
+        TraitItem::Type(i) => &i.attrs,
+        TraitItem::Macro(i) => &i.attrs,
+        TraitItem::Verbatim(tokens) => return verbatim_test_only(tokens),
+        _ => return false,
+    };
+    excluded(attrs)
+}
+
+fn expr_test_only(expr: &syn::Expr) -> bool {
+    use syn::Expr;
+    let attrs = match expr {
+        Expr::Array(e) => &e.attrs,
+        Expr::Assign(e) => &e.attrs,
+        Expr::Async(e) => &e.attrs,
+        Expr::Await(e) => &e.attrs,
+        Expr::Binary(e) => &e.attrs,
+        Expr::Block(e) => &e.attrs,
+        Expr::Break(e) => &e.attrs,
+        Expr::Call(e) => &e.attrs,
+        Expr::Cast(e) => &e.attrs,
+        Expr::Closure(e) => &e.attrs,
+        Expr::Const(e) => &e.attrs,
+        Expr::Continue(e) => &e.attrs,
+        Expr::Field(e) => &e.attrs,
+        Expr::ForLoop(e) => &e.attrs,
+        Expr::Group(e) => &e.attrs,
+        Expr::If(e) => &e.attrs,
+        Expr::Index(e) => &e.attrs,
+        Expr::Infer(e) => &e.attrs,
+        Expr::Let(e) => &e.attrs,
+        Expr::Lit(e) => &e.attrs,
+        Expr::Loop(e) => &e.attrs,
+        Expr::Macro(e) => &e.attrs,
+        Expr::Match(e) => &e.attrs,
+        Expr::MethodCall(e) => &e.attrs,
+        Expr::Paren(e) => &e.attrs,
+        Expr::Path(e) => &e.attrs,
+        Expr::Range(e) => &e.attrs,
+        Expr::RawAddr(e) => &e.attrs,
+        Expr::Reference(e) => &e.attrs,
+        Expr::Repeat(e) => &e.attrs,
+        Expr::Return(e) => &e.attrs,
+        Expr::Struct(e) => &e.attrs,
+        Expr::Try(e) => &e.attrs,
+        Expr::TryBlock(e) => &e.attrs,
+        Expr::Tuple(e) => &e.attrs,
+        Expr::Unary(e) => &e.attrs,
+        Expr::Unsafe(e) => &e.attrs,
+        Expr::While(e) => &e.attrs,
+        Expr::Yield(e) => &e.attrs,
+        Expr::Verbatim(tokens) => return verbatim_test_only(tokens),
+        _ => return false,
+    };
+    excluded(attrs)
 }
 
 fn forbidden(name: &str) -> bool {
@@ -136,22 +236,22 @@ impl Scanner {
 
 impl<'ast> Visit<'ast> for Scanner {
     fn visit_item(&mut self, item: &'ast syn::Item) {
-        if !test_only(item) {
+        if !item_test_only(item) {
             visit::visit_item(self, item);
         }
     }
     fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
-        if !test_only(item) {
+        if !impl_item_test_only(item) {
             visit::visit_impl_item(self, item);
         }
     }
     fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
-        if !test_only(item) {
+        if !trait_item_test_only(item) {
             visit::visit_trait_item(self, item);
         }
     }
     fn visit_expr(&mut self, expr: &'ast syn::Expr) {
-        if !test_only(expr) {
+        if !expr_test_only(expr) {
             visit::visit_expr(self, expr);
         }
     }
@@ -209,6 +309,7 @@ impl<'ast> Visit<'ast> for Scanner {
                 }
                 None
             });
+            let has_path = explicit.is_some();
             let path = explicit
                 .map(|path| self.path_dir.join(path))
                 .unwrap_or_else(|| {
@@ -219,7 +320,9 @@ impl<'ast> Visit<'ast> for Scanner {
                         child_dir.join("mod.rs")
                     }
                 });
-            let nested_dir = if path.file_name().is_some_and(|name| name == "mod.rs") {
+            // rustc treats a `#[path]` file like `mod.rs`: its own `mod x;`
+            // resolve next to it, whatever the file is called.
+            let nested_dir = if has_path || path.file_name().is_some_and(|name| name == "mod.rs") {
                 path.parent().unwrap().to_owned()
             } else {
                 path.with_extension("")
