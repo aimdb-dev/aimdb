@@ -12,6 +12,8 @@
 //! `futures` channels. The demux loop uses the same **extract-then-act** shape as
 //! the server (compute a [`ClientStep`], then act once the arm borrows release).
 
+use crate::session::events::{report, SessionEvent};
+
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -496,7 +498,7 @@ async fn client_loop<D, C>(
                 conn
             }
             Err(e) => {
-                log_warn!("client dial failed: {:?}", e);
+                report(SessionEvent::DialFailed { error: &e });
                 // `Closed` is terminal — the dialer signals it will never succeed
                 // again (e.g. the caller stopped the bridge), so retrying would
                 // spin a permanently-failing redial forever. Only transient
@@ -535,10 +537,9 @@ async fn reconnect_after(
     }
     *attempt += 1;
     if config.max_reconnect_attempts != 0 && *attempt >= config.max_reconnect_attempts {
-        log_warn!(
-            "client giving up after {} reconnect attempts",
-            config.max_reconnect_attempts
-        );
+        report(SessionEvent::ReconnectExhausted {
+            attempts: config.max_reconnect_attempts,
+        });
         return false;
     }
     clock
@@ -922,11 +923,10 @@ async fn inbound_pump(handle: ClientHandle, inbound: crate::InboundDispatch, id:
             Ok(update) => {
                 // Per the loss contract above: surface the hole, keep mirroring.
                 if update.skipped > 0 {
-                    log_warn!(
-                        "mirror gap on '{}': {} update(s) lost (latest-state, no resync)",
-                        id.as_ref(),
-                        update.skipped
-                    );
+                    report(SessionEvent::MirrorGap {
+                        topic: id.as_ref(),
+                        skipped: update.skipped,
+                    });
                 }
                 inbound.dispatch(id.as_ref(), &update.data);
             }
@@ -1564,7 +1564,25 @@ mod tests {
             // Dropping the sink ends the stream, so the pump returns.
             drop(events);
         };
+        #[cfg(feature = "std")]
+        let gap_seen = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        #[cfg(feature = "std")]
+        let pump = crate::session::events::capture::future(
+            {
+                let seen = gap_seen.clone();
+                Arc::new(move |event| match event {
+                    SessionEvent::MirrorGap { topic, skipped } => {
+                        assert_eq!((*topic, *skipped), ("tele", 7));
+                        seen.fetch_add(1, Ordering::Relaxed);
+                    }
+                    other => panic!("unexpected event: {other:?}"),
+                })
+            },
+            pump,
+        );
         futures_util::future::join(pump, remote).await;
+        #[cfg(feature = "std")]
+        assert_eq!(gap_seen.load(Ordering::Relaxed), 1);
 
         let seen = seen.lock();
         assert_eq!(seen.len(), 2, "the gap must not drop or end the mirror");

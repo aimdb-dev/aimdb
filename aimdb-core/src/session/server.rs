@@ -15,6 +15,8 @@
 //! borrows of `conn`/`subs`) drop — `futures`' macro, unlike `tokio::select!`,
 //! keeps non-selected futures alive across the handler.
 
+use crate::session::events::{report, SessionEvent};
+
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -115,7 +117,7 @@ pub async fn run_session<C, D>(
     let ctx = match dispatch.authenticate(conn.peer(), first.as_deref()).await {
         Ok(ctx) => ctx,
         Err(_e) => {
-            log_warn!("session authenticate rejected: {:?}", _e);
+            report(SessionEvent::AuthenticationRejected { error: &_e });
             return;
         }
     };
@@ -205,7 +207,7 @@ pub async fn run_session<C, D>(
                     if !flushed {
                         break;
                     }
-                    log_warn!("subscription {} ended: its source closed", end.sub_id);
+                    report(SessionEvent::SubscriptionEnded { id: &end.sub_id });
                     if let Ok(id) = end.sub_id.parse::<u64>() {
                         send_reply_err(&mut conn, codec, &mut out, id, RpcError::Internal).await;
                     }
@@ -232,10 +234,9 @@ pub async fn run_session<C, D>(
                                 // may reach it or outlive it. Dropping the pumps
                                 // releases their buffer subscribers; a fresh
                                 // funnel discards their queued events.
-                                log_info!(
-                                    "new handshake on a live connection: ending {} subscription(s) of the previous client",
-                                    cancels.len()
-                                );
+                                report(SessionEvent::HandshakeReset {
+                                    ended_subscriptions: cancels.len(),
+                                });
                                 subs = FuturesUnordered::new();
                                 cancels.clear();
                                 (event_tx, event_rx) =
@@ -263,7 +264,7 @@ pub async fn run_session<C, D>(
                         // An id that still names a live subscription is refused:
                         // replacing it would cancel the live one without a word.
                         if cancels.contains_key(&sub_id) {
-                            log_warn!("subscribe refused: id {} is still live", sub_id);
+                            report(SessionEvent::SubscribeRefused { id: &sub_id });
                             send_reply_err(&mut conn, codec, &mut out, id, RpcError::Denied).await;
                             continue;
                         }
@@ -323,12 +324,11 @@ pub async fn run_session<C, D>(
                                         // burst's last snapshot the `last` flag
                                         // goes with it and no `snapshot_end`
                                         // reaches the subscriber.
-                                        log_warn!(
-                                            "snapshot encode failed, skipping: sub={} topic={} err={:?}",
-                                            sub_id,
-                                            snap_topic,
-                                            _e
-                                        );
+                                        report(SessionEvent::SnapshotEncodeFailed {
+                                            id: &sub_id,
+                                            topic: &snap_topic,
+                                            error: &_e,
+                                        });
                                         continue;
                                     }
                                     if conn.send(&out).await.is_err() {
@@ -534,17 +534,16 @@ where
         after_error = accept.is_err();
         match accept {
             Ok(conn) => {
-                if let Some(_failed) = failures.on_success() {
-                    log_info!("accept recovered after {} failed attempt(s)", _failed);
+                if let Some(event) = failures.on_success() {
+                    report(event);
                 }
                 // Soft cap; `len()` counts finished-but-not-yet-reaped futures, so
                 // under an accept flood (the biased `accept` arm starves the reap
                 // arm) it may read high transiently — acceptable for a soft cap.
                 if conns.len() >= config.limits.max_connections {
-                    log_warn!(
-                        "max_connections={} reached, refusing client",
-                        config.limits.max_connections
-                    );
+                    report(SessionEvent::ConnectionLimitReached {
+                        limit: config.limits.max_connections,
+                    });
                     drop(conn);
                     continue;
                 }
@@ -559,27 +558,15 @@ where
             // serve the open ones to their end. Calling `accept` again would
             // only fail again, at once — a spin that starves those connections.
             Err(TransportError::Closed) => {
-                log_info!(
-                    "listener closed; serving {} open connection(s) to their end",
-                    conns.len()
-                );
+                report(SessionEvent::ListenerClosed {
+                    open_connections: conns.len(),
+                });
                 while conns.next().await.is_some() {}
                 return;
             }
             Err(_e) => {
-                match failures.on_error() {
-                    AcceptReport::First => log_error!(
-                        "accept failed: {:?}; retrying, further failures are summarized",
-                        _e
-                    ),
-                    AcceptReport::Summary(_n) => {
-                        log_warn!(
-                            "accept still failing: {} attempts in a row, last: {:?}",
-                            _n,
-                            _e
-                        )
-                    }
-                    AcceptReport::Quiet => {}
+                if let Some(event) = failures.on_error(_e) {
+                    report(event);
                 }
                 // Keep serving existing connections despite a transient accept
                 // error; the next accept yields first (`after_error`).
@@ -597,31 +584,22 @@ struct AcceptFailures {
     consecutive: u64,
 }
 
-/// What [`AcceptFailures::on_error`] asks the caller to log.
-#[derive(Debug, PartialEq, Eq)]
-enum AcceptReport {
-    /// The first failure of a series: log the error.
-    First,
-    /// A summary: this many failures in a row.
-    Summary(u64),
-    /// Nothing.
-    Quiet,
-}
-
 impl AcceptFailures {
-    fn on_error(&mut self) -> AcceptReport {
+    fn on_error(&mut self, error: TransportError) -> Option<SessionEvent<'static>> {
         self.consecutive = self.consecutive.saturating_add(1);
         match self.consecutive {
-            1 => AcceptReport::First,
-            n if is_power_of_ten(n) => AcceptReport::Summary(n),
-            _ => AcceptReport::Quiet,
+            1 => Some(SessionEvent::AcceptFailed { error }),
+            n if is_power_of_ten(n) => {
+                Some(SessionEvent::AcceptStillFailing { attempts: n, error })
+            }
+            _ => None,
         }
     }
 
     /// The length of the series a success ends, if there was one.
-    fn on_success(&mut self) -> Option<u64> {
+    fn on_success(&mut self) -> Option<SessionEvent<'static>> {
         let failed = core::mem::take(&mut self.consecutive);
-        (failed > 0).then_some(failed)
+        (failed > 0).then_some(SessionEvent::AcceptRecovered { after: failed })
     }
 }
 
@@ -664,36 +642,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_failing_series_logs_its_first_failure_then_once_per_decade() {
+    fn a_failing_series_reports_first_then_once_per_decade() {
         let mut failures = AcceptFailures::default();
-        let logged: Vec<(u64, AcceptReport)> = (1..=1000)
-            .map(|n| (n, failures.on_error()))
-            .filter(|(_, r)| *r != AcceptReport::Quiet)
+        let reported: Vec<_> = (1..=1000)
+            .filter_map(|n| {
+                failures.on_error(TransportError::Io).map(|event| {
+                    assert!(matches!(
+                        event,
+                        SessionEvent::AcceptFailed {
+                            error: TransportError::Io
+                        } | SessionEvent::AcceptStillFailing {
+                            error: TransportError::Io,
+                            ..
+                        }
+                    ));
+                    n
+                })
+            })
             .collect();
-        assert_eq!(
-            logged,
-            [
-                (1, AcceptReport::First),
-                (10, AcceptReport::Summary(10)),
-                (100, AcceptReport::Summary(100)),
-                (1000, AcceptReport::Summary(1000)),
-            ]
-        );
+        assert_eq!(reported, [1, 10, 100, 1000]);
+        assert!(matches!(
+            failures.on_success(),
+            Some(SessionEvent::AcceptRecovered { after: 1000 })
+        ));
+        assert!(failures.on_success().is_none());
+        assert!(matches!(
+            failures.on_error(TransportError::Busy),
+            Some(SessionEvent::AcceptFailed {
+                error: TransportError::Busy
+            })
+        ));
     }
 
     #[test]
-    fn a_success_ends_the_series_and_reports_its_length() {
-        let mut failures = AcceptFailures::default();
-        assert_eq!(failures.on_success(), None, "no series, nothing to report");
-        for _ in 0..12 {
-            failures.on_error();
-        }
-        assert_eq!(failures.on_success(), Some(12));
-        assert_eq!(
-            failures.on_error(),
-            AcceptReport::First,
-            "a new series starts"
-        );
+    fn failure_count_saturates_without_repeated_summaries() {
+        let mut failures = AcceptFailures {
+            consecutive: u64::MAX - 1,
+        };
+        assert!(failures.on_error(TransportError::Io).is_none());
+        assert!(failures.on_error(TransportError::Io).is_none());
+        assert!(matches!(
+            failures.on_success(),
+            Some(SessionEvent::AcceptRecovered { after: u64::MAX })
+        ));
     }
 
     #[test]

@@ -19,6 +19,7 @@ members = [
     "aimdb-serial-connector",
     "aimdb-tcp-connector",
     "aimdb-wasm-adapter",
+    "tools/check-no-globals",
     "tools/aimdb-cli",
     "tools/aimdb-mcp",
     "examples/knx-connector-demo-common",

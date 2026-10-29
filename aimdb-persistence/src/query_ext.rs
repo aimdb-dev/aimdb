@@ -1,5 +1,7 @@
 //! Query extensions on [`AimDb`] — `query_latest` and `query_range`.
 
+use crate::events::{report, PersistenceEvent};
+
 use std::sync::Arc;
 
 use aimdb_core::builder::AimDb;
@@ -97,12 +99,10 @@ impl AimDbQueryExt for AimDb {
                     } = sv;
                     serde_json::from_value(value)
                         .map_err(|_e| {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(
-                                "Skipping persisted row for '{}': deserialization failed: {}",
-                                _record_name,
-                                _e
-                            );
+                            report(PersistenceEvent::RowDecodeFailed {
+                                record: &_record_name,
+                                error: &_e,
+                            });
                         })
                         .ok()
                 })
@@ -142,12 +142,10 @@ impl AimDbQueryExt for AimDb {
                     } = sv;
                     serde_json::from_value(value)
                         .map_err(|_e| {
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!(
-                                "Skipping persisted row for '{}': deserialization failed: {}",
-                                _record_name,
-                                _e
-                            );
+                            report(PersistenceEvent::RowDecodeFailed {
+                                record: &_record_name,
+                                error: &_e,
+                            });
                         })
                         .ok()
                 })

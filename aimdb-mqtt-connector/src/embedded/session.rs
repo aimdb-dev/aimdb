@@ -6,6 +6,8 @@
 //! runtime that can dial a
 //! [`StreamDialer`](aimdb_core::session::StreamDialer) can speak MQTT.
 
+use crate::events::{report, MqttEvent};
+
 use core::future::Future;
 
 /// Asserts that a broker session future is `Send`.
@@ -81,8 +83,7 @@ where
         let mut stream = match dialer.connect(&host, port).await {
             Ok(stream) => stream,
             Err(_e) => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("MQTT: connect failed, will retry");
+                report(MqttEvent::ConnectFailed);
                 Delay::sleep(&dialer, settings.reconnection_delay).await;
                 continue;
             }
@@ -106,10 +107,7 @@ where
         )
         .await;
 
-        #[cfg(feature = "defmt")]
-        defmt::warn!("MQTT: session errored: {:?}", error);
-        #[cfg(not(feature = "defmt"))]
-        let _ = error;
+        report(MqttEvent::SessionFailed { error });
 
         Delay::sleep(&dialer, settings.reconnection_delay).await;
     }

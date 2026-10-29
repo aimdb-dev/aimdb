@@ -28,6 +28,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+mod events;
+
 /// The URL scheme of plain Zenoh links.
 pub(crate) const SCHEME: &str = "zenoh";
 

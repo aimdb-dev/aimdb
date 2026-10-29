@@ -18,6 +18,8 @@
 //! Param shapes follow the client ([`aimdb_client::AimxConnection`]):
 //! `record.get`/`record.set` take `{name[, value]}`, `write` takes `{value}`.
 
+use crate::session::events::{report, SessionEvent};
+
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -204,12 +206,11 @@ impl AimxSession {
                     })));
                 }
                 Err(_e) => {
-                    log_warn!(
-                        "wildcard subscribe '{}': skipping '{}': {:?}",
+                    report(SessionEvent::WildcardSubscribeFailed {
                         pattern,
-                        key,
-                        _e
-                    );
+                        record: &key,
+                        error: &_e,
+                    });
                 }
             }
         }
@@ -415,11 +416,10 @@ impl AimxSession {
     fn hello(&self, params: Value) -> Result<Value, RpcError> {
         let version = str_field(&params, "version").unwrap_or_default();
         if !crate::remote::version_compatible(&version) {
-            log_warn!(
-                "refusing handshake: client protocol version {:?} incompatible with server {}",
-                version,
-                PROTOCOL_VERSION
-            );
+            report(SessionEvent::HandshakeVersionRejected {
+                client_version: &version,
+                server_version: PROTOCOL_VERSION,
+            });
             return Err(RpcError::VersionMismatch);
         }
         Ok(self.welcome())
@@ -540,5 +540,59 @@ mod tests {
             Some(QUERY_ALL_PATTERN),
             "an omitted name must span every record, at every depth"
         );
+    }
+    #[cfg(feature = "std")]
+    #[tokio::test]
+    async fn protocol_and_wildcard_failures_are_typed() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        // Listed metadata, but no JSON access: wildcard subscribe must skip it.
+        builder.configure::<u32>("plain", |reg| {
+            reg.buffer_cfg(crate::buffer::BufferCfg::SingleLatest);
+        });
+        let (db, _runner) = builder.build().await.expect("build db");
+        let dispatch = AimxDispatch::new(Arc::new(db), AimxConfig::uds_default());
+        let mut session = dispatch.open(&SessionCtx::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &SessionEvent<'_>| {
+                let tag = match event {
+                    SessionEvent::HandshakeVersionRejected {
+                        client_version,
+                        server_version,
+                    } => {
+                        assert_eq!(
+                            (*client_version, *server_version),
+                            ("0.0.0", PROTOCOL_VERSION)
+                        );
+                        "version"
+                    }
+                    SessionEvent::WildcardSubscribeFailed {
+                        pattern,
+                        record,
+                        error,
+                    } => {
+                        assert_eq!((*pattern, *record), ("#", "plain"));
+                        assert!(matches!(error, DbError::RuntimeError { .. }));
+                        "wildcard"
+                    }
+                    other => panic!("unexpected event: {other:?}"),
+                };
+                seen.lock().unwrap().push(tag);
+            })
+        };
+        crate::session::events::capture::future(observer, async {
+            assert_eq!(
+                session
+                    .call("hello", to_payload(&json!({ "version": "0.0.0" })))
+                    .await,
+                Err(RpcError::VersionMismatch)
+            );
+            let mut stream = session.subscribe("#").await.expect("wildcard stream");
+            assert!(stream.next().await.is_none());
+        })
+        .await;
+        assert_eq!(*seen.lock().unwrap(), ["version", "wildcard"]);
     }
 }

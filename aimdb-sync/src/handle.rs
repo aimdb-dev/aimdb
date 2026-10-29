@@ -1,8 +1,10 @@
 //! AimDB handle for managing the sync API runtime thread.
 
+use crate::events::{report, SyncEvent};
+
 use crate::runtime::{Runtime, ShutdownSignal};
 use crate::{SyncError, SyncResult};
-use aimdb_core::{log_error, log_warn, AimDb, AimDbBuilder, DbError};
+use aimdb_core::{AimDb, AimDbBuilder, DbError};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -265,7 +267,7 @@ impl AimDbHandle {
                         // Report the reason before dying. Dropping the sender
                         // would already unblock the caller; this is what gives
                         // it something to print.
-                        log_error!("Failed to create Tokio runtime: {}", e);
+                        report(SyncEvent::RuntimeStartFailed { error: &e });
                         let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
                             "Failed to create Tokio runtime: {}",
                             e
@@ -279,7 +281,7 @@ impl AimDbHandle {
                     .blocking_send(Ok(runtime.handle().clone()))
                     .is_err()
                 {
-                    log_error!("Failed to send runtime handle to main thread");
+                    report(SyncEvent::RuntimeHandoffFailed);
                     return;
                 }
 
@@ -584,7 +586,7 @@ impl AimDbHandle {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                log_error!("Failed to create Tokio runtime: {}", e);
+                report(SyncEvent::RuntimeStartFailed { error: &e });
                 let _ = handle_tx.blocking_send(Err(DbError::runtime_error(format!(
                     "Failed to create Tokio runtime: {}",
                     e
@@ -596,7 +598,7 @@ impl AimDbHandle {
         let rt_handle = runtime.handle().clone();
         // Send the runtime handle to the main thread
         if handle_tx.blocking_send(Ok(rt_handle)).is_err() {
-            log_error!("Failed to send runtime handle to main thread");
+            report(SyncEvent::RuntimeHandoffFailed);
             return;
         }
         runtime.block_on(async move {
@@ -605,7 +607,7 @@ impl AimDbHandle {
                 Ok(d) => (Arc::new(d.0), d.1),
                 Err(e) => {
                     // Sent as-is: this is the error whose kind is worth keeping.
-                    log_error!("Failed to build database: {}", e);
+                    report(SyncEvent::DatabaseBuildFailed { error: &e });
                     let _ = db_tx.send(Err(e)).await;
                     return;
                 }
@@ -613,7 +615,7 @@ impl AimDbHandle {
 
             // Send the database to the main thread
             if db_tx.send(Ok(db.clone())).await.is_err() {
-                log_error!("Failed to send database to main thread");
+                report(SyncEvent::DatabaseHandoffFailed);
                 return;
             }
 
@@ -656,8 +658,8 @@ impl Drop for AimDbHandle {
         }
 
         if let Some(owned) = owned {
-            log_warn!("AimDbHandle dropped without calling shutdown()");
-            log_warn!("Shutdown was signalled; the runtime thread stops on its own");
+            report(SyncEvent::ImplicitShutdown);
+            report(SyncEvent::ShutdownSignalled);
             // Non-blocking. Released rather than joined — see the note above.
             let _ = owned.shutdown.try_send(ShutdownSignal);
         }
@@ -672,5 +674,28 @@ mod tests {
     fn check() {
         assert_send::<crate::AimDbHandle>();
         assert_sync::<crate::AimDbHandle>();
+    }
+
+    #[test]
+    fn dropping_an_owned_handle_reports_implicit_shutdown() {
+        use super::*;
+        let handle = AimDbHandle::new_from_builder(
+            AimDbBuilder::new()
+                .runtime(Arc::new(aimdb_tokio_adapter::TokioAdapter::new().unwrap())),
+        )
+        .unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &SyncEvent<'_>| {
+                seen.lock().unwrap().push(match event {
+                    SyncEvent::ImplicitShutdown => "implicit",
+                    SyncEvent::ShutdownSignalled => "signalled",
+                    other => panic!("unexpected {other:?}"),
+                });
+            })
+        };
+        crate::events::capture::with(observer, || drop(handle));
+        assert_eq!(*seen.lock().unwrap(), ["implicit", "signalled"]);
     }
 }

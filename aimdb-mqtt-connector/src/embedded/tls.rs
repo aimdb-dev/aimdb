@@ -7,6 +7,8 @@
 //! ([`TlsOptions::new`]). The dialer resolves the host, so there is no network
 //! stack here.
 
+use crate::events::{report, MqttEvent};
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -357,8 +359,7 @@ where
             WallClock::set_unix_secs(secs as u32);
         }
         if WallClock::unix_secs().is_none() {
-            #[cfg(feature = "defmt")]
-            defmt::info!("MQTT-TLS: waiting for a wall-clock reading...");
+            report(MqttEvent::TlsWaitingForClock);
             while WallClock::unix_secs().is_none() {
                 if let Some((secs, _)) = runtime.unix_time() {
                     WallClock::set_unix_secs(secs as u32);
@@ -371,8 +372,7 @@ where
         let mut stream = match dialer.connect(&host, port).await {
             Ok(stream) => stream,
             Err(_e) => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("MQTT-TLS: connect failed, will retry");
+                report(MqttEvent::TlsConnectFailed);
                 aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
                 continue;
             }
@@ -393,18 +393,11 @@ where
         // The handshake reads and writes sequentially through one connection,
         // so it needs no split and takes neither lock twice.
         if let Err(e) = tls.open(TlsContext::new(&tls_config, provider)).await {
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "MQTT-TLS: handshake failed, will retry: {:?}",
-                defmt::Debug2Format(&e)
-            );
-            #[cfg(not(feature = "defmt"))]
-            let _ = e;
+            report(MqttEvent::TlsHandshakeFailed { error: e });
             aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
             continue;
         }
-        #[cfg(feature = "defmt")]
-        defmt::info!("MQTT-TLS: session established");
+        report(MqttEvent::TlsEstablished);
 
         // From here the session is the plain path's, byte for byte: the record
         // layer is just another pair of halves.
@@ -424,10 +417,7 @@ where
         )
         .await;
 
-        #[cfg(feature = "defmt")]
-        defmt::warn!("MQTT-TLS: session errored: {:?}", error);
-        #[cfg(not(feature = "defmt"))]
-        let _ = error;
+        report(MqttEvent::TlsSessionFailed { error });
 
         aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
     }

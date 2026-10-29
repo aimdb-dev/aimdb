@@ -63,4 +63,14 @@ fn aimdb_sync_events_reach_the_log_destination() {
         "no aimdb-sync event reached the log destination — is the `log` feature \
          still mirrored in aimdb-sync/Cargo.toml? got: {targets:?}"
     );
+    // Reported through `events.rs`, but the target is still the raising
+    // module, so `aimdb_sync::handle=warn`-style filters keep matching.
+    assert!(
+        targets.iter().any(|t| t == "aimdb_sync::handle"),
+        "the drop warnings lost their `aimdb_sync::handle` target; got: {targets:?}"
+    );
+    assert!(
+        !targets.iter().any(|t| t.ends_with("::events")),
+        "an event was logged under its `events` module; got: {targets:?}"
+    );
 }

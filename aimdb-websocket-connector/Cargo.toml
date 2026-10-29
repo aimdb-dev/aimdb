@@ -30,7 +30,8 @@ client = [
 # the server module without changing their Cargo.toml.
 tokio-runtime = ["server"]
 
-tracing = ["dep:tracing"]
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+log = ["aimdb-core/log"]
 
 [dependencies]
 aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
@@ -85,3 +86,6 @@ required-features = ["client"]
 name = "fanout_socket"
 harness = false
 required-features = ["server"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }

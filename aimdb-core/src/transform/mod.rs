@@ -10,6 +10,8 @@
 //! - Single-input: `.transform()` with `TransformBuilder`
 //! - Multi-input: `.transform_join()` with `JoinBuilder`
 
+mod events;
+
 use core::any::TypeId;
 use core::fmt::Debug;
 

@@ -40,6 +40,8 @@
 
 extern crate alloc;
 
+use crate::events::{report, AdapterEvent};
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::task::{Context, Poll};
@@ -394,12 +396,7 @@ fn make_spmc_sub<
     let channel_static: &'static PubSubChannel<CriticalSectionRawMutex, T, CAP, SUBS, PUBS> =
         unsafe { &*(channel as *const _) };
     channel_static.subscriber().map_err(|_| {
-        defmt::error!(
-            "AimDB: SpmcRing subscriber slot exhausted (max SUBS={}). \
-             Increase the CONSUMERS const generic on buffer_sized<CAP, CONSUMERS>. \
-             Count one slot per .tap(), .link_to() connector, and each transform_join input.",
-            SUBS
-        );
+        report(AdapterEvent::SubscriberSlotsExhausted { capacity: SUBS });
         DbError::BufferClosed {
             buffer_name: String::from(SPMC_BUFFER_NAME),
         }
@@ -804,7 +801,19 @@ mod tests {
 
         // Both SUBS slots are taken. The eager `subscribe()` call itself
         // must not panic — it stores the failure, not propagate it.
-        let mut over_limit = buffer.subscribe();
+        let seen = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &AdapterEvent| {
+                assert!(matches!(
+                    event,
+                    AdapterEvent::SubscriberSlotsExhausted { capacity: 2 }
+                ));
+                seen.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let mut over_limit = crate::events::capture::with(observer, || buffer.subscribe());
+        assert_eq!(seen.load(core::sync::atomic::Ordering::Relaxed), 1);
 
         // The failure surfaces on first use.
         assert!(matches!(

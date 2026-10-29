@@ -204,8 +204,8 @@ match db.query_latest::<MyRecord>("my_record.*", 10).await {
 }
 ```
 
-Rows that fail to deserialise as `T` are skipped with a `tracing::warn!`
-(when the `tracing` feature is enabled) rather than failing the entire query.
+Rows that fail to deserialise as `T` are skipped and reported through the enabled
+logging destinations rather than failing the entire query.
 
 ## Implementing a Custom Backend
 
@@ -255,7 +255,12 @@ impl PersistenceBackend for MyBackend {
 | Feature | Default | Description |
 |---|---|---|
 | `std` | yes | Enables `std`-backed types; required for Tokio runtimes |
+| `log` | no | Forward operational events through the `log` facade |
 | `tracing` | no | Emit structured log events via the `tracing` crate |
+
+Operational failures are reported as internal typed events. Enable `tracing`
+or `log` to forward them to the corresponding facade destination; both may
+be enabled together. Their log target is `aimdb_persistence::events`.
 
 ## Related Crates
 

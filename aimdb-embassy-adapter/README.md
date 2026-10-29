@@ -180,8 +180,16 @@ embassy-runtime = []              # Enable Embassy support
 embassy-task-pool-8 = []          # 8-task pool (default)
 embassy-task-pool-16 = []         # 16-task pool
 embassy-task-pool-32 = []         # 32-task pool
-defmt = ["dep:defmt"]             # Embedded logging
+defmt = ["aimdb-core/defmt"]       # Operational logging (enabled by default)
+log = ["aimdb-core/log"]           # Optional operational log destination
+tracing = ["aimdb-core/tracing", "dep:tracing"]
 ```
+
+The adapter defaults to `alloc,defmt`. With `default-features = false`, select
+`defmt`, `log`, or `tracing` explicitly for buffer operational diagnostics, such
+as subscriber slot exhaustion. These use `aimdb_embassy_adapter::events`.
+The default `defmt` feature also enables core's defmt reporting. The generic
+runtime logging bridge continues to use defmt independently.
 
 ## Time Operations
 

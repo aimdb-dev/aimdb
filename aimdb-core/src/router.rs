@@ -11,6 +11,10 @@
 //! - DDS: Routes topics to records
 //! - Shared Memory: Routes segment names to records
 
+mod events;
+
+use crate::router::events::{report, RouterEvent};
+
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::connector::IngestFn;
@@ -153,7 +157,10 @@ impl Router {
                         log_debug!("Routed message on '{}' to producer", resource_id);
                     }
                     Err(_e) => {
-                        log_warn!("Failed to ingest message on '{}': {}", resource_id, _e);
+                        report(RouterEvent::IngestFailed {
+                            topic: resource_id,
+                            reason: &_e,
+                        });
                     }
                 }
             }
@@ -425,5 +432,26 @@ mod tests {
         router.route("a/+", b"", &ctx).unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(subscriptions(&router), ["a/+"]);
+    }
+
+    #[test]
+    fn ingest_failure_emits_topic_and_reason() {
+        use events::capture;
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observer = {
+            let seen = seen.clone();
+            Arc::new(move |event: &RouterEvent<'_>| {
+                let RouterEvent::IngestFailed { topic, reason } = event;
+                assert_eq!((*topic, *reason), ("broken", "decode failed"));
+                seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let ingest: crate::connector::IngestFn = Arc::new(|_, _, _| Err("decode failed".into()));
+        let router = Router::new(
+            &crate::ExactGrammar,
+            vec![CompiledRoute::exact("broken", ingest)],
+        );
+        capture::with(observer, || router.route("broken", b"bad", &test_ctx())).unwrap();
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

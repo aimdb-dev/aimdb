@@ -58,9 +58,9 @@ _test-embassy = [
 # `aimdb_core::__private`, so neither dependency is declared here any more.
 # The *features* stay: a `#[cfg]` in a `#[macro_export]`ed macro is resolved
 # where it expands, so without them this crate would emit nothing.
-tracing = ["aimdb-core/tracing"]
-log = ["aimdb-core/log"]
-defmt = ["dep:defmt", "aimdb-core/defmt"]
+tracing = ["aimdb-core/tracing", "aimdb-embassy-adapter?/tracing"]
+log = ["aimdb-core/log", "aimdb-embassy-adapter?/log"]
+defmt = ["dep:defmt", "aimdb-core/defmt", "aimdb-embassy-adapter?/defmt"]
 
 
 [dependencies]

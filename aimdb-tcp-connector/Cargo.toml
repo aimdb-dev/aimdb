@@ -35,8 +35,9 @@ std = ["connector", "aimdb-core/std"]
 tokio-runtime = ["std"]
 embassy-runtime = ["connector"]
 
-tracing = ["aimdb-core/tracing"]
-defmt = ["aimdb-core/defmt"]
+tracing = ["aimdb-core/tracing", "aimdb-embassy-adapter?/tracing"]
+log = ["aimdb-core/log", "aimdb-embassy-adapter?/log"]
+defmt = ["aimdb-core/defmt", "aimdb-embassy-adapter?/defmt"]
 
 _test-tokio = ["tokio-runtime", "dep:aimdb-tokio-adapter", "aimdb-tokio-adapter/net"]
 

@@ -211,6 +211,9 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
+mod events;
+
+#[cfg(feature = "std")]
 mod consumer;
 mod error;
 #[cfg(feature = "std")]

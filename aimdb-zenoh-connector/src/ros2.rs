@@ -1,5 +1,7 @@
 //! `Ros2Connector`: `ros2://` links following rmw_zenoh's conventions.
 
+use crate::events::{report, ZenohEvent};
+
 use std::any::{type_name, TypeId};
 use std::boxed::Box;
 use std::format;
@@ -9,10 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use aimdb_core::connector::ConnectorBuilder;
-use aimdb_core::LogDisplay;
-use aimdb_core::{
-    log_error, log_warn, AimDb, ExactGrammar, InboundDispatch, OutboundRoutes, RouteInfo,
-};
+use aimdb_core::{AimDb, ExactGrammar, InboundDispatch, OutboundRoutes, RouteInfo};
 use aimdb_data_contracts::{ros2, RosMessage, WireFormat};
 use zenoh::key_expr::KeyExpr;
 use zenoh::qos::CongestionControl;
@@ -36,7 +35,7 @@ pub(crate) const DEPTH_KEY: &str = "ros2.depth";
 pub(crate) const RELIABILITY_KEY: &str = "ros2.reliability";
 
 /// The highest domain id ROS 2 documents.
-const DOMAIN_MAX: u32 = 232;
+pub(crate) const DOMAIN_MAX: u32 = 232;
 
 /// The ROS 2 node AimDB appears as.
 #[derive(Debug, Clone)]
@@ -140,9 +139,7 @@ impl ConnectorBuilder for Ros2Connector {
         Box::pin(async move {
             let domain = resolve_domain(self.domain, std::env::var(DOMAIN_ENV).ok().as_deref())
                 .map_err(config_error)?;
-            if let Some(warning) = domain_warning(domain) {
-                log_warn!("{}", warning);
-            }
+            report_domain_warning(domain);
             let node = &self.node;
             profile::validate_node_name(&node.name)
                 .map_err(|e| config_error(format!("node name '{}' {e}", node.name)))?;
@@ -174,13 +171,13 @@ impl ConnectorBuilder for Ros2Connector {
             )
             .map_err(config_error)?;
 
-            for warning in publishers
+            for link in publishers
                 .iter()
                 .map(|p| &p.link)
                 .chain(subscriptions.links.iter())
-                .filter_map(|link| link.warning.as_deref())
+                .filter(|link| link.unchecked_codec)
             {
-                log_warn!("{}", warning);
+                report(ZenohEvent::Ros2CodecUnchecked { topic: &link.topic });
             }
 
             self.shared.deposit_ros2(Ros2Parts {
@@ -232,13 +229,10 @@ fn parse_domain(value: &str) -> Option<u32> {
 
 /// ROS 2 documents domains 0 to 232, the range DDS can map to ports. rmw_zenoh
 /// accepts any, but a node there is out of reach of DDS-based ROS 2.
-fn domain_warning(domain: u32) -> Option<String> {
-    (domain > DOMAIN_MAX).then(|| {
-        format!(
-            "ROS 2 domain {domain} is above {DOMAIN_MAX}, the highest ROS 2 documents; \
-             rmw_zenoh accepts it, DDS-based ROS 2 does not"
-        )
-    })
+fn report_domain_warning(domain: u32) {
+    if domain > DOMAIN_MAX {
+        report(ZenohEvent::Ros2DomainWarning { domain });
+    }
 }
 
 /// A registered type's own claims: it is CDR, and its names are well formed.
@@ -268,7 +262,7 @@ struct Link {
     /// The rmw_zenoh data key.
     key: KeyExpr<'static>,
     /// Logged once the whole configuration is known to be valid.
-    warning: Option<String>,
+    unchecked_codec: bool,
 }
 
 /// The checks both directions share: a ROS topic name, a registered type,
@@ -290,7 +284,7 @@ fn link(
         .ok_or_else(|| {
             format!("ros2://{resource}: the record's type is not registered with Ros2Connector")
         })?;
-    let warning = codec_warning(resource, options)?;
+    let unchecked_codec = codec_is_unchecked(resource, options)?;
     let qos = qos(options).map_err(|e| format!("ros2://{resource}: {e}"))?;
     let key = KeyExpr::try_from(profile::data_key(domain, &topic, ty.dds_name, ty.hash))
         .map_err(|e| format!("ros2://{resource}: {e}"))?;
@@ -300,20 +294,17 @@ fn link(
         qos,
         entity_id,
         key,
-        warning,
+        unchecked_codec,
     })
 }
 
 /// A codec verb records CDR; any other recorded format is refused. A custom
 /// serializer or deserializer records none: that is the documented escape
 /// hatch, so it warns instead.
-fn codec_warning(resource: &str, options: &[(String, String)]) -> Result<Option<String>, String> {
+fn codec_is_unchecked(resource: &str, options: &[(String, String)]) -> Result<bool, String> {
     match WireFormat::recorded_in(options) {
-        WireFormat::Cdr => Ok(None),
-        WireFormat::Unspecified => Ok(Some(format!(
-            "ros2://{resource}: a custom serializer or deserializer is installed; \
-             nothing checks that it speaks CDR"
-        ))),
+        WireFormat::Cdr => Ok(false),
+        WireFormat::Unspecified => Ok(true),
         other => Err(format!(
             "ros2://{resource} encodes as {other:?}; a ROS topic needs CDR"
         )),
@@ -488,10 +479,7 @@ impl Ros2Parts {
         for token in tokens {
             match session.liveliness().declare_token(token).await {
                 Ok(token) => live.push(token),
-                Err(_e) => log_error!(
-                    "ROS 2: cannot declare a liveliness token: {}",
-                    LogDisplay(&_e)
-                ),
+                Err(_e) => report(ZenohEvent::Ros2LivelinessDeclarationFailed { error: &_e }),
             }
         }
 
@@ -510,7 +498,7 @@ impl Ros2Parts {
                 .await;
             match declared {
                 Ok(subscriber) => subscribers.push(subscriber),
-                Err(_e) => log_error!("ROS 2: cannot declare a subscriber: {}", LogDisplay(&_e)),
+                Err(_e) => report(ZenohEvent::Ros2SubscriberDeclarationFailed { error: &_e }),
             }
         }
 
@@ -524,11 +512,10 @@ impl Ros2Parts {
             match declared {
                 Ok(sender) => senders.push(Some(sender)),
                 Err(_e) => {
-                    log_error!(
-                        "ROS 2: cannot declare a publisher on '{}': {}",
-                        publisher.link.topic,
-                        LogDisplay(&_e)
-                    );
+                    report(ZenohEvent::Ros2PublisherDeclarationFailed {
+                        topic: &publisher.link.topic,
+                        error: &_e,
+                    });
                     senders.push(None);
                 }
             }
@@ -552,11 +539,10 @@ impl Ros2Parts {
                 .attachment(attachment.encode())
                 .await;
             if let Err(_e) = result {
-                log_error!(
-                    "ROS 2: put on '{}' failed: {}",
-                    publishers[id].link.topic,
-                    LogDisplay(&_e)
-                );
+                report(ZenohEvent::Ros2PublishFailed {
+                    topic: &publishers[id].link.topic,
+                    error: &_e,
+                });
                 outbound.reject(id);
             }
         }
@@ -601,12 +587,19 @@ mod tests {
         // Above 232 warns: rmw_zenoh accepts it.
         assert_eq!(resolve_domain(Some(233), None), Ok(233));
         assert_eq!(resolve_domain(None, Some("233")), Ok(233));
-        assert_eq!(domain_warning(232), None);
-        let warning = domain_warning(233).expect("a warning");
-        assert!(
-            warning.contains("233") && warning.contains("rmw_zenoh"),
-            "{warning}"
-        );
+        let domains = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = {
+            let domains = domains.clone();
+            Arc::new(move |event: &ZenohEvent<'_>| match event {
+                ZenohEvent::Ros2DomainWarning { domain } => domains.lock().unwrap().push(*domain),
+                other => panic!("unexpected {other:?}"),
+            })
+        };
+        crate::events::capture::with(observer, || {
+            report_domain_warning(232);
+            report_domain_warning(233);
+        });
+        assert_eq!(*domains.lock().unwrap(), [233]);
         assert!(
             resolve_domain(None, Some("4294967296")).is_err(),
             "beyond u32"
@@ -620,14 +613,10 @@ mod tests {
     fn a_custom_serializer_warns_and_a_foreign_codec_fails() {
         use aimdb_core::connector::WIRE_FORMAT_KEY;
         let format = |f: &str| [(WIRE_FORMAT_KEY.to_string(), f.to_string())];
-        assert_eq!(codec_warning("t", &format("cdr")), Ok(None));
+        assert_eq!(codec_is_unchecked("t", &format("cdr")), Ok(false));
         // `with_serializer` alone, or after a codec verb, which it clears.
-        let warning = codec_warning("t", &[]).unwrap().expect("a warning");
-        assert!(
-            warning.contains("ros2://t") && warning.contains("CDR"),
-            "{warning}"
-        );
-        let error = codec_warning("t", &format("json")).unwrap_err();
+        assert_eq!(codec_is_unchecked("t", &[]), Ok(true));
+        let error = codec_is_unchecked("t", &format("json")).unwrap_err();
         assert!(error.contains("Json"), "{error}");
     }
 

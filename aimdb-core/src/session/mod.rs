@@ -34,6 +34,8 @@ mod server;
 #[cfg(all(feature = "connector-session", feature = "remote"))]
 pub mod aimx;
 
+mod events;
+
 mod topic_match;
 pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 

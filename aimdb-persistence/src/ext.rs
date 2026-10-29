@@ -1,5 +1,7 @@
 //! Record registration extension: `.persist()` on [`RecordRegistrar`].
 
+use crate::events::{report, PersistenceEvent};
+
 use std::sync::Arc;
 
 use aimdb_core::typed_api::RecordRegistrar;
@@ -39,11 +41,9 @@ where
         // If no backend is configured, treat `.persist()` as a no-op so that
         // persistence remains optional and does not cause runtime panics.
         let Some(backend) = backend else {
-            #[cfg(feature = "tracing")]
-            tracing::warn!(
-                "Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op",
-                record_name
-            );
+            report(PersistenceEvent::BackendMissing {
+                record: &record_name,
+            });
             return self;
         };
         // Subscribe to the typed buffer as a tap (side-effect observer).
@@ -62,9 +62,10 @@ where
                 let json = match serde_json::to_value(&value) {
                     Ok(v) => v,
                     Err(e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("Persistence: failed to serialize '{}': {}", record_name, e);
-                        let _ = e;
+                        report(PersistenceEvent::SerializeFailed {
+                            record: &record_name,
+                            error: &e,
+                        });
                         continue;
                     }
                 };
@@ -75,14 +76,14 @@ where
                     .as_millis() as u64;
 
                 if let Err(e) = backend.store(&record_name, &json, timestamp).await {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("Persistence: failed to store '{}': {}", record_name, e);
-                    let _ = e;
+                    report(PersistenceEvent::StoreFailed {
+                        record: &record_name,
+                        error: &e,
+                    });
                 }
             }
 
-            #[cfg(feature = "tracing")]
-            tracing::debug!(
+            aimdb_core::log_debug!(
                 "Persistence subscriber for '{}' stopping (buffer closed)",
                 record_name
             );

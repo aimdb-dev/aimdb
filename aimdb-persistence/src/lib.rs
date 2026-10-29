@@ -59,6 +59,8 @@
 //! # }
 //! ```
 
+mod events;
+
 pub mod backend;
 pub mod builder_ext;
 pub mod error;

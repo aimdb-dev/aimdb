@@ -4,6 +4,8 @@
 //! have no battery-backed RTC. Each sync feeds both [`unix_now`] and the TLS
 //! handshake clock. Opt in with `TlsOptions::with_sntp`.
 
+use crate::events::{report, MqttEvent};
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_net::dns::DnsQueryType;
@@ -56,33 +58,29 @@ pub(crate) async fn run(stack: Stack<'static>, server: &'static str) -> ! {
                         // The TLS handshake reads the certificate-validity
                         // clock, which a board with no RTC has only from here.
                         crate::embedded::tls::WallClock::set_unix_secs(unix_secs as u32);
-                        #[cfg(feature = "defmt")]
-                        defmt::info!("SNTP: synced, unix time {}", unix_secs);
+                        report(MqttEvent::ClockSynced {
+                            unix_seconds: unix_secs,
+                        });
                         Timer::after(RESYNC_INTERVAL).await;
                     }
                     _ => {
-                        #[cfg(feature = "defmt")]
-                        defmt::warn!(
-                            "SNTP: implausible time {} from {}, retrying",
-                            unix_secs,
-                            server
-                        );
+                        report(MqttEvent::ClockImplausible {
+                            unix_seconds: unix_secs,
+                            server,
+                        });
                         Timer::after(RETRY_INTERVAL).await;
                     }
                 }
             }
             Err(error) => {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("SNTP: sync with {} failed: {}, retrying", server, error);
-                #[cfg(not(feature = "defmt"))]
-                let _ = error;
+                report(MqttEvent::ClockSyncFailed { server, error });
                 Timer::after(RETRY_INTERVAL).await;
             }
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum SntpError {
     /// DNS lookup failed or returned no A record.
@@ -93,6 +91,12 @@ pub(crate) enum SntpError {
     Timeout,
     /// The reply was not a plausible SNTP server response.
     InvalidReply,
+}
+
+impl core::fmt::Display for SntpError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self, f)
+    }
 }
 
 /// Best-effort request nonce from the tick counter — the hardware TRNG belongs

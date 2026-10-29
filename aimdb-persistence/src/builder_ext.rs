@@ -1,5 +1,7 @@
 //! Builder extension: `.with_persistence()` on [`AimDbBuilder`].
 
+use crate::events::{report, PersistenceEvent};
+
 use std::sync::Arc;
 
 use aimdb_core::builder::AimDbBuilder;
@@ -107,18 +109,14 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
 
                 match backend_task.cleanup(cutoff).await {
                     Ok(_deleted) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
+                        aimdb_core::log_debug!(
                             "Persistence cleanup: deleted {} rows older than {}ms",
                             _deleted,
                             cutoff
                         );
                     }
                     Err(e) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("Persistence cleanup failed: {}", e);
-                        #[cfg(not(feature = "tracing"))]
-                        eprintln!("[aimdb-persistence] retention cleanup failed: {e}");
+                        report(PersistenceEvent::CleanupFailed { error: &e });
                     }
                 }
 

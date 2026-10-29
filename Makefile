@@ -158,7 +158,7 @@ build:
 	@printf "$(YELLOW)  → Building benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
 	cargo build --package aimdb-bench --benches
 
-test:
+test: test-operational-events
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo test --package aimdb-cdr
@@ -310,7 +310,8 @@ fmt-check:
 	fi
 	@printf "$(GREEN)✓ All packages properly formatted!$(NC)\n"
 
-clippy:
+clippy: clippy-operational-events
+	cargo clippy --package check-no-globals --all-targets -- -D warnings
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
@@ -917,40 +918,17 @@ check-no-sim:
 # No library crate may install a process-global on its host's behalf.
 # Applications may, so `tools/`, `examples/` and codegen's generated `main` are
 # not scanned. The one exception: the fork detector owns the runtime thread it
-# protects. A positive control keeps the guard from failing open.
+# protects. Syntax-aware fixtures verify production rejection and test exclusion.
 GLOBALS_SCANNED := aimdb-core aimdb-cdr aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
 	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \
 	aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector \
 	aimdb-serial-connector aimdb-tcp-connector
-GLOBALS_PATTERN := tracing_subscriber::|set_global_default|set_boxed_logger|set_logger\(|set_max_level|panic::set_hook|panic::take_hook|pthread_atfork|sigaction|signal_hook|set_var\(
-GLOBALS_ALLOWED := aimdb-sync/src/fork\.rs
 check-no-globals:
 	@printf "$(GREEN)Checking that no library crate installs a process-global...$(NC)\n"
-	@scan() { \
-		grep -rnE '$(GLOBALS_PATTERN)' --include='*.rs' "$$@" 2>/dev/null \
-			| grep -vE ':[0-9]+:[[:space:]]*(//|\*)' || true; \
-	}; \
-	control=$$(mktemp -d) || exit 1; \
-	printf 'fn main() { tracing_subscriber::fmt().init(); }\n' > "$$control/probe.rs"; \
-	control_hit=$$(scan "$$control"); \
-	rm -rf "$$control"; \
-	if [ -z "$$control_hit" ]; then \
-		printf "$(RED)✗ positive control failed: the scanner no longer flags a subscriber install, so a clean result proves nothing$(NC)\n"; \
-		exit 1; \
-	fi; \
-	found=$$(scan $(addsuffix /src,$(GLOBALS_SCANNED)) | grep -vE '^($(GLOBALS_ALLOWED)):' || true); \
-	if [ -n "$$found" ]; then \
-		printf "$(RED)✗ a library crate installs a process-global:$(NC)\n"; \
-		printf '%s\n' "$$found"; \
-		printf "$(YELLOW)  A library does not get to make this decision for its host. Hand the$(NC)\n"; \
-		printf "$(YELLOW)  application a way to make it instead — see design 050 for how the log$(NC)\n"; \
-		printf "$(YELLOW)  destination does it. If the global genuinely belongs to the crate that$(NC)\n"; \
-		printf "$(YELLOW)  owns the runtime thread, add it to GLOBALS_ALLOWED with the reason.$(NC)\n"; \
-		exit 1; \
-	fi; \
-	printf "$(BLUE)✓ scanner verified against a positive control$(NC)\n"; \
-	printf "$(GREEN)✓ No library crate installs a process-global$(NC)\n"
+	cargo test --quiet --package check-no-globals
+	cargo run --quiet --package check-no-globals -- $(addsuffix /src/lib.rs,$(GLOBALS_SCANNED))
+
 
 # The devcontainer image builds from the .devcontainer/ context, so it cannot
 # read rust-toolchain.toml and has to repeat the channel in ARG RUST_VERSION.
@@ -1073,3 +1051,26 @@ wasm-test-deps:
 
 all: build test examples
 	@printf "$(GREEN)Build and test completed!$(NC)\n"
+
+# Library destination combinations for the internal operational reporters.
+# Run separately from embedded bundles: Cargo feature unification across a
+# workspace-wide all-features invocation would mix std and Embassy runtimes.
+.PHONY: test-operational-events
+test-operational-events:
+	cargo test -p aimdb-persistence -p aimdb-persistence-sqlite --features aimdb-persistence/tracing,aimdb-persistence/log,aimdb-persistence-sqlite/tracing,aimdb-persistence-sqlite/log
+	cargo test -p aimdb-websocket-connector --features server,client,tracing,log
+	cargo test -p aimdb-mqtt-connector --features std,tracing,log
+	cargo test -p aimdb-knx-connector --features std,tracing,log
+	cargo test -p aimdb-zenoh-connector --features std,tracing,log
+	cargo test -p aimdb-sync --features tracing,log
+	cargo test -p aimdb-embassy-adapter --no-default-features --features alloc,embassy-sync,embassy-time,log,tracing --lib
+
+.PHONY: clippy-operational-events
+clippy-operational-events:
+	cargo clippy -p aimdb-persistence -p aimdb-persistence-sqlite --all-targets --features aimdb-persistence/tracing,aimdb-persistence/log,aimdb-persistence-sqlite/tracing,aimdb-persistence-sqlite/log -- -D warnings
+	cargo clippy -p aimdb-websocket-connector --all-targets --features server,client,tracing,log -- -D warnings
+	cargo clippy -p aimdb-mqtt-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-knx-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-zenoh-connector --all-targets --features std,tracing,log -- -D warnings
+	cargo clippy -p aimdb-sync --all-targets --features tracing,log -- -D warnings
+	cargo clippy -p aimdb-embassy-adapter --no-default-features --features alloc,embassy-sync,embassy-time,log,tracing --lib -- -D warnings

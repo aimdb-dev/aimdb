@@ -13,6 +13,8 @@
 //! engine emissions; this session only supplies the snapshot bytes and the
 //! subscription stream.
 
+use crate::events::{report, WebSocketEvent};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -223,8 +225,7 @@ impl WsSession {
                 .handle_query(&name, start, end, limit)
                 .await
                 .map_err(|_e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("record.query handler failed: {}", _e);
+                    report(WebSocketEvent::QueryHandlerFailed { error: &_e });
                     RpcError::Internal
                 })?;
             records
@@ -243,8 +244,7 @@ impl WsSession {
                 })
             };
             let mut values = handler_fut.await.map_err(|_e| {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("record.query persistence handler failed: {}", _e);
+                report(WebSocketEvent::PersistenceQueryFailed { error: &_e });
                 RpcError::Internal
             })?;
 
@@ -254,8 +254,7 @@ impl WsSession {
             match values.get_mut("records").map(Value::take) {
                 None | Some(Value::Null) => Vec::new(),
                 Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("record.query handler returned malformed records: {}", _e);
+                    report(WebSocketEvent::MalformedQueryResult { error: &_e });
                     RpcError::Internal
                 })?,
             }
