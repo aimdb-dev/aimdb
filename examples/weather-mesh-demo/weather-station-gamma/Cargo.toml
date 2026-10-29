@@ -30,6 +30,7 @@ aimdb-core = { path = "../../../aimdb-core", default-features = false, features 
 ] }
 aimdb-embassy-adapter = { path = "../../../aimdb-embassy-adapter", default-features = false, features = [
     "alloc",
+    "defmt",
     "embassy-runtime",
 ] }
 aimdb-data-contracts = { path = "../../../aimdb-data-contracts", default-features = false }
