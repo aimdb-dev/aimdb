@@ -394,8 +394,6 @@ where
         // so it needs no split and takes neither lock twice.
         if let Err(e) = tls.open(TlsContext::new(&tls_config, provider)).await {
             report(MqttEvent::TlsHandshakeFailed { error: e });
-            #[cfg(not(feature = "defmt"))]
-            let _ = e;
             aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
             continue;
         }
@@ -420,8 +418,6 @@ where
         .await;
 
         report(MqttEvent::TlsSessionFailed { error });
-        #[cfg(not(feature = "defmt"))]
-        let _ = error;
 
         aimdb_core::session::Delay::sleep(&delay, settings.reconnection_delay).await;
     }

@@ -108,8 +108,6 @@ where
         .await;
 
         report(MqttEvent::SessionFailed { error });
-        #[cfg(not(feature = "defmt"))]
-        let _ = error;
 
         Delay::sleep(&dialer, settings.reconnection_delay).await;
     }

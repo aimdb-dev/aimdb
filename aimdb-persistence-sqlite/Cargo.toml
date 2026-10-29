@@ -12,7 +12,7 @@ categories = ["database-implementations"]
 
 [features]
 default = []
-tracing = ["dep:tracing", "aimdb-core/tracing"]
+tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 
 [dependencies]
@@ -21,7 +21,6 @@ aimdb-persistence = { version = "0.2.0", path = "../aimdb-persistence" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }
-tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

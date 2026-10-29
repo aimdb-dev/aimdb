@@ -109,8 +109,7 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
 
                 match backend_task.cleanup(cutoff).await {
                     Ok(_deleted) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!(
+                        aimdb_core::log_debug!(
                             "Persistence cleanup: deleted {} rows older than {}ms",
                             _deleted,
                             cutoff

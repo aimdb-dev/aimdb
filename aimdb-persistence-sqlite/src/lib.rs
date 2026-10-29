@@ -248,8 +248,6 @@ fn query_sync(
                     record_name: row.get(0)?,
                     value: serde_json::from_str(&value_str).unwrap_or_else(|e| {
                         report(SqliteEvent::CorruptJson { error: &e });
-                        #[cfg(not(feature = "tracing"))]
-                        let _ = e;
                         Value::Null
                     }),
                     stored_at: row.get::<_, i64>(2).map(|v| v.max(0) as u64)?,
