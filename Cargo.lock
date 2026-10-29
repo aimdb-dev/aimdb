@@ -246,6 +246,7 @@ version = "0.9.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
+ "aimdb-core",
  "anyhow",
  "chrono",
  "clap",
