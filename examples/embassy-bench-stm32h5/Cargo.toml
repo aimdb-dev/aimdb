@@ -17,6 +17,7 @@ aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
 ] }
 aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
     "embassy-runtime",
+    "defmt",
 ] }
 # Shared payload types/factories + `CountingAllocator` (design 039 F12) — the
 # `no_std` half of aimdb-bench (`payloads`/`alloc`; `--no-default-features`

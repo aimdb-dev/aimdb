@@ -93,9 +93,9 @@ embassy-tls = [
 # a `critical-section` impl. Off by default: an MCU's HAL already provides one.
 critical-section-std-impl = ["dep:critical-section", "critical-section/std"]
 
-tracing = ["aimdb-core/tracing"]
-log = ["aimdb-core/log"]
-defmt = ["dep:defmt", "aimdb-core/defmt", "mountain-mqtt?/defmt"]
+tracing = ["aimdb-core/tracing", "aimdb-embassy-adapter?/tracing"]
+log = ["aimdb-core/log", "aimdb-embassy-adapter?/log"]
+defmt = ["dep:defmt", "aimdb-core/defmt", "mountain-mqtt?/defmt", "aimdb-embassy-adapter?/defmt"]
 
 # Internal: the embedded backend's host smoke over `TokioNet::tcp()`
 # (`tests/tokio_broker.rs`) — a real TCP socket and a fake broker, no network

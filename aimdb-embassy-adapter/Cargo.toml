@@ -12,7 +12,7 @@ categories = ["embedded", "asynchronous", "no-std"]
 build = "build.rs"
 
 [features]
-default = ["alloc", "defmt"]
+default = ["alloc"]
 
 # Heap allocation support (required for Arc-based readers)
 alloc = []
