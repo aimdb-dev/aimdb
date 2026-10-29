@@ -19,6 +19,10 @@
 //!     .finish();
 //! # }
 //! ```
+//!
+//! The knobs have no scheme of their own: on a connector registered under
+//! another scheme ([`MqttConnector::scheme`](crate::MqttConnector::scheme)),
+//! the same calls follow `reg.link_to("mqtt-cloud://sensors/temp")`.
 
 use aimdb_core::{InboundConnectorBuilder, OutboundConnectorBuilder};
 use alloc::string::ToString;

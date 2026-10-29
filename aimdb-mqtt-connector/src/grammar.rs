@@ -1,4 +1,7 @@
 //! MQTT topic filters as a [`TopicGrammar`] (MQTT 3.1.1 §4.7).
+//!
+//! The grammar sees only the topic after `<scheme>://`, so it is the same for
+//! every scheme a connector registers under (`mqtt-plant://plant/+/flow`).
 
 use aimdb_core::{PatternPart, Spans, TopicFilter, TopicGrammar, TopicPattern};
 use alloc::{boxed::Box, format, string::String, vec::Vec};

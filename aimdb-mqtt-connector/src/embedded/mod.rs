@@ -74,12 +74,12 @@ pub(crate) type TlsSlot = aimdb_core::session::OneShot<TlsOptions>;
 /// Connect and collect the data-plane futures for a plain `mqtt://` session.
 pub(crate) fn build_plain<'a, D>(
     db: &'a aimdb_core::builder::AimDb,
+    scheme: &'a str,
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
     keep_alive_secs: u16,
-    dialer: &'a D,
-    write_buffer: usize,
+    backend: &'a crate::connector::Embedded<D>,
 ) -> Pin<Box<dyn Future<Output = aimdb_core::DbResult<Vec<EmbassyBoxFuture>>> + Send + 'a>>
 where
     D: aimdb_core::session::StreamDialer
@@ -89,8 +89,13 @@ where
         + Sync
         + 'static,
 {
+    let crate::connector::Embedded {
+        dialer,
+        write_buffer,
+    } = backend;
+    let write_buffer = *write_buffer;
     Box::pin(async move {
-        let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let inbound = aimdb_core::InboundDispatch::new(db, scheme, &crate::MqttGrammar)?;
         let topics = inbound_topics(&inbound)?;
         let broker = parse_broker_url(broker_url)?;
         if broker.tls {
@@ -99,8 +104,14 @@ where
         let connection_settings =
             static_connection_settings(client_id, credentials, broker.credentials.as_ref());
         let settings = Settings::from_keep_alive_secs(keep_alive_secs);
-        let (outbound, opts) =
-            prepare_outbound(db, write_buffer, &settings, &connection_settings, &topics)?;
+        let (outbound, opts) = prepare_outbound(
+            db,
+            scheme,
+            write_buffer,
+            &settings,
+            &connection_settings,
+            &topics,
+        )?;
 
         setup_manager(
             &broker,
@@ -121,6 +132,7 @@ where
 #[cfg(feature = "embedded-tls")]
 pub(crate) fn build_tls<'a, D>(
     db: &'a aimdb_core::builder::AimDb,
+    scheme: &'a str,
     broker_url: &'a str,
     client_id: Option<&'a str>,
     credentials: Option<&'a (String, String)>,
@@ -136,7 +148,7 @@ where
         + 'static,
 {
     Box::pin(async move {
-        let inbound = aimdb_core::InboundDispatch::new(db, "mqtt", &crate::MqttGrammar)?;
+        let inbound = aimdb_core::InboundDispatch::new(db, scheme, &crate::MqttGrammar)?;
         let topics = inbound_topics(&inbound)?;
         let broker = parse_broker_url(broker_url)?;
         if !broker.tls {
@@ -151,6 +163,7 @@ where
         let settings = Settings::from_keep_alive_secs(keep_alive_secs);
         let (outbound, opts) = prepare_outbound(
             db,
+            scheme,
             backend.write_buffer,
             &settings,
             &connection_settings,
@@ -203,12 +216,13 @@ fn inbound_topics(
 /// at QoS 1.
 fn prepare_outbound(
     db: &aimdb_core::builder::AimDb,
+    scheme: &str,
     write_buffer: usize,
     settings: &Settings,
     connection_settings: &ConnectionSettings<'static>,
     topics: &[Subscription],
 ) -> Result<(aimdb_core::OutboundRoutes, Vec<PublishOpts>), aimdb_core::DbError> {
-    let outbound = aimdb_core::OutboundRoutes::new(db, "mqtt")?;
+    let outbound = aimdb_core::OutboundRoutes::new(db, scheme)?;
     let size = |len: Result<usize, crate::embedded::manager::Error>| {
         len.map_err(|_| build_err("a packet could not be sized"))
     };

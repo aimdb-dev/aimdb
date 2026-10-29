@@ -183,6 +183,25 @@ let mqtt = MqttConnector::new("mqtts://broker.example.com:8883").await?;
 // Example with credentials: mqtt://username:password@broker:1883
 ```
 
+### Several Brokers
+
+Each connector registers a link scheme, `mqtt` by default. Give each broker
+its own scheme with `.scheme(…)`, and links pick the broker by it:
+
+```rust
+let builder = AimDbBuilder::new()
+    .runtime(runtime)
+    .with_connector(MqttConnector::new("mqtt://plant.local:1883").scheme("mqtt-plant"))
+    .with_connector(MqttConnector::new("mqtts://cloud.example.com:8883").scheme("mqtt-cloud"));
+
+reg.link_from("mqtt-plant://plant/boiler/flow_temp")   // plant broker
+reg.link_to("mqtt-cloud://plant/boiler/flow_avg")      // cloud broker
+```
+
+The scheme changes routing only: the broker URL's `mqtt://` or `mqtts://`
+still selects plain TCP or TLS. Two connectors on the same scheme fail at
+`build()`, since each would claim every link of that scheme.
+
 ### Link Configuration
 
 ```rust

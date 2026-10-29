@@ -508,3 +508,119 @@ async fn a_subscribe_too_large_for_the_write_ring_fails_the_build() {
         .await
         .expect("a larger ring carries it");
 }
+
+/// Two brokers in one db: each connector registers its own scheme and carries
+/// only that scheme's links, in both directions. The scheme is set before
+/// `.transport(..)`, so it must survive the switch to the embedded backend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_scheme_reaches_only_its_own_broker() {
+    use aimdb_core::buffer::BufferCfg;
+    use aimdb_core::AimDbBuilder;
+    use aimdb_mqtt_connector::MqttConnector;
+    use aimdb_tokio_adapter::net::TokioNet;
+    use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+
+    let plant_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cloud_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let plant_port = plant_listener.local_addr().unwrap().port();
+    let cloud_port = cloud_listener.local_addr().unwrap().port();
+    let plant = Arc::new(Mutex::new(Seen::default()));
+    let cloud = Arc::new(Mutex::new(Seen::default()));
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(
+            MqttConnector::new(format!("mqtt://127.0.0.1:{plant_port}"))
+                .scheme("mqtt-plant")
+                .transport(TokioNet::tcp())
+                .with_client_id("plant"),
+        )
+        .with_connector(
+            MqttConnector::new(format!("mqtt://127.0.0.1:{cloud_port}"))
+                .scheme("mqtt-cloud")
+                .transport(TokioNet::tcp())
+                .with_client_id("cloud"),
+        );
+
+    for (key, address) in [
+        ("setpoint", "mqtt-plant://plant/setpoint"),
+        ("command", "mqtt-cloud://cloud/command"),
+    ] {
+        builder.configure::<u64>(key, |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .link_from(address)
+                .with_deserializer(|_ctx, data: &[u8]| {
+                    core::str::from_utf8(data)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .ok_or_else(|| String::from("bad payload"))
+                })
+                .finish();
+        });
+    }
+    for (key, address, value) in [
+        ("flow", "mqtt-plant://plant/flow", 7u64),
+        ("flow_avg", "mqtt-cloud://cloud/flow_avg", 8u64),
+    ] {
+        builder.configure::<u64>(key, |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .source(move |_ctx, producer| async move {
+                    loop {
+                        producer.produce(value);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .link_to(address)
+                .with_serializer(|_ctx, v: &u64| Ok(v.to_string().into_bytes()))
+                .finish();
+        });
+    }
+    let (_db, runner) = builder
+        .build()
+        .await
+        .expect("one connector per scheme builds");
+
+    let both_ready = async {
+        let ready = |seen: &Mutex<Seen>| {
+            let seen = seen.lock().unwrap();
+            !seen.subscribes.is_empty() && !seen.published.is_empty()
+        };
+        while !(ready(&plant) && ready(&cloud)) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+
+    tokio::select! {
+        _ = runner.run() => panic!("the session loops returned"),
+        _ = fake_broker(plant_listener, plant.clone(), 0, None) => panic!("plant broker returned"),
+        _ = fake_broker(cloud_listener, cloud.clone(), 0, None) => panic!("cloud broker returned"),
+        _ = both_ready => {}
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            let (p, c) = (plant.lock().unwrap(), cloud.lock().unwrap());
+            panic!(
+                "watchdog: plant {} subscribes / {} publishes, cloud {} / {}",
+                p.subscribes.len(), p.published.len(), c.subscribes.len(), c.published.len()
+            );
+        }
+    }
+
+    for (seen, client_id, subscribed, published, payload) in [
+        (&plant, "plant", "plant/setpoint", "plant/flow", b"7"),
+        (&cloud, "cloud", "cloud/command", "cloud/flow_avg", b"8"),
+    ] {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.client_ids, [client_id]);
+        assert_eq!(
+            seen.subscribed_topics(),
+            [subscribed],
+            "{client_id} subscriptions"
+        );
+        assert!(
+            seen.published
+                .iter()
+                .all(|(topic, data)| topic == published && data == payload),
+            "{client_id} must publish only its own scheme's link; saw {:?}",
+            seen.published
+        );
+    }
+}
