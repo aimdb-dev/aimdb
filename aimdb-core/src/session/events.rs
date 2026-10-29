@@ -182,45 +182,10 @@ pub(crate) fn report(event: SessionEvent<'_>) {
     }
 }
 
-/// Poll-scoped capture: no thread-local state survives an await. Wrap spawned
-/// futures individually; unrelated tasks and parallel tests do not inherit it.
+// Poll-scoped capture: no thread-local state survives an await. Wrap spawned
+// futures individually; unrelated tasks and parallel tests do not inherit it.
 #[cfg(all(test, feature = "std"))]
-pub(super) mod capture {
-    use super::SessionEvent;
-    use core::future::{poll_fn, Future};
-    use std::{cell::RefCell, sync::Arc};
-
-    pub(in crate::session) type Observer = Arc<dyn Fn(&SessionEvent<'_>) + Send + Sync>;
-    std::thread_local! {
-        static CURRENT: RefCell<Option<Observer>> = const { RefCell::new(None) };
-    }
-
-    struct Guard(Option<Observer>);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CURRENT.with(|slot| {
-                slot.replace(self.0.take());
-            });
-        }
-    }
-
-    pub(in crate::session) fn with<T>(observer: Observer, f: impl FnOnce() -> T) -> T {
-        let _guard = Guard(CURRENT.with(|slot| slot.replace(Some(observer))));
-        f()
-    }
-
-    pub(in crate::session) async fn future<F: Future>(observer: Observer, future: F) -> F::Output {
-        let mut future = alloc::boxed::Box::pin(future);
-        poll_fn(|cx| with(observer.clone(), || future.as_mut().poll(cx))).await
-    }
-
-    pub(super) fn record(event: &SessionEvent<'_>) {
-        let observer = CURRENT.with(|slot| slot.borrow().clone());
-        if let Some(observer) = observer {
-            observer(event);
-        }
-    }
-}
+crate::__event_capture!(super::SessionEvent<'_>);
 
 #[cfg(all(test, feature = "std"))]
 mod tests;

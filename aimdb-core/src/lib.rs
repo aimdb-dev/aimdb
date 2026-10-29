@@ -60,6 +60,7 @@ extern crate alloc;
 // Must precede the other modules: `macro_rules!` visibility is textual.
 #[macro_use]
 mod log;
+mod event_capture;
 
 /// Implementation detail of the `log_*` macros; no stability guarantee.
 ///

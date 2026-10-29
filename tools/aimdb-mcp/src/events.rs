@@ -175,38 +175,5 @@ pub(crate) fn report(event: McpEvent<'_>) {
     }
 }
 
-/// Test-only poll-scoped observation. Spawned work must be wrapped explicitly.
 #[cfg(test)]
-#[allow(dead_code)]
-pub(crate) mod capture {
-    extern crate std;
-    use super::McpEvent;
-    use core::future::{poll_fn, Future};
-    use std::{boxed::Box, cell::RefCell, sync::Arc};
-    pub(crate) type Observer = Arc<dyn Fn(&McpEvent<'_>) + Send + Sync>;
-    std::thread_local! {
-        static CURRENT: RefCell<Option<Observer>> = const { RefCell::new(None) };
-    }
-    struct Guard(Option<Observer>);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CURRENT.with(|slot| {
-                slot.replace(self.0.take());
-            });
-        }
-    }
-    pub(crate) fn with<T>(observer: Observer, f: impl FnOnce() -> T) -> T {
-        let _guard = Guard(CURRENT.with(|slot| slot.replace(Some(observer))));
-        f()
-    }
-    pub(crate) async fn future<F: Future>(observer: Observer, future: F) -> F::Output {
-        let mut future = Box::pin(future);
-        poll_fn(|cx| with(observer.clone(), || future.as_mut().poll(cx))).await
-    }
-    pub(super) fn record(event: &McpEvent<'_>) {
-        let observer = CURRENT.with(|slot| slot.borrow().clone());
-        if let Some(observer) = observer {
-            observer(event);
-        }
-    }
-}
+aimdb_core::__event_capture!(super::McpEvent<'_>);
