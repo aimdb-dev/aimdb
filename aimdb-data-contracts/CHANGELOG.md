@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Records report their contract's schema to core (#332).** `linked_to`,
+  `linked_from`, `linked_*_with` and `observe` set the record's schema to
+  `T::NAME`/`T::VERSION` (`RecordRegistrar::schema`), so `graph.nodes` and
+  `record.list` show it. `SchemaRegistrarExt::contract_schema()` sets it for
+  records with neither, available whenever `aimdb-core` is enabled.
+
 - **`WireFormat`** (`Unspecified`, `Json`, `Postcard`, `Cdr`) and the defaulted
   constants `Linkable::WIRE_FORMAT` and `LinkCodec::WIRE_FORMAT`. The codec
   verbs (`linked_to`, `linked_from`, `linked_*_with`, `with_link_codec`)

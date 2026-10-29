@@ -73,6 +73,12 @@ pub mod __private {
 mod streamable;
 pub use streamable::Streamable;
 
+#[cfg(feature = "aimdb-core")]
+mod contract_schema;
+
+#[cfg(feature = "aimdb-core")]
+pub use contract_schema::SchemaRegistrarExt;
+
 #[cfg(feature = "linkable")]
 mod link_codec;
 

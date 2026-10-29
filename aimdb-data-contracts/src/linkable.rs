@@ -13,6 +13,9 @@ use crate::{link_codecs, LinkCodec, LinkCodecBuilderExt, Linkable};
 
 /// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
 /// [`Linkable`] types.
+///
+/// Both also report `T::NAME`/`T::VERSION` as the record's schema
+/// ([`RecordRegistrar::schema`]).
 pub trait LinkableRegistrarExt<'a, T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
@@ -34,13 +37,15 @@ where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
     fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
-        self.link_from(url)
+        self.schema(T::NAME, T::VERSION)
+            .link_from(url)
             .with_link_codec(link_codecs::Default)
             .finish()
     }
 
     fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
-        self.link_to(url)
+        self.schema(T::NAME, T::VERSION)
+            .link_to(url)
             .with_link_codec(link_codecs::Default)
             .finish()
     }
@@ -74,14 +79,20 @@ where
     where
         C: LinkCodec<T>,
     {
-        self.link_from(url).with_link_codec(codec).finish()
+        self.schema(T::NAME, T::VERSION)
+            .link_from(url)
+            .with_link_codec(codec)
+            .finish()
     }
 
     fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
     where
         C: LinkCodec<T>,
     {
-        self.link_to(url).with_link_codec(codec).finish()
+        self.schema(T::NAME, T::VERSION)
+            .link_to(url)
+            .with_link_codec(codec)
+            .finish()
     }
 }
 

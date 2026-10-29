@@ -813,6 +813,13 @@ mod tests {
             });
             let (db, _runner) = builder.build().await.expect("build");
 
+            // #332: the link verbs report the contract's schema.
+            for key in ["reading.formats", "reading.formats.in"] {
+                let node = db.inner().dependency_graph().node(key).unwrap();
+                let schema = node.schema.as_ref().expect("schema set by link verbs");
+                assert_eq!((schema.name.as_str(), schema.version), (Reading::NAME, 1));
+            }
+
             let format_of = |topic: &str, config: &[(String, String)]| {
                 let records = config
                     .iter()
