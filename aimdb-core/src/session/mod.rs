@@ -374,6 +374,11 @@ pub enum Outbound<'a> {
 /// [`Listener::accept`] or [`Dialer::connect`]).
 pub trait Connection: Send {
     /// Receive one logical frame. `Ok(None)` signals the peer closed.
+    ///
+    /// # Cancellation
+    ///
+    /// Must be cancel-safe: the session loops drop this future whenever another
+    /// `select` arm wins, so a partly read frame must stay with the connection.
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>>;
 
     /// Send one logical frame.
