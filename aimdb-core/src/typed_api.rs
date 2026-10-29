@@ -2532,7 +2532,7 @@ mod tests {
         let route = &o.routes()[0];
         assert_eq!(&*route.default_topic, "tele/out");
         assert_eq!(route.payload_capacity, 4);
-        assert_eq!(route.config.record_index, Some(0));
+        assert_eq!(route.record_index, 0);
         assert_eq!(pull(&mut o).await, Some(("tele/out".into(), 5, false)));
         assert_eq!(pull(&mut o).await, None);
     }
@@ -2641,7 +2641,7 @@ mod tests {
         assert!(infos
             .iter()
             .all(|i| i.type_id == TypeId::of::<TestRecord>()));
-        assert!(infos.iter().all(|i| i.config.record_index == Some(0)));
+        assert!(infos.iter().all(|i| i.record_index == 0));
         assert_eq!(
             infos[0].config.protocol_options,
             vec![("qos".to_string(), "2".to_string())]

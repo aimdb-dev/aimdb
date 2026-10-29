@@ -24,7 +24,10 @@ pub struct RouteInfo {
     pub type_id: core::any::TypeId,
     /// The topic from the link URL, used when no topic is written.
     pub default_topic: Arc<str>,
-    /// The link's configuration, with `record_index` set.
+    /// Index of the record the link belongs to, in registration order (the
+    /// record's `RecordId`). Set by core, never from the link's query.
+    pub record_index: usize,
+    /// The link's configuration.
     pub config: ConnectorConfig,
     /// Longest topic the link's writer produces; 0 without a writer.
     pub topic_capacity: usize,
@@ -217,13 +220,12 @@ impl OutboundRoutes {
 
         for (record_index, type_id, link) in db.outbound_links(scheme) {
             let parts = (link.route_factory)(db);
-            let mut config = ConnectorConfig::from_query(&link.config);
-            config.record_index = Some(record_index);
             routes.push(RouteInfo {
                 id: routes.len(),
                 type_id,
                 default_topic: Arc::from(link.url.resource_id()),
-                config,
+                record_index,
+                config: ConnectorConfig::from_query(&link.config),
                 topic_capacity: parts.topic_capacity,
                 payload_capacity: parts.payload_capacity,
             });

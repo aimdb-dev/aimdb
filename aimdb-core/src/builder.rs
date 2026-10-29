@@ -1269,13 +1269,11 @@ impl AimDb {
                 match self.inbound_route(entry, link, &topic, grammar) {
                     Ok(route) => {
                         routes.push(route);
-                        let mut config =
-                            crate::transport::ConnectorConfig::from_query(&link.config);
-                        config.record_index = Some(record_index);
                         infos.push(crate::InboundRouteInfo {
                             topic: Arc::from(topic),
                             type_id: entry.type_id,
-                            config,
+                            record_index,
+                            config: crate::transport::ConnectorConfig::from_query(&link.config),
                         });
                     }
                     Err(message) => errors.push(crate::ConfigError::new(
