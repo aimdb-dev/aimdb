@@ -377,10 +377,8 @@ pub trait Connection: Send {
     ///
     /// # Cancellation
     ///
-    /// Must be cancel-safe: both session loops build this future afresh on
-    /// every `select` iteration and drop it whenever another arm wins. Bytes
-    /// of a frame read before the drop have to stay with the connection, so
-    /// the next `recv` resumes the frame instead of losing it (#202).
+    /// Must be cancel-safe: the session loops drop this future whenever another
+    /// `select` arm wins, so a partly read frame must stay with the connection.
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>>;
 
     /// Send one logical frame.

@@ -21,9 +21,7 @@ use aimdb_core::session::{
 pub struct UdsConnection {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
-    /// The line read so far. It lives here, not in the `recv` future, because
-    /// both session loops drop that future whenever another `select` arm wins
-    /// (#202): a partial line must survive into the next `recv`.
+    /// Partial line, kept here so it survives a dropped `recv` future.
     pending: Vec<u8>,
     peer: PeerInfo,
 }
@@ -45,12 +43,9 @@ impl UdsConnection {
 impl Connection for UdsConnection {
     fn recv(&mut self) -> BoxFut<'_, TransportResult<Option<Vec<u8>>>> {
         Box::pin(async move {
-            // `read_until` appends to `pending` and resumes where a dropped call
-            // stopped, so `recv` is cancel-safe. Not `read_line`: tokio moves the
-            // `String` into its future and a drop loses what was read.
+            // `read_until` resumes after a drop; `read_line` would lose the line.
             match self.reader.read_until(b'\n', &mut self.pending).await {
-                // EOF with nothing buffered — peer closed. A partial line before
-                // EOF is still delivered below, as `read_line` did.
+                // EOF with nothing buffered — peer closed.
                 Ok(_) if self.pending.is_empty() => Ok(None),
                 Ok(_) => {
                     let mut line = core::mem::take(&mut self.pending);
@@ -146,8 +141,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// #202: a `recv` dropped mid-line (as when another `select` arm wins)
-    /// must not lose the bytes it already read.
+    /// A `recv` dropped mid-line must not lose the bytes it already read.
     #[tokio::test]
     async fn a_dropped_recv_keeps_the_partial_line() {
         let (ours, mut theirs) = UnixStream::pair().unwrap();
@@ -165,8 +159,7 @@ mod tests {
         assert_eq!(frame, b"{\"id\":1,\"m\":\"ping\"}");
     }
 
-    /// One frame per line, a final unterminated line is still a frame, then
-    /// EOF ends the stream.
+    /// One frame per line; an unterminated last line is a frame, then EOF.
     #[tokio::test]
     async fn frames_split_on_newlines_until_eof() {
         let (ours, mut theirs) = UnixStream::pair().unwrap();
