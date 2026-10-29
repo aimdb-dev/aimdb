@@ -11,6 +11,11 @@
 //! Notes:
 //! - The no-op branch *borrows* (and therefore evaluates) the arguments — keep
 //!   them cheap (getters, lengths, references), never allocate in hot paths.
+//! - `target: <const &str>,` before the format string sets the `tracing` /
+//!   `log` target (default: the calling module, as both crates do). Events
+//!   reported from a central `events.rs` pass the module that raised them, so
+//!   per-module target filters keep matching. `defmt` has no runtime target
+//!   and ignores it: `DEFMT_LOG` filters on the expanding module.
 //! - Under `defmt`, every argument must implement `defmt::Format` (the format
 //!   strings are shared: `defmt` reads `{}` and `{:?}` alike). Core's own
 //!   types do (#352); a crate logging its own types derives or implements
@@ -52,72 +57,92 @@
 
 #[macro_export]
 macro_rules! log_trace {
-    ($s:literal $(, $x:expr)* $(,)?) => {{
+    (target: $t:expr, $s:literal $(, $x:expr)* $(,)?) => {{
+        let _: &str = $t;
         #[cfg(feature = "tracing")]
-        $crate::__private::tracing::trace!($s $(, $x)*);
+        $crate::__private::tracing::trace!(target: $t, $s $(, $x)*);
         #[cfg(feature = "log")]
-        $crate::__private::log::trace!($s $(, $x)*);
+        $crate::__private::log::trace!(target: $t, $s $(, $x)*);
         #[cfg(feature = "defmt")]
         ::defmt::trace!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log", feature = "defmt")))]
         { let _ = ($( & $x ),*); }
     }};
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        $crate::log_trace!(target: ::core::module_path!(), $s $(, $x)*)
+    };
 }
 
 #[macro_export]
 macro_rules! log_debug {
-    ($s:literal $(, $x:expr)* $(,)?) => {{
+    (target: $t:expr, $s:literal $(, $x:expr)* $(,)?) => {{
+        let _: &str = $t;
         #[cfg(feature = "tracing")]
-        $crate::__private::tracing::debug!($s $(, $x)*);
+        $crate::__private::tracing::debug!(target: $t, $s $(, $x)*);
         #[cfg(feature = "log")]
-        $crate::__private::log::debug!($s $(, $x)*);
+        $crate::__private::log::debug!(target: $t, $s $(, $x)*);
         #[cfg(feature = "defmt")]
         ::defmt::debug!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log", feature = "defmt")))]
         { let _ = ($( & $x ),*); }
     }};
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        $crate::log_debug!(target: ::core::module_path!(), $s $(, $x)*)
+    };
 }
 
 #[macro_export]
 macro_rules! log_info {
-    ($s:literal $(, $x:expr)* $(,)?) => {{
+    (target: $t:expr, $s:literal $(, $x:expr)* $(,)?) => {{
+        let _: &str = $t;
         #[cfg(feature = "tracing")]
-        $crate::__private::tracing::info!($s $(, $x)*);
+        $crate::__private::tracing::info!(target: $t, $s $(, $x)*);
         #[cfg(feature = "log")]
-        $crate::__private::log::info!($s $(, $x)*);
+        $crate::__private::log::info!(target: $t, $s $(, $x)*);
         #[cfg(feature = "defmt")]
         ::defmt::info!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log", feature = "defmt")))]
         { let _ = ($( & $x ),*); }
     }};
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        $crate::log_info!(target: ::core::module_path!(), $s $(, $x)*)
+    };
 }
 
 #[macro_export]
 macro_rules! log_warn {
-    ($s:literal $(, $x:expr)* $(,)?) => {{
+    (target: $t:expr, $s:literal $(, $x:expr)* $(,)?) => {{
+        let _: &str = $t;
         #[cfg(feature = "tracing")]
-        $crate::__private::tracing::warn!($s $(, $x)*);
+        $crate::__private::tracing::warn!(target: $t, $s $(, $x)*);
         #[cfg(feature = "log")]
-        $crate::__private::log::warn!($s $(, $x)*);
+        $crate::__private::log::warn!(target: $t, $s $(, $x)*);
         #[cfg(feature = "defmt")]
         ::defmt::warn!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log", feature = "defmt")))]
         { let _ = ($( & $x ),*); }
     }};
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        $crate::log_warn!(target: ::core::module_path!(), $s $(, $x)*)
+    };
 }
 
 #[macro_export]
 macro_rules! log_error {
-    ($s:literal $(, $x:expr)* $(,)?) => {{
+    (target: $t:expr, $s:literal $(, $x:expr)* $(,)?) => {{
+        let _: &str = $t;
         #[cfg(feature = "tracing")]
-        $crate::__private::tracing::error!($s $(, $x)*);
+        $crate::__private::tracing::error!(target: $t, $s $(, $x)*);
         #[cfg(feature = "log")]
-        $crate::__private::log::error!($s $(, $x)*);
+        $crate::__private::log::error!(target: $t, $s $(, $x)*);
         #[cfg(feature = "defmt")]
         ::defmt::error!($s $(, $x)*);
         #[cfg(not(any(feature = "tracing", feature = "log", feature = "defmt")))]
         { let _ = ($( & $x ),*); }
     }};
+    ($s:literal $(, $x:expr)* $(,)?) => {
+        $crate::log_error!(target: ::core::module_path!(), $s $(, $x)*)
+    };
 }
 
 /// Logs `T` through its `Display` impl in every destination, `defmt` included

@@ -1,5 +1,15 @@
 //! Typed operational reporting; payloads live only for the synchronous call.
 
+/// `tracing`/`log` targets: the module that raises each event, as before
+/// logging moved here, so per-module target filters keep matching.
+/// `tests/log_targets.rs` in aimdb-core checks each names a real module.
+#[allow(dead_code)] // some arms are feature-gated
+mod target {
+    pub(super) const BUILDER_EXT: &str = "aimdb_persistence::builder_ext";
+    pub(super) const EXT: &str = "aimdb_persistence::ext";
+    pub(super) const QUERY_EXT: &str = "aimdb_persistence::query_ext";
+}
+
 #[derive(Debug)]
 pub(crate) enum PersistenceEvent<'a> {
     CleanupFailed {
@@ -27,21 +37,40 @@ pub(crate) fn report(event: PersistenceEvent<'_>) {
     capture::record(&event);
     match event {
         PersistenceEvent::CleanupFailed { error } => {
-            aimdb_core::log_warn!("Persistence cleanup failed: {}", error);
+            aimdb_core::log_warn!(
+                target: target::BUILDER_EXT,
+                "Persistence cleanup failed: {}",
+                error
+            );
             #[cfg(not(any(feature = "tracing", feature = "log")))]
             eprintln!("[aimdb-persistence] retention cleanup failed: {error}");
         }
         PersistenceEvent::BackendMissing { record } => {
-            aimdb_core::log_warn!("Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op", record);
+            aimdb_core::log_warn!(
+                target: target::EXT,
+                "Record '{}' marked for persistence, but no backend is configured via with_persistence(); .persist() will be a no-op",
+                record
+            );
         }
         PersistenceEvent::SerializeFailed { record, error } => {
-            aimdb_core::log_warn!("Persistence: failed to serialize '{}': {}", record, error);
+            aimdb_core::log_warn!(
+                target: target::EXT,
+                "Persistence: failed to serialize '{}': {}",
+                record,
+                error
+            );
         }
         PersistenceEvent::StoreFailed { record, error } => {
-            aimdb_core::log_warn!("Persistence: failed to store '{}': {}", record, error);
+            aimdb_core::log_warn!(
+                target: target::EXT,
+                "Persistence: failed to store '{}': {}",
+                record,
+                error
+            );
         }
         PersistenceEvent::RowDecodeFailed { record, error } => {
             aimdb_core::log_warn!(
+                target: target::QUERY_EXT,
                 "Skipping persisted row for '{}': deserialization failed: {}",
                 record,
                 error
