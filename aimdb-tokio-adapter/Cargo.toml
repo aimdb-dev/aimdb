@@ -66,6 +66,8 @@ log = "0.4"
 [dev-dependencies]
 # For async testing
 tokio-test = { workspace = true }
+# `test-util` for paused time (`start_paused`) in the clock tests.
+tokio = { workspace = true, features = ["test-util", "macros"] }
 futures = { workspace = true }
 
 # For drain integration tests
