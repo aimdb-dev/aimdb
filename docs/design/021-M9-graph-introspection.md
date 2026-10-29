@@ -172,7 +172,9 @@ Returns the full dependency graph — all nodes, all edges, topological order.
         "buffer_type": "spmc_ring",
         "buffer_capacity": 100,
         "tap_count": 1,
-        "has_outbound_link": false
+        "has_outbound_link": false,
+        "outbound_links": [],
+        "schema": { "name": "temperature", "version": 2 }
       },
       {
         "key": "forecast.vienna.24h",
@@ -180,7 +182,9 @@ Returns the full dependency graph — all nodes, all edges, topological order.
         "buffer_type": "spmc_ring",
         "buffer_capacity": 100,
         "tap_count": 1,
-        "has_outbound_link": false
+        "has_outbound_link": false,
+        "outbound_links": [],
+        "schema": null
       },
       {
         "key": "validation.vienna",
@@ -188,7 +192,9 @@ Returns the full dependency graph — all nodes, all edges, topological order.
         "buffer_type": "spmc_ring",
         "buffer_capacity": 500,
         "tap_count": 1,
-        "has_outbound_link": false
+        "has_outbound_link": false,
+        "outbound_links": [],
+        "schema": null
       }
     ],
     "edges": [

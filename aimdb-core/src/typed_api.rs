@@ -527,6 +527,17 @@ where
         }
     }
 
+    /// Sets the data-contract schema this record carries, reported in the
+    /// dependency graph (`graph.nodes`) and in `record.list`.
+    ///
+    /// `aimdb-data-contracts` calls this from `SchemaType` (`linked_to`,
+    /// `linked_from`, `observe`, `contract_schema`). Setting the same schema
+    /// again does nothing; a different one fails `build()`.
+    pub fn schema(&mut self, name: &str, version: u32) -> &mut Self {
+        self.rec.set_schema(name, version);
+        self
+    }
+
     /// Registers a producer service for this record type.
     ///
     /// The closure receives the [`RuntimeContext`](crate::RuntimeContext)
@@ -2635,5 +2646,81 @@ mod tests {
             infos[0].config.protocol_options,
             vec![("qos".to_string(), "2".to_string())]
         );
+    }
+
+    /// #332: a record's schema and its outbound link addresses reach the
+    /// graph node and `record.list`.
+    #[tokio::test]
+    async fn graph_node_carries_schema_and_outbound_links() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.out", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer));
+            reg.schema("flow", 2).schema("flow", 2);
+            reg.link_to("mqtt://plant/boiler/flow_avg")
+                .with_serializer(le)
+                .finish();
+            reg.link_to("mqtt://plant/boiler/flow_raw")
+                .with_serializer(le)
+                .finish();
+        });
+        builder.configure::<TestRecord>("rec.plain", |_reg| {});
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        let graph = db.inner().dependency_graph();
+        let out = graph.node("rec.out").unwrap();
+        assert_eq!(
+            out.schema,
+            Some(crate::graph::SchemaInfo {
+                name: "flow".to_string(),
+                version: 2
+            })
+        );
+        assert_eq!(
+            out.outbound_links,
+            [
+                "mqtt://plant/boiler/flow_avg",
+                "mqtt://plant/boiler/flow_raw"
+            ]
+        );
+        assert!(out.has_outbound_link);
+        let plain = graph.node("rec.plain").unwrap();
+        assert_eq!(
+            (plain.schema.as_ref(), plain.has_outbound_link),
+            (None, false)
+        );
+        assert!(plain.outbound_links.is_empty());
+
+        #[cfg(feature = "remote")]
+        {
+            let records = db.list_records();
+            let out = records.iter().find(|r| r.record_key == "rec.out").unwrap();
+            assert_eq!(out.schema_type.as_deref(), Some("flow"));
+            assert_eq!(out.schema_version, Some(2));
+            let plain = records
+                .iter()
+                .find(|r| r.record_key == "rec.plain")
+                .unwrap();
+            assert_eq!(
+                (plain.schema_type.as_deref(), plain.schema_version),
+                (None, None)
+            );
+        }
+    }
+
+    /// #332: two different schemas on one record fail `build()`.
+    #[tokio::test]
+    async fn conflicting_schemas_fail_build() {
+        let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+        builder.configure::<TestRecord>("rec.x", |reg| {
+            reg.schema("flow", 1).schema("flow", 2);
+        });
+        let Err(crate::DbError::InvalidConfiguration { errors }) = builder.build().await else {
+            panic!("build must fail");
+        };
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].record_key, "rec.x");
+        assert!(errors[0].message.contains("flow v1"), "{errors:?}");
     }
 }

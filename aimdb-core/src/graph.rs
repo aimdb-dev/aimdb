@@ -38,6 +38,22 @@ pub enum RecordOrigin {
 }
 
 // ============================================================================
+// Schema
+// ============================================================================
+
+/// The data-contract schema a record carries, set while it is configured
+/// (`RecordRegistrar::schema`; `aimdb-data-contracts` fills it from
+/// `SchemaType`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SchemaInfo {
+    /// Schema name (e.g. "temperature")
+    pub name: String,
+    /// Schema version
+    pub version: u32,
+}
+
+// ============================================================================
 // Graph Node
 // ============================================================================
 
@@ -55,8 +71,13 @@ pub struct GraphNode {
     pub buffer_capacity: Option<usize>,
     /// Number of taps attached
     pub tap_count: usize,
-    /// Whether an outbound link is configured
+    /// Whether an outbound link is configured; `!outbound_links.is_empty()`,
+    /// kept for peers that read only this flag.
     pub has_outbound_link: bool,
+    /// The address of each outbound link (e.g. "mqtt://plant/boiler/flow_avg")
+    pub outbound_links: Vec<String>,
+    /// The schema the record carries, if one was set
+    pub schema: Option<SchemaInfo>,
 }
 
 // ============================================================================
@@ -294,13 +315,14 @@ impl DependencyGraph {
                     }
                 }
 
-                // Add outbound link edges if present
-                if info.has_outbound_link {
+                // One edge per outbound link, named by its scheme
+                for address in &info.outbound_links {
+                    let protocol = address.split_once("://").map_or("", |(scheme, _)| scheme);
                     edges.push(GraphEdge {
                         from: Some(info.key.clone()),
                         to: None,
                         edge_type: EdgeType::LinkOut {
-                            protocol: "unknown".to_string(), // Protocol info not available here
+                            protocol: protocol.to_string(),
                         },
                     });
                 }
@@ -359,6 +381,8 @@ mod tests {
             buffer_capacity: None,
             tap_count: 0,
             has_outbound_link: false,
+            outbound_links: Vec::new(),
+            schema: None,
         }
     }
 
@@ -475,5 +499,26 @@ mod tests {
             2,
             "both transforms of `beta` must lead sometimes"
         );
+    }
+
+    /// #332: one link-out edge per outbound link, named by its scheme.
+    #[test]
+    fn link_out_edges_follow_outbound_links() {
+        let mut out = node("out", RecordOrigin::Source);
+        out.outbound_links = vec![
+            "mqtt://plant/boiler/flow_avg".to_string(),
+            "knx://1/2/3".to_string(),
+        ];
+        out.has_outbound_link = true;
+        let graph = DependencyGraph::build_and_validate(vec![out]).unwrap();
+        let protocols: Vec<&str> = graph
+            .edges()
+            .iter()
+            .filter_map(|e| match &e.edge_type {
+                EdgeType::LinkOut { protocol } => Some(protocol.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(protocols, ["mqtt", "knx"]);
     }
 }

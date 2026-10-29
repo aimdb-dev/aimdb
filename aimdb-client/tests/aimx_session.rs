@@ -133,6 +133,11 @@ async fn aimx_roundtrip_over_uds_production_server() {
         nodes.len() >= 2,
         "configured records should appear as nodes"
     );
+    // #332: both fields are always sent, empty when there is nothing to report.
+    for node in &nodes {
+        assert!(node["outbound_links"].is_array(), "{node}");
+        assert!(node.get("schema").is_some(), "{node}");
+    }
     let _edges = conn.graph_edges().await.expect("graph edges");
     let topo = conn.graph_topo_order().await.expect("topo order");
     assert!(!topo.is_empty(), "topo order should list the records");
