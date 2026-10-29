@@ -134,10 +134,7 @@ fn generate_dot(name: &str, nodes: &[Value], edges: &[Value]) -> String {
             .get("key")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let origin = node
-            .get("origin")
-            .and_then(|v| v.as_str())
-            .unwrap_or("passive");
+        let origin = table::variant_name(node.get("origin")).unwrap_or("passive");
 
         // Escape the key for DOT format
         let escaped_key = key.replace('"', "\\\"");
@@ -146,7 +143,7 @@ fn generate_dot(name: &str, nodes: &[Value], edges: &[Value]) -> String {
         let color = match origin {
             "source" => "lightblue",
             "link" => "lightgreen",
-            "transform" => "lightyellow",
+            "transform" | "transform_join" => "lightyellow",
             _ => "lightgray",
         };
 
@@ -162,17 +159,14 @@ fn generate_dot(name: &str, nodes: &[Value], edges: &[Value]) -> String {
     for edge in edges {
         let from = edge.get("from").and_then(|v| v.as_str());
         let to = edge.get("to").and_then(|v| v.as_str());
-        let edge_type = edge
-            .get("edge_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("data_flow");
+        let edge_type = table::variant_name(edge.get("edge_type")).unwrap_or("-");
 
         if let (Some(from), Some(to)) = (from, to) {
             let from_id = from.replace(['.', ':', '-'], "_");
             let to_id = to.replace(['.', ':', '-'], "_");
 
             let style = match edge_type {
-                "transform_input" => "style=bold, color=blue",
+                "transform" | "transform_join" => "style=bold, color=blue",
                 "tap" => "style=dashed, color=gray",
                 _ => "",
             };
@@ -183,4 +177,35 @@ fn generate_dot(name: &str, nodes: &[Value], edges: &[Value]) -> String {
 
     dot.push_str("}\n");
     dot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Origins and edge types with data are objects on the wire; DOT styles
+    /// them by variant name.
+    #[test]
+    fn dot_styles_object_origins_and_edges() {
+        let nodes = vec![
+            serde_json::json!({"key": "flow.raw", "origin": {"link": {"protocol": "knx", "address": "knx://1/2/3"}}}),
+            serde_json::json!({"key": "flow.avg", "origin": {"transform": {"input": "flow.raw"}}}),
+        ];
+        let edges = vec![
+            serde_json::json!({"from": "flow.raw", "to": "flow.avg", "edge_type": "transform"}),
+        ];
+        let dot = generate_dot("g", &nodes, &edges);
+        assert!(
+            dot.contains("flow_raw [label=\"flow.raw\\n(link)\", fillcolor=lightgreen"),
+            "{dot}"
+        );
+        assert!(
+            dot.contains("flow_avg [label=\"flow.avg\\n(transform)\", fillcolor=lightyellow"),
+            "{dot}"
+        );
+        assert!(
+            dot.contains("flow_raw -> flow_avg [style=bold, color=blue]"),
+            "{dot}"
+        );
+    }
 }

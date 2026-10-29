@@ -133,6 +133,17 @@ pub fn format_instance_info(instance: &InstanceInfo) -> String {
     output
 }
 
+/// The variant name of a serialized graph enum (`origin`, `edge_type`): a
+/// unit variant is a string (`"source"`), one with data an object with a
+/// single key (`{"link": {...}}`).
+pub fn variant_name(value: Option<&serde_json::Value>) -> Option<&str> {
+    match value? {
+        serde_json::Value::String(name) => Some(name),
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
 /// Format graph nodes as a table
 pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
     if nodes.is_empty() {
@@ -154,7 +165,7 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
     // Add rows
     for node in nodes {
         let key = node.get("key").and_then(|v| v.as_str()).unwrap_or("-");
-        let origin = node.get("origin").and_then(|v| v.as_str()).unwrap_or("-");
+        let origin = variant_name(node.get("origin")).unwrap_or("-");
         let buffer_type = node
             .get("buffer_type")
             .and_then(|v| v.as_str())
@@ -173,7 +184,7 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
         let origin_colored = match origin {
             "source" => origin.cyan().to_string(),
             "link" => origin.green().to_string(),
-            "transform" => origin.yellow().to_string(),
+            "transform" | "transform_join" => origin.yellow().to_string(),
             _ => origin.dimmed().to_string(),
         };
 
@@ -217,15 +228,11 @@ pub fn format_graph_edges_table(edges: &[serde_json::Value]) -> String {
             .get("to")
             .and_then(|v| v.as_str())
             .unwrap_or("(side-effect)");
-        let edge_type = edge
-            .get("edge_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let edge_type = variant_name(edge.get("edge_type")).unwrap_or("-");
 
         let edge_type_colored = match edge_type {
-            "transform_input" => edge_type.blue().bold().to_string(),
+            "transform" | "transform_join" => edge_type.blue().bold().to_string(),
             "tap" => edge_type.dimmed().to_string(),
-            "data_flow" => edge_type.to_string(),
             _ => edge_type.to_string(),
         };
 
@@ -374,5 +381,31 @@ mod tests {
 │ Load │ type-load │ single_latest │ 1         │ 0         │ no       │ 0.75 (0.5..1, avg 0.625) │
 └──────┴───────────┴───────────────┴───────────┴───────────┴──────────┴──────────────────────────┘"
         );
+    }
+
+    /// Origins and edge types with data are objects on the wire; the tables
+    /// show their variant name.
+    #[test]
+    fn graph_tables_show_object_variants() {
+        colored::control::set_override(false);
+        let nodes = vec![
+            serde_json::json!({"key": "flow.avg", "origin": {"transform": {"input": "flow.raw"}},
+                "buffer_type": "single_latest", "tap_count": 0, "has_outbound_link": false}),
+            serde_json::json!({"key": "flow.raw",
+                "origin": {"link": {"protocol": "knx", "address": "knx://1/2/3"}},
+                "buffer_type": "spmc_ring", "tap_count": 1, "has_outbound_link": false}),
+        ];
+        let table = format_graph_nodes_table(&nodes);
+        assert!(table.contains("transform"), "{table}");
+        assert!(table.contains("link"), "{table}");
+
+        let edges = vec![
+            serde_json::json!({"from": "flow.raw", "to": "flow.avg", "edge_type": "transform"}),
+            serde_json::json!({"from": "flow.avg", "to": null,
+                "edge_type": {"link_out": {"protocol": "mqtt"}}}),
+        ];
+        let table = format_graph_edges_table(&edges);
+        assert!(table.contains("link_out"), "{table}");
+        assert!(table.contains("transform"), "{table}");
     }
 }

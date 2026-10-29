@@ -448,7 +448,7 @@ dot -Tpng aimdb-graph.dot -o aimdb-graph.png
 open aimdb-graph.png
 
 # Export as JSON for further analysis
-aimdb graph nodes --format json | jq '.[] | select(.origin == "transform")'
+aimdb graph nodes --format json | jq '.[] | select(.origin | objects | has("transform"))'
 ```
 
 ## Protocol
