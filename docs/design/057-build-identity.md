@@ -313,7 +313,7 @@ Clients read from 0 until they hold `total` bytes.
 
 - Serde types `InstanceInfoReply`, `BuildReply`, `PostLinkReply`,
   `PostLinkChunk` and both limits live in `aimdb_core::remote::protocol`.
-- `aimdb_core::remote::{instance_info_reply(&AimDb), post_link_chunk_reply(&AimDb, offset, len)}`
+- `aimdb_core::remote::{instance_info_reply(&AimDb), post_link_chunk_reply(&AimDb, &params)}`
   serve both the core AimX dispatch and the WebSocket dispatch.
 - `post_link_chunk_reply` returns `Result<Vec<u8>, PostLinkError>` with
   `PostLinkError::{NotWritten, InvalidParams}` (`remote` does not depend on

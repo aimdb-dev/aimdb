@@ -231,6 +231,16 @@ impl AimxSession {
             let name = str_field(&params, "name").ok_or(RpcError::NotFound)?;
             return self.record_get(&name).map(DispatchReply::RawJson);
         }
+        // Identity (3.1): built as JSON bytes, the build-info payload spliced in.
+        if method == "instance.info" {
+            let reply = crate::remote::instance_info_reply(&self.db);
+            return Ok(DispatchReply::RawJson(Payload::from(reply.as_slice())));
+        }
+        if method == "instance.post_link" {
+            return crate::remote::post_link_chunk_reply(&self.db, &params)
+                .map(|reply| DispatchReply::RawJson(Payload::from(reply.as_slice())))
+                .map_err(map_post_link_err);
+        }
 
         let value = match method {
             // Version gate: refuse an incompatible/absent client version at the
@@ -454,6 +464,7 @@ impl AimxSession {
             writable_records,
             max_subscriptions: Some(self.config.max_subs_per_connection),
             authenticated: Some(false),
+            instance_name: self.db.identity().name().map(String::from),
         };
         json!(welcome)
     }
@@ -487,6 +498,15 @@ fn to_payload(v: &Value) -> Payload {
 /// Extract a string field from a params object.
 fn str_field(params: &Value, key: &str) -> Option<String> {
     params.get(key).and_then(|v| v.as_str()).map(String::from)
+}
+
+/// Map a [`PostLinkError`](crate::remote::PostLinkError) onto the wire's
+/// error set.
+fn map_post_link_err(e: crate::remote::PostLinkError) -> RpcError {
+    match e {
+        crate::remote::PostLinkError::NotWritten => RpcError::NotFound,
+        crate::remote::PostLinkError::InvalidParams => RpcError::Internal,
+    }
 }
 
 /// Map a [`DbError`] onto the reshaped wire's coarse [`RpcError`] set.
@@ -594,5 +614,284 @@ mod tests {
         })
         .await;
         assert_eq!(*seen.lock().unwrap(), ["version", "wildcard"]);
+    }
+
+    // ── instance.info / instance.post_link (3.1) ─────────────────────────
+
+    /// The post-link region a test section carries.
+    enum Region<'a> {
+        None,
+        Erased,
+        Written(&'a [u8]),
+        /// A length past the region's end.
+        Malformed,
+    }
+
+    /// A format-1 section around `payload`, by hand, leaked as `section!()`.
+    fn section(payload: &[u8], region: Region<'_>) -> &'static [u8] {
+        let region_len = match region {
+            Region::None => 0,
+            Region::Written(data) => 4 + data.len(),
+            Region::Erased | Region::Malformed => 16,
+        };
+        let region_off = (32 + payload.len()).div_ceil(8) * 8;
+        let total = region_off + region_len;
+        let mut b = vec![0u8; total];
+        b[..8].copy_from_slice(&aimdb_build_info::MAGIC);
+        b[8..10].copy_from_slice(&1u16.to_le_bytes());
+        b[10..12].copy_from_slice(&32u16.to_le_bytes());
+        b[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        b[16..20].copy_from_slice(&(region_off as u32).to_le_bytes());
+        b[20..24].copy_from_slice(&(region_len as u32).to_le_bytes());
+        b[24..28].copy_from_slice(&(total as u32).to_le_bytes());
+        b[32..32 + payload.len()].copy_from_slice(payload);
+        b[region_off..].fill(0xFF);
+        match region {
+            Region::Written(data) => {
+                b[region_off..region_off + 4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                b[region_off + 4..].copy_from_slice(data);
+            }
+            Region::Malformed => {
+                b[region_off..region_off + 4].copy_from_slice(&13u32.to_le_bytes());
+            }
+            Region::None | Region::Erased => {}
+        }
+        Box::leak(b.into_boxed_slice())
+    }
+
+    async fn session_for(builder: crate::AimDbBuilder) -> Box<dyn Session> {
+        let (db, _runner) = builder
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps))
+            .build()
+            .await
+            .expect("build db");
+        AimxDispatch::new(Arc::new(db), AimxConfig::uds_default()).open(&SessionCtx::default())
+    }
+
+    async fn call_raw(
+        session: &mut Box<dyn Session>,
+        method: &str,
+        params: &[u8],
+    ) -> Result<Vec<u8>, RpcError> {
+        session
+            .call(method, Payload::from(params))
+            .await
+            .map(|p| p.to_vec())
+    }
+
+    async fn call(
+        session: &mut Box<dyn Session>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        let reply = call_raw(session, method, &serde_json::to_vec(&params).unwrap()).await?;
+        Ok(serde_json::from_slice(&reply).expect("reply is JSON"))
+    }
+
+    const PAYLOAD: &[u8] =
+        br#"{"schema":1,"name":"boiler-gateway","version":"1.4.0","ext":{"board":"h563"}}"#;
+
+    #[tokio::test]
+    async fn instance_info_without_identity() {
+        let mut session = session_for(crate::AimDbBuilder::new()).await;
+        let reply = call(&mut session, "instance.info", Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(
+            reply,
+            json!({
+                "aimdb_version": env!("CARGO_PKG_VERSION"),
+                "instance": { "name": null, "uid": null },
+                "build": null,
+            })
+        );
+        let welcome = call(
+            &mut session,
+            "hello",
+            json!({ "version": PROTOCOL_VERSION }),
+        )
+        .await
+        .unwrap();
+        assert!(welcome.get("instance_name").is_none(), "{welcome}");
+        assert_eq!(
+            call(&mut session, "instance.post_link", json!({})).await,
+            Err(RpcError::NotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn instance_info_with_identity() {
+        let mut session = session_for(
+            crate::AimDbBuilder::new()
+                .instance_name("gateway-3")
+                .instance_uid(&[0x00, 0x35, 0x00, 0x2e, 0xab])
+                .build_info(section(PAYLOAD, Region::Written(b"signed"))),
+        )
+        .await;
+        let reply = call_raw(&mut session, "instance.info", b"null")
+            .await
+            .unwrap();
+        // The payload is spliced in byte for byte.
+        let text = core::str::from_utf8(&reply).unwrap();
+        assert!(
+            text.contains(core::str::from_utf8(PAYLOAD).unwrap()),
+            "{text}"
+        );
+        let reply: crate::remote::InstanceInfoReply = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(reply.instance.name.as_deref(), Some("gateway-3"));
+        assert_eq!(reply.instance.uid.as_deref(), Some("0035002eab"));
+        let build = reply.build.expect("build");
+        assert_eq!(build.format, 1);
+        assert_eq!(build.info["ext"]["board"], "h563");
+        assert_eq!(
+            build.post_link,
+            Some(crate::remote::PostLinkReply::Written { len: 6 })
+        );
+
+        let welcome = call(
+            &mut session,
+            "hello",
+            json!({ "version": PROTOCOL_VERSION }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(welcome["instance_name"], "gateway-3");
+    }
+
+    #[tokio::test]
+    async fn instance_info_reports_each_region_state() {
+        use crate::remote::PostLinkReply;
+        for (region, expected) in [
+            (Region::None, Value::Null),
+            (Region::Erased, json!({ "state": "erased" })),
+            (
+                Region::Written(b""),
+                json!({ "state": "written", "len": 0 }),
+            ),
+            (Region::Malformed, json!({ "state": "malformed" })),
+        ] {
+            let mut session =
+                session_for(crate::AimDbBuilder::new().build_info(section(b"{}", region))).await;
+            let reply = call(&mut session, "instance.info", json!({}))
+                .await
+                .unwrap();
+            assert_eq!(reply["build"]["post_link"], expected);
+            assert_eq!(reply["build"]["info"], json!({}));
+            // Every state but `written` has nothing to read.
+            let chunk = call(&mut session, "instance.post_link", json!({})).await;
+            match serde_json::from_value::<Option<PostLinkReply>>(expected).unwrap() {
+                Some(PostLinkReply::Written { .. }) => assert!(chunk.is_ok()),
+                _ => assert_eq!(chunk, Err(RpcError::NotFound)),
+            }
+        }
+    }
+
+    async fn chunk(session: &mut Box<dyn Session>, params: Value) -> Value {
+        call(session, "instance.post_link", params).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn post_link_chunks() {
+        let data: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|b| alloc::format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let mut session = session_for(
+            crate::AimDbBuilder::new().build_info(section(b"{}", Region::Written(&data))),
+        )
+        .await;
+
+        // Defaults: offset 0, 1 KiB; `null` params equal `{}`.
+        for params in [Value::Null, json!({})] {
+            assert_eq!(
+                chunk(&mut session, params).await,
+                json!({ "offset": 0, "total": 1500, "data": hex(&data[..1024]) })
+            );
+        }
+        // The rest, with `len` over the maximum clamped.
+        assert_eq!(
+            chunk(&mut session, json!({ "offset": 1024, "len": u32::MAX })).await,
+            json!({ "offset": 1024, "total": 1500, "data": hex(&data[1024..]) })
+        );
+        assert_eq!(
+            chunk(&mut session, json!({ "offset": 10, "len": 3 })).await,
+            json!({ "offset": 10, "total": 1500, "data": hex(&data[10..13]) })
+        );
+        // `len: 0` and offsets at or past the end: no data, `total` still set.
+        for params in [
+            json!({ "len": 0 }),
+            json!({ "offset": 1500 }),
+            json!({ "offset": u32::MAX, "len": u32::MAX }),
+        ] {
+            let reply = chunk(&mut session, params.clone()).await;
+            assert_eq!(
+                (reply["data"].as_str(), reply["total"].as_u64()),
+                (Some(""), Some(1500)),
+                "{params}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn post_link_rejects_malformed_params_before_the_region() {
+        let written = section(b"{}", Region::Written(b"x"));
+        for builder in [
+            crate::AimDbBuilder::new().build_info(written),
+            // No section: still `internal`, not `not_found`.
+            crate::AimDbBuilder::new(),
+        ] {
+            let mut session = session_for(builder).await;
+            for params in [
+                json!({ "offset": -1 }),
+                json!({ "offset": 1.5 }),
+                json!({ "offset": "0" }),
+                json!({ "offset": null }),
+                json!({ "offset": u64::from(u32::MAX) + 1 }),
+                json!({ "len": -1 }),
+                json!({ "len": 2.0 }),
+                json!({ "len": "8" }),
+                json!({ "len": null }),
+                json!({ "len": u64::from(u32::MAX) + 1 }),
+                json!([0, 8]),
+                json!("offset"),
+                json!(7),
+            ] {
+                assert_eq!(
+                    call(&mut session, "instance.post_link", params.clone()).await,
+                    Err(RpcError::Internal),
+                    "{params}"
+                );
+            }
+        }
+    }
+
+    /// The largest identity the builder accepts stays within
+    /// `INSTANCE_INFO_REPLY_MAX`.
+    #[tokio::test]
+    async fn worst_case_instance_info_fits_the_bound() {
+        let mut payload = vec![b' '; aimdb_build_info::PAYLOAD_MAX];
+        payload[0] = b'{';
+        payload[aimdb_build_info::PAYLOAD_MAX - 1] = b'}';
+        // Control characters escape to `\u00XX`: six bytes each.
+        let name: String = core::iter::repeat_n('\u{1}', crate::identity::NAME_MAX).collect();
+        let mut session = session_for(
+            crate::AimDbBuilder::new()
+                .instance_name(name)
+                .instance_uid(&[0xff; crate::identity::UID_MAX])
+                .build_info(section(&payload, Region::Erased)),
+        )
+        .await;
+        let reply = call_raw(&mut session, "instance.info", b"{}")
+            .await
+            .unwrap();
+        assert!(
+            reply.len() <= crate::remote::INSTANCE_INFO_REPLY_MAX,
+            "{} bytes",
+            reply.len()
+        );
+        assert!(!reply.contains(&b'\n') && !reply.contains(&b'\r'));
     }
 }

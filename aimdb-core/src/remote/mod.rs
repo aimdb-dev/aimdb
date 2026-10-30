@@ -45,16 +45,19 @@
 
 mod config;
 mod error;
+mod instance;
 mod metadata;
 mod protocol;
 mod query;
 
 pub use config::{AimxConfig, SecurityPolicy};
 pub use error::{RemoteError, RemoteResult};
+pub use instance::{instance_info_reply, post_link_chunk_reply, PostLinkError};
 pub use metadata::{InboundKeysInfo, RecordMetadata};
 pub use protocol::{
-    version_compatible, ws_url_with_version, ErrorObject, Event, HelloMessage, Request, Response,
-    WelcomeMessage, PROTOCOL_VERSION, VERSION_PARAM,
+    version_compatible, ws_url_with_version, BuildReply, ErrorObject, Event, HelloMessage,
+    InstanceIdentityReply, InstanceInfoReply, PostLinkChunk, PostLinkReply, Request, Response,
+    WelcomeMessage, INSTANCE_INFO_REPLY_MAX, POST_LINK_CHUNK_MAX, PROTOCOL_VERSION, VERSION_PARAM,
 };
 pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
 
