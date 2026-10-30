@@ -112,6 +112,7 @@ mod tests {
             writable_records: vec![],
             max_subscriptions: Some(8),
             authenticated: false,
+            name: None,
         }
     }
 

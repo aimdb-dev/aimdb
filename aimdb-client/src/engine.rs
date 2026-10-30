@@ -28,7 +28,10 @@ use aimdb_core::session::{
 use aimdb_tokio_adapter::TokioAdapter;
 
 use crate::error::{ClientError, ClientResult};
-use crate::protocol::{version_compatible, RecordMetadata, WelcomeMessage, PROTOCOL_VERSION};
+use crate::protocol::{
+    version_compatible, InstanceInfoReply, PostLinkChunk, RecordMetadata, WelcomeMessage,
+    POST_LINK_CHUNK_MAX, PROTOCOL_VERSION,
+};
 
 /// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
 /// the case where a peer accepts the socket but never replies — the engine has
@@ -324,6 +327,46 @@ impl AimxConnection {
         Ok(serde_json::from_slice(&reply)?)
     }
 
+    /// Which build and which instance this is (`instance.info`, protocol
+    /// 3.1). `None` from a 3.0 server, which does not know the method.
+    pub async fn instance_info(&self) -> ClientResult<Option<InstanceInfoReply>> {
+        match self.handle.call("instance.info", null_payload()).await {
+            Ok(reply) => Ok(Some(from_payload(&reply)?)),
+            Err(RpcError::NotFound) => Ok(None),
+            Err(e) => Err(rpc_err(e)),
+        }
+    }
+
+    /// The written post-link bytes (`instance.post_link`, protocol 3.1), read
+    /// in chunks of at most [`POST_LINK_CHUNK_MAX`] bytes. `None` when the
+    /// server embeds no build info, its region is not written, or it speaks
+    /// 3.0.
+    pub async fn post_link(&self) -> ClientResult<Option<Vec<u8>>> {
+        let mut data = Vec::new();
+        loop {
+            let params = json!({ "offset": data.len(), "len": POST_LINK_CHUNK_MAX });
+            let chunk: PostLinkChunk = match self
+                .handle
+                .call("instance.post_link", to_payload(&params)?)
+                .await
+            {
+                Ok(reply) => from_payload(&reply)?,
+                Err(RpcError::NotFound) => return Ok(None),
+                Err(e) => return Err(rpc_err(e)),
+            };
+            let total = chunk.total as usize;
+            let bytes = decode_hex(&chunk.data)?;
+            if bytes.is_empty() && data.len() < total {
+                return Err(malformed_chunk("an empty chunk before the end"));
+            }
+            data.extend_from_slice(&bytes);
+            if data.len() >= total {
+                data.truncate(total);
+                return Ok(Some(data));
+            }
+        }
+    }
+
     /// All nodes in the dependency graph.
     pub async fn graph_nodes(&self) -> ClientResult<Vec<serde_json::Value>> {
         let reply = self.call("graph.nodes", null_payload()).await?;
@@ -422,6 +465,31 @@ fn from_payload<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> ClientResult<T>
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Lowercase or uppercase hex to bytes.
+fn decode_hex(hex: &str) -> ClientResult<Vec<u8>> {
+    fn nibble(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let (pairs, rest) = hex.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(malformed_chunk("odd-length hex"));
+    }
+    pairs
+        .iter()
+        .map(|&[hi, lo]| Some(nibble(hi)? << 4 | nibble(lo)?))
+        .collect::<Option<Vec<u8>>>()
+        .ok_or_else(|| malformed_chunk("data is not hex"))
+}
+
+fn malformed_chunk(why: &str) -> ClientError {
+    ClientError::Other(anyhow::anyhow!("malformed instance.post_link reply: {why}"))
+}
+
 /// Map an engine [`RpcError`] onto a [`ClientError`].
 fn rpc_err(e: RpcError) -> ClientError {
     match e {
@@ -457,6 +525,17 @@ mod tests {
     use super::*;
     use aimdb_core::session::SubUpdate;
     use serde_json::json;
+
+    #[test]
+    fn decode_hex_accepts_both_cases_and_rejects_the_rest() {
+        assert_eq!(decode_hex("").unwrap(), Vec::<u8>::new());
+        assert_eq!(decode_hex("00ff7A").unwrap(), vec![0x00, 0xff, 0x7a]);
+        assert!(decode_hex("abc").is_err(), "odd length");
+        assert!(decode_hex("zz").is_err(), "not hex");
+        // Multi-byte UTF-8 must not panic on a char boundary.
+        assert!(decode_hex("é0").is_err());
+        assert!(decode_hex("0é").is_err());
+    }
 
     /// Build a raw engine stream from a fixed list of subscription items.
     fn raw_stream(
