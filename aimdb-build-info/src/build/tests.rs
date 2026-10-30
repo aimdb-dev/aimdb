@@ -268,6 +268,7 @@ fn tree_watch_takes_clean_directories_whole() {
         watched,
         [
             ".git/HEAD",
+            ".git/index",
             &head_ref,
             ".gitignore",
             "Cargo.toml",
@@ -295,6 +296,22 @@ fn track_dirty_false() {
     for path in ["assets", ".git/HEAD", "src", "Cargo.toml", "build.rs"] {
         assert!(watched.contains(&path.into()), "{path} in {watched:?}");
     }
+    assert!(!watched.contains(&".git/index".into()), "{watched:?}");
+}
+
+/// Staging alone makes the repository dirty without touching a file, so the
+/// index is part of the dirty watch.
+#[test]
+fn staging_alone_is_dirty_and_the_index_is_watched() {
+    let pkg = Package::new();
+    pkg.repo().file("a.txt", "a").commit();
+    assert_eq!(pkg.payload(&info())["dirty"], false);
+    assert!(pkg.watched(&info()).contains(&".git/index".into()));
+
+    pkg.git(&["update-index", "--chmod=+x", "a.txt"]);
+    assert_eq!(pkg.payload(&info())["dirty"], true);
+    pkg.git(&["update-index", "--chmod=-x", "a.txt"]);
+    assert_eq!(pkg.payload(&info())["dirty"], false);
 }
 
 #[test]
@@ -308,6 +325,7 @@ fn revision_and_dirty_overrides() {
     // No git watch for overridden values; the package instead.
     let watched = pkg.watched(&info());
     assert!(!watched.contains(&".git/HEAD".into()), "{watched:?}");
+    assert!(!watched.contains(&".git/index".into()), "{watched:?}");
     assert!(watched.contains(&"src".into()), "{watched:?}");
 
     pkg.set(DIRTY_VAR, "false");

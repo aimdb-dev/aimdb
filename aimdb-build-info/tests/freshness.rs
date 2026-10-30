@@ -1,6 +1,6 @@
 //! The cargo behavior the build-script helper's rerun tracking relies on, in
-//! real builds: no spurious rerun, a directory watch that sees new and removed
-//! files, and the documented limit. Which paths get watched, the overrides and
+//! real builds: no spurious rerun, an index-only change, a directory watch
+//! that sees new and removed files, and the documented limit. Which paths get watched, the overrides and
 //! `track_dirty` are unit-tested in `src/build/tests.rs`. Run with
 //! `cargo test -p aimdb-build-info -- --ignored`.
 
@@ -132,6 +132,20 @@ fn section_follows_the_repository() {
     let b = build(&fx, &[]);
     assert!(!b.reran, "spurious rerun");
     assert_dirty(&b, "false");
+
+    // Staging alone, no file touched: the index watch sees it. The helper's
+    // own `git status` does not rewrite the index, so a rebuild after
+    // reverting it settles without another rerun.
+    fx.git(&["update-index", "--chmod=+x", "gen/src/lib.rs"]);
+    let b = build(&fx, &[]);
+    assert!(b.reran, "an index-only change was missed");
+    assert_dirty(&b, "true");
+    fx.git(&["update-index", "--chmod=-x", "gen/src/lib.rs"]);
+    assert_dirty(&build(&fx, &[]), "false");
+    assert!(
+        !build(&fx, &[]).reran,
+        "spurious rerun after an index change"
+    );
 
     // A new asset, even with an mtime older than the last build, is seen by
     // the directory watch; so is its removal.

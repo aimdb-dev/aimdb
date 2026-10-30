@@ -93,11 +93,12 @@ enum ConfigHash {
 /// The build script reruns when HEAD or its branch moves, when an override
 /// changes, and when an input named by [`config_hash_of_file`] or
 /// [`watch`](Self::watch) changes. Because `dirty` describes the whole
-/// repository, it also reruns when any file git knows changes: a directory
-/// with nothing ignored below it is watched whole, so a new file there counts;
-/// elsewhere the known files are watched one by one. A new untracked file in a
-/// directory that also holds ignored output (such as the repository top,
-/// beside `target/`) is therefore not noticed; name such inputs with
+/// repository, it also reruns when any file git knows changes or the index
+/// changes: a directory with nothing ignored below it is watched whole, so a
+/// new file there counts; elsewhere the known files are watched one by one.
+/// Refreshing the index, as a plain `git status` does, costs one rerun. A new
+/// untracked file in a directory that also holds ignored output (such as the
+/// repository top, beside `target/`) is not noticed; name such inputs with
 /// [`watch`](Self::watch).
 ///
 /// [`config_hash_of_file`]: Self::config_hash_of_file
@@ -456,8 +457,8 @@ impl Git {
     }
 
     /// `--no-optional-locks`: a plain `git status` refreshes and rewrites the
-    /// index, which would rerun a watch on it after every build. The index is
-    /// not watched anyway; the files are.
+    /// index, and the index is watched, so the build script would rerun after
+    /// every build because of its own check.
     fn dirty(&self) -> Option<bool> {
         run(&self.dir, &["--no-optional-locks", "status", "--porcelain"]).map(|s| !s.is_empty())
     }
@@ -488,13 +489,18 @@ impl Git {
         }
     }
 
-    /// Watch every file git knows (tracked, or untracked and not ignored).
-    /// Returns whether the watch is in place.
+    /// Watch every file git knows (tracked, or untracked and not ignored),
+    /// and the index. Returns whether the watch is in place.
     ///
     /// Cargo watches a directory recursively, so the top-most directory with
     /// no ignored path below it is watched whole and a new file anywhere in
     /// it counts. Elsewhere, and always at the top (which holds `.git/`), the
     /// known files are watched one by one.
+    ///
+    /// The index, because staging alone makes the repository dirty without
+    /// touching a file: `git update-index --chmod=+x`, or `git add` of an
+    /// edit already built. Other git commands that refresh the index, such as
+    /// a plain `git status`, cause one extra rerun.
     fn watch_tree(&self, watch: &mut Watch) -> bool {
         // From the top: in a subdirectory, `ls-files` lists only that
         // subdirectory.
@@ -530,6 +536,12 @@ impl Git {
             if path.exists() {
                 watch.path(path);
             }
+        }
+        // Relative to the package directory, like `watch_head`'s paths. A
+        // repository with nothing staged yet has no index.
+        let index = run(&self.dir, &["rev-parse", "--git-path", "index"]).map(|p| self.dir.join(p));
+        if let Some(index) = index.filter(|p| p.exists()) {
+            watch.path(index);
         }
         watch.tree = true;
         true

@@ -152,8 +152,11 @@ directory), `track_dirty(bool)`.
   (`--others --ignored --directory`). Emit `rerun-if-changed` for each
   top-most directory with no ignored path below it, and for each known file in
   the remaining directories (always including the repository root).
-- Run `git --no-optional-locks status --porcelain`; do not watch `.git/index`.
-  A plain `git status` rewrites the index and causes a spurious rerun.
+- Watch the index (`git rev-parse --git-path index`): staging alone, such as
+  `git update-index --chmod=+x`, makes the repository dirty without touching
+  a file. Run `git --no-optional-locks status --porcelain`, so the helper's own
+  check does not rewrite the index and rerun itself; other commands that
+  refresh it, such as a plain `git status`, cost one rerun.
 - `track_dirty(false)` disables only dirty tracking: it records `dirty: null`
   and skips the repository-wide watch, falling back to the package's `src/`,
   `Cargo.toml` and `build.rs`. Revision tracking, the override variables and
@@ -366,7 +369,7 @@ Clients read from 0 until they hold `total` bytes.
 |---|---|
 | `aimdb-build-info` | Encode/parse round trip; each header rule in §3 rejected; `header_len > 32` accepted and the payload read from `header_len`; region states incl. 1–3 byte regions and length near `u32::MAX`; no panic on any truncation or byte flip. |
 | `aimdb-build-info` (`build`) | With and without git; the three overrides; override validation and compaction; identical bytes across runs; payload > 4 KiB rejected. |
-| Build-script freshness | Temp git repo, two-crate workspace, dependency generating code from `assets/`, debug build. Only cargo's behavior; the watched paths, overrides and `track_dirty` are unit tests. Steps: commit → `false`; rebuild → no rerun; add asset (with old mtime) → `true`; remove → `false`; ignored file in `assets/` → documented limit, then `watch()` → `true`. After each step the binary's section equals the build-script output. |
+| Build-script freshness | Temp git repo, two-crate workspace, dependency generating code from `assets/`, debug build. Only cargo's behavior; the watched paths, overrides and `track_dirty` are unit tests. Steps: commit → `false`; rebuild → no rerun; index-only mode change → `true`, reverted → `false`, then no rerun; add asset (with old mtime) → `true`; remove → `false`; ignored file in `assets/` → documented limit, then `watch()` → `true`. After each step the binary's section equals the build-script output. |
 | Host link | Release + fat LTO binary without AimX: section present by name (ELF, Mach-O) and by symbol, parses; patch region in file → size unchanged, reads `written`. |
 | Host run after patch | Run the patched binary; it reports `written` with the patched bytes (catches constant folding). |
 | Board layout (CI) | `embassy-serial-connector-demo` for `thumbv8m.main-none-eabihf`: section at `0x08000400`, `.text` at `0x08002000`, section parses. |
