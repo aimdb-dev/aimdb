@@ -5,6 +5,7 @@
 #![cfg(feature = "transport-uds")]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use aimdb_client::protocol::PostLinkReply;
@@ -98,30 +99,46 @@ async fn without_build_info() {
     assert_eq!(conn.post_link().await.unwrap(), None);
 }
 
-/// A protocol 3.0 server on the raw AimX wire: it completes the handshake
-/// and answers every other request `not_found`.
-async fn serve_v30(dir: &tempfile::TempDir) -> String {
-    let path = dir.path().join("v30.sock");
+/// What a fake server answers to one `instance.post_link` request: the
+/// reply body, or `None` for `not_found`.
+type PostLinkFn = dyn Fn(&Value) -> Option<Value> + Send + Sync;
+
+/// A server on the raw AimX wire: it completes the handshake with protocol
+/// `version`, answers `instance.post_link` from `post_link`, and every other
+/// request `not_found`. Returns the socket path and the number of
+/// `instance.post_link` requests it has seen.
+async fn serve_fake(
+    dir: &tempfile::TempDir,
+    version: &'static str,
+    post_link: Box<PostLinkFn>,
+) -> (String, Arc<AtomicUsize>) {
+    let path = dir.path().join("fake.sock");
     let listener = UnixListener::bind(&path).unwrap();
+    let post_link: Arc<PostLinkFn> = Arc::from(post_link);
+    let requests = Arc::new(AtomicUsize::new(0));
+    let seen = requests.clone();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            let (post_link, seen) = (post_link.clone(), seen.clone());
             tokio::spawn(async move {
                 let (read, mut write) = stream.into_split();
                 let mut lines = BufReader::new(read).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let frame: Value = serde_json::from_str(&line).unwrap();
+                    let ok = |body: Value| json!({ "t": "reply", "id": frame["id"], "ok": body });
+                    let not_found = json!({ "t": "reply", "id": frame["id"], "err": "not_found" });
                     let reply = match (frame["t"].as_str(), frame["method"].as_str()) {
                         (Some("ping"), _) => json!({ "t": "pong" }),
-                        (Some("req"), Some("hello")) => json!({
-                            "t": "reply", "id": frame["id"], "ok": {
-                                "version": "3.0", "server": "aimdb",
-                                "permissions": ["read"], "writable_records": [],
-                            },
-                        }),
-                        (Some("req"), _) => {
-                            json!({ "t": "reply", "id": frame["id"], "err": "not_found" })
+                        (Some("req"), Some("hello")) => ok(json!({
+                            "version": version, "server": "aimdb",
+                            "permissions": ["read"], "writable_records": [],
+                        })),
+                        (Some("req"), Some("instance.post_link")) => {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                            post_link(&frame["params"]).map_or(not_found, ok)
                         }
+                        (Some("req"), _) => not_found,
                         _ => continue,
                     };
                     let mut bytes = serde_json::to_vec(&reply).unwrap();
@@ -131,7 +148,105 @@ async fn serve_v30(dir: &tempfile::TempDir) -> String {
             });
         }
     });
-    path.to_str().unwrap().to_owned()
+    (path.to_str().unwrap().to_owned(), requests)
+}
+
+/// A protocol 3.0 server: it does not know the 3.1 methods.
+async fn serve_v30(dir: &tempfile::TempDir) -> String {
+    serve_fake(dir, "3.0", Box::new(|_| None)).await.0
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// An honest chunk of `data` for the request's `offset` and `len`.
+fn honest(data: &[u8], params: &Value) -> Value {
+    let offset = params["offset"].as_u64().unwrap() as usize;
+    let len = params["len"].as_u64().unwrap() as usize;
+    let end = (offset + len).min(data.len());
+    json!({ "offset": offset, "total": data.len(), "data": hex(&data[offset.min(end)..end]) })
+}
+
+#[tokio::test]
+async fn post_link_reads_every_chunk_of_a_consistent_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let data: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
+    let served = data.clone();
+    let (sock, requests) =
+        serve_fake(&dir, "3.1", Box::new(move |p| Some(honest(&served, p)))).await;
+    let conn = AimxConnection::connect(&sock).await.expect("connect");
+    assert_eq!(conn.post_link().await.unwrap(), Some(data));
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        3,
+        "1024 + 1024 + 952 bytes"
+    );
+}
+
+/// A malformed peer gets an error, never a truncated or wrong result.
+#[tokio::test]
+async fn post_link_rejects_inconsistent_chunks() {
+    let data: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
+    let cases: Vec<(&str, Box<PostLinkFn>, usize)> = vec![
+        (
+            "a total no section can hold, refused before reading on",
+            Box::new(|_| Some(json!({ "offset": 0, "total": u32::MAX, "data": "00" }))),
+            1,
+        ),
+        (
+            "every chunk claims offset 0",
+            {
+                let data = data.clone();
+                Box::new(move |p| {
+                    let mut c = honest(&data, p);
+                    c["offset"] = json!(0);
+                    Some(c)
+                })
+            },
+            2,
+        ),
+        (
+            "the total changes between chunks",
+            {
+                let data = data.clone();
+                Box::new(move |p| {
+                    let mut c = honest(&data, p);
+                    if p["offset"] != 0 {
+                        c["total"] = json!(2000);
+                    }
+                    Some(c)
+                })
+            },
+            2,
+        ),
+        (
+            "the last chunk runs past the total",
+            {
+                let data = data.clone();
+                Box::new(move |p| {
+                    let mut c = honest(&data, p);
+                    if p["offset"] != 0 {
+                        c["data"] = json!(hex(&[0u8; 1024]));
+                    }
+                    Some(c)
+                })
+            },
+            2,
+        ),
+    ];
+    for (case, post_link, expected_requests) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let (sock, requests) = serve_fake(&dir, "3.1", post_link).await;
+        let conn = AimxConnection::connect(&sock).await.expect("connect");
+        let err = conn.post_link().await.expect_err(case);
+        assert!(
+            err.to_string()
+                .contains("malformed instance.post_link reply"),
+            "{case}: {err}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), expected_requests, "{case}");
+    }
 }
 
 #[tokio::test]
