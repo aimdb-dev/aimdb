@@ -1079,7 +1079,7 @@ all: build test examples
 .PHONY: test-build-info-link
 test-build-info-link:
 	@printf "$(YELLOW)  → Testing aimdb-build-info in linked fixture binaries$(NC)\n"
-	cargo test --package aimdb-build-info --features build -- --ignored
+	cargo test --package aimdb-build-info --features build --test host_link --test freshness -- --ignored
 
 .PHONY: test-operational-events
 test-operational-events:
