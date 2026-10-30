@@ -83,6 +83,8 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
+	@printf "$(YELLOW)  → Building aimdb-build-info (no_std)$(NC)\n"
+	cargo build --package aimdb-build-info
 	@printf "$(YELLOW)  → Building aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo build --package aimdb-cdr
 	cargo build --package aimdb-cdr --no-default-features
@@ -160,6 +162,8 @@ build:
 
 test: test-operational-events
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
+	@printf "$(YELLOW)  → Testing aimdb-build-info (no_std)$(NC)\n"
+	cargo test --package aimdb-build-info
 	@printf "$(YELLOW)  → Testing aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo test --package aimdb-cdr
 	cargo test --package aimdb-cdr --no-default-features
@@ -290,7 +294,7 @@ test: test-operational-events
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -299,7 +303,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -317,6 +321,8 @@ clippy: clippy-operational-events
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on aimdb-build-info (no_std)$(NC)\n"
+	cargo clippy --package aimdb-build-info --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo clippy --package aimdb-cdr --all-targets -- -D warnings
 	cargo clippy --package aimdb-cdr --no-default-features --all-targets -- -D warnings
@@ -497,6 +503,7 @@ doc:
 	cargo doc --package aimdb-tcp-connector --no-default-features --features "std" --no-deps
 	cargo doc --package aimdb-client --features "transport-serial,transport-tcp" --no-deps
 	cargo doc --package aimdb-derive --no-deps
+	cargo doc --package aimdb-build-info --no-deps
 	cargo doc --package aimdb-cdr --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"
@@ -537,6 +544,8 @@ test-wasm:
 
 test-embedded:
 	@printf "$(BLUE)Testing embedded/MCU cross-compilation compatibility...$(NC)\n"
+	@printf "$(YELLOW)  → Checking aimdb-build-info (no_std) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package aimdb-build-info --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR)
 	@printf "$(YELLOW)  → Checking aimdb-cdr (alloc, no_std) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-cdr --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR)
 	cargo check --package aimdb-cdr --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features
@@ -765,6 +774,7 @@ publish-check:
 PUBLISH_ORDER := \
 	aimdb-codegen \
 	aimdb-derive \
+	aimdb-build-info \
 	aimdb-cdr \
 	aimdb-core \
 	aimdb-data-contracts \
@@ -922,7 +932,7 @@ check-no-sim:
 # Applications may, so `tools/`, `examples/` and codegen's generated `main` are
 # not scanned. The one exception: the fork detector owns the runtime thread it
 # protects. Syntax-aware fixtures verify production rejection and test exclusion.
-GLOBALS_SCANNED := aimdb-core aimdb-cdr aimdb-data-contracts aimdb-derive aimdb-client \
+GLOBALS_SCANNED := aimdb-core aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
 	aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector \
 	aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector \
