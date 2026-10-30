@@ -69,12 +69,18 @@ pub struct RecordMetadata {
     /// Number of outbound connector links registered
     pub outbound_connector_count: usize,
 
-    /// Data-contract schema name (e.g. `"temperature"`), when the serving
-    /// dispatch owns a schema registry that can resolve it (the WebSocket
-    /// connector's `StreamableRegistry`). Core alone cannot map a `TypeId` to a
-    /// contract name and leaves it `None`.
+    /// Data-contract schema name (e.g. `"temperature"`). Set from the schema
+    /// the record was configured with (`RecordRegistrar::schema`, filled by
+    /// `aimdb-data-contracts` from `SchemaType`); otherwise a serving dispatch
+    /// that owns a schema registry may fill it (the WebSocket connector's
+    /// `StreamableRegistry`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_type: Option<String>,
+
+    /// Version of the schema named by `schema_type`, when the record was
+    /// configured with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
 
     /// The record key's **leaf segment** — everything after the last `.` or `/`
     /// (`"vienna"` for `"temp.vienna"` or `"sensors/temp/vienna"`).
@@ -186,6 +192,7 @@ impl RecordMetadata {
             writable,
             outbound_connector_count,
             schema_type: None,
+            schema_version: None,
             entity,
             inbound_keys: None,
             #[cfg(feature = "observability")]
@@ -201,6 +208,16 @@ impl RecordMetadata {
             #[cfg(feature = "observability")]
             signal_stats: None,
         }
+    }
+
+    /// Sets `schema_type` and `schema_version` from the record's schema, if
+    /// it has one.
+    pub fn with_schema(mut self, schema: Option<&crate::graph::SchemaInfo>) -> Self {
+        if let Some(schema) = schema {
+            self.schema_type = Some(schema.name.clone());
+            self.schema_version = Some(schema.version);
+        }
+        self
     }
 
     /// Sets buffer metrics from a snapshot (metrics feature only)

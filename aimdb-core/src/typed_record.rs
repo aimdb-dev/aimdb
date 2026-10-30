@@ -283,6 +283,9 @@ pub trait AnyRecord: Send + Sync {
     /// Get the inbound connector links for this record
     fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
 
+    /// The schema the record carries, if one was set while configuring it
+    fn schema(&self) -> Option<&crate::graph::SchemaInfo>;
+
     /// Returns the number of registered consumers (tap observers)
     fn consumer_count(&self) -> usize;
 
@@ -546,6 +549,10 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// and produces values into this record's buffer
     inbound_connectors: Vec<crate::connector::InboundConnectorLink>,
 
+    /// The data-contract schema the record carries, if one was set
+    /// (`RecordRegistrar::schema`). Reported in the graph and `record.list`.
+    schema: Option<crate::graph::SchemaInfo>,
+
     /// Per-stage profiling metrics (feature `observability`).
     /// Stages are appended here in the same order they are registered on the
     /// `RecordRegistrar`, which matches the order the spawn machinery iterates them.
@@ -586,6 +593,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             buffer_cfg: None,
             outbound_connectors: Vec::new(),
             inbound_connectors: Vec::new(),
+            schema: None,
             #[cfg(feature = "observability")]
             profiling: RecordProfilingMetrics::new(),
             #[cfg(feature = "remote")]
@@ -602,6 +610,33 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// the record key) and fails with `DbError::InvalidConfiguration`.
     pub(crate) fn push_config_error(&mut self, err: crate::error::ConfigError) {
         self.config_errors.push(err);
+    }
+
+    /// Sets the schema the record carries. Setting the same schema again does
+    /// nothing; a different one is a configuration error reported by `build()`.
+    pub fn set_schema(&mut self, name: &str, version: u32) {
+        match &self.schema {
+            None => {
+                self.schema = Some(crate::graph::SchemaInfo {
+                    name: name.to_string(),
+                    version,
+                })
+            }
+            Some(s) if s.name == name && s.version == version => {}
+            Some(s) => {
+                let message = alloc::format!(
+                    "schema {name} v{version} set, but the record already carries {} v{}",
+                    s.name,
+                    s.version
+                );
+                self.push_config_error(crate::error::ConfigError::new("", None, message));
+            }
+        }
+    }
+
+    /// The schema the record carries, if one was set
+    pub fn schema(&self) -> Option<&crate::graph::SchemaInfo> {
+        self.schema.as_ref()
     }
 
     /// Stage profiling metrics for this record (feature `observability`).
@@ -1240,6 +1275,10 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         &self.inbound_connectors
     }
 
+    fn schema(&self) -> Option<&crate::graph::SchemaInfo> {
+        self.schema.as_ref()
+    }
+
     fn consumer_count(&self) -> usize {
         TypedRecord::consumer_count(self)
     }
@@ -1307,7 +1346,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
             self.consumer_count(),
             self.writable.load(portable_atomic::Ordering::SeqCst),
             self.outbound_connectors.len(),
-        );
+        )
+        .with_schema(self.schema.as_ref());
 
         // Add buffer metrics if available
         #[cfg(feature = "observability")]

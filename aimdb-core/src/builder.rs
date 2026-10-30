@@ -745,6 +745,11 @@ impl AimDbBuilder {
             .map(|e| {
                 let record = &e.record;
                 let (buffer_type, buffer_capacity) = record.buffer_info();
+                let outbound_links: Vec<String> = record
+                    .outbound_connectors()
+                    .iter()
+                    .map(|link| link.url.to_string())
+                    .collect();
 
                 crate::graph::GraphNode {
                     key: e.key.as_str().to_string(),
@@ -752,7 +757,9 @@ impl AimDbBuilder {
                     buffer_type,
                     buffer_capacity,
                     tap_count: record.consumer_count(),
-                    has_outbound_link: !record.outbound_connectors().is_empty(),
+                    has_outbound_link: !outbound_links.is_empty(),
+                    outbound_links,
+                    schema: record.schema().cloned(),
                 }
             })
             .collect();

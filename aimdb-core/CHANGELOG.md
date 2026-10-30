@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Graph nodes report each record's schema and outbound link addresses
+  (#332).** `RecordRegistrar::schema(name, version)` sets the data-contract
+  schema a record carries; setting a different one on the same record fails
+  `build()`. `GraphNode` gains `schema: Option<SchemaInfo>` and
+  `outbound_links: Vec<String>` (each link's `scheme://resource`);
+  `has_outbound_link` stays and equals `!outbound_links.is_empty()`. Both are
+  always sent in `graph.nodes`, as `null` and `[]` when empty. `record.list`
+  fills `schema_type` from the same slot and gains `schema_version`.
+
 - **`AimDbBuilder::start_order_seed(seed)` permutes the record task start
   order (#325).** Behind the new `start-order-seed` feature, for tests and
   simulation. With a seed, the topological sort draws the next record from
@@ -97,6 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, API)
 
+- **`GraphNode` has two new public fields, `schema` and `outbound_links`
+  (#332).** Code that builds a `GraphNode` with a struct literal must set
+  them. The AimX JSON change is additive.
 - **A route's record index lives on the route, not in `ConnectorConfig`
   (#264).** `RouteInfo` and `InboundRouteInfo` gain `record_index: usize`,
   always set by core; `ConnectorConfig::record_index` is removed. Before, core
@@ -192,6 +204,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   features nothing was logged.
 
 ### Fixed
+
+- **`link_out` graph edges name their protocol (#332).** Each outbound link
+  now has its own edge with the link's scheme as `protocol`; before, a record
+  had one edge with `protocol: "unknown"` however many links it had.
 
 - **`session::serve` no longer spins on a failing listener (#351).** It
   logged a failed `accept` and called `accept` again at once, and its select

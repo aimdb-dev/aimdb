@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`graph nodes` shows each record's schema and outbound link addresses
+  (#332).** New "Schema" column (`temperature v2`); "Outbound" lists the
+  link addresses instead of `yes`, and falls back to `yes` for servers that
+  send only `has_outbound_link`.
+
 ### Fixed
+
+- **`graph nodes`, `graph edges` and `graph dot` read origins and edge types
+  with data.** Those arrive as objects (`{"link": {...}}`,
+  `{"link_out": {...}}`), so link and transform records showed `-` or were
+  drawn as passive, and transform edges were never styled. They now show the
+  variant name. The README's `jq` example filters transforms the same way.
 
 - **The `yaml` feature builds again.** `instance list --format yaml` serialized `aimdb_client::InstanceInfo`, which does not implement `Serialize`, so `aimdb-cli` never compiled with `--features yaml`. YAML now uses the same serializable form as JSON, with the same field names (`socket_path`, …). `make test` and `make clippy` now also build the CLI with `--features yaml`.
 

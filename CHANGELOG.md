@@ -31,6 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — schema and outbound links in graph introspection
+
+- **`graph.nodes` shows which schema a record carries and where it
+  publishes (#332).** Each node has `schema` (`{ name, version }`, set by
+  `aimdb-data-contracts`' link and observe verbs or `contract_schema()`) and
+  `outbound_links` (each link's address). `record.list` reports the same
+  schema in `schema_type` and the new `schema_version`. `aimdb graph nodes`
+  shows both, and `link_out` edges name their protocol.
+  ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md),
+  [aimdb-cli](tools/aimdb-cli/CHANGELOG.md),
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
+
 ### Added — current record values over HTTP
 
 - **Custom HTTP routes can read current record values directly (#363).**

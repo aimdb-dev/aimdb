@@ -133,6 +133,17 @@ pub fn format_instance_info(instance: &InstanceInfo) -> String {
     output
 }
 
+/// The variant name of a serialized graph enum (`origin`, `edge_type`): a
+/// unit variant is a string (`"source"`), one with data an object with a
+/// single key (`{"link": {...}}`).
+pub fn variant_name(value: Option<&serde_json::Value>) -> Option<&str> {
+    match value? {
+        serde_json::Value::String(name) => Some(name),
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
 /// Format graph nodes as a table
 pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
     if nodes.is_empty() {
@@ -145,6 +156,7 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
     builder.push_record(vec![
         "Key",
         "Origin",
+        "Schema",
         "Buffer Type",
         "Capacity",
         "Taps",
@@ -154,7 +166,12 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
     // Add rows
     for node in nodes {
         let key = node.get("key").and_then(|v| v.as_str()).unwrap_or("-");
-        let origin = node.get("origin").and_then(|v| v.as_str()).unwrap_or("-");
+        let origin = variant_name(node.get("origin")).unwrap_or("-");
+        let schema = node
+            .get("schema")
+            .and_then(|s| Some((s.get("name")?.as_str()?, s.get("version")?.as_u64()?)))
+            .map(|(name, version)| format!("{name} v{version}"))
+            .unwrap_or_else(|| "-".to_string());
         let buffer_type = node
             .get("buffer_type")
             .and_then(|v| v.as_str())
@@ -165,6 +182,12 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
         let tap_count = node.get("tap_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let outbound_links: Vec<&str> = node
+            .get("outbound_links")
+            .and_then(|v| v.as_array())
+            .map(|links| links.iter().filter_map(|l| l.as_str()).collect())
+            .unwrap_or_default();
+        // Servers before #332 send only the flag.
         let has_outbound = node
             .get("has_outbound_link")
             .and_then(|v| v.as_bool())
@@ -173,11 +196,13 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
         let origin_colored = match origin {
             "source" => origin.cyan().to_string(),
             "link" => origin.green().to_string(),
-            "transform" => origin.yellow().to_string(),
+            "transform" | "transform_join" => origin.yellow().to_string(),
             _ => origin.dimmed().to_string(),
         };
 
-        let outbound_str = if has_outbound {
+        let outbound_str = if !outbound_links.is_empty() {
+            outbound_links.join("\n").green().to_string()
+        } else if has_outbound {
             "yes".green().to_string()
         } else {
             "-".dimmed().to_string()
@@ -186,6 +211,7 @@ pub fn format_graph_nodes_table(nodes: &[serde_json::Value]) -> String {
         builder.push_record(vec![
             key.to_string(),
             origin_colored,
+            schema,
             buffer_type.to_string(),
             capacity,
             tap_count.to_string(),
@@ -217,15 +243,11 @@ pub fn format_graph_edges_table(edges: &[serde_json::Value]) -> String {
             .get("to")
             .and_then(|v| v.as_str())
             .unwrap_or("(side-effect)");
-        let edge_type = edge
-            .get("edge_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let edge_type = variant_name(edge.get("edge_type")).unwrap_or("-");
 
         let edge_type_colored = match edge_type {
-            "transform_input" => edge_type.blue().bold().to_string(),
+            "transform" | "transform_join" => edge_type.blue().bold().to_string(),
             "tap" => edge_type.dimmed().to_string(),
-            "data_flow" => edge_type.to_string(),
             _ => edge_type.to_string(),
         };
 
@@ -374,5 +396,48 @@ mod tests {
 │ Load │ type-load │ single_latest │ 1         │ 0         │ no       │ 0.75 (0.5..1, avg 0.625) │
 └──────┴───────────┴───────────────┴───────────┴───────────┴──────────┴──────────────────────────┘"
         );
+    }
+
+    /// #332: schema and outbound addresses are shown; origins and edge types
+    /// with data (objects on the wire) show their variant name.
+    #[test]
+    fn graph_tables_show_schema_links_and_object_variants() {
+        colored::control::set_override(false);
+        let nodes = vec![
+            serde_json::json!({
+                "key": "flow.avg",
+                "origin": {"transform": {"input": "flow.raw"}},
+                "buffer_type": "single_latest",
+                "buffer_capacity": null,
+                "tap_count": 0,
+                "has_outbound_link": true,
+                "outbound_links": ["mqtt://plant/boiler/flow_avg"],
+                "schema": {"name": "flow", "version": 2},
+            }),
+            // A server before #332: no `schema`, no `outbound_links`.
+            serde_json::json!({
+                "key": "flow.raw",
+                "origin": {"link": {"protocol": "knx", "address": "knx://1/2/3"}},
+                "buffer_type": "spmc_ring",
+                "buffer_capacity": 16,
+                "tap_count": 1,
+                "has_outbound_link": true,
+            }),
+        ];
+        let table = format_graph_nodes_table(&nodes);
+        assert!(table.contains("transform"), "{table}");
+        assert!(table.contains("link"), "{table}");
+        assert!(table.contains("flow v2"), "{table}");
+        assert!(table.contains("mqtt://plant/boiler/flow_avg"), "{table}");
+        assert!(table.contains("yes"), "{table}");
+
+        let edges = vec![
+            serde_json::json!({"from": "flow.raw", "to": "flow.avg", "edge_type": "transform"}),
+            serde_json::json!({"from": "flow.avg", "to": null,
+                "edge_type": {"link_out": {"protocol": "mqtt"}}}),
+        ];
+        let table = format_graph_edges_table(&edges);
+        assert!(table.contains("link_out"), "{table}");
+        assert!(table.contains("transform"), "{table}");
     }
 }

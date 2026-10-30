@@ -194,7 +194,7 @@ Press Ctrl+C to stop watching and unsubscribe cleanly.
 Commands for exploring the dependency graph of records in an AimDB instance.
 
 #### `graph nodes`
-List all nodes in the dependency graph, showing record origins, buffer types, and connection counts.
+List all nodes in the dependency graph, showing record origins, schemas, buffer types, tap counts, and the address of each outbound link.
 
 ```bash
 aimdb graph nodes [OPTIONS]
@@ -205,13 +205,13 @@ Options:
 
 Example output:
 ```
-┌──────────────────────┬───────────┬───────────────┬──────────┬──────┬──────────┐
-│ Key                  │ Origin    │ Buffer Type   │ Capacity │ Taps │ Outbound │
-├──────────────────────┼───────────┼───────────────┼──────────┼──────┼──────────┤
-│ temp.vienna          │ link      │ single_latest │ 1        │ 1    │ -        │
-│ temp.berlin          │ link      │ single_latest │ 1        │ 1    │ -        │
-│ weather.aggregate    │ transform │ single_latest │ 1        │ 0    │ yes      │
-└──────────────────────┴───────────┴───────────────┴──────────┴──────┴──────────┘
+┌───────────────────┬────────────────┬────────────────┬───────────────┬──────────┬──────┬──────────────────────────┐
+│ Key               │ Origin         │ Schema         │ Buffer Type   │ Capacity │ Taps │ Outbound                 │
+├───────────────────┼────────────────┼────────────────┼───────────────┼──────────┼──────┼──────────────────────────┤
+│ temp.vienna       │ link           │ temperature v2 │ single_latest │ -        │ 1    │ -                        │
+│ temp.berlin       │ link           │ temperature v2 │ single_latest │ -        │ 1    │ -                        │
+│ weather.aggregate │ transform_join │ -              │ single_latest │ -        │ 0    │ mqtt://weather/aggregate │
+└───────────────────┴────────────────┴────────────────┴───────────────┴──────────┴──────┴──────────────────────────┘
 ```
 
 #### `graph edges`
@@ -448,7 +448,7 @@ dot -Tpng aimdb-graph.dot -o aimdb-graph.png
 open aimdb-graph.png
 
 # Export as JSON for further analysis
-aimdb graph nodes --format json | jq '.[] | select(.origin == "transform")'
+aimdb graph nodes --format json | jq '.[] | select(.origin | objects | has("transform"))'
 ```
 
 ## Protocol
