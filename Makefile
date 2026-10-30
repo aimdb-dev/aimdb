@@ -83,8 +83,9 @@ help:
 ## Core commands
 build:
 	@printf "$(GREEN)Building AimDB (all valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Building aimdb-build-info (no_std)$(NC)\n"
+	@printf "$(YELLOW)  → Building aimdb-build-info (no_std, build helper)$(NC)\n"
 	cargo build --package aimdb-build-info
+	cargo build --package aimdb-build-info --features build
 	@printf "$(YELLOW)  → Building aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo build --package aimdb-cdr
 	cargo build --package aimdb-cdr --no-default-features
@@ -162,8 +163,9 @@ build:
 
 test: test-operational-events
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
-	@printf "$(YELLOW)  → Testing aimdb-build-info (no_std)$(NC)\n"
+	@printf "$(YELLOW)  → Testing aimdb-build-info (no_std, build helper)$(NC)\n"
 	cargo test --package aimdb-build-info
+	cargo test --package aimdb-build-info --features build
 	@printf "$(YELLOW)  → Testing aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo test --package aimdb-cdr
 	cargo test --package aimdb-cdr --no-default-features
@@ -321,8 +323,9 @@ clippy: clippy-operational-events
 	@printf "$(GREEN)Running clippy (all valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Clippy on aimdb-derive$(NC)\n"
 	cargo clippy --package aimdb-derive --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on aimdb-build-info (no_std)$(NC)\n"
+	@printf "$(YELLOW)  → Clippy on aimdb-build-info (no_std, build helper)$(NC)\n"
 	cargo clippy --package aimdb-build-info --all-targets -- -D warnings
+	cargo clippy --package aimdb-build-info --features build --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-cdr (alloc, no_std)$(NC)\n"
 	cargo clippy --package aimdb-cdr --all-targets -- -D warnings
 	cargo clippy --package aimdb-cdr --no-default-features --all-targets -- -D warnings
@@ -503,7 +506,7 @@ doc:
 	cargo doc --package aimdb-tcp-connector --no-default-features --features "std" --no-deps
 	cargo doc --package aimdb-client --features "transport-serial,transport-tcp" --no-deps
 	cargo doc --package aimdb-derive --no-deps
-	cargo doc --package aimdb-build-info --no-deps
+	cargo doc --package aimdb-build-info --features build --no-deps
 	cargo doc --package aimdb-cdr --no-deps
 	@cp -r target/doc/* target/doc-final/cloud/
 	@printf "$(YELLOW)  → Building embedded documentation$(NC)\n"

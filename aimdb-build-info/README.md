@@ -32,3 +32,45 @@ match aimdb_build_info::parse(bytes) {
 
 A probe reads the 32-byte header first, checks it, then reads
 `total_len - 32` more bytes. Sections over `SECTION_MAX` (64 KiB) are rejected.
+
+## Writing the section
+
+Feature `build` adds the build-script helper:
+
+```toml
+[dependencies]
+aimdb-build-info = "0.1"
+
+[build-dependencies]
+aimdb-build-info = { version = "0.1", features = ["build"] }
+```
+
+```rust,ignore
+// build.rs
+fn main() {
+    aimdb_build_info::BuildInfo::from_cargo_env()
+        .kind("release")
+        .config_hash_of_file("config/gateway.toml") // sha256, and watched
+        .ext("board", "nucleo-h563zi")
+        .post_link_len(1024)
+        .write()
+        .expect("build info");
+}
+```
+
+The payload is compact JSON of at most 4 KiB:
+
+| Field | Type | Source |
+|---|---|---|
+| `schema` | `1` | this crate |
+| `name`, `version` | string | `CARGO_PKG_NAME`, `CARGO_PKG_VERSION` |
+| `revision` | string or `null` | `git rev-parse HEAD` |
+| `dirty` | bool or `null` | `git status --porcelain` non-empty |
+| `kind` | string or `null` | `kind()` |
+| `config_hash` | `"<alg>:<hex>"` or `null` | `config_hash()`, `config_hash_of_file()` |
+| `profile`, `target` | string | `PROFILE`, `TARGET` |
+| `ext` | object, optional | `ext()` |
+
+`null` means unknown. Readers ignore fields they do not know; application
+data goes in `ext`. Builds without `.git` set `AIMDB_BUILD_REVISION` and
+`AIMDB_BUILD_DIRTY`, or name a complete payload file in `AIMDB_BUILD_INFO`.

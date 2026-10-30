@@ -12,3 +12,17 @@ keywords = ["build-info", "embedded", "no-std", "aimdb"]
 categories = ["embedded", "no-std", "development-tools::build-utils"]
 
 [dependencies]
+serde_json = { workspace = true, optional = true, features = ["std"] }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+# The build-script helper, `BuildInfo`: composes the payload and writes the
+# section image to OUT_DIR. std; use it from `[build-dependencies]` only.
+build = ["dep:serde_json", "dep:sha2"]
+
+[package.metadata.docs.rs]
+all-features = true

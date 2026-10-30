@@ -89,6 +89,11 @@ dependencies = [
 [[package]]
 name = "aimdb-build-info"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "aimdb-cdr"

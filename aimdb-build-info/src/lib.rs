@@ -5,6 +5,14 @@
 )]
 #![no_std]
 
+#[cfg(feature = "build")]
+extern crate std;
+
+#[cfg(feature = "build")]
+mod build;
+#[cfg(feature = "build")]
+pub use build::{encode, BuildInfo, Error, DEFAULT_POST_LINK_LEN};
+
 /// The section's first eight bytes.
 pub const MAGIC: [u8; 8] = *b"AIMDB-BI";
 
@@ -27,6 +35,14 @@ pub const PAYLOAD_MAX: usize = 4 * 1024;
 /// The byte erased flash reads as. An unwritten post-link region holds only
 /// this byte.
 pub const ERASED: u8 = 0xFF;
+
+/// The payload schema version this crate writes. It changes only when a
+/// standard field changes type or meaning; readers ignore fields they do not
+/// know.
+pub const SCHEMA: u64 = 1;
+
+/// File name of the section image in the build script's `OUT_DIR`.
+pub const FILE_NAME: &str = "aimdb_build_info.bin";
 
 /// Why bytes are not a build-info section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
