@@ -74,3 +74,41 @@ The payload is compact JSON of at most 4 KiB:
 `null` means unknown. Readers ignore fields they do not know; application
 data goes in `ext`. Builds without `.git` set `AIMDB_BUILD_REVISION` and
 `AIMDB_BUILD_DIRTY`, or name a complete payload file in `AIMDB_BUILD_INFO`.
+
+## Placing the section
+
+`section!()` places the image the build script wrote and returns its bytes.
+Call it once per binary:
+
+```rust,ignore
+let build_info: &'static [u8] = aimdb_build_info::section!();
+```
+
+| Target | Section | Kept by |
+|---|---|---|
+| ELF (Linux, bare-metal `none`) | `.aimdb_build_info` | the `R` (retain) flag; `KEEP` in the board fragment |
+| Mach-O (Apple) | `__DATA,__aimdb_bi` | `.no_dead_strip` |
+| PE, wasm | none: an ordinary `static`, without a post-link region | – |
+
+On ELF and Mach-O the bytes are opaque to the compiler, so a post-link region
+written into the binary after linking is what the program reads. Tools find
+the section by name or by the global symbol `__AIMDB_BUILD_INFO`. On Apple
+platforms, re-sign a patched binary (`codesign -f -s -`).
+
+## A fixed address on boards
+
+The crate ships the linker fragment `aimdb_build_info.x`. It places the
+section at `AIMDB_BUILD_INFO_ADDR`, between the vector table and `.text`, and
+fails the link if the section overlaps either or is missing. The board defines
+the address and moves `.text` past it; there is no default:
+
+```rust,ignore
+// build.rs of a cortex-m-rt binary
+println!("cargo:rustc-link-arg-bins=--defsym=AIMDB_BUILD_INFO_ADDR=0x08000400");
+println!("cargo:rustc-link-arg-bins=--defsym=_stext=0x08002000");
+println!("cargo:rustc-link-arg-bins=-Tlink.x");
+println!("cargo:rustc-link-arg-bins=-Taimdb_build_info.x");
+```
+
+A debug probe then reads the 32-byte header at that address, checks it, and
+reads `total_len - 32` more bytes.

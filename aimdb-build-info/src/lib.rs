@@ -44,6 +44,16 @@ pub const SCHEMA: u64 = 1;
 /// File name of the section image in the build script's `OUT_DIR`.
 pub const FILE_NAME: &str = "aimdb_build_info.bin";
 
+/// Name of the section in ELF files.
+pub const ELF_SECTION: &str = ".aimdb_build_info";
+
+/// Segment and section name of the section in Mach-O files.
+pub const MACHO_SECTION: (&str, &str) = ("__DATA", "__aimdb_bi");
+
+/// The global symbol at the section's start, as Rust names it (Mach-O adds a
+/// leading underscore).
+pub const SYMBOL: &str = "__AIMDB_BUILD_INFO";
+
 /// Why bytes are not a build-info section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
@@ -179,4 +189,157 @@ pub fn parse(bytes: &[u8]) -> Result<Section<'_>, ParseError> {
         }),
         _ => Err(ParseError::Truncated),
     }
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use core;
+
+    /// FNV-1a of the section image. [`section!`](crate::section) writes it
+    /// into the assembly text: `.incbin` reads the file only when assembling,
+    /// so without it an incremental build that sees an image of the same
+    /// length reuses the old object.
+    pub const fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut i = 0;
+        while i < bytes.len() {
+            hash ^= bytes[i] as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            i += 1;
+        }
+        hash
+    }
+
+    /// Whether `.incbin` can name a file under `dir`: its quoted string ends
+    /// at `"` and treats `\` as an escape.
+    pub const fn incbin_path_ok(dir: &str) -> bool {
+        let bytes = dir.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'"' || bytes[i] == b'\\' {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+}
+
+/// Place this binary's build-info section and return its bytes.
+///
+/// The bytes come from `OUT_DIR/aimdb_build_info.bin`, which the build script
+/// writes with `BuildInfo::write` (feature `build`). If the build fails with
+/// that file missing, the build script does not call `write()`.
+///
+/// Call it once per binary. The section's symbol, `__AIMDB_BUILD_INFO`, is
+/// global, so a second call is a duplicate-symbol link error, and tools can
+/// find the section by that symbol as well as by section name.
+///
+/// On ELF and Mach-O targets the section is assembled from the file with
+/// `.incbin` and declared to Rust as an `extern` static. Rust never sees its
+/// contents, so it cannot fold them into constants: every read is a load, and
+/// a post-link region written into the binary after linking is what the
+/// program reads. The section is kept by the linker even when nothing reads
+/// it: on ELF by the `R` (retain) flag, on Mach-O by `.no_dead_strip`.
+///
+/// | Target | Section |
+/// |---|---|
+/// | ELF (Linux, bare-metal `none`, …) | `.aimdb_build_info` |
+/// | Mach-O (Apple) | `__DATA,__aimdb_bi` |
+/// | PE (Windows, UEFI), wasm | none: an ordinary `static`, served over AimX only, without a post-link region |
+///
+/// On ELF and Mach-O, `OUT_DIR` must not contain `"` or `\`, which the
+/// assembler's `.incbin` cannot name; the build then fails with that message.
+#[macro_export]
+macro_rules! section {
+    () => {{
+        // A module, because `global_asm!` is allowed in item position only.
+        mod __aimdb_build_info {
+            const IMAGE: &[u8] = $crate::__private::core::include_bytes!(
+                $crate::__private::core::concat!(
+                    $crate::__private::core::env!("OUT_DIR"),
+                    "/aimdb_build_info.bin"
+                )
+            );
+            pub const LEN: usize = IMAGE.len();
+
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "uefi",
+                target_family = "wasm"
+            )))]
+            const _: () = $crate::__private::core::assert!(
+                $crate::__private::incbin_path_ok($crate::__private::core::env!("OUT_DIR")),
+                "aimdb-build-info: OUT_DIR contains `\"` or `\\`, which `.incbin` cannot name"
+            );
+
+            #[cfg(target_vendor = "apple")]
+            $crate::__private::core::arch::global_asm!(
+                ".pushsection __DATA,__aimdb_bi",
+                ".globl ___AIMDB_BUILD_INFO",
+                ".no_dead_strip ___AIMDB_BUILD_INFO",
+                ".p2align 3",
+                "___AIMDB_BUILD_INFO:",
+                $crate::__private::core::concat!(
+                    ".incbin \"",
+                    $crate::__private::core::env!("OUT_DIR"),
+                    "/aimdb_build_info.bin\""
+                ),
+                ".popsection",
+                "/* aimdb-build-info image {hash} */",
+                hash = const $crate::__private::fnv1a(IMAGE),
+            );
+
+            #[cfg(not(any(
+                target_vendor = "apple",
+                target_os = "windows",
+                target_os = "uefi",
+                target_family = "wasm"
+            )))]
+            $crate::__private::core::arch::global_asm!(
+                ".pushsection .aimdb_build_info,\"aR\",%progbits",
+                ".globl __AIMDB_BUILD_INFO",
+                ".type __AIMDB_BUILD_INFO,%object",
+                ".p2align 3",
+                "__AIMDB_BUILD_INFO:",
+                $crate::__private::core::concat!(
+                    ".incbin \"",
+                    $crate::__private::core::env!("OUT_DIR"),
+                    "/aimdb_build_info.bin\""
+                ),
+                ".size __AIMDB_BUILD_INFO, . - __AIMDB_BUILD_INFO",
+                ".popsection",
+                "/* aimdb-build-info image {hash} */",
+                hash = const $crate::__private::fnv1a(IMAGE),
+            );
+
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "uefi",
+                target_family = "wasm"
+            )))]
+            unsafe extern "C" {
+                pub static __AIMDB_BUILD_INFO: [u8; LEN];
+            }
+
+            #[cfg(any(
+                target_os = "windows",
+                target_os = "uefi",
+                target_family = "wasm"
+            ))]
+            pub static __AIMDB_BUILD_INFO: [u8; LEN] =
+                *$crate::__private::core::include_bytes!($crate::__private::core::concat!(
+                    $crate::__private::core::env!("OUT_DIR"),
+                    "/aimdb_build_info.bin"
+                ));
+        }
+
+        // SAFETY: on ELF and Mach-O the symbol is the section assembled
+        // above, exactly `LEN` bytes, never written while the program runs.
+        #[allow(unused_unsafe)]
+        let section: &'static [u8] = unsafe {
+            &*$crate::__private::core::ptr::addr_of!(__aimdb_build_info::__AIMDB_BUILD_INFO)
+        };
+        section
+    }};
 }

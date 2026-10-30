@@ -57,6 +57,7 @@ help:
 	@printf "  $(YELLOW)Testing Commands:$(NC)\n"
 	@printf "    check                Comprehensive development check (fmt + clippy + all tests)\n"
 	@printf "    test-embedded        Test embedded/MCU cross-compilation compatibility\n"
+	@printf "    test-build-info-link Build-info section in linked fixture binaries (slow)\n"
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    ros2-interop         ros2:// against a ROS 2 distribution in Docker (DISTRO=lyrical)\n"
@@ -161,7 +162,7 @@ build:
 	@printf "$(YELLOW)  → Building benchmarking infrastructure (host-only, incl. benches)$(NC)\n"
 	cargo build --package aimdb-bench --benches
 
-test: test-operational-events
+test: test-operational-events test-build-info-link
 	@printf "$(GREEN)Running all tests (valid combinations)...$(NC)\n"
 	@printf "$(YELLOW)  → Testing aimdb-build-info (no_std, build helper)$(NC)\n"
 	cargo test --package aimdb-build-info
@@ -1071,6 +1072,13 @@ all: build test examples
 # Library destination combinations for the internal operational reporters.
 # Run separately from embedded bundles: Cargo feature unification across a
 # workspace-wide all-features invocation would mix std and Embassy runtimes.
+# The build-info section in real linked binaries: fixture packages built with
+# a nested cargo (slow, so `#[ignore]`d in plain `cargo test`).
+.PHONY: test-build-info-link
+test-build-info-link:
+	@printf "$(YELLOW)  → Testing aimdb-build-info in linked fixture binaries$(NC)\n"
+	cargo test --package aimdb-build-info --features build -- --ignored
+
 .PHONY: test-operational-events
 test-operational-events:
 	cargo test -p aimdb-persistence -p aimdb-persistence-sqlite --features aimdb-persistence/tracing,aimdb-persistence/log,aimdb-persistence-sqlite/tracing,aimdb-persistence-sqlite/log

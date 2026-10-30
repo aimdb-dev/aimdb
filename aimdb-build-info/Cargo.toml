@@ -10,6 +10,8 @@ homepage.workspace = true
 description = "Build identity in the binary: a fixed-layout section readable over AimX, from a file and from flash"
 keywords = ["build-info", "embedded", "no-std", "aimdb"]
 categories = ["embedded", "no-std", "development-tools::build-utils"]
+# The build script ships the board linker fragment `aimdb_build_info.x`.
+links = "aimdb-build-info"
 
 [dependencies]
 serde_json = { workspace = true, optional = true, features = ["std"] }
@@ -17,6 +19,8 @@ sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Finds the section in the host-link tests' binaries.
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
 
 [features]
 default = []
