@@ -93,6 +93,7 @@ async fn read_instances_resource() -> McpResult<ResourceReadResult> {
                 "writable_records": info.writable_records,
                 "max_subscriptions": info.max_subscriptions,
                 "authenticated": info.authenticated,
+                "name": info.name,
             })
         })
         .collect();

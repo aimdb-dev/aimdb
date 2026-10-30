@@ -184,7 +184,7 @@ impl McpServer {
         let mut tools = vec![
             Tool {
                 name: "discover_instances".to_string(),
-                description: "Discover all running AimDB instances on the system. Scans /tmp/*.sock and /var/run/aimdb/*.sock for AimDB servers.".to_string(),
+                description: "Discover all running AimDB instances on the system. Scans /tmp/*.sock and /var/run/aimdb/*.sock for AimDB servers. Each result carries the instance name, if one was given.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -249,7 +249,7 @@ impl McpServer {
             },
             Tool {
                 name: "get_instance_info".to_string(),
-                description: "Get detailed information about a specific AimDB instance. Returns server version, protocol, permissions, and capabilities.".to_string(),
+                description: "Get detailed information about a specific AimDB instance. Returns server version, protocol, permissions and capabilities, and from protocol 3.1 servers the AimDB version, the instance name and UID, and the build info embedded in the binary (application, version, git revision, uncommitted changes, kind, config hash, profile, target, post-link region state).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
