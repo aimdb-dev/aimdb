@@ -130,6 +130,7 @@ dependencies = [
 name = "aimdb-client"
 version = "0.7.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-core",
  "aimdb-serial-connector",
  "aimdb-tcp-connector",

@@ -341,10 +341,18 @@ impl AimxConnection {
     /// in chunks of at most [`POST_LINK_CHUNK_MAX`] bytes. `None` when the
     /// server embeds no build info, its region is not written, or it speaks
     /// 3.0.
+    ///
+    /// Each chunk must start at the requested offset, carry the same `total`
+    /// as the first, stay within the bytes requested and within `total`; a
+    /// `total` a build-info section cannot hold is refused before reading
+    /// further. Any of these from a malformed peer is an error, never a
+    /// truncated or padded result.
     pub async fn post_link(&self) -> ClientResult<Option<Vec<u8>>> {
         let mut data = Vec::new();
+        let mut total = None;
         loop {
-            let params = json!({ "offset": data.len(), "len": POST_LINK_CHUNK_MAX });
+            let offset = data.len();
+            let params = json!({ "offset": offset, "len": POST_LINK_CHUNK_MAX });
             let chunk: PostLinkChunk = match self
                 .handle
                 .call("instance.post_link", to_payload(&params)?)
@@ -354,14 +362,10 @@ impl AimxConnection {
                 Err(RpcError::NotFound) => return Ok(None),
                 Err(e) => return Err(rpc_err(e)),
             };
-            let total = chunk.total as usize;
-            let bytes = decode_hex(&chunk.data)?;
-            if bytes.is_empty() && data.len() < total {
-                return Err(malformed_chunk("an empty chunk before the end"));
-            }
+            let total = *total.get_or_insert(chunk.total);
+            let bytes = check_chunk(&chunk, offset, total)?;
             data.extend_from_slice(&bytes);
-            if data.len() >= total {
-                data.truncate(total);
+            if data.len() == total as usize {
                 return Ok(Some(data));
             }
         }
@@ -465,6 +469,48 @@ fn from_payload<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> ClientResult<T>
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// The bytes of a post-link `chunk` read at `offset`, if it fits a download
+/// whose first chunk said `total`.
+fn check_chunk(chunk: &PostLinkChunk, offset: usize, total: u32) -> ClientResult<Vec<u8>> {
+    if total as usize >= aimdb_build_info::SECTION_MAX {
+        return Err(malformed_chunk(format!(
+            "a total of {total} bytes, more than a build-info section holds"
+        )));
+    }
+    if chunk.total != total {
+        return Err(malformed_chunk(format!(
+            "the total changed from {total} to {} bytes",
+            chunk.total
+        )));
+    }
+    if chunk.offset as usize != offset {
+        return Err(malformed_chunk(format!(
+            "a chunk at offset {} where {offset} was asked for",
+            chunk.offset
+        )));
+    }
+    // Checked on the hex, before decoding it.
+    let max = POST_LINK_CHUNK_MAX as usize;
+    if chunk.data.len() > 2 * max {
+        return Err(malformed_chunk(format!(
+            "a chunk of {} hex digits, more than the {max} bytes asked for",
+            chunk.data.len()
+        )));
+    }
+    let bytes = decode_hex(&chunk.data)?;
+    let remaining = total as usize - offset;
+    if bytes.len() > remaining {
+        return Err(malformed_chunk(format!(
+            "{} bytes at offset {offset}, past the total of {total}",
+            bytes.len()
+        )));
+    }
+    if bytes.is_empty() && remaining > 0 {
+        return Err(malformed_chunk("an empty chunk before the end"));
+    }
+    Ok(bytes)
+}
+
 /// Lowercase or uppercase hex to bytes.
 fn decode_hex(hex: &str) -> ClientResult<Vec<u8>> {
     fn nibble(c: u8) -> Option<u8> {
@@ -486,7 +532,7 @@ fn decode_hex(hex: &str) -> ClientResult<Vec<u8>> {
         .ok_or_else(|| malformed_chunk("data is not hex"))
 }
 
-fn malformed_chunk(why: &str) -> ClientError {
+fn malformed_chunk(why: impl core::fmt::Display) -> ClientError {
     ClientError::Other(anyhow::anyhow!("malformed instance.post_link reply: {why}"))
 }
 
@@ -525,6 +571,67 @@ mod tests {
     use super::*;
     use aimdb_core::session::SubUpdate;
     use serde_json::json;
+
+    fn chunk(offset: u32, total: u32, data: &str) -> PostLinkChunk {
+        PostLinkChunk {
+            offset,
+            total,
+            data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn check_chunk_accepts_consistent_chunks() {
+        assert_eq!(
+            check_chunk(&chunk(0, 3, "aabbcc"), 0, 3).unwrap(),
+            vec![0xaa, 0xbb, 0xcc]
+        );
+        assert_eq!(
+            check_chunk(&chunk(1024, 1500, &"00".repeat(476)), 1024, 1500).unwrap(),
+            vec![0; 476]
+        );
+        // Nothing written past offset 0: an empty region.
+        assert!(check_chunk(&chunk(0, 0, ""), 0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn check_chunk_rejects_inconsistent_chunks() {
+        let max = aimdb_build_info::SECTION_MAX as u32;
+        let full = "00".repeat(POST_LINK_CHUNK_MAX as usize);
+        for (case, chunk, offset, total) in [
+            ("total a section cannot hold", chunk(0, max, ""), 0, max),
+            ("huge total", chunk(0, u32::MAX, "00"), 0, u32::MAX),
+            ("total changed", chunk(1024, 3000, &full), 1024, 2048),
+            (
+                "offset not the one asked for",
+                chunk(0, 2048, &full),
+                1024,
+                2048,
+            ),
+            (
+                "more than asked for",
+                chunk(0, 4096, &format!("{full}00")),
+                0,
+                4096,
+            ),
+            ("past the total", chunk(0, 2, "aabbcc"), 0, 2),
+            (
+                "past the total, later chunk",
+                chunk(1024, 1500, &full),
+                1024,
+                1500,
+            ),
+            ("empty before the end", chunk(4, 8, ""), 4, 8),
+            ("not hex", chunk(0, 1, "zz"), 0, 1),
+        ] {
+            let err = check_chunk(&chunk, offset, total).expect_err(case);
+            assert!(
+                err.to_string()
+                    .contains("malformed instance.post_link reply"),
+                "{case}: {err}"
+            );
+        }
+    }
 
     #[test]
     fn decode_hex_accepts_both_cases_and_rejects_the_rest() {

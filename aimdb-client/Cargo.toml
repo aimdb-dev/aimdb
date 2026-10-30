@@ -31,6 +31,9 @@ aimdb-core = { version = "2.0.0", path = "../aimdb-core", features = [
     "connector-session",
 ] }
 
+# The build-info layout's limits, to bound a post-link download.
+aimdb-build-info = { version = "0.1.0", path = "../aimdb-build-info" }
+
 # Transports the resolver dials over, each behind its `transport-*` feature so a
 # binary links only what it needs.
 aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector", optional = true }
