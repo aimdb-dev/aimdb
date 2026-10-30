@@ -689,6 +689,8 @@ examples:
 	cargo build --package embassy-knx-connector-demo --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building embassy-serial-connector-demo (embedded, embassy runtime)$(NC)\n"
 	cargo build --package embassy-serial-connector-demo --target thumbv8m.main-none-eabihf
+	@printf "$(YELLOW)  → Checking its build-info section sits at 0x08000400, before .text at 0x08002000$(NC)\n"
+	cargo run --quiet --package aimdb-build-info --example inspect -- target/thumbv8m.main-none-eabihf/debug/embassy-serial-connector-demo --section-addr 0x08000400 --text-addr 0x08002000
 	@printf "$(YELLOW)  → Building embassy-bench-stm32h5 (B3 on-target profiling, embassy runtime)$(NC)\n"
 	cargo build --package embassy-bench-stm32h5 --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"

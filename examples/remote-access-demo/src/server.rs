@@ -118,8 +118,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build database with remote access enabled. Remote access is now just a
     // connector: register the UDS *server* via `with_connector` (the client
     // side, by contrast, uses `UdsClient` + `link_to`/`link_from`).
+    // Build identity, reported by `aimdb instance info`: the build-info
+    // section from build.rs, and a name (`AIMDB_INSTANCE_NAME` to change it).
+    let instance_name =
+        std::env::var("AIMDB_INSTANCE_NAME").unwrap_or_else(|_| "remote-access-demo".to_string());
     let mut builder = AimDbBuilder::new()
         .runtime(adapter)
+        .build_info(aimdb_build_info::section!())
+        .instance_name(instance_name)
         .with_connector(UdsServer::from_config(remote_config));
 
     // Configure records

@@ -25,6 +25,8 @@ aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-featur
     "connector",
     "defmt",
 ] }
+# Build identity: the section `main` places and the linker fragment for it.
+aimdb-build-info = { path = "../../aimdb-build-info" }
 
 # Embassy ecosystem - STM32H563ZI
 embassy-stm32 = { workspace = true, features = [
@@ -65,6 +67,9 @@ static_cell = { workspace = true }
 # Embedded HAL / heap
 embedded-io-async = { workspace = true }
 embedded-alloc = { version = "0.6", features = ["llff"] }
+
+[build-dependencies]
+aimdb-build-info = { path = "../../aimdb-build-info", features = ["build"] }
 
 [package.metadata.embassy]
 build = [
