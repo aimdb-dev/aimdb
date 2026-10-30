@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`instance info` shows the build an instance runs (#331)**, with
+  `--format` and `--post-link`; `instance list` gains a Name column.
+
 - **`graph nodes` shows each record's schema and outbound link addresses
   (#332).** New "Schema" column (`temperature v2`); "Outbound" lists the
   link addresses instead of `yes`, and falls back to `yes` for servers that

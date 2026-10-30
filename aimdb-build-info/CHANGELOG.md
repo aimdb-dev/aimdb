@@ -9,5 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **First release**: the build-info section (format 1), its `no_std` parser,
-  and the build-script helper (feature `build`).
+- **First release (#331)**: the build-info section (format 1), its `no_std`
+  parser, the build-script helper (feature `build`), `section!()`, and the
+  board linker fragment `aimdb_build_info.x`.

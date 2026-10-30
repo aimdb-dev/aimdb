@@ -1,6 +1,6 @@
 # 057 — Build identity in the binary
 
-**Status:** 📝 Proposed
+**Status:** ✅ Implemented
 
 **Scope:** [#331](https://github.com/aimdb-dev/aimdb/issues/331). A
 fixed-layout build-info section produced by a new leaf crate

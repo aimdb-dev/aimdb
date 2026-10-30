@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`get_instance_info` returns `aimdb_version`, `instance` and `build`
+  (#331)**, absent against a 3.0 server; `discover_instances` returns `name`.
+
 - **`graph_nodes` returns each record's `schema` (`{ name, version }`) and
   `outbound_links` (#332).** Passed through from the server; the tool
   description lists them.
