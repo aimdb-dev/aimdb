@@ -26,7 +26,7 @@ a debug probe when AimX is unavailable.
 | R2 | Layout, payload schema and AimX method are versioned independently; readers skip what they do not know. |
 | R3 | Reproducible: no time, host or user in the section. |
 | R4 | A fixed-size, erased post-link region can be written in place after linking, without relinking or changing the file size. |
-| R5 | `no_std`, allocation-free parsing; the server never decodes the payload. |
+| R5 | `no_std`, allocation-free parsing; the server never builds a JSON tree from the payload (`build()` validates it without one). |
 | R6 | Every reply fits the smallest AimX frame (serial, 8 KiB) and contains no CR/LF (UDS frames are newline-delimited). |
 | R7 | Additive on the wire: 3.0 clients work against 3.1 servers; 3.1 clients report "not available" against 3.0 servers. |
 | R8 | Same answer on UDS, serial, TCP and WebSocket. |
@@ -45,7 +45,8 @@ off  size  field
  20     4  region_len   u32
  24     4  total_len    u32 = region_off + region_len
  28     4  reserved     0
- 32     …  payload      UTF-8 JSON (§3.1), zero-padded to region_off
+  hl    …  payload      at header_len (32 in format 1's initial layout);
+                        UTF-8 JSON (§3.1), zero-padded to region_off
   …     …  region       region_len bytes, 0xFF until written (§3.2)
 ```
 
@@ -53,7 +54,8 @@ Reader rules:
 
 1. Wrong magic → no build info.
 2. `format != 1` → reject. `format` changes only when a field changes meaning.
-3. `header_len >= 32`; bytes past 32 are ignored (room for new header fields).
+3. `header_len >= 32`; header bytes past 32 are ignored (room for new header
+   fields). The payload starts at `header_len`, never at a hard-coded 32.
 4. Require `header_len + payload_len <= region_off`, `region_off % 8 == 0`,
    `region_off + region_len == total_len`, `total_len <= SECTION_MAX` (64 KiB),
    and `total_len <= available bytes`.
@@ -152,8 +154,10 @@ directory), `track_dirty(bool)`.
   the remaining directories (always including the repository root).
 - Run `git --no-optional-locks status --porcelain`; do not watch `.git/index`.
   A plain `git status` rewrites the index and causes a spurious rerun.
-- `track_dirty(false)` records `dirty: null` and watches only the package's
-  `src/`, `Cargo.toml` and `build.rs`.
+- `track_dirty(false)` disables only dirty tracking: it records `dirty: null`
+  and skips the repository-wide watch, falling back to the package's `src/`,
+  `Cargo.toml` and `build.rs`. Revision tracking, the override variables and
+  file, `config_hash_of_file` inputs and `watch()` paths stay active.
 - Known limit: a new untracked file in a directory that also contains ignored
   output is not detected. Use `watch()` for such inputs.
 
@@ -290,16 +294,18 @@ No params, `read` permission.
 
 ### 6.3 `instance.post_link`
 
-Params `{"offset", "len"}`, `read` permission. Reply
-`{"offset", "total": L, "data": "<lowercase hex>"}`; `not_found` when the
-region is not written.
+Params `{"offset": u32, "len": u32}`, both optional, `read` permission. Reply
+`{"offset": u32, "total": u32, "data": "<lowercase hex>"}`; `not_found` when
+no section is registered or the region is not written.
 
 | Input | Behavior |
 |---|---|
 | `offset` missing | 0 |
-| `len` missing or > `POST_LINK_CHUNK_MAX` (1 KiB) | clamped to 1 KiB |
+| `len` missing | 1 KiB |
+| `len` a valid `u32` > `POST_LINK_CHUNK_MAX` (1 KiB) | clamped to 1 KiB |
 | `len: 0` | empty `data`, `total` present |
 | `offset >= total` | empty `data` |
+| `offset` or `len` present but not a JSON integer in `0..=u32::MAX` (negative, fractional, string, `null`, too large) | rejected with `internal`, like other methods' malformed params; no clamping or defaulting |
 
 Clients read from 0 until they hold `total` bytes.
 
@@ -309,6 +315,12 @@ Clients read from 0 until they hold `total` bytes.
   `PostLinkChunk` and both limits live in `aimdb_core::remote::protocol`.
 - `aimdb_core::remote::{instance_info_reply(&AimDb), post_link_chunk_reply(&AimDb, offset, len)}`
   serve both the core AimX dispatch and the WebSocket dispatch.
+- `post_link_chunk_reply` returns `Result<Vec<u8>, PostLinkError>` with
+  `PostLinkError::{NotWritten, InvalidParams}` (`remote` does not depend on
+  `connector-session`, so it cannot return `RpcError`). Both dispatches map
+  `NotWritten` → `not_found` and `InvalidParams` → `internal`. Params are
+  validated before the region is checked; `null`/absent params equal `{}`, any
+  other non-object is `InvalidParams`.
 
 ## 7. Clients
 
@@ -352,7 +364,7 @@ Clients read from 0 until they hold `total` bytes.
 
 | Where | What |
 |---|---|
-| `aimdb-build-info` | Encode/parse round trip; each header rule in §3 rejected; `header_len > 32` accepted; region states incl. 1–3 byte regions and length near `u32::MAX`; no panic on any truncation or byte flip. |
+| `aimdb-build-info` | Encode/parse round trip; each header rule in §3 rejected; `header_len > 32` accepted and the payload read from `header_len`; region states incl. 1–3 byte regions and length near `u32::MAX`; no panic on any truncation or byte flip. |
 | `aimdb-build-info` (`build`) | With and without git; the three overrides; override validation and compaction; identical bytes across runs; payload > 4 KiB rejected. |
 | Build-script freshness | Temp git repo, two-crate workspace, dependency generating code from `assets/`, debug build. Steps: commit → `false`; rebuild → no rerun; edit dep → `true`; revert → `false`; add asset (also with old mtime) → `true`; remove → `false`; commit → new revision; `track_dirty(false)` → `null`; ignored file in `assets/` → documented limit, then `watch()` → `true`; rewrite override file → new payload. After each step the binary's section equals the build-script output. |
 | Host link | Release + fat LTO binary without AimX: section present by name (ELF, Mach-O) and by symbol, parses; patch region in file → size unchanged, reads `written`. |
@@ -360,7 +372,7 @@ Clients read from 0 until they hold `total` bytes.
 | Board layout (CI) | `embassy-serial-connector-demo` for `thumbv8m.main-none-eabihf`: section at `0x08000400`, `.text` at `0x08002000`, section parses. |
 | `aimdb-core` | `instance.info` with/without section, name, UID, each region state; `build()` rejects malformed sections and payloads with line breaks; `instance_name` in welcome present/omitted; 3.0 `WelcomeMessage` parses a 3.1 welcome. |
 | `aimdb-client` | `instance_info()` → `None` against a dispatch without the method; discovery fills `name`. |
-| WebSocket e2e | Same `instance.info` reply as UDS; `post_link` chunking edge cases from §6.3. |
+| WebSocket e2e | Same `instance.info` reply as UDS; `post_link` chunking edge cases from §6.3, including each invalid-parameter case. |
 | UDS round trip | Payload with whitespace and an escaped newline; `instance_name` in welcome; 1,500-byte region via `post_link()`. |
 | Serial bounds | Worst case (4 KiB payload, 128-byte control-character name, 32-byte UID, full 4 KiB region): `instance.info` ≤ `INSTANCE_INFO_REPLY_MAX`, every framed reply within the serial cap, full region read over a slow pipe. |
 | CLI | `instance info` table/JSON for 3.1 with build, without, and 3.0; `instance list` Name column. |
