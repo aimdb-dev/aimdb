@@ -49,6 +49,15 @@ impl Fixture {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.cargo_env(args, &[])
+    }
+
+    /// [`cargo`](Self::cargo) with `vars` set.
+    pub fn cargo_env<I, S>(&self, args: I, vars: &[(&str, &str)]) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let out = Command::new(env::var_os("CARGO").unwrap_or("cargo".into()))
             .args(args)
             .arg("--target-dir")
@@ -58,6 +67,7 @@ impl Fixture {
             .env_remove("AIMDB_BUILD_DIRTY")
             .env_remove("AIMDB_BUILD_INFO")
             .env_remove("CARGO_TARGET_DIR")
+            .envs(vars.iter().copied())
             .output()
             .unwrap();
         assert!(
@@ -66,6 +76,19 @@ impl Fixture {
             String::from_utf8_lossy(&out.stderr)
         );
         out
+    }
+
+    /// `git <args>` in the fixture, as a fixed committer; its trimmed stdout.
+    pub fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&self.dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().into()
     }
 
     pub fn bin(&self, profile: &str, name: &str) -> PathBuf {
