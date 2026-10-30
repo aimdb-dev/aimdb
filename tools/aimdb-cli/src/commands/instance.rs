@@ -22,8 +22,16 @@ pub enum InstanceSubcommand {
         #[arg(short, long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Show detailed information about an instance
-    Info {},
+    /// Show detailed information about an instance: identity, build info
+    /// (protocol 3.1), permissions
+    Info {
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: OutputFormat,
+        /// Also read the post-link region's bytes, shown as hex
+        #[arg(long)]
+        post_link: bool,
+    },
     /// Test connection to an instance
     Ping {},
 }
@@ -33,7 +41,9 @@ impl InstanceCommand {
         match self.subcommand {
             // `list` is discovery-only (a Unix-socket scan); it ignores --connect.
             InstanceSubcommand::List { format } => list_instances(format).await,
-            InstanceSubcommand::Info {} => show_instance_info(endpoint).await,
+            InstanceSubcommand::Info { format, post_link } => {
+                show_instance_info(endpoint, format, post_link).await
+            }
             InstanceSubcommand::Ping {} => ping_instance(endpoint).await,
         }
     }
@@ -70,9 +80,34 @@ async fn list_instances(format: OutputFormat) -> CliResult<()> {
     Ok(())
 }
 
-async fn show_instance_info(endpoint: Option<&str>) -> CliResult<()> {
-    let instance = resolve_instance(endpoint).await?;
-    let output = table::format_instance_info(&instance);
+async fn show_instance_info(
+    endpoint: Option<&str>,
+    format: OutputFormat,
+    with_post_link: bool,
+) -> CliResult<()> {
+    // `instance.info` needs a connection, so discovery only picks the endpoint.
+    let endpoint = match endpoint {
+        Some(ep) => ep.to_string(),
+        None => find_instance(None).await?.endpoint.display().to_string(),
+    };
+    let conn = AimxConnection::connect(&endpoint).await?;
+    let instance = InstanceInfo::from((PathBuf::from(&endpoint), conn.server_info().clone()));
+    let reply = conn.instance_info().await?;
+    let post_link = match with_post_link {
+        true => Some(conn.post_link().await?),
+        false => None,
+    };
+    let post_link = post_link.as_ref().map(Option::as_deref);
+
+    let value = || json::instance_info_value(&instance, reply.as_ref(), post_link);
+    let output = match format {
+        OutputFormat::Table => table::format_instance_info(&instance, reply.as_ref(), post_link),
+        OutputFormat::Json => json::format_json_pretty(&value())?,
+        OutputFormat::JsonCompact => json::format_json_compact(&value())?,
+        #[cfg(feature = "yaml")]
+        OutputFormat::Yaml => serde_yaml::to_string(&value())
+            .map_err(|e| anyhow::anyhow!("YAML serialization error: {}", e))?,
+    };
     println!("{}", output);
     Ok(())
 }

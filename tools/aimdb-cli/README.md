@@ -114,12 +114,21 @@ Options:
 - `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
 
 #### `instance info`
-Show detailed information about a specific instance. Works over any endpoint, not
-just discovered sockets.
+Show detailed information about a specific instance: its name and UID, the
+build it runs (from the binary's build info, protocol 3.1), and its
+permissions. Works over any endpoint, not just discovered sockets.
 
 ```bash
-aimdb [--connect <ENDPOINT>] instance info
+aimdb [--connect <ENDPOINT>] instance info [--format <FORMAT>] [--post-link]
 ```
+
+Options:
+- `-f, --format <FORMAT>`: Output format (table, json, json-compact, yaml)
+- `--post-link`: Also read the bytes written into the build info's post-link
+  region after linking, as hex (`post_link_data` in JSON)
+
+Against a 3.0 server the build is shown as not reported; a binary without
+build info shows it as not embedded.
 
 #### `instance ping`
 Test connection to an instance.

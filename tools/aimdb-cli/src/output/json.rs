@@ -1,7 +1,7 @@
 //! JSON Output Formatting
 
 use aimdb_client::discovery::InstanceInfo;
-use aimdb_client::protocol::RecordMetadata;
+use aimdb_client::protocol::{InstanceInfoReply, RecordMetadata};
 use serde::Serialize;
 
 /// Format data as pretty JSON
@@ -29,9 +29,34 @@ pub fn instances_value(instances: &[InstanceInfo]) -> Vec<serde_json::Value> {
                 "writable_records": i.writable_records,
                 "max_subscriptions": i.max_subscriptions,
                 "authenticated": i.authenticated,
+                "name": i.name,
             })
         })
         .collect()
+}
+
+/// Serializable form of `instance info`: the instance's [`instances_value`]
+/// row, plus `aimdb_version`, `instance` and `build` from `instance.info`
+/// (absent from a 3.0 server), plus `post_link_data` as hex when asked for
+/// (`null` when nothing is written).
+pub fn instance_info_value(
+    instance: &InstanceInfo,
+    reply: Option<&InstanceInfoReply>,
+    post_link: Option<Option<&[u8]>>,
+) -> serde_json::Value {
+    let mut value = instances_value(std::slice::from_ref(instance)).remove(0);
+    let object = value
+        .as_object_mut()
+        .expect("instances_value rows are objects");
+    if let Some(serde_json::Value::Object(fields)) =
+        reply.and_then(|r| serde_json::to_value(r).ok())
+    {
+        object.extend(fields);
+    }
+    if let Some(data) = post_link {
+        object.insert("post_link_data".into(), data.map(super::hex).into());
+    }
+    value
 }
 
 /// Format instances as JSON
@@ -114,6 +139,35 @@ mod tests {
             authenticated: false,
             name: None,
         }
+    }
+
+    #[test]
+    fn instance_info_value_merges_the_reply() {
+        let reply: InstanceInfoReply = serde_json::from_value(serde_json::json!({
+            "aimdb_version": "2.1.0",
+            "instance": { "name": "gateway-3", "uid": "00ff" },
+            "build": null,
+        }))
+        .unwrap();
+        let mut named = instance();
+        named.name = Some("gateway-3".to_string());
+
+        let value = instance_info_value(&named, Some(&reply), Some(Some(&[0xab])));
+        assert_eq!(value["name"], "gateway-3");
+        assert_eq!(value["socket_path"], "/tmp/aimdb.sock");
+        assert_eq!(value["aimdb_version"], "2.1.0");
+        assert_eq!(value["instance"]["uid"], "00ff");
+        assert_eq!(value["build"], serde_json::Value::Null);
+        assert_eq!(value["post_link_data"], "ab");
+
+        // From a 3.0 server: no reply fields; post-link data only when asked.
+        let value = instance_info_value(&instance(), None, None);
+        for key in ["aimdb_version", "instance", "build", "post_link_data"] {
+            assert!(value.get(key).is_none(), "{key}");
+        }
+        assert_eq!(value["name"], serde_json::Value::Null);
+        let value = instance_info_value(&instance(), None, Some(None));
+        assert_eq!(value["post_link_data"], serde_json::Value::Null);
     }
 
     #[test]
