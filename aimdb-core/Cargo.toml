@@ -74,6 +74,9 @@ test-utils = ["std"]
 start-order-seed = []
 
 [dependencies]
+# The build-info section: no_std, no dependencies.
+aimdb-build-info = { version = "0.1.0", path = "../aimdb-build-info" }
+
 # Derive macros (optional)
 aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
 
