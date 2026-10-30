@@ -922,3 +922,187 @@ async fn golden_wire_frames() {
     ws_send(&mut c, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
 }
+
+// ── instance.info / instance.post_link (3.1) ─────────────────────────
+
+const BUILD_PAYLOAD: &[u8] =
+    br#"{"schema":1,"name":"ws-app","version":"1.0.0","ext":{"note":"a\nb"}}"#;
+
+/// A format-1 section around `payload` whose post-link region holds `data`,
+/// built by hand and leaked to `'static` as `section!()` is.
+fn build_section(payload: &[u8], data: &[u8]) -> &'static [u8] {
+    let region_len = 4 + data.len();
+    let region_off = (32 + payload.len()).div_ceil(8) * 8;
+    let total = region_off + region_len;
+    let mut b = vec![0u8; total];
+    b[..8].copy_from_slice(b"AIMDB-BI");
+    b[8..10].copy_from_slice(&1u16.to_le_bytes());
+    b[10..12].copy_from_slice(&32u16.to_le_bytes());
+    b[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    b[16..20].copy_from_slice(&(region_off as u32).to_le_bytes());
+    b[20..24].copy_from_slice(&(region_len as u32).to_le_bytes());
+    b[24..28].copy_from_slice(&(total as u32).to_le_bytes());
+    b[32..32 + payload.len()].copy_from_slice(payload);
+    b[region_off..region_off + 4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+    b[region_off + 4..].copy_from_slice(data);
+    Box::leak(b.into_boxed_slice())
+}
+
+/// A server with build info (1,500 written post-link bytes), a name and a
+/// UID, granting everything only to `?grant=all` clients.
+async fn spawn_with_identity(data: &[u8]) -> (SocketAddr, Arc<AimDb>) {
+    let addr = free_addr();
+    let (db, runner) = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .build_info(build_section(BUILD_PAYLOAD, data))
+        .instance_name("ws-1")
+        .instance_uid(&[0x00, 0x35, 0xab])
+        .with_connector(
+            WebSocketConnector::new()
+                .with_auth(GrantByQuery)
+                .bind(addr)
+                .path("/ws"),
+        )
+        .build()
+        .await
+        .expect("build db");
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+    (addr, Arc::new(db))
+}
+
+/// One `instance.post_link` call; the reply frame.
+async fn post_link(c: &mut WsClient, id: u64, params: Value) -> Value {
+    ws_send(
+        c,
+        json!({"t":"req","id":id,"method":"instance.post_link","params":params}),
+    )
+    .await;
+    let reply = ws_recv_tag(c, "reply").await;
+    assert_eq!(reply["id"], id);
+    reply
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tokio::test]
+async fn instance_info_is_the_reply_core_builds() {
+    let data: Vec<u8> = (0..1500u32).map(|i| (i * 31) as u8).collect();
+    let (addr, db) = spawn_with_identity(&data).await;
+    let mut c = ws_connect_with(addr, "&grant=all").await;
+
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":1,"method":"instance.info","params":null}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut c, "reply").await;
+    let core: Value =
+        serde_json::from_slice(&aimdb_core::remote::instance_info_reply(&db)).unwrap();
+    assert_eq!(reply["ok"], core, "the same reply as every other transport");
+    assert_eq!(
+        reply["ok"]["instance"],
+        json!({ "name": "ws-1", "uid": "0035ab" })
+    );
+    assert_eq!(reply["ok"]["build"]["info"]["ext"]["note"], "a\nb");
+    assert_eq!(
+        reply["ok"]["build"]["post_link"],
+        json!({ "state": "written", "len": 1500 })
+    );
+}
+
+#[tokio::test]
+async fn post_link_chunking_over_ws() {
+    let data: Vec<u8> = (0..1500u32).map(|i| (i * 31) as u8).collect();
+    let (addr, _db) = spawn_with_identity(&data).await;
+    let mut c = ws_connect_with(addr, "&grant=all").await;
+
+    let cases = [
+        // Defaults: offset 0, 1 KiB; `null` equals `{}`.
+        (
+            json!(null),
+            json!({"offset":0,"total":1500,"data":hex(&data[..1024])}),
+        ),
+        (
+            json!({}),
+            json!({"offset":0,"total":1500,"data":hex(&data[..1024])}),
+        ),
+        // The rest; `len` over 1 KiB is clamped.
+        (
+            json!({"offset":1024,"len":u32::MAX}),
+            json!({"offset":1024,"total":1500,"data":hex(&data[1024..])}),
+        ),
+        (
+            json!({"offset":7,"len":5}),
+            json!({"offset":7,"total":1500,"data":hex(&data[7..12])}),
+        ),
+        // Nothing to send, `total` still present.
+        (json!({"len":0}), json!({"offset":0,"total":1500,"data":""})),
+        (
+            json!({"offset":1500}),
+            json!({"offset":1500,"total":1500,"data":""}),
+        ),
+        (
+            json!({"offset":u32::MAX}),
+            json!({"offset":u32::MAX,"total":1500,"data":""}),
+        ),
+    ];
+    for (id, (params, expected)) in (10..).zip(cases) {
+        let reply = post_link(&mut c, id, params.clone()).await;
+        assert_eq!(reply["ok"], expected, "{params}");
+    }
+
+    // Malformed params: `internal`, never clamped or defaulted.
+    let invalid = [
+        json!({"offset":-1}),
+        json!({"offset":1.5}),
+        json!({"offset":"0"}),
+        json!({"offset":null}),
+        json!({"offset":u64::from(u32::MAX) + 1}),
+        json!({"len":-1}),
+        json!({"len":0.5}),
+        json!({"len":"1"}),
+        json!({"len":null}),
+        json!({"len":u64::from(u32::MAX) + 1}),
+        json!([0, 1]),
+        json!("x"),
+        json!(1),
+    ];
+    for (id, params) in (100..).zip(invalid) {
+        let reply = post_link(&mut c, id, params.clone()).await;
+        assert_eq!(reply["err"], "internal", "{params}");
+    }
+}
+
+#[tokio::test]
+async fn instance_methods_need_read_access_and_a_written_region() {
+    // No build info: nothing to read.
+    let (addr, _db) = spawn_default().await;
+    let mut c = ws_connect(addr).await;
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":1,"method":"instance.info","params":null}),
+    )
+    .await;
+    assert_eq!(
+        ws_recv_tag(&mut c, "reply").await["ok"]["build"],
+        Value::Null
+    );
+    assert_eq!(post_link(&mut c, 2, json!({})).await["err"], "not_found");
+
+    // An ungranted client is denied both, as it is `subscribe`.
+    let (addr, _db) = spawn_with_identity(b"x").await;
+    let mut c = ws_connect(addr).await;
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":3,"method":"instance.info","params":null}),
+    )
+    .await;
+    assert_eq!(
+        ws_recv_tag(&mut c, "reply").await,
+        json!({"t":"reply","id":3,"err":"denied"})
+    );
+    assert_eq!(post_link(&mut c, 4, json!({})).await["err"], "denied");
+}
