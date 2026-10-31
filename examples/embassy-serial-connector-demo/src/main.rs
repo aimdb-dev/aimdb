@@ -149,6 +149,10 @@ async fn main(spawner: Spawner) {
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::default());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
+        // Which build this is (also readable by a probe at 0x08000400) and
+        // which board: the chip's 96-bit unique ID.
+        .build_info(aimdb_build_info::section!())
+        .instance_uid(&embassy_stm32::uid::uid())
         .with_connector(SerialServer::new(EmbassyUart::new(rx, tx)).security_policy(policy));
     builder.configure::<Counter>("counter", |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)

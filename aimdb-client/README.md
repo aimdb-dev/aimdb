@@ -42,6 +42,8 @@ or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
 - **Subscriptions**: `subscribe()` (returns a `Stream` of `Result<RecordUpdate, ClientError>` —
   value, topic, gap count, snapshot-burst marker; a refused subscription is one `Err` item)
 - **Introspection**: `graph_nodes()`, `graph_edges()`, `graph_topo_order()`, `query()`
+- **Identity** (protocol 3.1): `instance_info()` (build info, instance name and UID;
+  `None` from a 3.0 server), `post_link()` (the written post-link bytes)
 
 ### Discovery
 

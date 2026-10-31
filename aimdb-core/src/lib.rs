@@ -102,6 +102,7 @@ mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
+pub mod identity;
 mod inbound_dispatch;
 mod inbound_key;
 mod outbound;

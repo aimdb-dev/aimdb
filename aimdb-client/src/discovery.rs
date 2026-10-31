@@ -21,6 +21,8 @@ pub struct InstanceInfo {
     pub writable_records: Vec<String>,
     pub max_subscriptions: Option<usize>,
     pub authenticated: bool,
+    /// The instance's name from the welcome (protocol 3.1), when one was given.
+    pub name: Option<String>,
 }
 
 impl From<(PathBuf, WelcomeMessage)> for InstanceInfo {
@@ -33,6 +35,7 @@ impl From<(PathBuf, WelcomeMessage)> for InstanceInfo {
             writable_records: welcome.writable_records,
             max_subscriptions: welcome.max_subscriptions,
             authenticated: welcome.authenticated.unwrap_or(false),
+            name: welcome.instance_name,
         }
     }
 }

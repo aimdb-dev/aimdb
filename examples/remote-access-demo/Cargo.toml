@@ -29,9 +29,13 @@ aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = [
     "observable",
 ] }
 aimdb-uds-connector = { path = "../../aimdb-uds-connector" }
+aimdb-build-info = { path = "../../aimdb-build-info" }
 tokio = { version = "1.48", features = ["full"] }
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[build-dependencies]
+aimdb-build-info = { path = "../../aimdb-build-info", features = ["build"] }

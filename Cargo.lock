@@ -87,6 +87,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-build-info"
+version = "0.1.0"
+dependencies = [
+ "object",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "aimdb-cdr"
 version = "0.1.0"
 dependencies = [
@@ -120,6 +130,7 @@ dependencies = [
 name = "aimdb-client"
 version = "0.7.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-core",
  "aimdb-serial-connector",
  "aimdb-tcp-connector",
@@ -151,6 +162,7 @@ dependencies = [
 name = "aimdb-core"
 version = "2.0.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-derive",
  "async-channel",
  "defmt 1.1.1",
@@ -331,6 +343,7 @@ dependencies = [
 name = "aimdb-serial-connector"
 version = "0.1.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-core",
  "aimdb-embassy-adapter",
  "aimdb-tokio-adapter",
@@ -1884,6 +1897,7 @@ dependencies = [
 name = "embassy-serial-connector-demo"
 version = "0.1.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-core",
  "aimdb-embassy-adapter",
  "aimdb-serial-connector",
@@ -3745,6 +3759,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4503,6 +4526,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "remote-access-demo"
 version = "0.1.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-client",
  "aimdb-core",
  "aimdb-data-contracts",

@@ -20,3 +20,8 @@ pub enum OutputFormat {
     #[cfg(feature = "yaml")]
     Yaml,
 }
+
+/// Lowercase hex of `bytes`.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}

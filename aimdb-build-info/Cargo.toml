@@ -1,0 +1,32 @@
+[package]
+name = "aimdb-build-info"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Build identity in the binary: a fixed-layout section readable over AimX, from a file and from flash"
+keywords = ["build-info", "embedded", "no-std", "aimdb"]
+categories = ["embedded", "no-std", "development-tools::build-utils"]
+# The build script ships the board linker fragment `aimdb_build_info.x`.
+links = "aimdb-build-info"
+
+[dependencies]
+serde_json = { workspace = true, optional = true, features = ["std"] }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+# Finds the section in the host-link tests' binaries.
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+
+[features]
+default = []
+# The build-script helper, `BuildInfo`: composes the payload and writes the
+# section image to OUT_DIR. std; use it from `[build-dependencies]` only.
+build = ["dep:serde_json", "dep:sha2"]
+
+[package.metadata.docs.rs]
+all-features = true

@@ -24,7 +24,7 @@
 //! `GET /version` returns `200 OK` with the AimX major.minor this server
 //! speaks:
 //! ```json
-//! { "aimx": "3.0" }
+//! { "aimx": "3.1" }
 //! ```
 //!
 //! It exists because the upgrade-time version gate below answers an
@@ -193,7 +193,7 @@ async fn ws_upgrade_handler(
     // Protocol-version gate, before auth: the socket transports negotiate the
     // version inside `hello`, but the WS server runs `reads_hello:false` and a
     // browser cannot set handshake headers — so the client declares its version
-    // in the URL (`?v=3.0`, see `ws_url_with_version`). A missing or
+    // in the URL (`?v=3.1`, see `ws_url_with_version`). A missing or
     // major-incompatible version is refused here with 426 so a stale client
     // fails at the upgrade rather than on its first frame's new shape. Absent
     // fails closed (`version_compatible("")` is false), matching the socket gate.
@@ -278,7 +278,7 @@ async fn ws_upgrade_handler(
 
 /// Protocol-version endpoint — the readable half of the upgrade gate.
 ///
-/// Returns [`PROTOCOL_VERSION`] as `{"aimx": "3.0"}`. Unlike the 426 the gate
+/// Returns [`PROTOCOL_VERSION`] as `{"aimx": "3.1"}`. Unlike the 426 the gate
 /// returns, this is reachable from a browser (the router's permissive CORS
 /// layer covers it), so a WASM/JS client can learn what the hub speaks before
 /// it dials and report a version mismatch instead of a bare connection

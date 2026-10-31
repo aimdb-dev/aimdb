@@ -12,14 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Version of the AimX wire protocol spoken by this crate.
-pub const PROTOCOL_VERSION: &str = "3.0";
+pub const PROTOCOL_VERSION: &str = "3.1";
 
 /// Query-parameter name a WebSocket client uses to declare its
 /// [`PROTOCOL_VERSION`] at the HTTP upgrade. The socket transports gate the
 /// version inside the `hello` handshake, but a browser cannot set custom
 /// headers on the WebSocket handshake **and** the WS server runs
 /// `reads_hello:false`, so the WS upgrade carries the version in the URL
-/// instead (`…/ws?v=3.0`) and the server refuses an incompatible/absent one
+/// instead (`…/ws?v=3.1`) and the server refuses an incompatible/absent one
 /// before the socket opens. See [`ws_url_with_version`].
 pub const VERSION_PARAM: &str = "v";
 
@@ -101,6 +101,80 @@ pub struct WelcomeMessage {
     /// Whether client is authenticated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authenticated: Option<bool>,
+
+    /// The instance's name, when one was given at startup (3.1)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_name: Option<String>,
+}
+
+/// Most bytes of post-link data one `instance.post_link` reply carries; the
+/// reply's `data` is twice as many hex digits.
+pub const POST_LINK_CHUNK_MAX: u32 = 1024;
+
+/// Upper bound on an `instance.info` reply, in bytes of JSON: a 4 KiB payload,
+/// a 128-byte name (JSON escaping at most 6× it), a 32-byte UID as hex and
+/// the fixed fields. Every reply fits the smallest AimX frame (serial, 8 KiB).
+pub const INSTANCE_INFO_REPLY_MAX: usize = 6 * 1024;
+
+/// Reply of `instance.info` (3.1): which build and which instance this is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstanceInfoReply {
+    /// Version of `aimdb-core` the instance runs.
+    pub aimdb_version: String,
+    /// Name and UID given at startup.
+    pub instance: InstanceIdentityReply,
+    /// The build-info section; `None` (`null`) when none is embedded.
+    pub build: Option<BuildReply>,
+}
+
+/// The `instance` part of [`InstanceInfoReply`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstanceIdentityReply {
+    /// Instance name.
+    pub name: Option<String>,
+    /// Instance UID as lowercase hex.
+    pub uid: Option<String>,
+}
+
+/// The `build` part of [`InstanceInfoReply`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildReply {
+    /// Section layout version.
+    pub format: u16,
+    /// The payload as embedded (schema 1 or later); readers ignore fields
+    /// they do not know.
+    pub info: JsonValue,
+    /// The post-link region's state; `None` (`null`) when the section has no
+    /// region. Its bytes are read with `instance.post_link`.
+    pub post_link: Option<PostLinkReply>,
+}
+
+/// State of the post-link region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PostLinkReply {
+    /// Not written yet.
+    Erased,
+    /// Written: `len` bytes.
+    Written {
+        /// Number of written bytes.
+        len: u32,
+    },
+    /// Neither erased nor a valid length prefix.
+    Malformed,
+}
+
+/// Reply of `instance.post_link` (3.1): one chunk of the written post-link
+/// bytes. Clients read from offset 0 until they hold `total` bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostLinkChunk {
+    /// Offset of `data` in the written bytes, as requested.
+    pub offset: u32,
+    /// Number of written bytes.
+    pub total: u32,
+    /// Lowercase hex of at most [`POST_LINK_CHUNK_MAX`] bytes; empty at or
+    /// past the end.
+    pub data: String,
 }
 
 /// Request message from client
@@ -223,8 +297,74 @@ mod tests {
         };
 
         let json = serde_json::to_string(&hello).unwrap();
-        assert!(json.contains("\"version\":\"3.0\""));
+        assert!(json.contains("\"version\":\"3.1\""));
         assert!(json.contains("\"client\":\"test-client\""));
+    }
+
+    fn welcome(instance_name: Option<&str>) -> WelcomeMessage {
+        WelcomeMessage {
+            version: PROTOCOL_VERSION.to_string(),
+            server: "aimdb".to_string(),
+            permissions: vec!["read".to_string()],
+            writable_records: vec![],
+            max_subscriptions: Some(8),
+            authenticated: Some(false),
+            instance_name: instance_name.map(String::from),
+        }
+    }
+
+    #[test]
+    fn instance_name_is_omitted_when_unset() {
+        let json = serde_json::to_string(&welcome(None)).unwrap();
+        assert!(!json.contains("instance_name"), "{json}");
+        let json = serde_json::to_string(&welcome(Some("gateway-3"))).unwrap();
+        assert!(json.contains(r#""instance_name":"gateway-3""#), "{json}");
+    }
+
+    /// 3.1 is additive: a 3.0 client parses a 3.1 welcome, and a 3.1 client
+    /// parses a 3.0 welcome.
+    #[test]
+    fn welcome_is_compatible_both_ways() {
+        /// `WelcomeMessage` as of protocol 3.0, frozen.
+        #[derive(Deserialize, Serialize)]
+        struct WelcomeV30 {
+            version: String,
+            server: String,
+            permissions: Vec<String>,
+            writable_records: Vec<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            max_subscriptions: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            authenticated: Option<bool>,
+        }
+
+        let v31 = serde_json::to_string(&welcome(Some("gateway-3"))).unwrap();
+        let old: WelcomeV30 = serde_json::from_str(&v31).unwrap();
+        assert_eq!(old.server, "aimdb");
+
+        let v30 = serde_json::to_string(&WelcomeV30 {
+            version: "3.0".to_string(),
+            ..old
+        })
+        .unwrap();
+        let new: WelcomeMessage = serde_json::from_str(&v30).unwrap();
+        assert_eq!(new.instance_name, None);
+    }
+
+    #[test]
+    fn post_link_reply_shapes() {
+        let cases = [
+            (PostLinkReply::Erased, r#"{"state":"erased"}"#),
+            (
+                PostLinkReply::Written { len: 1472 },
+                r#"{"state":"written","len":1472}"#,
+            ),
+            (PostLinkReply::Malformed, r#"{"state":"malformed"}"#),
+        ];
+        for (reply, json) in cases {
+            assert_eq!(serde_json::to_string(&reply).unwrap(), json);
+            assert_eq!(serde_json::from_str::<PostLinkReply>(json).unwrap(), reply);
+        }
     }
 
     #[test]

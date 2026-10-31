@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`instance_info()` and `post_link()` (#331)**, both `None` against a 3.0
+  server; `InstanceInfo` gains `name`.
+
 ### Fixed
 
 - **A subscription the server ended no longer reads as a transport failure

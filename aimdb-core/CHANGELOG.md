@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
+  `instance_name` and `instance_uid` (checked by `build()`), and
+  `AimDb::identity()`. AimX gains `instance.info` and `instance.post_link`;
+  the welcome carries `instance_name`. Additive: 3.0 and 3.1 interoperate.
+
 - **Graph nodes report each record's schema and outbound link addresses
   (#332).** `RecordRegistrar::schema(name, version)` sets the data-contract
   schema a record carries; setting a different one on the same record fails

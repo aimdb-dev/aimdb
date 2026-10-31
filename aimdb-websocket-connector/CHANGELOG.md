@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`instance.info` and `instance.post_link` (#331)**, the same replies as the
+  other AimX transports; denied to clients without read grants.
+
 - **Database access from additional HTTP routes (#363).** Routers supplied
   to `with_additional_routes` receive `axum::Extension<AimDb>` at connector
   build time, preserving their existing application state. Handlers can use

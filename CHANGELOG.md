@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
 > - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
 > - [aimdb-cdr/CHANGELOG.md](aimdb-cdr/CHANGELOG.md)
+> - [aimdb-build-info/CHANGELOG.md](aimdb-build-info/CHANGELOG.md)
 > - [aimdb-tokio-adapter/CHANGELOG.md](aimdb-tokio-adapter/CHANGELOG.md)
 > - [aimdb-embassy-adapter/CHANGELOG.md](aimdb-embassy-adapter/CHANGELOG.md)
 > - [aimdb-mqtt-connector/CHANGELOG.md](aimdb-mqtt-connector/CHANGELOG.md)
@@ -30,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
+
+### Added — build identity in the binary
+
+- **A running instance reports which build it is (#331).** The new
+  `aimdb-build-info` crate embeds a fixed-layout section (name, version, git
+  revision, uncommitted changes, kind, config hash, profile, target) that a
+  probe can read at a fixed flash address and AimDB serves over AimX 3.1
+  (`instance.info`, `instance.post_link`), along with an instance name and UID.
+  `aimdb instance info` and the MCP `get_instance_info` tool show it.
+  ([aimdb-build-info](aimdb-build-info/CHANGELOG.md),
+  [aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-client](aimdb-client/CHANGELOG.md),
+  [aimdb-websocket-connector](aimdb-websocket-connector/CHANGELOG.md),
+  [aimdb-cli](tools/aimdb-cli/CHANGELOG.md),
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
 
 ### Added — schema and outbound links in graph introspection
 

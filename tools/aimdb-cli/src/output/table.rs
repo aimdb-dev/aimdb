@@ -1,7 +1,7 @@
 //! Table Output Formatting
 
 use aimdb_client::discovery::InstanceInfo;
-use aimdb_client::protocol::RecordMetadata;
+use aimdb_client::protocol::{InstanceInfoReply, PostLinkReply, RecordMetadata};
 use colored::Colorize;
 use tabled::{builder::Builder, settings::Style};
 
@@ -16,6 +16,7 @@ pub fn format_instances_table(instances: &[InstanceInfo]) -> String {
     // Add header
     builder.push_record(vec![
         "Socket Path",
+        "Name",
         "Server Version",
         "Protocol",
         "Records",
@@ -27,6 +28,7 @@ pub fn format_instances_table(instances: &[InstanceInfo]) -> String {
     for instance in instances {
         builder.push_record(vec![
             instance.endpoint.display().to_string(),
+            instance.name.clone().unwrap_or_else(|| UNSET.to_string()),
             instance.server_version.clone(),
             instance.protocol_version.clone(),
             instance.permissions.len().to_string(),
@@ -101,21 +103,125 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
     builder.build().with(Style::modern()).to_string()
 }
 
-/// Format instance details
-pub fn format_instance_info(instance: &InstanceInfo) -> String {
+/// Shown for a value that is not set.
+const UNSET: &str = "–";
+
+/// Format instance details: the welcome, plus `instance.info` (`None` from a
+/// 3.0 server) and, with `--post-link`, the post-link bytes (`Some(None)`
+/// when nothing is written).
+pub fn format_instance_info(
+    instance: &InstanceInfo,
+    reply: Option<&InstanceInfoReply>,
+    post_link: Option<Option<&[u8]>>,
+) -> String {
     let mut output = String::new();
+    let line = |output: &mut String, label: &str, value: &str| {
+        output.push_str(&format!("  {label}: {value}\n"));
+    };
 
     output.push_str(&format!("{}\n", "Instance Information".bold()));
-    output.push_str(&format!("  Endpoint: {}\n", instance.endpoint.display()));
-    output.push_str(&format!("  Server: {}\n", instance.server_version));
-    output.push_str(&format!("  Protocol: {}\n", instance.protocol_version));
-    output.push_str(&format!(
-        "  Authenticated: {}\n",
-        if instance.authenticated { "yes" } else { "no" }
-    ));
-
+    line(
+        &mut output,
+        "Endpoint",
+        &instance.endpoint.display().to_string(),
+    );
+    match reply {
+        Some(reply) => line(
+            &mut output,
+            "AimDB",
+            &format!(
+                "{} (protocol {})",
+                reply.aimdb_version, instance.protocol_version
+            ),
+        ),
+        None => line(
+            &mut output,
+            "Server",
+            &format!(
+                "{} (protocol {})",
+                instance.server_version, instance.protocol_version
+            ),
+        ),
+    }
+    line(
+        &mut output,
+        "Name",
+        instance.name.as_deref().unwrap_or(UNSET),
+    );
+    let uid = reply.and_then(|r| r.instance.uid.as_deref());
+    line(&mut output, "UID", uid.unwrap_or(UNSET));
+    line(
+        &mut output,
+        "Authenticated",
+        if instance.authenticated { "yes" } else { "no" },
+    );
     if let Some(max_subs) = instance.max_subscriptions {
-        output.push_str(&format!("  Max Subscriptions: {}\n", max_subs));
+        line(&mut output, "Max Subscriptions", &max_subs.to_string());
+    }
+
+    match reply.map(|r| r.build.as_ref()) {
+        None => output.push_str(&format!(
+            "\n{} not reported (server speaks AimX {})\n",
+            "Build:".bold(),
+            instance.protocol_version
+        )),
+        Some(None) => output.push_str(&format!("\n{} not embedded\n", "Build:".bold())),
+        Some(Some(build)) => {
+            output.push_str(&format!("\n{}\n", "Build:".bold()));
+            let info = &build.info;
+            let field = |key: &str| info.get(key).and_then(|v| v.as_str());
+            line(
+                &mut output,
+                "Application",
+                &format!(
+                    "{} {}",
+                    field("name").unwrap_or(UNSET),
+                    field("version").unwrap_or(UNSET)
+                ),
+            );
+            let dirty = match info.get("dirty").and_then(|v| v.as_bool()) {
+                Some(true) => " (uncommitted changes)",
+                Some(false) => "",
+                None => " (uncommitted changes unknown)",
+            };
+            let revision =
+                field("revision").map_or("unknown".to_string(), |r| abbreviate(r, 10, 0));
+            line(&mut output, "Revision", &format!("{revision}{dirty}"));
+            line(&mut output, "Kind", field("kind").unwrap_or(UNSET));
+            line(
+                &mut output,
+                "Profile",
+                &format!(
+                    "{} · {}",
+                    field("profile").unwrap_or(UNSET),
+                    field("target").unwrap_or(UNSET)
+                ),
+            );
+            let config = field("config_hash").map(|h| match h.split_once(':') {
+                Some((alg, hex)) => format!("{alg}:{}", abbreviate(hex, 4, 4)),
+                None => h.to_string(),
+            });
+            line(&mut output, "Config", config.as_deref().unwrap_or(UNSET));
+            let region = match build.post_link {
+                None => "none".to_string(),
+                Some(PostLinkReply::Erased) => "erased".to_string(),
+                Some(PostLinkReply::Written { len }) => format!("{len} bytes"),
+                Some(PostLinkReply::Malformed) => "malformed".to_string(),
+            };
+            line(&mut output, "Post-link", &region);
+            if let Some(ext) = info.get("ext").and_then(|v| v.as_object()) {
+                for (key, value) in ext {
+                    let value = value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_string);
+                    line(&mut output, key, &value);
+                }
+            }
+        }
+    }
+    if let Some(data) = post_link {
+        let data = data.map_or_else(|| "none".to_string(), super::hex);
+        line(&mut output, "Post-link data", &data);
     }
 
     output.push_str(&format!("\n{}\n", "Permissions:".bold()));
@@ -131,6 +237,18 @@ pub fn format_instance_info(instance: &InstanceInfo) -> String {
     }
 
     output
+}
+
+/// `s` shortened to its first `head` and last `tail` characters around `…`,
+/// when that is shorter.
+fn abbreviate(s: &str, head: usize, tail: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= head + tail + 1 {
+        return s.to_string();
+    }
+    let head: String = chars[..head].iter().collect();
+    let tail: String = chars[chars.len() - tail..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// The variant name of a serialized graph enum (`origin`, `edge_type`): a
@@ -279,6 +397,138 @@ pub fn format_topo_order_table(order: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn instance(protocol: &str, name: Option<&str>) -> InstanceInfo {
+        InstanceInfo {
+            endpoint: "serial:///dev/ttyACM0?baud=115200".into(),
+            server_version: "aimdb".to_string(),
+            protocol_version: protocol.to_string(),
+            permissions: vec!["read".to_string()],
+            writable_records: vec![],
+            max_subscriptions: Some(8),
+            authenticated: false,
+            name: name.map(String::from),
+        }
+    }
+
+    fn reply(build: serde_json::Value) -> InstanceInfoReply {
+        serde_json::from_value(serde_json::json!({
+            "aimdb_version": "2.1.0",
+            "instance": { "name": null, "uid": "0035002e3233510f37363436" },
+            "build": build,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn instance_info_with_build() {
+        colored::control::set_override(false);
+        let reply = reply(serde_json::json!({
+            "format": 1,
+            "info": {
+                "schema": 1, "name": "boiler-gateway", "version": "1.4.0",
+                "revision": "3f2a9c1e5d7b8a6f0e1d2c3b4a5f6e7d8c9b0a1f", "dirty": true,
+                "kind": "release",
+                "config_hash": "sha256:7d53aa00000000000000000000000000000000000000000000000000ff33",
+                "profile": "release", "target": "thumbv8m.main-none-eabihf",
+                "ext": { "board": "nucleo-h563zi", "rev": 3 },
+            },
+            "post_link": { "state": "written", "len": 1472 },
+        }));
+        let out = format_instance_info(&instance("3.1", None), Some(&reply), None);
+        let expected = "\
+Instance Information
+  Endpoint: serial:///dev/ttyACM0?baud=115200
+  AimDB: 2.1.0 (protocol 3.1)
+  Name: –
+  UID: 0035002e3233510f37363436
+  Authenticated: no
+  Max Subscriptions: 8
+
+Build:
+  Application: boiler-gateway 1.4.0
+  Revision: 3f2a9c1e5d… (uncommitted changes)
+  Kind: release
+  Profile: release · thumbv8m.main-none-eabihf
+  Config: sha256:7d53…ff33
+  Post-link: 1472 bytes
+  board: nucleo-h563zi
+  rev: 3
+
+Permissions:
+  - read
+";
+        assert_eq!(out, expected);
+
+        // `--post-link`: the bytes, or `none`.
+        let out = format_instance_info(
+            &instance("3.1", None),
+            Some(&reply),
+            Some(Some(&[0xab, 0x01])),
+        );
+        assert!(out.contains("  Post-link data: ab01\n"), "{out}");
+        let out = format_instance_info(&instance("3.1", None), Some(&reply), Some(None));
+        assert!(out.contains("  Post-link data: none\n"), "{out}");
+    }
+
+    #[test]
+    fn instance_info_unknowns() {
+        colored::control::set_override(false);
+        let reply = reply(serde_json::json!({
+            "format": 1,
+            "info": {
+                "schema": 1, "name": "app", "version": "0.1.0", "revision": null,
+                "dirty": null, "kind": null, "config_hash": null,
+                "profile": "debug", "target": "x86_64-unknown-linux-gnu",
+            },
+            "post_link": null,
+        }));
+        let out = format_instance_info(&instance("3.1", Some("gateway-3")), Some(&reply), None);
+        for line in [
+            "  Name: gateway-3\n",
+            "  Revision: unknown (uncommitted changes unknown)\n",
+            "  Kind: –\n",
+            "  Config: –\n",
+            "  Post-link: none\n",
+        ] {
+            assert!(out.contains(line), "{line:?} in\n{out}");
+        }
+    }
+
+    #[test]
+    fn instance_info_without_build() {
+        colored::control::set_override(false);
+        let out = format_instance_info(
+            &instance("3.1", None),
+            Some(&reply(serde_json::Value::Null)),
+            None,
+        );
+        assert!(out.contains("\nBuild: not embedded\n"), "{out}");
+        assert!(out.contains("  UID: 0035002e3233510f37363436\n"), "{out}");
+    }
+
+    #[test]
+    fn instance_info_from_a_3_0_server() {
+        colored::control::set_override(false);
+        let out = format_instance_info(&instance("3.0", None), None, None);
+        assert!(out.contains("  Server: aimdb (protocol 3.0)\n"), "{out}");
+        assert!(out.contains("  UID: –\n"), "{out}");
+        assert!(
+            out.contains("\nBuild: not reported (server speaks AimX 3.0)\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn instances_table_has_a_name_column() {
+        colored::control::set_override(false);
+        let out =
+            format_instances_table(&[instance("3.1", Some("gateway-3")), instance("3.0", None)]);
+        let header = out.lines().nth(1).unwrap();
+        assert!(header.contains("Name"), "{out}");
+        assert!(out.contains("gateway-3"), "{out}");
+        assert!(out.lines().nth(5).unwrap().contains(" – "), "{out}");
+    }
 
     #[test]
     fn test_format_records_table() {

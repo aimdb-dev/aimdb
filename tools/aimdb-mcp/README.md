@@ -220,7 +220,9 @@ Get detailed information about a specific instance:
 ```
 Query: "Show me details about /tmp/aimdb-demo.sock"
 
-Result: Server version, protocol, permissions, capabilities
+Result: Server version, protocol, permissions, capabilities; from protocol 3.1
+servers also the instance name and UID and the build it runs (application,
+version, git revision, uncommitted changes, kind, config hash, target)
 ```
 
 ### 3. list_records

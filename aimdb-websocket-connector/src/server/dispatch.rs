@@ -18,7 +18,9 @@ use crate::events::{report, WebSocketEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
+use aimdb_core::remote::{
+    PostLinkError, QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN,
+};
 use aimdb_core::session::Session;
 use aimdb_core::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
@@ -130,6 +132,26 @@ impl Session for WsSession {
                 "record.query" => {
                     let params: Value = serde_json::from_slice(&params).unwrap_or(Value::Null);
                     self.record_query(params).await?
+                }
+                // Identity (3.1): the same replies as every other AimX
+                // transport, built by core. Read access, like `subscribe`.
+                "instance.info" | "instance.post_link"
+                    if self.info.permissions.read_patterns.is_empty() =>
+                {
+                    return Err(RpcError::Denied);
+                }
+                "instance.info" => {
+                    let reply = aimdb_core::remote::instance_info_reply(&self.db);
+                    return Ok(Payload::from(reply.as_slice()));
+                }
+                "instance.post_link" => {
+                    let params: Value = serde_json::from_slice(&params).unwrap_or(Value::Null);
+                    return aimdb_core::remote::post_link_chunk_reply(&self.db, &params)
+                        .map(|reply| Payload::from(reply.as_slice()))
+                        .map_err(|e| match e {
+                            PostLinkError::NotWritten => RpcError::NotFound,
+                            PostLinkError::InvalidParams => RpcError::Internal,
+                        });
                 }
                 _ => return Err(RpcError::NotFound),
             };

@@ -74,6 +74,9 @@ pub struct AimDbInner {
     /// during builder configuration and retrieve it at query time via
     /// `AimDb::extensions()`.
     pub(crate) extensions: Extensions,
+
+    /// Build info, instance name and UID, checked at build().
+    identity: crate::identity::Identity,
 }
 
 impl AimDbInner {
@@ -309,6 +312,9 @@ pub struct AimDbBuilder {
     /// [`DbError::InvalidConfiguration`].
     config_errors: Vec<crate::error::ConfigError>,
 
+    /// Build info, instance name and UID; checked by `build()`.
+    identity: crate::identity::IdentityConfig,
+
     /// Permutes the record task start order; see [`Self::start_order_seed`].
     #[cfg(feature = "start-order-seed")]
     start_order_seed: Option<u64>,
@@ -328,9 +334,35 @@ impl AimDbBuilder {
             start_fns: Vec::new(),
             extensions: Extensions::new(),
             config_errors: Vec::new(),
+            identity: Default::default(),
             #[cfg(feature = "start-order-seed")]
             start_order_seed: None,
         }
+    }
+
+    /// This binary's build-info section, from
+    /// [`aimdb_build_info::section!`]. Served by the AimX method
+    /// `instance.info`; `build()` fails if AimX could not serve it (see
+    /// [`Identity::build_info`](crate::identity::Identity::build_info)).
+    pub fn build_info(mut self, section: &'static [u8]) -> Self {
+        self.identity.build_info = Some(section);
+        self
+    }
+
+    /// The instance's name, given at startup: at most
+    /// [`NAME_MAX`](crate::identity::NAME_MAX) bytes. Sent in the AimX welcome
+    /// and by `instance.info`.
+    pub fn instance_name(mut self, name: impl Into<String>) -> Self {
+        self.identity.name = Some(name.into());
+        self
+    }
+
+    /// The instance's unique ID, e.g. the chip's: at most
+    /// [`UID_MAX`](crate::identity::UID_MAX) bytes. Reported by
+    /// `instance.info` as lowercase hex, in the given byte order.
+    pub fn instance_uid(mut self, uid: &[u8]) -> Self {
+        self.identity.uid = Some(uid.to_vec());
+        self
     }
 
     /// Permutes the order in which record tasks start, reproducibly per seed.
@@ -611,6 +643,12 @@ impl AimDbBuilder {
         // ── Validation pass: collect every configuration mistake before any
         // effectful phase runs. Nothing returns early here.
         let mut errors = core::mem::take(&mut self.config_errors);
+        let (identity, identity_errors) = core::mem::take(&mut self.identity).freeze();
+        errors.extend(
+            identity_errors
+                .into_iter()
+                .map(|message| ConfigError::new("", None, message)),
+        );
 
         for (key, _, record) in self.records.iter_mut() {
             // Mistakes recorded during configuration — fill in the record key
@@ -798,6 +836,7 @@ impl AimDbBuilder {
             by_key,
             dependency_graph,
             extensions: self.extensions,
+            identity,
         });
 
         #[cfg(feature = "observability")]
@@ -1018,6 +1057,11 @@ impl AimDb {
     /// to service query calls. The extensions are read-only on the live handle.
     pub fn extensions(&self) -> &Extensions {
         &self.inner.extensions
+    }
+
+    /// Build info, instance name and UID, checked at `build()`.
+    pub fn identity(&self) -> &crate::identity::Identity {
+        &self.inner.identity
     }
 
     /// Shared wall clock used by stage profiling (nanoseconds since an arbitrary epoch).

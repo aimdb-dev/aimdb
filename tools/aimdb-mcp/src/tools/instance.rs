@@ -1,6 +1,7 @@
 //! Instance-related tools (discover_instances, get_instance_info)
 
 use crate::error::McpResult;
+use aimdb_client::protocol::InstanceInfoReply;
 use aimdb_client::{self, AimxConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +24,9 @@ pub struct DiscoveredInstance {
     pub max_subscriptions: Option<usize>,
     /// Whether authentication is required
     pub authenticated: bool,
+    /// Instance name given at startup (protocol 3.1); `null` when unset
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Discover all running AimDB instances
@@ -48,6 +52,7 @@ pub async fn discover_instances(_args: Option<Value>) -> McpResult<Value> {
             writable_records: info.writable_records,
             max_subscriptions: info.max_subscriptions,
             authenticated: info.authenticated,
+            name: info.name,
         })
         .collect();
 
@@ -80,11 +85,16 @@ pub struct InstanceInfoResult {
     pub max_subscriptions: Option<usize>,
     /// Whether authentication is required
     pub authenticated: bool,
+    /// `aimdb_version`, `instance` (name, UID) and `build` from
+    /// `instance.info` (protocol 3.1); absent from a 3.0 server
+    #[serde(flatten)]
+    pub instance_info: Option<InstanceInfoReply>,
 }
 
 /// Get detailed information about a specific AimDB instance
 ///
-/// Connects to the instance and retrieves server metadata from the welcome message.
+/// Connects to the instance and retrieves server metadata from the welcome
+/// message, plus its identity and build info from `instance.info`.
 pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
     // Omitted args (or `{}`) is not an error here — it just means "no explicit
     // endpoint", so resolution can still fall back to `--connect` / AIMDB_CONNECT.
@@ -121,6 +131,7 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
         writable_records: server_info.writable_records.clone(),
         max_subscriptions: server_info.max_subscriptions,
         authenticated: server_info.authenticated.unwrap_or(false),
+        instance_info: client.instance_info().await?,
     };
 
     debug!("✅ Retrieved instance info: {:?}", result);
@@ -149,6 +160,65 @@ mod tests {
                 assert!(err.message().contains("No running AimDB instances"));
             }
         }
+    }
+
+    fn info_result(instance_info: Option<InstanceInfoReply>) -> Value {
+        serde_json::to_value(InstanceInfoResult {
+            endpoint: "/tmp/aimdb.sock".to_string(),
+            server_version: "aimdb".to_string(),
+            protocol_version: "3.1".to_string(),
+            permissions: vec!["read".to_string()],
+            writable_records: vec![],
+            max_subscriptions: Some(8),
+            authenticated: false,
+            instance_info,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn instance_info_fields_are_flattened_in() {
+        let reply: InstanceInfoReply = serde_json::from_value(serde_json::json!({
+            "aimdb_version": "2.1.0",
+            "instance": { "name": "gateway-3", "uid": "00ff" },
+            "build": {
+                "format": 1,
+                "info": { "schema": 1, "name": "app" },
+                "post_link": { "state": "erased" },
+            },
+        }))
+        .unwrap();
+        let value = info_result(Some(reply));
+        assert_eq!(value["endpoint"], "/tmp/aimdb.sock");
+        assert_eq!(value["aimdb_version"], "2.1.0");
+        assert_eq!(value["instance"]["uid"], "00ff");
+        assert_eq!(value["build"]["info"]["name"], "app");
+        assert_eq!(value["build"]["post_link"]["state"], "erased");
+    }
+
+    #[test]
+    fn instance_info_fields_are_absent_from_a_3_0_server() {
+        let value = info_result(None);
+        for key in ["aimdb_version", "instance", "build"] {
+            assert!(value.get(key).is_none(), "{key}: {value}");
+        }
+        assert_eq!(value["protocol_version"], "3.1");
+    }
+
+    #[test]
+    fn discovered_instance_carries_the_name() {
+        let value = serde_json::to_value(DiscoveredInstance {
+            socket_path: "/tmp/aimdb.sock".to_string(),
+            server_version: "aimdb".to_string(),
+            protocol_version: "3.1".to_string(),
+            permissions: vec![],
+            writable_records: vec![],
+            max_subscriptions: None,
+            authenticated: false,
+            name: Some("gateway-3".to_string()),
+        })
+        .unwrap();
+        assert_eq!(value["name"], "gateway-3");
     }
 
     #[tokio::test]
