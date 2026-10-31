@@ -44,19 +44,42 @@ fn main() {
     println!();
 
     let telemetry_report = block_on(async {
-        measure_b0(&telemetry_buffer(), telemetry_msg, "Telemetry", "SpmcRing").await
+        measure_b0(
+            &telemetry_buffer(),
+            telemetry_msg,
+            WARMUP_ITERS,
+            "Telemetry",
+            "SpmcRing",
+        )
+        .await
     });
     telemetry_report.print();
 
-    let state_report =
-        block_on(async { measure_b0(&state_buffer(), state_msg, "State", "SingleLatest").await });
+    let state_report = block_on(async {
+        measure_b0(
+            &state_buffer(),
+            state_msg,
+            WARMUP_ITERS,
+            "State",
+            "SingleLatest",
+        )
+        .await
+    });
     state_report.print();
 
     // Tight 1:1 push → recv loop for Mailbox. Do NOT batch pushes ahead of the
     // consumer: the single slot overwrites earlier values. `measure_b0`
     // already does this (lockstep push/recv).
-    let command_report =
-        block_on(async { measure_b0(&command_buffer(), command_msg, "Command", "Mailbox").await });
+    let command_report = block_on(async {
+        measure_b0(
+            &command_buffer(),
+            command_msg,
+            WARMUP_ITERS,
+            "Command",
+            "Mailbox",
+        )
+        .await
+    });
     command_report.print();
 
     println!();
