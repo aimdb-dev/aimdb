@@ -74,7 +74,7 @@ async fn rollout_observer01(ctx: RuntimeContext, consumer: Consumer<Temperature>
     let time = ctx.time();
 
     while let Ok(t) = reader.recv().await {
-        println!("Observer 01: {}", t);
+        println!("Observer 01: {}", t.value);
         time.sleep_millis(40).await;
     }
 }
@@ -87,7 +87,7 @@ async fn rollout_observer02(ctx: RuntimeContext, consumer: Consumer<Temperature>
     loop {
         match reader.recv().await {
             Ok(t) => {
-                println!("Observer 02: {}", t);
+                println!("Observer 02: {}", t.value);
                 time.sleep_millis(150).await;
             }
             Err(DbError::BufferLagged { lag_count, .. }) => {

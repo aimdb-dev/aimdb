@@ -199,7 +199,9 @@ where
     fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self {
         use aimdb_core::buffer::Buffer;
         use alloc::boxed::Box;
-        let buffer = Box::new(EmbassyBuffer::<T, 16, 4, 4, 1>::new(&cfg));
+        let buffer = Box::new(EmbassyBuffer::<aimdb_core::Stamped<T>, 16, 4, 4, 1>::new(
+            &cfg,
+        ));
         // Record the cfg so buffer_info() reports the real buffer
         // type/capacity for the dependency graph.
         self.buffer_with_cfg(buffer, cfg)
@@ -355,9 +357,13 @@ where
         };
 
         // Map CONSUMERS to appropriate Embassy generic parameter
-        let buffer = Box::new(EmbassyBuffer::<T, CAP, CONSUMERS, PUBS, CONSUMERS>::new(
-            &cfg,
-        ));
+        let buffer = Box::new(EmbassyBuffer::<
+            aimdb_core::Stamped<T>,
+            CAP,
+            CONSUMERS,
+            PUBS,
+            CONSUMERS,
+        >::new(&cfg));
         // Record the cfg so buffer_info() reports the real buffer type/capacity
         // for the dependency graph.
         self.buffer_with_cfg(buffer, cfg)

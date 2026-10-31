@@ -244,7 +244,7 @@ async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
         _ = serve_one_tls(listener, acceptor, log.clone(), Script::SplitPublish { gap: GAP }) => {
             panic!("the broker returned")
         }
-        received = async { inbound.recv().await.expect("inbound record") } => received,
+        received = async { inbound.recv().await.expect("inbound record").value } => received,
         _ = tokio::time::sleep(Duration::from_secs(60)) => {
             let log = log.lock().unwrap();
             panic!(

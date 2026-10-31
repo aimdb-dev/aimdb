@@ -146,7 +146,7 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
     let received = tokio::select! {
         _ = runner.run() => panic!("the session loop returned"),
         _ = broker => panic!("the broker returned"),
-        value = inbound.recv() => value.expect("inbound record"),
+        value = inbound.recv() => value.expect("inbound record").value,
         _ = tokio::time::sleep(Duration::from_secs(30)) => {
             let seen = seen.lock().unwrap();
             panic!(

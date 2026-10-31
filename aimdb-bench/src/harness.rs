@@ -7,9 +7,10 @@ use std::future::Future;
 use std::time::Instant;
 
 use aimdb_core::buffer::{Buffer, Reader};
+use aimdb_core::Stamped;
 use criterion::{Criterion, Throughput};
 
-use crate::payloads::{BATCH_SIZE, WARMUP_ITERS};
+use crate::payloads::{stamped, BATCH_SIZE, WARMUP_ITERS};
 use crate::reports::AllocReport;
 
 /// Runs a future to completion on whichever executor a bench file is using
@@ -53,19 +54,22 @@ pub async fn measure_b0<T, B>(
     buffer_type: &str,
 ) -> AllocReport
 where
-    B: Buffer<T>,
+    B: Buffer<Stamped<T>>,
     T: Clone + Send,
 {
     let mut reader = Reader::new(Box::new(buf.subscribe()));
 
     for i in 0..WARMUP_ITERS {
-        buf.push(mk_msg(i as u64));
+        buf.push(stamped(mk_msg(i as u64), i as u64));
         let _ = reader.recv().await;
     }
 
     crate::alloc::reset();
     for i in 0..BATCH_SIZE {
-        buf.push(mk_msg((WARMUP_ITERS + i) as u64));
+        buf.push(stamped(
+            mk_msg((WARMUP_ITERS + i) as u64),
+            (WARMUP_ITERS + i) as u64,
+        ));
         let _ = reader.recv().await;
     }
     let (allocs, bytes) = crate::alloc::snapshot();
@@ -89,7 +93,7 @@ pub fn bench_spsc<T, B>(
     mk_msg: impl Fn(u64) -> T + Copy,
     executor: &impl BlockOn,
 ) where
-    B: Buffer<T>,
+    B: Buffer<Stamped<T>>,
     T: Clone + Send,
 {
     let buf = mk_buf();
@@ -97,7 +101,7 @@ pub fn bench_spsc<T, B>(
 
     executor.block_on(async {
         for i in 0..WARMUP_ITERS {
-            buf.push(mk_msg(i as u64));
+            buf.push(stamped(mk_msg(i as u64), i as u64));
             let _ = reader.recv().await;
         }
     });
@@ -109,7 +113,10 @@ pub fn bench_spsc<T, B>(
             executor.block_on(async {
                 let start = Instant::now();
                 for i in 0..iters {
-                    buf.push(mk_msg(WARMUP_ITERS as u64 + i));
+                    buf.push(stamped(
+                        mk_msg(WARMUP_ITERS as u64 + i),
+                        WARMUP_ITERS as u64 + i,
+                    ));
                     let _ = reader.recv().await;
                 }
                 start.elapsed()

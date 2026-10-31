@@ -66,11 +66,12 @@ type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
 
 /// Wrapper for a record's latest value with optional serialization.
 ///
-/// Created by `TypedRecord::latest()`. Core methods (`get()`, `into_inner()`, `Deref`) work in
-/// both std and no_std. JSON serialization (`.as_json()`) requires the
-/// `remote` feature.
+/// Created by `TypedRecord::latest()`. Carries the value together with the
+/// metadata of the write that stored it. Core methods (`get()`,
+/// `into_inner()`, `Deref`, `metadata()`, `stamp()`) work in both std and
+/// no_std. JSON serialization (`.as_json()`) requires the `remote` feature.
 pub struct RecordValue<T> {
-    value: T,
+    inner: crate::Stamped<T>,
     #[cfg(feature = "remote")]
     codec: Option<RecordCodec<T>>,
 }
@@ -78,24 +79,39 @@ pub struct RecordValue<T> {
 impl<T> RecordValue<T> {
     /// Create a new RecordValue with optional codec
     #[cfg(feature = "remote")]
-    fn new(value: T, codec: Option<RecordCodec<T>>) -> Self {
-        Self { value, codec }
+    fn new(inner: crate::Stamped<T>, codec: Option<RecordCodec<T>>) -> Self {
+        Self { inner, codec }
     }
 
     /// Create a new RecordValue without codec (codec feature off)
     #[cfg(not(feature = "remote"))]
-    fn new(value: T, _codec: Option<()>) -> Self {
-        Self { value }
+    fn new(inner: crate::Stamped<T>, _codec: Option<()>) -> Self {
+        Self { inner }
     }
 
     /// Get a reference to the underlying value
     pub fn get(&self) -> &T {
-        &self.value
+        &self.inner.value
     }
 
     /// Consume the wrapper and return the underlying value
     pub fn into_inner(self) -> T {
-        self.value
+        self.inner.value
+    }
+
+    /// The metadata of the write that stored this value.
+    pub fn metadata(&self) -> &crate::WriteMetadata {
+        self.inner.metadata()
+    }
+
+    /// When this value was written, on the instance clock.
+    pub fn stamp(&self) -> crate::Stamp {
+        self.inner.stamp()
+    }
+
+    /// Consume the wrapper and return the value with its write metadata.
+    pub fn into_stamped(self) -> crate::Stamped<T> {
+        self.inner
     }
 
     /// Serialize the value to JSON (feature `remote`)
@@ -106,7 +122,7 @@ impl<T> RecordValue<T> {
     /// `.into_inner()`, or `Deref` for direct access.
     #[cfg(feature = "remote")]
     pub fn as_json(&self) -> Option<serde_json::Value> {
-        self.codec.as_ref()?.encode(&self.value)
+        self.codec.as_ref()?.encode(&self.inner.value)
     }
 }
 
@@ -114,7 +130,7 @@ impl<T> core::ops::Deref for RecordValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.value
+        &self.inner.value
     }
 }
 
@@ -122,17 +138,33 @@ impl<T> core::ops::Deref for RecordValue<T> {
 ///
 /// Bridges the gap between typed buffers and type-erased JSON streaming for
 /// remote access subscriptions. Each receive:
-/// 1. Receives a typed value `T` from the buffer
-/// 2. Serializes it through the configured codec
-/// 3. Returns either a JSON tree (compatibility API) or owned JSON bytes
+/// 1. Receives one `Stamped<T>` from the buffer
+/// 2. Serializes its value through the configured codec
+/// 3. Returns either a JSON tree (compatibility API) or owned JSON bytes,
+///    with the write metadata of that same sample
 ///
 /// Used internally by `TypedRecord::subscribe_json()`.
 #[cfg(feature = "remote")]
 struct JsonReaderAdapter<T: Clone + Send + 'static> {
     /// The underlying typed buffer reader
-    inner: Box<dyn crate::buffer::BufferReader<T> + Send>,
+    inner: Box<dyn crate::buffer::BufferReader<crate::Stamped<T>> + Send>,
     /// JSON codec (from .with_remote_access())
     codec: RecordCodec<T>,
+}
+
+#[cfg(feature = "remote")]
+impl<T: Clone + Send + 'static> JsonReaderAdapter<T> {
+    /// Encodes one received sample, keeping its write metadata whole.
+    fn encode<U>(
+        &self,
+        sample: crate::Stamped<T>,
+        encode: impl FnOnce(&RecordCodec<T>, &T) -> Option<U>,
+    ) -> Result<crate::Stamped<U>, crate::DbError> {
+        sample.as_ref().try_map(|value| {
+            encode(&self.codec, value)
+                .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
+        })
+    }
 }
 
 #[cfg(feature = "remote")]
@@ -140,50 +172,35 @@ impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAd
     fn poll_recv_json(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<serde_json::Value, crate::DbError>> {
+    ) -> Poll<Result<crate::Stamped<serde_json::Value>, crate::DbError>> {
         // Poll the inner typed reader (allocation-free), then serialize on the
         // ready value — no per-message boxing.
         match self.inner.poll_recv(cx) {
-            Poll::Ready(Ok(value)) => {
-                Poll::Ready(self.codec.encode(&value).ok_or_else(|| {
-                    crate::DbError::runtime_error("Failed to serialize value to JSON")
-                }))
-            }
+            Poll::Ready(Ok(sample)) => Poll::Ready(self.encode(sample, |c, v| c.encode(v))),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn try_recv_json(&mut self) -> Result<serde_json::Value, crate::DbError> {
-        // Non-blocking receive from underlying typed buffer
-        let value = self.inner.try_recv()?;
-
-        // Serialize to JSON using the configured codec
-        self.codec
-            .encode(&value)
-            .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
+    fn try_recv_json(&mut self) -> Result<crate::Stamped<serde_json::Value>, crate::DbError> {
+        let sample = self.inner.try_recv()?;
+        self.encode(sample, |c, v| c.encode(v))
     }
 
     fn poll_recv_json_bytes(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Vec<u8>, crate::DbError>> {
+    ) -> Poll<Result<crate::Stamped<Vec<u8>>, crate::DbError>> {
         match self.inner.poll_recv(cx) {
-            Poll::Ready(Ok(value)) => {
-                Poll::Ready(self.codec.encode_to_vec(&value).ok_or_else(|| {
-                    crate::DbError::runtime_error("Failed to serialize value to JSON")
-                }))
-            }
+            Poll::Ready(Ok(sample)) => Poll::Ready(self.encode(sample, |c, v| c.encode_to_vec(v))),
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             Poll::Pending => Poll::Pending,
         }
     }
 
-    fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, crate::DbError> {
-        let value = self.inner.try_recv()?;
-        self.codec
-            .encode_to_vec(&value)
-            .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
+    fn try_recv_json_bytes(&mut self) -> Result<crate::Stamped<Vec<u8>>, crate::DbError> {
+        let sample = self.inner.try_recv()?;
+        self.encode(sample, |c, v| c.encode_to_vec(v))
     }
 }
 
@@ -364,15 +381,16 @@ pub trait JsonRecordAccess {
     /// Returns JSON for type-erased remote access
     ///
     /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
-    fn latest_json(&self) -> Option<serde_json::Value>;
+    fn latest_json(&self) -> Option<crate::Stamped<serde_json::Value>>;
 
     /// Returns owned JSON bytes for type-erased remote access.
     ///
     /// Existing implementations inherit a compatibility path through
-    /// [`latest_json`](Self::latest_json). `TypedRecord<T>` overrides this and
-    /// asks its codec to encode `T` directly.
-    fn latest_json_bytes(&self) -> Option<Vec<u8>> {
-        serde_json::to_vec(&self.latest_json()?).ok()
+    /// [`latest_json`](Self::latest_json), keeping its write metadata.
+    /// `TypedRecord<T>` overrides this and asks its codec to encode `T`
+    /// directly.
+    fn latest_json_bytes(&self) -> Option<crate::Stamped<Vec<u8>>> {
+        crate::buffer::json_tree_to_bytes(self.latest_json()?).ok()
     }
 
     /// Subscribe to record updates as JSON stream
@@ -540,7 +558,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     ///
     /// Stored as `Arc` (not `Box`) so `Producer<T>` and `Consumer<T>` can hold
     /// a pre-resolved handle to the same buffer.
-    buffer: Option<Arc<dyn DynBuffer<T>>>,
+    buffer: Option<Arc<dyn DynBuffer<crate::Stamped<T>>>>,
 
     /// The instance clock, bound by `build()` before any writer exists.
     clock: Option<Arc<dyn crate::clock::InstanceClock>>,
@@ -877,7 +895,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Sets the buffer for this record
     ///
     /// When set, `produce()` enqueues values for async dispatch to consumers.
-    pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<T>>) {
+    pub fn set_buffer(&mut self, buffer: Box<dyn DynBuffer<crate::Stamped<T>>>) {
         // The buffer trait object hides the original BufferCfg, so callers must
         // supply it via set_buffer_cfg() if they want accurate buffer_info().
         self.buffer_cfg = None;
@@ -920,8 +938,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Returns a reference to the buffer if present
     ///
     /// # Returns
-    /// `Some(&dyn DynBuffer<T>)` if buffer is set, `None` otherwise
-    pub fn buffer(&self) -> Option<&dyn DynBuffer<T>> {
+    /// `Some(&dyn DynBuffer<crate::Stamped<T>>)` if buffer is set, `None` otherwise
+    pub fn buffer(&self) -> Option<&dyn DynBuffer<crate::Stamped<T>>> {
         self.buffer.as_deref()
     }
 
@@ -951,7 +969,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
     /// Returns a clone of the buffer `Arc` (or `None` if no buffer is
     /// configured). Used at build time to pre-resolve `Consumer<T>` handles.
-    pub(crate) fn buffer_handle(&self) -> Option<Arc<dyn DynBuffer<T>>> {
+    pub(crate) fn buffer_handle(&self) -> Option<Arc<dyn DynBuffer<crate::Stamped<T>>>> {
         self.buffer.clone()
     }
 
@@ -1220,16 +1238,16 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     ///
     /// **std only**: `.as_json()` (if `.with_remote_access()` configured)
     pub fn latest(&self) -> Option<RecordValue<T>> {
-        // Read buffer-native storage via peek(). Records without
-        // a buffer return None.
-        let value = self.buffer.as_ref()?.peek()?;
+        // Read buffer-native storage via one peek(), so value and metadata
+        // come from the same write. Records without a buffer return None.
+        let sample = self.buffer.as_ref()?.peek()?;
         #[cfg(feature = "remote")]
         {
-            Some(RecordValue::new(value, self.remote_codec.clone()))
+            Some(RecordValue::new(sample, self.remote_codec.clone()))
         }
         #[cfg(not(feature = "remote"))]
         {
-            Some(RecordValue::new(value, None))
+            Some(RecordValue::new(sample, None))
         }
     }
 }
@@ -1418,30 +1436,35 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
 #[cfg(feature = "remote")]
 impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<T> {
-    fn latest_json(&self) -> Option<serde_json::Value> {
+    fn latest_json(&self) -> Option<crate::Stamped<serde_json::Value>> {
         log_debug!(
             "latest_json called for type: {}",
             core::any::type_name::<T>()
         );
 
-        // Read buffer-native storage via peek(). Records without
-        // a buffer return None.
-        let value = self.buffer.as_ref()?.peek()?;
-        let result = self.remote_codec.as_ref()?.encode(&value);
+        // One peek(): payload and metadata come from the same write. Records
+        // without a buffer return None.
+        let codec = self.remote_codec.as_ref()?;
+        let sample = self.buffer.as_ref()?.peek()?;
+        let result = sample.as_ref().try_map(|v| codec.encode(v).ok_or(())).ok();
 
         log_debug!("Serialization result: {:?}", result.is_some());
 
         result
     }
 
-    fn latest_json_bytes(&self) -> Option<Vec<u8>> {
+    fn latest_json_bytes(&self) -> Option<crate::Stamped<Vec<u8>>> {
         log_debug!(
             "latest_json_bytes called for type: {}",
             core::any::type_name::<T>()
         );
 
-        let value = self.buffer.as_ref()?.peek()?;
-        let result = self.remote_codec.as_ref()?.encode_to_vec(&value);
+        let codec = self.remote_codec.as_ref()?;
+        let sample = self.buffer.as_ref()?.peek()?;
+        let result = sample
+            .as_ref()
+            .try_map(|v| codec.encode_to_vec(v).ok_or(()))
+            .ok();
 
         log_debug!("Byte serialization result: {:?}", result.is_some());
 
@@ -1536,34 +1559,43 @@ mod tests {
 
     use crate::buffer::{BufferReader, DynBuffer};
     use crate::codec::JsonCodec;
+    use crate::{Stamp, Stamped, WriteMetadata};
 
-    struct OneReader(Option<u32>);
+    /// A sample whose stamp equals its value.
+    fn sample(v: u32) -> Stamped<u32> {
+        Stamped::new(v, WriteMetadata::new(Stamp::from_nanos(u64::from(v))))
+    }
 
-    impl BufferReader<u32> for OneReader {
-        fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Result<u32, crate::DbError>> {
+    struct OneReader(Option<Stamped<u32>>);
+
+    impl BufferReader<Stamped<u32>> for OneReader {
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<Stamped<u32>, crate::DbError>> {
             Poll::Ready(self.try_recv())
         }
 
-        fn try_recv(&mut self) -> Result<u32, crate::DbError> {
+        fn try_recv(&mut self) -> Result<Stamped<u32>, crate::DbError> {
             self.0.take().ok_or(crate::DbError::BufferEmpty)
         }
     }
 
     struct PeekBuffer(u32);
 
-    impl DynBuffer<u32> for PeekBuffer {
-        fn push(&self, _value: u32) {}
+    impl DynBuffer<Stamped<u32>> for PeekBuffer {
+        fn push(&self, _value: Stamped<u32>) {}
 
-        fn subscribe_boxed(&self) -> Box<dyn BufferReader<u32> + Send> {
-            Box::new(OneReader(Some(self.0)))
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<u32>> + Send> {
+            Box::new(OneReader(Some(sample(self.0))))
         }
 
         fn as_any(&self) -> &dyn Any {
             self
         }
 
-        fn peek(&self) -> Option<u32> {
-            Some(self.0)
+        fn peek(&self) -> Option<Stamped<u32>> {
+            Some(sample(self.0))
         }
     }
 
@@ -1588,6 +1620,48 @@ mod tests {
         }
     }
 
+    /// A buffer where every `peek` sees a newer write: value and stamp both
+    /// equal the number of peeks so far.
+    struct AdvancingBuffer(core::sync::atomic::AtomicU32);
+
+    impl DynBuffer<Stamped<u32>> for AdvancingBuffer {
+        fn push(&self, _value: Stamped<u32>) {}
+
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<u32>> + Send> {
+            Box::new(OneReader(None))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn peek(&self) -> Option<Stamped<u32>> {
+            Some(sample(self.0.fetch_add(1, Ordering::SeqCst) + 1))
+        }
+    }
+
+    /// Design 058 §4.4: payload and stamp come from one buffer read. A path
+    /// that peeked twice would pair a value with a newer write's stamp.
+    #[test]
+    fn json_reads_take_payload_and_stamp_from_one_read() {
+        let mut record = TypedRecord::<u32>::new();
+        record.with_remote_access();
+        record.buffer = Some(Arc::new(AdvancingBuffer(
+            core::sync::atomic::AtomicU32::new(0),
+        )));
+
+        let tree = record.latest_json().unwrap();
+        assert_eq!(tree.stamp(), Stamp::from_nanos(1));
+        assert_eq!(tree.value, serde_json::json!(1));
+
+        let bytes = record.latest_json_bytes().unwrap();
+        assert_eq!(bytes.stamp(), Stamp::from_nanos(2));
+        assert_eq!(bytes.value, b"2");
+
+        let latest = record.latest().unwrap();
+        assert_eq!((*latest.get(), latest.stamp()), (3, Stamp::from_nanos(3)));
+    }
+
     #[test]
     fn typed_latest_and_subscription_select_the_codec_byte_path() {
         let tree_calls = Arc::new(AtomicUsize::new(0));
@@ -1601,15 +1675,29 @@ mod tests {
         record.remote_codec = Some(codec);
         record.buffer = Some(Arc::new(PeekBuffer(17)));
 
-        assert_eq!(record.latest_json_bytes().unwrap(), b"17");
+        // Payloads are the codec's output for `T` alone; each carries the
+        // stamp of the sample it was encoded from.
+        let latest = record.latest_json_bytes().unwrap();
+        assert_eq!(
+            (latest.value.as_slice(), latest.stamp()),
+            (&b"17"[..], Stamp::from_nanos(17))
+        );
 
         let mut reader = record.subscribe_json().unwrap();
-        assert_eq!(reader.try_recv_json_bytes().unwrap(), b"17");
+        let received = reader.try_recv_json_bytes().unwrap();
+        assert_eq!(
+            (received.value.as_slice(), received.stamp()),
+            (&b"17"[..], Stamp::from_nanos(17))
+        );
 
         assert_eq!(byte_calls.load(Ordering::Relaxed), 2);
         assert_eq!(tree_calls.load(Ordering::Relaxed), 0);
 
-        assert_eq!(record.latest_json(), Some(serde_json::json!(17)));
+        let tree = record.latest_json().unwrap();
+        assert_eq!(
+            (tree.stamp(), tree.value),
+            (Stamp::from_nanos(17), serde_json::json!(17))
+        );
         assert_eq!(tree_calls.load(Ordering::Relaxed), 1);
     }
 

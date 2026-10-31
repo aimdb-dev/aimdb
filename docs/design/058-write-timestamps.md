@@ -418,9 +418,10 @@ A slot grows by 8 to 15 bytes, padding included. Examples:
 - Tokio broadcast rings grow by the same amount per slot, on top of their
   existing per-slot bookkeeping.
 
-The Embassy tests assert `size_of` for the default `CAP = 16` buffer of a
-small `T`, and the existing `aimdb-bench` allocation gates stay in place, so
-a change to the budget is visible in review. A formal before/after
+The Embassy tests assert the slot size behind the default `CAP = 16` buffer
+of an `f32` record (the buffer holds its slots behind one allocation), and
+the existing `aimdb-bench` allocation gates stay in place, so a change to
+the budget is visible in review. A formal before/after
 `produce` → `recv` latency comparison is deferred. A packed slot
 (`[u8; 8]` instead of `u64`) would save the padding for small `T` at the
 cost of unaligned reads on every receive; not adopted.
@@ -516,7 +517,7 @@ consumers. A string would cost every Rust client a parse.
 | Outbound | `OutboundMessage` gains `metadata`; `stamp()` added. |
 | AimX | 4.0: mandatory `ts`, new `get` / `drain` / `set` reply shapes. 3.x peers are refused. |
 | `aimdb-client` | `RecordUpdate.ts`, `get` / `drain` return types, `DrainResponse` without serde derives. |
-| Codegen | Generated `tap` stubs and examples that call `recv()` use `.value`. |
+| Callers | Examples, demos and docs that read a received value use `.value`. Generated code is unaffected: it reads no record values. |
 
 Both phases (§8) ship in one PR, with CHANGELOG entries in the crates they
 touch.
@@ -525,7 +526,7 @@ touch.
 
 | Phase | Content | Crates |
 |---|---|---|
-| 1 | `Stamp`, `InstanceClock`, `Stamped<T>` / `WriteMetadata` and their conversions, the instance clock bound in `build()`, buffer element type, stamping in `RecordWriter`, reader / latest / join-trigger / outbound exposure | core, tokio / embassy / wasm adapters, sync, codegen, data-contracts, persistence, connectors' library code, examples, bench |
+| 1 | `Stamp`, `InstanceClock`, `Stamped<T>` / `WriteMetadata` and their conversions, the instance clock bound in `build()`, buffer element type, stamping in `RecordWriter`, reader / latest / join-trigger / outbound exposure | core, tokio / embassy / wasm adapters, sync, data-contracts, persistence, connectors' library code, examples, bench |
 | 2 | AimX 4.0, client, CLI, MCP | core, client, cli, mcp, websocket / uds / serial / tcp connectors, wasm adapter, bench |
 
 Phase 2 depends on phase 1. Both should reach users in the same release, so
@@ -540,7 +541,7 @@ Phase 2 depends on phase 1. Both should reach users in the same release, so
 | `aimdb-core` (JSON reads) | for one write, `latest_json`, `latest_json_bytes`, `try_latest_as_json*`, and each `JsonBufferReader` / `JsonReader` method (tree and bytes, poll and try) return the typed read's stamp; the trait-default byte paths keep it; a write landing between two reads never gives a payload the newer stamp (single-read check with a buffer whose `peek` is counted); encoded payloads equal the codec's output for `T` alone. |
 | `aimdb-core` (AimX) | `ts` on `event`, `snap`, `get`, `drain` and `set`; `set` on a ring replies `{status}`; a value frame without `ts` is malformed; a 3.x client is refused. |
 | `aimdb-tokio-adapter` | under `tokio::time::pause`, two writes with no `advance` share a stamp and `advance(d)` between them gives exactly `d`; readings from a `std::thread` and from a second runtime use the instance runtime's clock; an `aimdb-sync` `set` is stamped on the instance's paused clock. |
-| `aimdb-embassy-adapter` | stamps are measured from `build()`; buffer contract tests (`test_support`) run with `Stamped<T>`; `size_of` of the default `CAP = 16` `f32` buffer asserted. |
+| `aimdb-embassy-adapter` | stamps are measured from `build()`; buffer contract tests (`test_support`) run with `Stamped<T>`; slot size of the default `CAP = 16` `f32` buffer asserted. |
 | `aimdb-wasm-adapter` | write stamps are nondecreasing. |
 | `aimdb-websocket-connector` | `ts` in `event` and `snap` frames; a `?v=3.x` URL is refused. |
 | `aimdb-client` / CLI / MCP | `ts` surfaced per update, per `get` and per `drain` item; a reply without `ts` is a protocol error; a `set` reply with `value` (including `null`) but no `ts` is refused, `{status}` is accepted; `watch --format json` stays valid NDJSON through startup, gaps, snapshot completion and shutdown. |

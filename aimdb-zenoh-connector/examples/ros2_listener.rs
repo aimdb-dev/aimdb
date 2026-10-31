@@ -44,6 +44,6 @@ async fn main() {
     tokio::spawn(runner.run());
 
     while let Ok(msg) = reader.recv().await {
-        println!("received: {}", msg.data);
+        println!("received: {}", msg.value.data);
     }
 }

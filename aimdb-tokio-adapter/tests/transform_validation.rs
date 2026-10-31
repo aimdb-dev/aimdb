@@ -40,7 +40,7 @@ where
         loop {
             db.produce::<I>(input, value.clone()).unwrap();
             if let Ok(Ok(v)) = tokio::time::timeout(Duration::from_millis(50), out.recv()).await {
-                return v;
+                return v.value;
             }
         }
     })

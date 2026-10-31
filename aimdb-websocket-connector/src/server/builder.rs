@@ -211,7 +211,7 @@ impl WebSocketConnectorBuilder {
     /// async fn temperature(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
     ///     db.latest::<f32>("temperature")
     ///         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    ///         .map(|value| format!("{value:.1}"))
+    ///         .map(|sample| format!("{:.1}", sample.value))
     ///         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
     /// }
     /// let rest = Router::new().route("/temperature", get(temperature));

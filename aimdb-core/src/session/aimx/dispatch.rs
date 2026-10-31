@@ -153,8 +153,8 @@ impl Session for AimxSession {
         self.matched_keys(topic)
             .into_iter()
             .filter_map(|key| {
-                let value = self.db.try_latest_as_json(&key)?;
-                Some((key, to_payload(&value)))
+                let sample = self.db.try_latest_as_json(&key)?;
+                Some((key, to_payload(&sample.value)))
             })
             .collect()
     }
@@ -284,7 +284,7 @@ impl AimxSession {
             .map_err(map_db_err)?;
         // Echo the updated value when available (matches the legacy reply shape).
         Ok(match self.db.try_latest_as_json(&name) {
-            Some(updated) => json!({ "status": "success", "value": updated }),
+            Some(updated) => json!({ "status": "success", "value": updated.value }),
             None => json!({ "status": "success" }),
         })
     }
@@ -302,8 +302,8 @@ impl AimxSession {
     /// is first opened (a fresh broadcast reader starts at the tail). Use
     /// `record.drain` for a ring's full backlog.
     fn record_get(&mut self, name: &str) -> Result<Payload, RpcError> {
-        if let Some(bytes) = self.db.try_latest_as_json_bytes(name) {
-            return Ok(Payload::from(bytes));
+        if let Some(sample) = self.db.try_latest_as_json_bytes(name) {
+            return Ok(Payload::from(sample.value));
         }
         // Ring fallback: drain to the newest currently-available value (or NotFound).
         self.drain_values(name, usize::MAX)?
@@ -362,7 +362,7 @@ impl AimxSession {
         let mut values = Vec::new();
         while values.len() < limit {
             match reader.try_recv_json() {
-                Ok(val) => values.push(val),
+                Ok(sample) => values.push(sample.value),
                 Err(DbError::BufferEmpty) => break,
                 // Ring overflowed since the last read — cursor resets; keep going.
                 Err(DbError::BufferLagged { .. }) => continue,

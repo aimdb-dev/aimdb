@@ -123,13 +123,15 @@ impl RemoteJsonHarness {
                 let value = self
                     .db
                     .try_latest_as_json(RECORD_KEY)
-                    .expect("bench latest JSON tree");
+                    .expect("bench latest JSON tree")
+                    .value;
                 Payload::from(serde_json::to_vec(&value).expect("bench tree serialization"))
             }
             RemoteJsonPath::Direct => Payload::from(
                 self.db
                     .try_latest_as_json_bytes(RECORD_KEY)
-                    .expect("bench latest JSON bytes"),
+                    .expect("bench latest JSON bytes")
+                    .value,
             ),
         };
 
@@ -157,13 +159,15 @@ impl RemoteJsonHarness {
                 let value = self
                     .reader
                     .try_recv_json()
-                    .expect("bench subscription JSON tree");
+                    .expect("bench subscription JSON tree")
+                    .value;
                 Payload::from(serde_json::to_vec(&value).expect("bench tree serialization"))
             }
             RemoteJsonPath::Direct => Payload::from(
                 self.reader
                     .try_recv_json_bytes()
-                    .expect("bench subscription JSON bytes"),
+                    .expect("bench subscription JSON bytes")
+                    .value,
             ),
         };
 

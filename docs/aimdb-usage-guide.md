@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(data) = reader.recv().await {
                     println!("🌡️  Temperature: {:.1}°C at {}", 
-                             data.temperature, data.timestamp);
+                             data.value.temperature, data.value.timestamp);
                 }
             });
         })
@@ -266,7 +266,7 @@ async fn main(_spawner: Spawner) {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(press) = reader.recv().await {
                     defmt::info!("🔘 Button pressed! Count: {}, Time: {}", 
-                                 press.count, press.timestamp);
+                                 press.value.count, press.value.timestamp);
                 }
             });
         })
@@ -349,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reg.tap(|_, consumer| async move {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(state) = reader.recv().await {
-                    println!("💡 Light: {}", if state.is_on { "ON" } else { "OFF" });
+                    println!("💡 Light: {}", if state.value.is_on { "ON" } else { "OFF" });
                 }
             });
         })
@@ -414,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(reading) = reader.recv().await {
                     println!("📊 Temp: {:.1}°C, Humidity: {:.1}%", 
-                             reading.temperature, reading.humidity);
+                             reading.value.temperature, reading.value.humidity);
                 }
             });
         })

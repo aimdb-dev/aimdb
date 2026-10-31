@@ -801,7 +801,10 @@ async fn server_write_reaches_inbound_record() {
     ws_send(&mut c, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(db.try_latest_as_json("cfg"), Some(json!({"c":7.5})));
+    assert_eq!(
+        db.try_latest_as_json("cfg").map(|s| s.value),
+        Some(json!({"c":7.5}))
+    );
 }
 
 // ── Client engine e2e (run_client + WsDialer over a real socket) ─────

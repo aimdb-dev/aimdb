@@ -188,7 +188,9 @@ pub(crate) async fn run_single_transform<I, O, S>(
     );
 
     loop {
-        match reader.recv().await {
+        // The input's write metadata stays here: the output is a new write
+        // and gets its own (design 058 §4.4).
+        match reader.recv().await.map(crate::Stamped::into_value) {
             Ok(input_value) => {
                 #[cfg(feature = "observability")]
                 {

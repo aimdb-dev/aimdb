@@ -216,9 +216,12 @@ impl AimDbInner {
     /// * `record_key` - The record key (e.g., "sensors.temperature")
     ///
     /// # Returns
-    /// `Some(JsonValue)` with the current record value, or `None`
+    /// `Some` with the current record value and its write metadata, or `None`
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
+    pub fn try_latest_as_json(
+        &self,
+        record_key: &str,
+    ) -> Option<crate::Stamped<serde_json::Value>> {
         let id = self.resolve_str(record_key)?;
         self.storages
             .get(id.index())?
@@ -234,7 +237,7 @@ impl AimDbInner {
     /// codec serializes the typed record directly; compatibility codecs may
     /// inherit a `Value`-based fallback.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json_bytes(&self, record_key: &str) -> Option<Vec<u8>> {
+    pub fn try_latest_as_json_bytes(&self, record_key: &str) -> Option<crate::Stamped<Vec<u8>>> {
         let id = self.resolve_str(record_key)?;
         self.storages
             .get(id.index())?
@@ -1124,12 +1127,15 @@ impl AimDb {
     /// Unknown keys and mismatched types return the same errors as
     /// [`produce`](Self::produce). This read needs neither serialization nor
     /// remote-access registration and is available on both std and no_std.
-    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<T>>
+    ///
+    /// The value comes with the metadata of the write that stored it; read
+    /// `.value` for the value alone, `.stamp()` for its write time.
+    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<crate::Stamped<T>>>
     where
         T: Send + 'static + Debug + Clone,
     {
         let record = self.inner.get_typed_record_by_key::<T>(key)?;
-        Ok(record.latest().map(|value| value.into_inner()))
+        Ok(record.latest().map(|value| value.into_stamped()))
     }
 
     /// Subscribes to a specific record by key
@@ -1268,7 +1274,10 @@ impl AimDb {
     /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
     /// for state you want to read latest-value style.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+    pub fn try_latest_as_json(
+        &self,
+        record_name: &str,
+    ) -> Option<crate::Stamped<serde_json::Value>> {
         self.inner.try_latest_as_json(record_name)
     }
 
@@ -1279,7 +1288,7 @@ impl AimDb {
     /// `None`. AimX `record.get` retains its per-connection drain fallback for
     /// those records.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json_bytes(&self, record_name: &str) -> Option<Vec<u8>> {
+    pub fn try_latest_as_json_bytes(&self, record_name: &str) -> Option<crate::Stamped<Vec<u8>>> {
         self.inner.try_latest_as_json_bytes(record_name)
     }
 

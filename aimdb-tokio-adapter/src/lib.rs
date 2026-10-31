@@ -52,7 +52,7 @@ where
 {
     fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self {
         use aimdb_core::buffer::Buffer;
-        let buffer = Box::new(TokioBuffer::<T>::new(&cfg));
+        let buffer = Box::new(TokioBuffer::<aimdb_core::Stamped<T>>::new(&cfg));
         // Record the cfg so buffer_info() reports the real buffer
         // type/capacity for the dependency graph.
         self.buffer_with_cfg(buffer, cfg)

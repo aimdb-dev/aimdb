@@ -44,7 +44,7 @@ async fn mirror_reaches(
     for _ in 0..100 {
         push();
         tokio::time::sleep(Duration::from_millis(25)).await;
-        if db.try_latest_as_json(key).as_ref() == Some(want) {
+        if db.try_latest_as_json(key).map(|s| s.value).as_ref() == Some(want) {
             return true;
         }
     }

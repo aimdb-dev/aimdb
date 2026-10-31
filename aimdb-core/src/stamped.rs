@@ -26,7 +26,6 @@ pub struct WriteMetadata {
 
 impl WriteMetadata {
     /// Created by `RecordWriter` at write time.
-    #[allow(dead_code)] // the write path stamps from checkpoint B on
     pub(crate) fn new(stamp: Stamp) -> Self {
         Self { stamp }
     }

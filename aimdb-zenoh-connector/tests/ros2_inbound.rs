@@ -145,7 +145,7 @@ async fn a_ros_publisher_reaches_every_record_linked_to_its_topic() {
             .await
             .expect("a value")
             .unwrap();
-        assert_eq!(value, command, "the delete was not ingested first");
+        assert_eq!(value.value, command, "the delete was not ingested first");
     }
 }
 

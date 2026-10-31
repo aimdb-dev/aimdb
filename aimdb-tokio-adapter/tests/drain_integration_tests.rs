@@ -662,7 +662,7 @@ async fn test_drain_independent_of_other_consumers() {
     // In-process reader consumes all 3
     for _ in 0..3 {
         let val = in_process_reader.recv().await.unwrap();
-        assert!(val.celsius >= 100.0);
+        assert!(val.value.celsius >= 100.0);
     }
 
     // Drain should ALSO return all 3 values (independent reader)

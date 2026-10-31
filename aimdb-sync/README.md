@@ -138,7 +138,7 @@ let mut consumer = handle.consumer::<Temperature>("temperature")?;
 
 // Blocks until value is available
 let temp = consumer.get()?;
-println!("Received: {}°C", temp.celsius);
+println!("Received: {}°C (written at {:?})", temp.value.celsius, temp.stamp());
 ```
 
 ### Receive with Timeout

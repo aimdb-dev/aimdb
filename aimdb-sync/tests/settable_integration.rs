@@ -56,8 +56,8 @@ fn set_value_constructs_produces_and_is_consumed() {
         .get_with_timeout(Duration::from_secs(2))
         .expect("failed to consume");
 
-    assert_eq!(received.celsius, 22.5);
-    assert!(received.timestamp > 0, "timestamp should be stamped");
+    assert_eq!(received.value.celsius, 22.5);
+    assert!(received.value.timestamp > 0, "timestamp should be stamped");
 
     handle.detach().expect("failed to detach");
 }
@@ -90,8 +90,10 @@ fn set_value_at_stamps_the_explicit_timestamp() {
         .get_with_timeout(Duration::from_secs(2))
         .expect("failed to consume");
 
+    // The contract's measurement time is application data; the write stamp
+    // is separate (design 058 §1).
     assert_eq!(
-        received,
+        received.value,
         Temperature {
             celsius: 22.5,
             timestamp: 1_700_000_000_000,

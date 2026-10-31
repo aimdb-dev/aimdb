@@ -556,7 +556,7 @@ mod tests {
             .await
             .expect("no telegram reached the record")
             .expect("recv");
-        assert_eq!(value, 0x01);
+        assert_eq!(value.value, 0x01);
 
         // Outbound: a produced value reaches the wire.
         db.producer::<u8>("out").expect("producer").produce(1);

@@ -34,8 +34,13 @@
 //!     consumer: Consumer<Temperature>,
 //! ) {
 //!     let mut rx = consumer.subscribe();
+//!     // Each value comes with the metadata of the write that stored it.
 //!     while let Ok(temp) = rx.recv().await {
-//!         ctx.log().info(&format!("Temp: {:.1}°C", temp.celsius));
+//!         ctx.log().info(&format!(
+//!             "Temp: {:.1}°C, written at {:?}",
+//!             temp.value.celsius,
+//!             temp.stamp()
+//!         ));
 //!     }
 //! }
 //! ```
@@ -220,7 +225,7 @@ impl<T> Clone for Producer<T> {
 /// - **Security**: Cannot misuse database for unintended operations
 pub struct Consumer<T> {
     /// Pre-resolved buffer handle to the record's buffer.
-    buffer: Arc<dyn DynBuffer<T>>,
+    buffer: Arc<dyn DynBuffer<crate::Stamped<T>>>,
     /// Stage profiling state (set by the spawn machinery for `.tap()` / `.link_to()`).
     #[cfg(feature = "observability")]
     profiling: Option<(Arc<crate::profiling::StageMetrics>, crate::profiling::Clock)>,
@@ -233,7 +238,7 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Create a new consumer bound to a pre-resolved buffer handle.
-    pub(crate) fn new(buffer: Arc<dyn DynBuffer<T>>) -> Self {
+    pub(crate) fn new(buffer: Arc<dyn DynBuffer<crate::Stamped<T>>>) -> Self {
         Self {
             buffer,
             #[cfg(feature = "observability")]
@@ -381,9 +386,9 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
         use crate::outbound::RouteOutcome;
         use core::task::Poll;
 
-        let value = match self.reader.poll_recv(cx) {
+        let sample = match self.reader.poll_recv(cx) {
             Poll::Pending => return Poll::Pending,
-            Poll::Ready(Ok(value)) => value,
+            Poll::Ready(Ok(sample)) => sample,
             Poll::Ready(Err(crate::DbError::BufferLagged { lag_count, .. })) => {
                 return Poll::Ready(RouteOutcome::Lagged(lag_count));
             }
@@ -394,7 +399,7 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
             None => None,
             Some(writer) => {
                 let mut out = crate::connector::TopicBuf::new(topic);
-                match write_topic(&**writer, &value, &mut out) {
+                match write_topic(&**writer, &sample.value, &mut out) {
                     Ok(written) => written.then_some(out.len()),
                     Err(_) => return Poll::Ready(RouteOutcome::TopicOverflow),
                 }
@@ -405,11 +410,15 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
             &self.serialize,
             self.serialize_into.as_ref(),
             ctx,
-            &value,
+            &sample.value,
             payload,
         );
         Poll::Ready(match serialized {
-            Ok(payload) => RouteOutcome::Staged { topic_len, payload },
+            Ok(payload) => RouteOutcome::Staged {
+                topic_len,
+                payload,
+                metadata: *sample.metadata(),
+            },
             Err(failure) => RouteOutcome::SerializeFailed(failure),
         })
     }
@@ -598,7 +607,10 @@ where
     ///
     /// **Note:** For metadata tracking in std mode, call `buffer_with_cfg()` instead,
     /// or call `buffer_cfg()` separately to set the configuration.
-    pub fn buffer_raw(&mut self, buffer: Box<dyn crate::buffer::DynBuffer<T>>) -> &mut Self {
+    pub fn buffer_raw(
+        &mut self,
+        buffer: Box<dyn crate::buffer::DynBuffer<crate::Stamped<T>>>,
+    ) -> &mut Self {
         self.rec.set_buffer(buffer);
         self
     }
@@ -606,7 +618,7 @@ where
     /// Configures a buffer with metadata tracking
     pub fn buffer_with_cfg(
         &mut self,
-        buffer: Box<dyn crate::buffer::DynBuffer<T>>,
+        buffer: Box<dyn crate::buffer::DynBuffer<crate::Stamped<T>>>,
         cfg: crate::buffer::BufferCfg,
     ) -> &mut Self {
         self.rec.set_buffer(buffer);
@@ -1348,9 +1360,11 @@ mod tests {
     /// Minimal mock buffer so `has_buffer()` returns true
     struct MockBuffer;
 
-    impl crate::buffer::DynBuffer<TestRecord> for MockBuffer {
-        fn push(&self, _value: TestRecord) {}
-        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+    impl crate::buffer::DynBuffer<crate::Stamped<TestRecord>> for MockBuffer {
+        fn push(&self, _value: crate::Stamped<TestRecord>) {}
+        fn subscribe_boxed(
+            &self,
+        ) -> Box<dyn crate::buffer::BufferReader<crate::Stamped<TestRecord>> + Send> {
             unimplemented!("not needed for deserializer tests")
         }
         fn as_any(&self) -> &dyn core::any::Any {
@@ -1988,12 +2002,14 @@ mod tests {
         count: Arc<AtomicUsize>,
     }
 
-    impl crate::buffer::DynBuffer<TestRecord> for RecordingBuffer {
-        fn push(&self, value: TestRecord) {
-            self.last.store(value.value, Ordering::SeqCst);
+    impl crate::buffer::DynBuffer<crate::Stamped<TestRecord>> for RecordingBuffer {
+        fn push(&self, sample: crate::Stamped<TestRecord>) {
+            self.last.store(sample.value.value, Ordering::SeqCst);
             self.count.fetch_add(1, Ordering::SeqCst);
         }
-        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+        fn subscribe_boxed(
+            &self,
+        ) -> Box<dyn crate::buffer::BufferReader<crate::Stamped<TestRecord>> + Send> {
             unimplemented!("not needed for ingest tests")
         }
         fn as_any(&self) -> &dyn core::any::Any {
@@ -2076,6 +2092,49 @@ mod tests {
         });
         let (db, _runner) = builder.build().await.expect("build must succeed");
         (db, last, count)
+    }
+
+    /// Buffer that records the stamp of the last pushed value.
+    struct StampRecordingBuffer(Arc<core::sync::atomic::AtomicU64>);
+
+    impl crate::buffer::DynBuffer<crate::Stamped<TestRecord>> for StampRecordingBuffer {
+        fn push(&self, sample: crate::Stamped<TestRecord>) {
+            self.0.store(sample.stamp().as_nanos(), Ordering::SeqCst);
+        }
+        fn subscribe_boxed(
+            &self,
+        ) -> Box<dyn crate::buffer::BufferReader<crate::Stamped<TestRecord>> + Send> {
+            unimplemented!("not needed for ingest tests")
+        }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+    }
+
+    /// Design 058 §1: an inbound value is stamped when it is written locally.
+    #[tokio::test]
+    async fn an_inbound_value_is_stamped_when_written() {
+        let ops = crate::executor::test_support::ManualClockRuntimeOps::default();
+        let stamp = Arc::new(core::sync::atomic::AtomicU64::new(u64::MAX));
+        let buf_stamp = stamp.clone();
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(ops.clone()))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", move |reg| {
+            reg.buffer_raw(Box::new(StampRecordingBuffer(buf_stamp)));
+            reg.link_from("mqtt://cmd/in")
+                .with_deserializer(|_ctx, bytes: &[u8]| {
+                    Ok::<_, String>(TestRecord {
+                        value: bytes.len() as i32,
+                    })
+                })
+                .finish();
+        });
+        let (db, _runner) = builder.build().await.expect("build must succeed");
+
+        ops.clock.advance(core::time::Duration::from_nanos(4242));
+        route(&db, "cmd/in", &[1]);
+        assert_eq!(stamp.load(Ordering::SeqCst), 4242);
     }
 
     /// The key index, or -1 without a key.
@@ -2224,11 +2283,11 @@ mod tests {
         script: Vec<Result<TestRecord, crate::DbError>>,
     }
 
-    impl crate::buffer::BufferReader<TestRecord> for ScriptedReader {
+    impl crate::buffer::BufferReader<crate::Stamped<TestRecord>> for ScriptedReader {
         fn poll_recv(
             &mut self,
             _cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<Result<TestRecord, crate::DbError>> {
+        ) -> core::task::Poll<Result<crate::Stamped<TestRecord>, crate::DbError>> {
             let next = if self.script.is_empty() {
                 Err(crate::DbError::BufferClosed {
                     buffer_name: "scripted".to_string(),
@@ -2236,9 +2295,14 @@ mod tests {
             } else {
                 self.script.remove(0)
             };
-            core::task::Poll::Ready(next)
+            core::task::Poll::Ready(next.map(|value| {
+                crate::Stamped::new(
+                    value,
+                    crate::WriteMetadata::new(crate::Stamp::from_nanos(0)),
+                )
+            }))
         }
-        fn try_recv(&mut self) -> Result<TestRecord, crate::DbError> {
+        fn try_recv(&mut self) -> Result<crate::Stamped<TestRecord>, crate::DbError> {
             unimplemented!("not needed for outbound route tests")
         }
     }
@@ -2248,9 +2312,11 @@ mod tests {
     /// Buffer whose readers replay `script`.
     struct ScriptedBuffer(Script);
 
-    impl crate::buffer::DynBuffer<TestRecord> for ScriptedBuffer {
-        fn push(&self, _value: TestRecord) {}
-        fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<TestRecord> + Send> {
+    impl crate::buffer::DynBuffer<crate::Stamped<TestRecord>> for ScriptedBuffer {
+        fn push(&self, _value: crate::Stamped<TestRecord>) {}
+        fn subscribe_boxed(
+            &self,
+        ) -> Box<dyn crate::buffer::BufferReader<crate::Stamped<TestRecord>> + Send> {
             Box::new(ScriptedReader { script: (self.0)() })
         }
         fn as_any(&self) -> &dyn core::any::Any {

@@ -333,7 +333,7 @@ mod tests {
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
     use aimdb_core::{
         AimDb, AimDbBuilder, BoxFuture, DbError, DbResult, InboundDispatch, OutboundPayload,
-        OutboundRoutes,
+        OutboundRoutes, Stamp, Stamped, WriteMetadata,
     };
     use serde::{Deserialize, Serialize};
 
@@ -551,12 +551,15 @@ mod tests {
     }
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
-    impl DynBuffer<Reading> for CannedBuffer {
-        fn push(&self, _value: Reading) {}
+    impl DynBuffer<Stamped<Reading>> for CannedBuffer {
+        fn push(&self, _value: Stamped<Reading>) {}
 
-        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Reading> + Send> {
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<Reading>> + Send> {
             Box::new(OneShotReader {
-                value: Some(self.value.clone()),
+                value: Some(Stamped::new(
+                    self.value.clone(),
+                    WriteMetadata::from_wire_stamp(Stamp::from_nanos(0)),
+                )),
             })
         }
 
@@ -567,12 +570,12 @@ mod tests {
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
     struct OneShotReader {
-        value: Option<Reading>,
+        value: Option<Stamped<Reading>>,
     }
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
     impl OneShotReader {
-        fn receive(&mut self) -> Result<Reading, DbError> {
+        fn receive(&mut self) -> Result<Stamped<Reading>, DbError> {
             self.value.take().ok_or_else(|| DbError::BufferClosed {
                 buffer_name: "per-link-codec-test".to_string(),
             })
@@ -580,12 +583,12 @@ mod tests {
     }
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
-    impl BufferReader<Reading> for OneShotReader {
-        fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Result<Reading, DbError>> {
+    impl BufferReader<Stamped<Reading>> for OneShotReader {
+        fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Result<Stamped<Reading>, DbError>> {
             Poll::Ready(self.receive())
         }
 
-        fn try_recv(&mut self) -> Result<Reading, DbError> {
+        fn try_recv(&mut self) -> Result<Stamped<Reading>, DbError> {
             self.receive()
         }
     }
@@ -596,12 +599,12 @@ mod tests {
     }
 
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
-    impl DynBuffer<Reading> for CapturingBuffer {
-        fn push(&self, value: Reading) {
-            *self.latest.lock().expect("capture lock poisoned") = Some(value);
+    impl DynBuffer<Stamped<Reading>> for CapturingBuffer {
+        fn push(&self, sample: Stamped<Reading>) {
+            *self.latest.lock().expect("capture lock poisoned") = Some(sample.value);
         }
 
-        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Reading> + Send> {
+        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<Reading>> + Send> {
             Box::new(OneShotReader { value: None })
         }
 

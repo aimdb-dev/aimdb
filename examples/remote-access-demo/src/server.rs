@@ -299,8 +299,8 @@ async fn temperature_logger(_ctx: RuntimeContext, consumer: Consumer<Temperature
     while let Ok(reading) = reader.recv().await {
         tracing::debug!(
             "🌡️  Logged temperature: {:.1} °C from {}",
-            reading.celsius,
-            reading.sensor_id
+            reading.value.celsius,
+            reading.value.sensor_id
         );
     }
 }
@@ -333,8 +333,8 @@ async fn slow_status_processor(ctx: RuntimeContext, consumer: Consumer<SystemSta
         time.sleep_millis(100).await;
         tracing::debug!(
             "💻 Processed status: CPU {:.1}%, MEM {:.1}%",
-            snapshot.cpu_usage,
-            snapshot.memory_usage
+            snapshot.value.cpu_usage,
+            snapshot.value.memory_usage
         );
     }
 }

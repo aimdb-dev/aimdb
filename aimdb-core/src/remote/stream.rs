@@ -77,8 +77,8 @@ fn record_updates(
     unfold(state, |(mut reader, key, mut skipped)| async move {
         loop {
             match reader.recv_json_bytes().await {
-                Ok(bytes) => {
-                    let data = crate::session::Payload::from(bytes);
+                Ok(sample) => {
+                    let data = crate::session::Payload::from(sample.value);
                     return Some(((data, skipped), (reader, key, 0)));
                 }
                 Err(DbError::BufferLagged { lag_count, .. }) => {
@@ -118,26 +118,33 @@ mod tests {
         step: Arc<AtomicUsize>,
     }
 
+    fn sample(value: serde_json::Value) -> crate::Stamped<serde_json::Value> {
+        crate::Stamped::new(
+            value,
+            crate::WriteMetadata::new(crate::Stamp::from_nanos(0)),
+        )
+    }
+
     impl JsonBufferReader for FakeReader {
         fn poll_recv_json(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<Result<serde_json::Value, DbError>> {
+        ) -> Poll<Result<crate::Stamped<serde_json::Value>, DbError>> {
             let s = self.step.fetch_add(1, Ordering::SeqCst);
             Poll::Ready(match s {
-                0 => Ok(serde_json::json!({"v": 1})),
+                0 => Ok(sample(serde_json::json!({"v": 1}))),
                 1 => Err(DbError::BufferLagged {
                     buffer_name: "test".to_string(),
                     lag_count: 7,
                 }),
-                2 => Ok(serde_json::json!({"v": 2})),
+                2 => Ok(sample(serde_json::json!({"v": 2}))),
                 _ => Err(DbError::BufferClosed {
                     buffer_name: "test".to_string(),
                 }),
             })
         }
 
-        fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError> {
+        fn try_recv_json(&mut self) -> Result<crate::Stamped<serde_json::Value>, DbError> {
             Err(DbError::BufferEmpty)
         }
     }

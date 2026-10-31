@@ -62,9 +62,13 @@ fn join_channel() -> (
 /// downcast per join input value) is confined to this module and applies
 /// only to explicit user-built joins, never to the connector spine.
 pub enum JoinTrigger {
+    /// A value written to input `index`. `metadata` is the write metadata of
+    /// that input value; match with `..`, more fields may follow.
+    #[non_exhaustive]
     Input {
         index: usize,
         value: Box<dyn Any + Send>,
+        metadata: crate::WriteMetadata,
     },
 }
 
@@ -79,6 +83,20 @@ impl JoinTrigger {
         match self {
             JoinTrigger::Input { index, .. } => *index,
         }
+    }
+
+    /// The write metadata of the input value. The join's output is a new
+    /// write with its own; pairing inputs on write time is an application
+    /// choice (design 058 §1).
+    pub fn metadata(&self) -> &crate::WriteMetadata {
+        match self {
+            JoinTrigger::Input { metadata, .. } => metadata,
+        }
+    }
+
+    /// When the input value was written, on the instance clock.
+    pub fn stamp(&self) -> crate::Stamp {
+        self.metadata().stamp()
     }
 }
 
@@ -179,8 +197,8 @@ where
                     let mut reader = consumer.subscribe();
 
                     loop {
-                        let value = match reader.recv().await {
-                            Ok(v) => v,
+                        let sample = match reader.recv().await {
+                            Ok(sample) => sample,
                             // SPMC-ring overflow: the reader recovers (cursor
                             // resets to the oldest live value), so a transient
                             // lag must not permanently silence this input —
@@ -195,9 +213,12 @@ where
                             // Buffer closed / fatal — the input record is gone.
                             Err(_) => break,
                         };
+                        // Box the value, not the `Stamped<I>`: `as_input::<I>()`
+                        // downcasts to `I` and would never match the envelope.
                         let trigger = JoinTrigger::Input {
                             index,
-                            value: Box::new(value),
+                            metadata: *sample.metadata(),
+                            value: Box::new(sample.value),
                         };
                         if tx.send(trigger).await.is_err() {
                             break;

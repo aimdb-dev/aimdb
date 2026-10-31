@@ -640,7 +640,7 @@ where
             match select(recv_fut, cancel_fut).await {
                 Either::Left((Ok(val), _)) => {
                     let serializer = serde_wasm_bindgen::Serializer::json_compatible();
-                    if let Ok(js) = val.serialize(&serializer) {
+                    if let Ok(js) = val.value.serialize(&serializer) {
                         let _ = callback.call1(&JsValue::NULL, &js);
                     }
                 }
