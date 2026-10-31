@@ -130,9 +130,11 @@ fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
     }
 }
 
-/// A value frame's write stamp; its absence makes the frame malformed.
-fn stamp_of(ts: Option<u64>) -> Result<Stamp, CodecError> {
-    ts.map(Stamp::from_nanos).ok_or(CodecError::Malformed)
+/// A value frame's write stamp. Its absence is a protocol error on that
+/// frame's subscription, `sub`.
+fn stamp_of(ts: Option<u64>, sub: &str) -> Result<Stamp, CodecError> {
+    ts.map(Stamp::from_nanos)
+        .ok_or_else(|| CodecError::MissingStamp { sub: sub.into() })
 }
 
 fn payload_of(raw: Option<&RawValue>) -> Payload {
@@ -148,6 +150,8 @@ fn err_code(e: &RpcError) -> &'static str {
         RpcError::Denied => "denied",
         RpcError::Internal => "internal",
         RpcError::VersionMismatch => "version_mismatch",
+        // Client-side only; a server has no reason to send it.
+        RpcError::Protocol => "internal",
     }
 }
 
@@ -360,21 +364,27 @@ impl EnvelopeCodec for AimxCodec {
                 };
                 Ok(Outbound::Reply { id, result })
             }
-            "event" => Ok(Outbound::Event {
-                sub: f.sub.ok_or(CodecError::Malformed)?,
-                seq: f.seq.ok_or(CodecError::Malformed)?,
-                topic: f.topic,
-                ts: stamp_of(f.ts)?,
-                data: payload_of(f.data),
-            }),
-            "snap" => Ok(Outbound::Snapshot {
-                sub: f.sub.ok_or(CodecError::Malformed)?,
-                seq: f.seq.ok_or(CodecError::Malformed)?,
-                last: f.last.unwrap_or(false),
-                topic: f.topic.ok_or(CodecError::Malformed)?,
-                ts: stamp_of(f.ts)?,
-                data: payload_of(f.data),
-            }),
+            "event" => {
+                let sub = f.sub.ok_or(CodecError::Malformed)?;
+                Ok(Outbound::Event {
+                    sub,
+                    seq: f.seq.ok_or(CodecError::Malformed)?,
+                    topic: f.topic,
+                    ts: stamp_of(f.ts, sub)?,
+                    data: payload_of(f.data),
+                })
+            }
+            "snap" => {
+                let sub = f.sub.ok_or(CodecError::Malformed)?;
+                Ok(Outbound::Snapshot {
+                    sub,
+                    seq: f.seq.ok_or(CodecError::Malformed)?,
+                    last: f.last.unwrap_or(false),
+                    topic: f.topic.ok_or(CodecError::Malformed)?,
+                    ts: stamp_of(f.ts, sub)?,
+                    data: payload_of(f.data),
+                })
+            }
             "subscribed" => Ok(Outbound::Subscribed {
                 sub: f.sub.ok_or(CodecError::Malformed)?,
             }),
@@ -641,16 +651,17 @@ mod tests {
     }
 
     /// AimX 4.0: `ts` is mandatory on every value frame. A 3.x-shaped `event`
-    /// or `snap` (no `ts`) is malformed rather than read with a made-up stamp.
+    /// or `snap` (no `ts`) is a protocol error naming its subscription, rather
+    /// than read with a made-up stamp.
     #[test]
-    fn value_frame_without_ts_is_malformed() {
+    fn value_frame_without_ts_is_a_missing_stamp() {
         let event = br#"{"t":"event","seq":2,"sub":"5","data":42}"#;
         let snap = br#"{"t":"snap","seq":1,"topic":"temp.berlin","sub":"8","data":1}"#;
-        for frame in [&event[..], &snap[..]] {
-            assert!(matches!(
-                AimxCodec.decode_outbound(frame),
-                Err(CodecError::Malformed)
-            ));
+        for (frame, sub) in [(&event[..], "5"), (&snap[..], "8")] {
+            assert_eq!(
+                AimxCodec.decode_outbound(frame).err(),
+                Some(CodecError::MissingStamp { sub: sub.into() })
+            );
         }
     }
 

@@ -586,6 +586,9 @@ fn rpc_err(e: RpcError) -> ClientError {
 fn sub_err(e: RpcError) -> ClientError {
     match e {
         RpcError::NotFound | RpcError::Denied => rpc_err(e),
+        RpcError::Protocol => {
+            ClientError::protocol("the server sent a value without `ts` (AimX 4.0 requires it)")
+        }
         _ => ClientError::server_error(
             "internal",
             "the server ended the subscription (its source closed or could not be opened)",

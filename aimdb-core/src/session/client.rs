@@ -26,8 +26,8 @@ use futures_util::{select_biased, FutureExt, StreamExt};
 use hashbrown::HashMap;
 
 use super::{
-    BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
-    SubUpdate, TransportError,
+    BoxFut, BoxStream, CodecError, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload,
+    RpcError, SubUpdate, TransportError,
 };
 use crate::AimDb;
 
@@ -738,6 +738,15 @@ where
                     Ok(Outbound::Pong) => {}
                     // Explicit subscribe ack — informational; the sink already exists.
                     Ok(Outbound::Subscribed { .. }) => {}
+                    // A value without its stamp breaks the protocol for that
+                    // subscription: end it with an error the subscriber sees,
+                    // as a refusal does, instead of dropping the frame unseen.
+                    Err(CodecError::MissingStamp { sub }) => {
+                        if let Some(tx) = subs.remove(&sub) {
+                            let _ = tx.try_send(Err(RpcError::Protocol));
+                            last_seq.remove(&sub);
+                        }
+                    }
                     Err(_e) => continue, // skip a malformed frame, keep the connection
                 }
             }

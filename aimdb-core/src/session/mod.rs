@@ -254,6 +254,14 @@ pub enum TransportError {
 pub enum CodecError {
     /// The frame was not valid for this envelope format.
     Malformed,
+    /// A value frame (`event`, `snap`) for subscription `sub` lacks its
+    /// mandatory write stamp (AimX 4.0). Unlike [`Malformed`](Self::Malformed)
+    /// it names the subscription, so the client can end that subscription with
+    /// [`RpcError::Protocol`] instead of dropping the frame unseen.
+    MissingStamp {
+        /// The subscription the frame was for.
+        sub: String,
+    },
 }
 
 /// Dispatch-layer (application) failure for `call` / `subscribe` / `write`.
@@ -269,6 +277,10 @@ pub enum RpcError {
     /// The peer's declared protocol version is incompatible with this server's
     /// `PROTOCOL_VERSION`. Raised at the handshake, before `hello` completes.
     VersionMismatch,
+    /// The peer broke the protocol on this subscription, e.g. a value without
+    /// its mandatory `ts` (AimX 4.0). Raised by the client engine; never sent
+    /// on the wire.
+    Protocol,
 }
 
 /// Authentication failure raised by [`Dispatch::authenticate`].

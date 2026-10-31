@@ -844,6 +844,7 @@ fn rpc_err_str(e: &RpcError) -> &'static str {
         RpcError::VersionMismatch => {
             "version_mismatch (server rejected the client protocol version)"
         }
+        RpcError::Protocol => "protocol (the server sent a value without `ts`)",
         _ => "internal (engine stopped, disconnected, or server error)",
     }
 }
