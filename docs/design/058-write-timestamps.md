@@ -144,7 +144,7 @@ The origin is instance start on every adapter, captured in `build()`.
 
 | Adapter | `now()` | Origin | `unix_time()` |
 |---|---|---|---|
-| Tokio | `tokio::time::Instant::now()` read in the context of the runtime captured at `build()` | that `Instant` at `build()` | `SystemTime` |
+| Tokio | `tokio::time::Instant::now()` in the captured runtime; `std::time::Instant` if created outside a runtime | that source's `Instant` at `build()` | `SystemTime` |
 | Embassy | `embassy_time::Instant::now()` (µs × 1000, saturating) | that `Instant` at `build()`, not boot | boot anchor from `set_unix_time` plus uptime; `None` until set |
 | WASM | `performance.now()` | `performance.now()` at `build()` | `Date.now()` |
 
@@ -152,23 +152,40 @@ The origin is instance start on every adapter, captured in `build()`.
 outside the runtime, such as `aimdb-sync`'s `SyncProducer::set`, which runs
 on the caller's thread, or a write from another runtime, would otherwise read
 a different origin and, under `test-util`, a different clock. The clock
-instead captures `Handle::current()` and an origin `Instant` in
-`build()` (which is `async`, so a runtime is always current). `now()`:
+uses `Handle::try_current()` at creation to choose a fixed source:
 
 ```rust
-let now = if Handle::try_current().map(|h| h.id()) == Ok(self.handle.id()) {
+enum Source {
+    Tokio { handle: Handle, origin: tokio::time::Instant },
+    System { origin: std::time::Instant },
+}
+```
+
+When a runtime is current, the clock captures its handle and a Tokio origin.
+For that source, `now()` reads:
+
+```rust
+let now = if Handle::try_current().map(|h| h.id()).ok() == Some(handle.id()) {
     Instant::now()
 } else {
-    let _guard = self.handle.enter();   // selects the captured runtime's clock
+    let _guard = handle.enter();   // selects the captured runtime's clock
     Instant::now()
 };
-let nanos = now.saturating_duration_since(self.origin).as_nanos();
+let nanos = now.saturating_duration_since(*origin).as_nanos();
 Stamp(u64::try_from(nanos).unwrap_or(u64::MAX))
 ```
 
 The fast path costs one thread-local read; writes from foreign threads pay a
 context enter. With `tokio::time::pause()`, every write reads the paused
 clock of the instance's runtime, wherever it comes from (R5).
+
+Created outside a runtime, the clock uses `std::time::Instant` for both its
+origin and every reading: **created outside a runtime → real time**. It ignores
+Tokio's paused time even when later read inside a runtime. This keeps creation
+infallible and readings monotonic across runtime boundaries; there is no
+captured runtime whose paused time it could follow. An async `build()` may be
+driven by another executor, and standalone contexts may be created in
+synchronous code, so both sources are supported.
 
 The per-runtime anchor `TokioAdapter::now_nanos()` used (#333) goes away
 with `now_nanos()`: each clock has its own origin, so a paused runtime that

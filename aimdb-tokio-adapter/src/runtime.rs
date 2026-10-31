@@ -51,20 +51,43 @@ impl Default for TokioAdapter {
 /// thread, another runtime) enters the captured runtime's context to read the
 /// clock, so under `tokio::time::pause` every write follows the instance
 /// runtime's paused time wherever it comes from.
+///
+/// Created outside a runtime, the clock always reads real time from
+/// `std::time::Instant`, even when later read inside a paused runtime.
 #[cfg(feature = "tokio-runtime")]
 struct TokioClock {
-    /// `None` only when `build()` was driven outside any Tokio runtime; then
-    /// every reading is taken in the caller's context.
-    handle: Option<tokio::runtime::Handle>,
-    origin: tokio::time::Instant,
+    source: Source,
+}
+
+#[cfg(feature = "tokio-runtime")]
+enum Source {
+    Tokio {
+        handle: tokio::runtime::Handle,
+        origin: tokio::time::Instant,
+    },
+    System {
+        origin: std::time::Instant,
+    },
 }
 
 #[cfg(feature = "tokio-runtime")]
 impl TokioClock {
     fn new() -> Self {
-        let handle = tokio::runtime::Handle::try_current().ok();
-        let origin = tokio::time::Instant::now();
-        Self { handle, origin }
+        let source = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => Source::Tokio {
+                handle,
+                origin: tokio::time::Instant::now(),
+            },
+            Err(_) => {
+                aimdb_core::log_debug!(
+                    "tokio clock created outside a runtime: reads real time, not tokio's paused time"
+                );
+                Source::System {
+                    origin: std::time::Instant::now(),
+                }
+            }
+        };
+        Self { source }
     }
 }
 
@@ -74,15 +97,20 @@ impl InstanceClock for TokioClock {
         use tokio::runtime::Handle;
         use tokio::time::Instant;
 
-        let now = match &self.handle {
-            Some(handle) if Handle::try_current().map(|h| h.id()).ok() != Some(handle.id()) => {
-                // Selects the captured runtime's (possibly paused) clock.
-                let _guard = handle.enter();
-                Instant::now()
+        let elapsed = match &self.source {
+            Source::Tokio { handle, origin } => {
+                let now = if Handle::try_current().map(|h| h.id()).ok() == Some(handle.id()) {
+                    Instant::now()
+                } else {
+                    // Selects the captured runtime's (possibly paused) clock.
+                    let _guard = handle.enter();
+                    Instant::now()
+                };
+                now.saturating_duration_since(*origin)
             }
-            _ => Instant::now(),
+            Source::System { origin } => origin.elapsed(),
         };
-        aimdb_core::clock::stamp_from_duration(now.saturating_duration_since(self.origin))
+        aimdb_core::clock::stamp_from_duration(elapsed)
     }
 
     fn unix_time(&self) -> Option<(u64, u32)> {
@@ -131,6 +159,8 @@ impl RuntimeOps for TokioAdapter {
 
     /// The clock of the runtime current at this call, measured from now: one
     /// clock for every reader, whatever thread or runtime it runs on.
+    /// Created outside a runtime, it always reads real time, ignoring Tokio's
+    /// paused time even when later read inside a runtime.
     fn new_clock(&self) -> std::sync::Arc<dyn InstanceClock> {
         std::sync::Arc::new(TokioClock::new())
     }
@@ -235,5 +265,45 @@ mod runtime_ops_tests {
         .join()
         .unwrap();
         assert_eq!(from_other_runtime, expected);
+    }
+
+    /// Without a runtime at creation, entering or leaving a paused runtime
+    /// must neither switch the clock's source nor move its readings backwards.
+    #[test]
+    fn clock_created_outside_runtime_always_reads_system_time() {
+        use std::time::Instant;
+
+        let origin_before = Instant::now();
+        let clock = TokioAdapter.new_clock();
+        let origin_after = Instant::now();
+        let read_system_time = || {
+            let before = Instant::now();
+            let stamp = clock.now();
+            let after = Instant::now();
+            let elapsed = stamp.since(Stamp::from_nanos(0));
+            assert!(elapsed >= before.duration_since(origin_after));
+            assert!(elapsed <= after.duration_since(origin_before));
+            stamp
+        };
+
+        let mut previous = read_system_time();
+        for advance_secs in [60, 120] {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .unwrap();
+            let inside = runtime.block_on(async {
+                tokio::time::advance(Duration::from_secs(advance_secs)).await;
+                let before = read_system_time();
+                assert!(before >= previous);
+                std::thread::sleep(Duration::from_millis(10));
+                let after = read_system_time();
+                assert!(after.since(before) >= Duration::from_millis(10));
+                after
+            });
+            previous = read_system_time();
+            assert!(previous >= inside);
+        }
     }
 }
