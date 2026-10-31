@@ -88,7 +88,10 @@ async fn aimx_roundtrips_over_the_serial_transport() {
     // AimX 4.0: `{"value": <value>, "ts": <write stamp>}`.
     let reply: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
     assert_eq!(reply["value"], json!({ "level": 42 }));
-    assert!(reply["ts"].is_u64(), "the reply carries the write stamp: {reply}");
+    assert!(
+        reply["ts"].is_u64(),
+        "the reply carries the write stamp: {reply}"
+    );
 
     // A second RPC reuses the same framed connection (proves the stream re-syncs
     // frame-to-frame, not just on the first message).
