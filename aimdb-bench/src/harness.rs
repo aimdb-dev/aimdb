@@ -7,9 +7,10 @@ use std::future::Future;
 use std::time::Instant;
 
 use aimdb_core::buffer::{Buffer, Reader};
+use aimdb_core::Stamped;
 use criterion::{Criterion, Throughput};
 
-use crate::payloads::{BATCH_SIZE, WARMUP_ITERS};
+use crate::payloads::{stamped, BATCH_SIZE, WARMUP_ITERS};
 use crate::reports::AllocReport;
 
 /// Runs a future to completion on whichever executor a bench file is using
@@ -41,31 +42,39 @@ impl BlockOn for FuturesBlockOn {
     }
 }
 
-/// Subscribe, warm up `WARMUP_ITERS` push→recv cycles, reset the allocation
+/// Subscribe, warm up `warmup` push→recv cycles, reset the allocation
 /// counters, then run `BATCH_SIZE` more cycles and report the result —
 /// the B0 measurement model shared by every workload profile on both
 /// adapters. Async: the caller `block_on`s it with whichever executor
 /// matches their adapter.
+///
+/// `warmup` must cover every slot the measured cycles write: a buffer may
+/// pay a one-time cost the first time it writes a slot, which is not
+/// steady state. Tokio's broadcast ring is one: each slot has its own std
+/// lock, and on macOS std allocates a pthread lock the first time it is
+/// used. Pass at least the ring's capacity for a ring, `WARMUP_ITERS`
+/// otherwise.
 pub async fn measure_b0<T, B>(
     buf: &B,
     mk_msg: impl Fn(u64) -> T,
+    warmup: usize,
     profile: &str,
     buffer_type: &str,
 ) -> AllocReport
 where
-    B: Buffer<T>,
+    B: Buffer<Stamped<T>>,
     T: Clone + Send,
 {
     let mut reader = Reader::new(Box::new(buf.subscribe()));
 
-    for i in 0..WARMUP_ITERS {
-        buf.push(mk_msg(i as u64));
+    for i in 0..warmup {
+        buf.push(stamped(mk_msg(i as u64), i as u64));
         let _ = reader.recv().await;
     }
 
     crate::alloc::reset();
     for i in 0..BATCH_SIZE {
-        buf.push(mk_msg((WARMUP_ITERS + i) as u64));
+        buf.push(stamped(mk_msg((warmup + i) as u64), (warmup + i) as u64));
         let _ = reader.recv().await;
     }
     let (allocs, bytes) = crate::alloc::snapshot();
@@ -89,7 +98,7 @@ pub fn bench_spsc<T, B>(
     mk_msg: impl Fn(u64) -> T + Copy,
     executor: &impl BlockOn,
 ) where
-    B: Buffer<T>,
+    B: Buffer<Stamped<T>>,
     T: Clone + Send,
 {
     let buf = mk_buf();
@@ -97,7 +106,7 @@ pub fn bench_spsc<T, B>(
 
     executor.block_on(async {
         for i in 0..WARMUP_ITERS {
-            buf.push(mk_msg(i as u64));
+            buf.push(stamped(mk_msg(i as u64), i as u64));
             let _ = reader.recv().await;
         }
     });
@@ -109,7 +118,10 @@ pub fn bench_spsc<T, B>(
             executor.block_on(async {
                 let start = Instant::now();
                 for i in 0..iters {
-                    buf.push(mk_msg(WARMUP_ITERS as u64 + i));
+                    buf.push(stamped(
+                        mk_msg(WARMUP_ITERS as u64 + i),
+                        WARMUP_ITERS as u64 + i,
+                    ));
                     let _ = reader.recv().await;
                 }
                 start.elapsed()

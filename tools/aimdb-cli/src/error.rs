@@ -60,6 +60,10 @@ pub enum CliError {
         details: Option<serde_json::Value>,
     },
 
+    /// The server's reply broke the AimX protocol (e.g. a value without `ts`)
+    #[error("Protocol error: {reason}\n  Hint: the server must speak AimX 4.x")]
+    Protocol { reason: String },
+
     /// I/O error occurred
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -92,6 +96,7 @@ impl From<aimdb_client::ClientError> for CliError {
                 message,
                 details,
             },
+            aimdb_client::ClientError::Protocol { reason } => CliError::Protocol { reason },
             aimdb_client::ClientError::Io(e) => CliError::Io(e),
             aimdb_client::ClientError::Json(e) => CliError::Json(e),
             aimdb_client::ClientError::Other(e) => CliError::Other(e),
@@ -108,6 +113,7 @@ impl CliError {
             Self::ConnectionFailed { .. }
             | Self::NoInstancesFound
             | Self::ProtocolMismatch { .. }
+            | Self::Protocol { .. }
             | Self::Io(_)
             // A reply or file that does not parse.
             | Self::Json(_) => EXIT_ENVIRONMENT,

@@ -13,6 +13,8 @@ use alloc::vec::Vec;
 
 use super::BufferCfg;
 use crate::DbError;
+#[cfg(feature = "remote")]
+use crate::Stamped;
 
 /// Static buffer trait for concrete implementations
 ///
@@ -264,24 +266,28 @@ pub trait JsonBufferReader: Send {
     /// - `Err(BufferLagged)` - Missed messages (can continue reading)
     /// - `Err(BufferClosed)` - Buffer closed (graceful shutdown)
     /// - `Err(SerializationFailed)` - Failed to serialize value to JSON
-    fn poll_recv_json(&mut self, cx: &mut Context<'_>) -> Poll<Result<serde_json::Value, DbError>>;
+    fn poll_recv_json(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Stamped<serde_json::Value>, DbError>>;
 
     /// Non-blocking receive as JSON — returns immediately.
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
-    fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError>;
+    fn try_recv_json(&mut self) -> Result<Stamped<serde_json::Value>, DbError>;
 
     /// Poll for the next value as owned JSON bytes.
     ///
     /// Existing implementations inherit a compatibility path that calls
     /// [`poll_recv_json`](Self::poll_recv_json) and serializes the returned
-    /// tree. Typed record readers override this to encode `T` directly.
-    fn poll_recv_json_bytes(&mut self, cx: &mut Context<'_>) -> Poll<Result<Vec<u8>, DbError>> {
+    /// tree, keeping its write metadata. Typed record readers override this to
+    /// encode `T` directly.
+    fn poll_recv_json_bytes(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Stamped<Vec<u8>>, DbError>> {
         match self.poll_recv_json(cx) {
-            Poll::Ready(Ok(value)) => Poll::Ready(
-                serde_json::to_vec(&value)
-                    .map_err(|_| DbError::runtime_error("Failed to serialize value to JSON")),
-            ),
+            Poll::Ready(Ok(sample)) => Poll::Ready(json_tree_to_bytes(sample)),
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             Poll::Pending => Poll::Pending,
         }
@@ -291,11 +297,20 @@ pub trait JsonBufferReader: Send {
     ///
     /// Existing implementations inherit a compatibility path through
     /// [`try_recv_json`](Self::try_recv_json).
-    fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
-        let value = self.try_recv_json()?;
+    fn try_recv_json_bytes(&mut self) -> Result<Stamped<Vec<u8>>, DbError> {
+        json_tree_to_bytes(self.try_recv_json()?)
+    }
+}
+
+/// Serializes a JSON tree to bytes, keeping the sample's write metadata whole.
+#[cfg(feature = "remote")]
+pub(crate) fn json_tree_to_bytes(
+    sample: Stamped<serde_json::Value>,
+) -> Result<Stamped<Vec<u8>>, DbError> {
+    sample.try_map(|value| {
         serde_json::to_vec(&value)
             .map_err(|_| DbError::runtime_error("Failed to serialize value to JSON"))
-    }
+    })
 }
 
 /// Snapshot of buffer metrics at a point in time

@@ -44,6 +44,15 @@ pub struct OutboundMessage<'a> {
     pub topic: &'a str,
     /// The serialized value.
     pub payload: OutboundPayload<'a>,
+    /// Metadata of the write the route serialized.
+    pub metadata: crate::WriteMetadata,
+}
+
+impl OutboundMessage<'_> {
+    /// When the serialized value was written, on the instance clock.
+    pub fn stamp(&self) -> crate::Stamp {
+        self.metadata.stamp()
+    }
 }
 
 /// Where a pulled message's bytes are.
@@ -99,6 +108,7 @@ pub(crate) enum RouteOutcome {
     Staged {
         topic_len: Option<usize>,
         payload: StagedPayload,
+        metadata: crate::WriteMetadata,
     },
     /// The reader lagged by this many values.
     Lagged(u64),
@@ -186,6 +196,7 @@ struct Staged {
     id: RouteId,
     topic_len: Option<usize>,
     payload: StagedPayload,
+    metadata: crate::WriteMetadata,
 }
 
 /// Every outbound link of one scheme, read by the connector's transport task.
@@ -292,12 +303,17 @@ impl OutboundRoutes {
             let stats = &mut stats[id];
             match states[id].poll_route(route_cx, ctx, topic, payload) {
                 Poll::Pending => Polled::Pending,
-                Poll::Ready(RouteOutcome::Staged { topic_len, payload }) => {
+                Poll::Ready(RouteOutcome::Staged {
+                    topic_len,
+                    payload,
+                    metadata,
+                }) => {
                     stats.sent += 1;
                     *staged = Some(Staged {
                         id,
                         topic_len,
                         payload,
+                        metadata,
                     });
                     Polled::Staged
                 }
@@ -354,6 +370,7 @@ impl OutboundRoutes {
             route,
             topic,
             payload,
+            metadata: staged.metadata,
         })
     }
 

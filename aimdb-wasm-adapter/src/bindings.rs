@@ -360,7 +360,7 @@ impl WasmDb {
 fn discover_impl(url: String) -> js_sys::Promise {
     js_sys::Promise::new(&mut move |resolve, reject| {
         // Declare our AimX version in the URL — the server gates the WS upgrade
-        // on it, and a browser cannot set handshake headers (`?v=3.0`).
+        // on it, and a browser cannot set handshake headers (`?v=4.0`).
         let url = aimdb_core::remote::ws_url_with_version(&url);
         let ws = match web_sys::WebSocket::new(&url) {
             Ok(ws) => ws,
@@ -640,7 +640,7 @@ where
             match select(recv_fut, cancel_fut).await {
                 Either::Left((Ok(val), _)) => {
                     let serializer = serde_wasm_bindgen::Serializer::json_compatible();
-                    if let Ok(js) = val.serialize(&serializer) {
+                    if let Ok(js) = val.value.serialize(&serializer) {
                         let _ = callback.call1(&JsValue::NULL, &js);
                     }
                 }

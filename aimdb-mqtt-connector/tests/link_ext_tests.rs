@@ -126,5 +126,8 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
         .subscribe::<Reading>("test.reading.codec")
         .expect("subscribe");
     inbound.dispatch("commands/codec", &encoded);
-    assert_eq!(reader.try_recv().expect("Postcard ingest").value, 17.5);
+    assert_eq!(
+        reader.try_recv().expect("Postcard ingest").value.value,
+        17.5
+    );
 }

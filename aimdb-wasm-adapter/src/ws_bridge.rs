@@ -404,7 +404,7 @@ impl Dialer for WasmWsDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         // Declare our AimX version in the URL so the server's upgrade-time gate
         // admits us — a browser cannot set custom WebSocket handshake headers,
-        // so the version rides the query string (`?v=3.0`).
+        // so the version rides the query string (`?v=4.0`).
         let url = aimdb_core::remote::ws_url_with_version(&self.url);
         let shared = self.shared.clone();
         Box::pin(SendFuture(async move {
@@ -763,8 +763,8 @@ impl WsBridge {
             url: url.to_string(),
             shared: shared.clone(),
         };
-        let (handle, engine_fut) =
-            run_client(dialer, AimxCodec, engine_config, Arc::new(WasmAdapter));
+        let ctx = aimdb_core::RuntimeContext::new(Arc::new(WasmAdapter));
+        let (handle, engine_fut) = run_client(dialer, AimxCodec, engine_config, ctx);
         wasm_bindgen_futures::spawn_local(engine_fut);
 
         // One pump per configured pattern; the subscribe command queues offline

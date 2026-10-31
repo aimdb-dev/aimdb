@@ -168,7 +168,7 @@ impl ConnectorBuilder for WsClientConnectorBuilder {
                 WsDialer::new(self.url.clone()),
                 AimxCodec,
                 config,
-                db.runtime_ops(),
+                db.runtime_ctx(),
             );
             let inbound = InboundDispatch::new(db, "ws-client", &ExactGrammar)?;
             let mut futures = pump_client(db, "ws-client", inbound, &handle)?;

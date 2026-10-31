@@ -51,7 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         thread::sleep(Duration::from_millis(100));
 
         match consumer.try_get() {
-            Ok(msg) => println!("   ✓ Got: {:?}  ← only the latest survived", msg.color),
+            Ok(msg) => println!(
+                "   ✓ Got: {:?}  ← only the latest survived",
+                msg.value.color
+            ),
             Err(_) => println!("   (mailbox was already empty)"),
         }
 
@@ -74,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match consumer2.try_get() {
         Ok(msg) => println!(
             "   ✓ Got: {:?}  ← only the latest survived (Green)",
-            msg.color
+            msg.value.color
         ),
         Err(_) => println!("   (mailbox was already empty)"),
     }

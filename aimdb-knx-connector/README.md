@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reg.tap(|_, consumer| async move {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(state) = reader.recv().await {
-                    println!("💡 Light: {}", if state.is_on { "ON" } else { "OFF" });
+                    println!("💡 Light: {}", if state.value.is_on { "ON" } else { "OFF" });
                 }
             });
         })

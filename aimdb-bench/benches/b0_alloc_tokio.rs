@@ -20,7 +20,7 @@ use aimdb_bench::{
     harness::measure_b0,
     profiles::{
         command_buffer, command_msg, state_buffer, state_msg, telemetry_buffer, telemetry_msg,
-        BATCH_SIZE, WARMUP_ITERS,
+        BATCH_SIZE, TELEMETRY_CAPACITY, WARMUP_ITERS,
     },
     reports::write_reports,
 };
@@ -39,26 +39,51 @@ fn main() {
         .expect("failed to build current-thread Tokio runtime");
 
     println!("=== B0 Allocation Benchmarks (Tokio adapter, buffer layer) ===");
-    println!("  Warmup iters : {WARMUP_ITERS}");
+    println!("  Warmup iters : {WARMUP_ITERS} (Telemetry: {TELEMETRY_CAPACITY}, one ring wrap)");
     println!("  Batch size   : {BATCH_SIZE}");
     println!();
 
     // Subscribe before pushing so the reader holds its read position from the
-    // start — a reader created after sends are in flight misses them.
+    // start — a reader created after sends are in flight misses them. The
+    // warmup wraps the ring once, so the measured pushes reuse written slots
+    // (see `measure_b0`).
     let telemetry_report = rt.block_on(async {
-        measure_b0(&telemetry_buffer(), telemetry_msg, "Telemetry", "SpmcRing").await
+        measure_b0(
+            &telemetry_buffer(),
+            telemetry_msg,
+            TELEMETRY_CAPACITY,
+            "Telemetry",
+            "SpmcRing",
+        )
+        .await
     });
     telemetry_report.print();
 
-    let state_report = rt
-        .block_on(async { measure_b0(&state_buffer(), state_msg, "State", "SingleLatest").await });
+    let state_report = rt.block_on(async {
+        measure_b0(
+            &state_buffer(),
+            state_msg,
+            WARMUP_ITERS,
+            "State",
+            "SingleLatest",
+        )
+        .await
+    });
     state_report.print();
 
     // Tight 1:1 push → recv loop for Mailbox. Do NOT batch pushes ahead of the
     // consumer: the single slot overwrites earlier values, leaving only the
     // last write. `measure_b0` already does this (lockstep push/recv).
-    let command_report = rt
-        .block_on(async { measure_b0(&command_buffer(), command_msg, "Command", "Mailbox").await });
+    let command_report = rt.block_on(async {
+        measure_b0(
+            &command_buffer(),
+            command_msg,
+            WARMUP_ITERS,
+            "Command",
+            "Mailbox",
+        )
+        .await
+    });
     command_report.print();
 
     println!();

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Write timestamps (#326).** `aimdb watch` shows `ts` (seconds since
+  instance start) and gains `--format json`: one NDJSON object per update on
+  stdout, status on stderr. `aimdb record get` prints `ts`; its JSON formats
+  are `{value, ts}`. Requires an AimX 4.0 server.
+
 - **`instance info` shows the build an instance runs (#331)**, with
   `--format` and `--post-link`; `instance list` gains a Name column.
 

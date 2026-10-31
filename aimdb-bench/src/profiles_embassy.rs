@@ -31,19 +31,21 @@
 
 use aimdb_embassy_adapter::EmbassyBuffer;
 
+use aimdb_core::Stamped;
+
 use crate::payloads::{CommandMsg, StateMsg, TelemetryMsg};
 
 /// SpmcRing capacity for the Telemetry profile (compile-time const generic).
 pub const TELEMETRY_CAP: usize = 16;
 
 /// Telemetry buffer: `SpmcRing` with room for the 1→4 fan-out (SUBS=4).
-pub type TelemetryBuffer = EmbassyBuffer<TelemetryMsg, TELEMETRY_CAP, 4, 1, 1>;
+pub type TelemetryBuffer = EmbassyBuffer<Stamped<TelemetryMsg>, TELEMETRY_CAP, 4, 1, 1>;
 
 /// State buffer: `SingleLatest` (`Watch`); only `WATCH_N` is meaningful.
-pub type StateBuffer = EmbassyBuffer<StateMsg, 1, 1, 1, 4>;
+pub type StateBuffer = EmbassyBuffer<Stamped<StateMsg>, 1, 1, 1, 4>;
 
 /// Command buffer: `Mailbox` (single-slot `Channel`).
-pub type CommandBuffer = EmbassyBuffer<CommandMsg, 1, 1, 1, 1>;
+pub type CommandBuffer = EmbassyBuffer<Stamped<CommandMsg>, 1, 1, 1, 1>;
 
 /// Build a Telemetry `SpmcRing` Embassy buffer.
 pub fn telemetry_buffer() -> TelemetryBuffer {

@@ -68,11 +68,12 @@ async fn aimx_roundtrips_over_the_serial_transport() {
         sends_hello: false,
         ..ClientConfig::default()
     };
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         OneShotDialer::new(framed(TokioByteStream(client_end))),
         AimxCodec,
         client_config,
-        Arc::new(TokioAdapter),
+        ctx,
     );
     tokio::spawn(engine);
 
@@ -84,8 +85,10 @@ async fn aimx_roundtrips_over_the_serial_transport() {
         .await
         .expect("rpc within timeout")
         .expect("rpc ok");
-    let value: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
-    assert_eq!(value, json!({ "level": 42 }));
+    // AimX 4.0: `{"value": <value>, "ts": <write stamp>}`.
+    let reply: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
+    assert_eq!(reply["value"], json!({ "level": 42 }));
+    assert!(reply["ts"].is_u64(), "the reply carries the write stamp: {reply}");
 
     // A second RPC reuses the same framed connection (proves the stream re-syncs
     // frame-to-frame, not just on the first message).

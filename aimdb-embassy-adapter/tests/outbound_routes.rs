@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Waker};
 use aimdb_core::buffer::DynBuffer;
 use aimdb_core::connector::ConnectorBuilder;
 use aimdb_core::executor::test_support::NoopRuntimeOps;
-use aimdb_core::{AimDb, AimDbBuilder, DbResult, OutboundRoutes};
+use aimdb_core::{AimDb, AimDbBuilder, DbResult, OutboundRoutes, Stamped};
 use aimdb_embassy_adapter::EmbassyBuffer;
 use futures::executor::block_on;
 
@@ -38,7 +38,7 @@ impl ConnectorBuilder for TestConnector {
 const KEYS: [&str; 3] = ["r0", "r1", "r2"];
 
 /// One record per buffer, keyed `r0`, `r1`, …, each linked to `test://r{i}`.
-fn db(buffers: Vec<Box<dyn DynBuffer<u32>>>) -> AimDb {
+fn db(buffers: Vec<Box<dyn DynBuffer<Stamped<u32>>>>) -> AimDb {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(NoopRuntimeOps))
         .with_connector(TestConnector);
@@ -76,9 +76,9 @@ fn values(got: &[(usize, u32)], route: usize) -> Vec<u32> {
 #[test]
 fn outage_semantics_per_buffer_type() {
     let db = db(vec![
-        Box::new(EmbassyBuffer::<u32, 16, 4, 4, 4>::new_watch()),
-        Box::new(EmbassyBuffer::<u32, 16, 4, 4, 4>::new_mailbox()),
-        Box::new(EmbassyBuffer::<u32, 16, 4, 4, 4>::new_spmc()),
+        Box::new(EmbassyBuffer::<Stamped<u32>, 16, 4, 4, 4>::new_watch()),
+        Box::new(EmbassyBuffer::<Stamped<u32>, 16, 4, 4, 4>::new_mailbox()),
+        Box::new(EmbassyBuffer::<Stamped<u32>, 16, 4, 4, 4>::new_spmc()),
     ]);
     let mut o = OutboundRoutes::new(&db, "test").unwrap();
     for v in 0..5 {
@@ -94,7 +94,9 @@ fn outage_semantics_per_buffer_type() {
 
 #[test]
 fn an_spmc_ring_that_overflows_reports_lag_then_recovers() {
-    let db = db(vec![Box::new(EmbassyBuffer::<u32, 4, 4, 4, 4>::new_spmc())]);
+    let db = db(vec![Box::new(
+        EmbassyBuffer::<Stamped<u32>, 4, 4, 4, 4>::new_spmc(),
+    )]);
     let mut o = OutboundRoutes::new(&db, "test").unwrap();
     for v in 0..10 {
         db.produce::<u32>("r0", v).unwrap();

@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(data) = reader.recv().await {
                     println!("🌡️  Temperature: {:.1}°C at {}", 
-                             data.temperature, data.timestamp);
+                             data.value.temperature, data.value.timestamp);
                 }
             });
         })
@@ -266,7 +266,7 @@ async fn main(_spawner: Spawner) {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(press) = reader.recv().await {
                     defmt::info!("🔘 Button pressed! Count: {}, Time: {}", 
-                                 press.count, press.timestamp);
+                                 press.value.count, press.value.timestamp);
                 }
             });
         })
@@ -349,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reg.tap(|_, consumer| async move {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(state) = reader.recv().await {
-                    println!("💡 Light: {}", if state.is_on { "ON" } else { "OFF" });
+                    println!("💡 Light: {}", if state.value.is_on { "ON" } else { "OFF" });
                 }
             });
         })
@@ -414,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut reader = consumer.subscribe().unwrap();
                 while let Ok(reading) = reader.recv().await {
                     println!("📊 Temp: {:.1}°C, Humidity: {:.1}%", 
-                             reading.temperature, reading.humidity);
+                             reading.value.temperature, reading.value.humidity);
                 }
             });
         })
@@ -463,6 +463,37 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
 
 See [AimDB and ROS 2](aimdb-and-ros2.md) for message types, domains, QoS and
 the gateway pattern.
+
+---
+
+## Write Timestamps
+
+Every record write is stamped from the instance's monotonic clock
+([design 058](design/058-write-timestamps.md)), and every read returns the
+stamp with the value. Readers yield a `Stamped<T>`: the value is `.value`, the
+write time `.stamp()`.
+
+```rust
+let mut reader = consumer.subscribe();
+while let Ok(sample) = reader.recv().await {
+    let age = db.now().since(sample.stamp()); // how long ago it was written
+    println!("{:?} (written {:?} ago)", sample.value, age);
+}
+```
+
+The same holds for `db.latest::<T>(key)`, `aimdb-sync`'s `get` family, and a
+join's `JoinTrigger::stamp()`.
+
+- **What it means:** when the value was written into *this* instance. A source
+  value is stamped when produced, a transform or join output when computed, an
+  inbound connector value when ingested. It is not wall-clock time, and not
+  when a sensor measured; keep measurement time in the record's own data.
+- **Scope:** nanoseconds since the instance started. Stamps compare within one
+  instance lifetime only.
+- **Remote access:** AimX 4.0 carries the stamp on every value as `ts`, and
+  3.x peers are refused. See the
+  [`aimdb-client` README](../aimdb-client/README.md#write-timestamps-aimx-40)
+  for the frame shapes and the JavaScript precision note.
 
 ---
 

@@ -78,7 +78,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(s.0, 11, "expected 1+10=11");
+    assert_eq!(s.value.0, 11, "expected 1+10=11");
 
     // A=2 → Sum=12 (B stays 10)
     db.produce::<ValueA>("test::A", ValueA(2)).unwrap();
@@ -86,7 +86,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(s.0, 12, "expected 2+10=12");
+    assert_eq!(s.value.0, 12, "expected 2+10=12");
 
     // B=20 → Sum=22 (A stays 2)
     db.produce::<ValueB>("test::B", ValueB(20)).unwrap();
@@ -94,7 +94,7 @@ async fn transform_join_produces_sum_on_both_inputs() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(s.0, 22, "expected 2+20=22");
+    assert_eq!(s.value.0, 22, "expected 2+20=22");
 }
 
 /// Stress test for the bounded(64) Tokio fan-in channel: pushes well over 64
@@ -155,7 +155,7 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
                 .await
                 .expect("warm-up: join forwarder did not subscribe in time")
                 .unwrap();
-            if s.0 == SENTINEL {
+            if s.value.0 == SENTINEL {
                 break;
             }
         }
@@ -166,7 +166,7 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
     // Drain any remaining warm-up echoes so the burst checker sees a clean stream.
     while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_millis(50), echo_rx.recv()).await {
         assert_eq!(
-            s.0, SENTINEL,
+            s.value.0, SENTINEL,
             "only warm-up sentinels should be in flight here"
         );
     }
@@ -189,7 +189,7 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
             .expect("backpressured fan-in should not deadlock")
             .unwrap();
         assert_eq!(
-            s.0, expected,
+            s.value.0, expected,
             "values must arrive in order under backpressure"
         );
     }

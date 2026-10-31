@@ -131,8 +131,8 @@ async fn both_backends_round_trip_against_one_broker() {
         _ = broker => panic!("the broker returned"),
         values = async {
             let values = (
-                native_in.recv().await.expect("native inbound"),
-                embedded_in.recv().await.expect("embedded inbound"),
+                native_in.recv().await.expect("native inbound").value,
+                embedded_in.recv().await.expect("embedded inbound").value,
             );
             // Both outbound links must land before the assertions below.
             while seen_for_wait.lock().unwrap().published.len() < 2 {
@@ -268,7 +268,7 @@ async fn pattern_link_covers_exact_link_on_both_backends() {
         values = async {
             let mut values = Vec::new();
             for reader in &mut inbound {
-                values.push(reader.recv().await.expect("inbound"));
+                values.push(reader.recv().await.expect("inbound").value);
             }
             // Room for a second delivery, which must not come.
             tokio::time::sleep(Duration::from_millis(200)).await;

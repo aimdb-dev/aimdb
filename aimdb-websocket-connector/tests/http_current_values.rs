@@ -30,8 +30,14 @@ async fn typed_latest_preserves_lookup_and_buffer_semantics() {
     });
     builder.configure::<Reading>("unbuffered", |_| {});
     let (db, _runner) = builder.build().await.unwrap();
-    assert_eq!(db.latest::<Reading>("first").unwrap(), None);
-    assert_eq!(db.latest::<Reading>("unbuffered").unwrap(), None);
+    assert_eq!(
+        db.latest::<Reading>("first").unwrap().map(|s| s.value),
+        None
+    );
+    assert_eq!(
+        db.latest::<Reading>("unbuffered").unwrap().map(|s| s.value),
+        None
+    );
     assert!(matches!(
         db.latest::<Reading>("missing"),
         Err(DbError::RecordKeyNotFound { .. })
@@ -45,19 +51,37 @@ async fn typed_latest_preserves_lookup_and_buffer_semantics() {
     db.produce("first", Reading(2)).unwrap();
     db.produce("second", Reading(3)).unwrap();
     for _ in 0..2 {
-        assert_eq!(db.latest::<Reading>("first").unwrap(), Some(Reading(2)));
+        assert_eq!(
+            db.latest::<Reading>("first").unwrap().map(|s| s.value),
+            Some(Reading(2))
+        );
     }
-    assert_eq!(reader.try_recv().unwrap(), Reading(2));
-    assert_eq!(db.latest::<Reading>("first").unwrap(), Some(Reading(2)));
-    assert_eq!(db.latest::<Reading>("second").unwrap(), Some(Reading(3)));
+    assert_eq!(reader.try_recv().unwrap().value, Reading(2));
+    assert_eq!(
+        db.latest::<Reading>("first").unwrap().map(|s| s.value),
+        Some(Reading(2))
+    );
+    assert_eq!(
+        db.latest::<Reading>("second").unwrap().map(|s| s.value),
+        Some(Reading(3))
+    );
     db.produce("ring", Reading(4)).unwrap();
-    assert_eq!(db.latest::<Reading>("ring").unwrap(), None);
+    assert_eq!(db.latest::<Reading>("ring").unwrap().map(|s| s.value), None);
     let mut mailbox = db.subscribe::<Reading>("mailbox").unwrap();
     db.produce("mailbox", Reading(5)).unwrap();
-    assert_eq!(db.latest::<Reading>("mailbox").unwrap(), Some(Reading(5)));
-    assert_eq!(db.latest::<Reading>("mailbox").unwrap(), Some(Reading(5)));
-    assert_eq!(mailbox.try_recv().unwrap(), Reading(5));
-    assert_eq!(db.latest::<Reading>("mailbox").unwrap(), None);
+    assert_eq!(
+        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
+        Some(Reading(5))
+    );
+    assert_eq!(
+        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
+        Some(Reading(5))
+    );
+    assert_eq!(mailbox.try_recv().unwrap().value, Reading(5));
+    assert_eq!(
+        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
+        None
+    );
 }
 
 struct DenyAuth;
@@ -76,7 +100,7 @@ async fn value(
 ) -> Result<String, StatusCode> {
     db.latest::<Reading>("value")
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map(|r| format!("{prefix}{}", r.0))
+        .map(|r| format!("{prefix}{}", r.value.0))
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 

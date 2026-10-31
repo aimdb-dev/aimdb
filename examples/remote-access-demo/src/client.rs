@@ -46,7 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // returns the canonical latest, non-destructively.
     println!("📤 record.get on Config (SingleLatest — point-in-time read)...");
     match conn.get_record("server::Config").await {
-        Ok(v) => println!("⚙️  Current Config:\n{}", serde_json::to_string_pretty(&v)?),
+        Ok(v) => println!(
+            "⚙️  Current Config (written {}):\n{}",
+            since_start(v.stamp()),
+            serde_json::to_string_pretty(&v.value)?
+        ),
         Err(e) => println!("❌ Error: {e}"),
     }
     println!();
@@ -67,8 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     match latest {
         Some(v) => println!(
-            "🌡️  Most recent Temperature (via drain fallback):\n{}",
-            serde_json::to_string_pretty(&v)?
+            "🌡️  Most recent Temperature (via drain fallback, written {}):\n{}",
+            since_start(v.stamp()),
+            serde_json::to_string_pretty(&v.value)?
         ),
         None => println!("ℹ️  No reading yet — the ring cursor was still empty."),
     }
@@ -81,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("📤 Current AppSettings:");
     match conn.get_record("server::AppSettings").await {
-        Ok(v) => println!("{}\n", serde_json::to_string_pretty(&v)?),
+        Ok(v) => println!("{}\n", serde_json::to_string_pretty(&v.value)?),
         Err(e) => {
             println!("❌ Error: {e}");
             return Ok(());
@@ -105,8 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📤 Verifying update...");
     match conn.get_record("server::AppSettings").await {
         Ok(v) => println!(
-            "✔️  AppSettings after update:\n{}\n",
-            serde_json::to_string_pretty(&v)?
+            "✔️  AppSettings after update (written {}):\n{}\n",
+            since_start(v.stamp()),
+            serde_json::to_string_pretty(&v.value)?
         ),
         Err(e) => println!("❌ Error: {e}"),
     }
@@ -148,9 +154,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let d2 = conn.drain_record("server::Temperature").await?;
     println!("   Values: {} (expected ~3)", d2.count);
     for (i, v) in d2.values.iter().enumerate() {
-        let celsius = v["celsius"].as_f64().unwrap_or(0.0);
-        let sensor = v["sensor_id"].as_str().unwrap_or("?");
-        println!("   📊 [{i}] {celsius:.1} °C from {sensor}");
+        let celsius = v.value["celsius"].as_f64().unwrap_or(0.0);
+        let sensor = v.value["sensor_id"].as_str().unwrap_or("?");
+        println!(
+            "   📊 [{i}] {celsius:.1} °C from {sensor}, written {}",
+            since_start(v.stamp())
+        );
     }
     println!();
 
@@ -207,4 +216,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("👋 Disconnecting...");
     Ok(())
+}
+
+/// A write stamp as "N.NNNs after server start". AimX 4.0 stamps every value
+/// with the server instance's clock; stamps compare within one server run.
+fn since_start(ts: aimdb_client::Stamp) -> String {
+    let ms = ts.as_nanos() / 1_000_000;
+    format!("{}.{:03}s after server start", ms / 1000, ms % 1000)
 }

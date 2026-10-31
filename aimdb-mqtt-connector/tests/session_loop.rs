@@ -191,7 +191,7 @@ async fn a_partial_packet_stops_neither_pings_nor_publishes() {
         _ = serve_one(listener, log.clone(), Script::SplitPublish { gap: GAP }) => {
             panic!("the broker returned")
         }
-        received = async { inbound.recv().await.expect("inbound record") } => received,
+        received = async { inbound.recv().await.expect("inbound record").value } => received,
         _ = tokio::time::sleep(Duration::from_secs(30)) => {
             let log = log.lock().unwrap();
             panic!(

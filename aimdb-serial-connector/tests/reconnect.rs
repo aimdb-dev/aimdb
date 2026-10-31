@@ -112,7 +112,7 @@ async fn every_client_on_one_serial_line_gets_its_events() {
         frames_within(&mut rx, Duration::from_millis(100)).await;
 
         wr.write_all(&frame(json!({"t":"req","id":1,"method":"hello",
-            "params":{"client":client,"version":"3.0"}})))
+            "params":{"client":client,"version":aimdb_core::remote::PROTOCOL_VERSION}})))
             .await
             .unwrap();
         let welcome = frames_within(&mut rx, Duration::from_millis(100)).await;

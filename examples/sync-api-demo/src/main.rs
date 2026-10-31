@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .tap(|_ctx, consumer| async move {
                 let mut reader = consumer.subscribe();
                 while let Ok(temp) = reader.recv().await {
-                    println!("   [Database] Received: {:.1}°C", temp.celsius);
+                    println!("   [Database] Received: {:.1}°C", temp.value.celsius);
                 }
             });
     });
@@ -81,7 +81,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..5 {
             match consumer1.get() {
                 Ok(temp) => {
-                    println!("   [Consumer 1] Got #{}: {:.1}°C", i + 1, temp.celsius);
+                    println!(
+                        "   [Consumer 1] Got #{}: {:.1}°C",
+                        i + 1,
+                        temp.value.celsius
+                    );
                 }
                 Err(e) => {
                     println!("   [Consumer 1] Error: {}", e);
@@ -98,7 +102,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Use try_get for non-blocking reads
             match consumer2.try_get() {
                 Ok(temp) => {
-                    println!("   [Consumer 2] Got #{}: {:.1}°C", i + 1, temp.celsius);
+                    println!(
+                        "   [Consumer 2] Got #{}: {:.1}°C",
+                        i + 1,
+                        temp.value.celsius
+                    );
                 }
                 Err(_) => {
                     // No data yet, sleep and retry
@@ -108,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!(
                             "   [Consumer 2] Got #{} (after timeout): {:.1}°C",
                             i + 1,
-                            temp.celsius
+                            temp.value.celsius
                         );
                     }
                 }

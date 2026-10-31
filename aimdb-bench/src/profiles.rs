@@ -10,14 +10,16 @@
 //! | **State**     | `SingleLatest` | `watch`                   | medium  |
 //! | **Command**   | `Mailbox`      | `Mutex` slot + waker list | small   |
 //!
-//! Buffers are constructed from a `BufferCfg` via the `Buffer<T>` trait so
-//! the bench code tests exactly the same code path that production uses.
+//! Buffers are constructed from a `BufferCfg` via the `Buffer<T>` trait and
+//! hold `Stamped<T>`, as a record's buffer does, so the bench code tests
+//! exactly the same code path and slot type that production uses.
 
 use aimdb_core::buffer::{Buffer, BufferCfg};
+use aimdb_core::Stamped;
 use aimdb_tokio_adapter::TokioBuffer;
 
 pub use crate::payloads::{
-    command_msg, state_msg, telemetry_msg, CommandMsg, StateMsg, TelemetryMsg, BATCH_SIZE,
+    command_msg, stamped, state_msg, telemetry_msg, CommandMsg, StateMsg, TelemetryMsg, BATCH_SIZE,
     WARMUP_ITERS,
 };
 
@@ -31,19 +33,19 @@ pub const TELEMETRY_CAPACITY: usize = 1024;
 
 // ── Buffer constructors ───────────────────────────────────────────────────────
 
-/// Build a `TokioBuffer<TelemetryMsg>` backed by `SpmcRing` (`broadcast`).
-pub fn telemetry_buffer() -> TokioBuffer<TelemetryMsg> {
+/// Build a `TokioBuffer<Stamped<TelemetryMsg>>` backed by `SpmcRing` (`broadcast`).
+pub fn telemetry_buffer() -> TokioBuffer<Stamped<TelemetryMsg>> {
     TokioBuffer::new(&BufferCfg::SpmcRing {
         capacity: TELEMETRY_CAPACITY,
     })
 }
 
-/// Build a `TokioBuffer<StateMsg>` backed by `SingleLatest` (`watch`).
-pub fn state_buffer() -> TokioBuffer<StateMsg> {
+/// Build a `TokioBuffer<Stamped<StateMsg>>` backed by `SingleLatest` (`watch`).
+pub fn state_buffer() -> TokioBuffer<Stamped<StateMsg>> {
     TokioBuffer::new(&BufferCfg::SingleLatest)
 }
 
-/// Build a `TokioBuffer<CommandMsg>` backed by `Mailbox` (`Mutex` slot + waker list).
-pub fn command_buffer() -> TokioBuffer<CommandMsg> {
+/// Build a `TokioBuffer<Stamped<CommandMsg>>` backed by `Mailbox` (`Mutex` slot + waker list).
+pub fn command_buffer() -> TokioBuffer<Stamped<CommandMsg>> {
     TokioBuffer::new(&BufferCfg::Mailbox)
 }

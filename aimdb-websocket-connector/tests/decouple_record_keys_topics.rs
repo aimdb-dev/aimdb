@@ -1077,7 +1077,10 @@ async fn write_patterns_uphold_topic() {
     ws_send(&mut client, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut client).await, json!({"t":"pong"}));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(server_db.try_latest_as_json("cfg"), Some(json!({"v": 1})));
+    assert_eq!(
+        server_db.try_latest_as_json("cfg").map(|s| s.value),
+        Some(json!({"v": 1}))
+    );
 }
 
 #[tokio::test]

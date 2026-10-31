@@ -43,6 +43,7 @@ pub mod endpoint;
 pub mod engine;
 pub mod error;
 pub mod protocol;
+mod wire;
 
 // Re-export main types for convenience. `AimxConnection` is the engine-based
 // client (the synchronous `AimxClient` was retired with the AimX server port).
@@ -50,5 +51,7 @@ pub mod protocol;
 pub use discovery::{discover_instances, find_instance, InstanceInfo};
 pub use endpoint::{dial, parse_endpoint, ParsedEndpoint, Scheme};
 pub use engine::{AimxConnection, DrainResponse, RecordUpdate};
+// Write timestamps (AimX 4.0): every value read carries its write stamp.
+pub use aimdb_core::{Stamp, Stamped, WriteMetadata};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};

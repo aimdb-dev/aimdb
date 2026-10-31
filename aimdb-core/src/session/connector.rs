@@ -99,7 +99,7 @@ where
                 dialer,
                 self.codec.clone(),
                 self.config.clone(),
-                db.runtime_ops(),
+                db.runtime_ctx(),
             );
             // One outbound future and one per inbound subscription; each holds a
             // `ClientHandle` clone, so the engine stays alive as long as any

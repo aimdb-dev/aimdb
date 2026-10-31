@@ -38,12 +38,14 @@ or a bare path), serial (`serial://DEVICE?baud=N`), and TCP
 
 - **Discovery**: `discover_instances()`, `find_instance()`
 - **Connection**: `AimxConnection::connect(endpoint)`, `connect_over(dialer)`
-- **Records**: `list_records()`, `get_record()`, `set_record()`, `drain_record()`
+- **Records**: `list_records()`, `get_record()` (a `Stamped<Value>`: `.value` and
+  `.stamp()`), `set_record()`, `drain_record()` (each value a `Stamped<Value>`)
 - **Subscriptions**: `subscribe()` (returns a `Stream` of `Result<RecordUpdate, ClientError>` —
-  value, topic, gap count, snapshot-burst marker; a refused subscription is one `Err` item)
+  value, write stamp `ts`, topic, gap count, snapshot-burst marker; a refused subscription is
+  one `Err` item)
 - **Introspection**: `graph_nodes()`, `graph_edges()`, `graph_topo_order()`, `query()`
-- **Identity** (protocol 3.1): `instance_info()` (build info, instance name and UID;
-  `None` from a 3.0 server), `post_link()` (the written post-link bytes)
+- **Identity** (since protocol 3.1): `instance_info()` (build info, instance name and UID),
+  `post_link()` (the written post-link bytes)
 
 ### Discovery
 
@@ -55,8 +57,44 @@ Automatically scans for running AimDB instances:
 
 The client speaks the **AimX** wire: NDJSON (newline-delimited JSON) tagged
 frames mapping onto the session engine's role-neutral message set. It declares
-`PROTOCOL_VERSION` (currently `3.0`) at `hello`; compatibility is by major
-version, so a pre-3.x peer is refused at the handshake.
+`PROTOCOL_VERSION` (currently `4.0`) at `hello`; compatibility is by major
+version, so a 3.x peer is refused at the handshake (and a WebSocket upgrade
+with `?v=3.x`).
+
+### Write timestamps (AimX 4.0)
+
+Every record value on the wire carries `ts`, the time it was written into the
+server instance ([design 058](../docs/design/058-write-timestamps.md)). It is
+mandatory: a value frame or reply without it is a protocol error
+(`ClientError::Protocol`).
+
+| Message | Shape |
+|---|---|
+| `event` | `{"t":"event","sub","seq","topic"?,"ts","data"}` |
+| `snap` | `{"t":"snap","sub","seq","topic","last"?,"ts","data"}` |
+| `record.get` reply | `{"value": <value>, "ts": <ns>}` |
+| `record.drain` reply | `{"record_name", "values": [{"value", "ts"}…], "count"}` |
+| `record.set` reply | `{"status", "value", "ts"}`, or `{"status"}` when the record has no readable latest value |
+
+```json
+{"t":"event","sub":"7","seq":42,"ts":81234567000,"data":{"celsius":21.5}}
+```
+
+- **What `ts` is:** integer nanoseconds since the server instance started, on
+  its monotonic clock. It says when the value was written into that instance:
+  a source value when produced, a transform or join output when computed, an
+  inbound connector value when ingested, a `record.set` when applied. It is
+  not wall-clock time, and not when a sensor measured; put measurement time in
+  the record's own data.
+- **Scope:** stamps compare only within one instance lifetime. A restart
+  starts again near zero, so reset timestamp comparisons on every reconnect.
+- **Order:** the server's `seq` is the authority on order; `ts` is the
+  authority on time. Values written concurrently can arrive with stamps out
+  of order by the width of that race.
+- **JavaScript:** `ts` passes 2⁵³ after about 104 days of uptime, beyond what
+  `JSON.parse` represents exactly. Browser code that parses frames itself
+  should read `ts` as a `BigInt` (or with a big-number-aware JSON parser).
+  Rust clients and the WASM bindings are unaffected.
 
 See `docs/design/remote-access-via-connectors.md` for the architecture and
 `aimdb-core/src/session/aimx/` for the codec.

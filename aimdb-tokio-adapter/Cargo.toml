@@ -30,8 +30,14 @@ net = ["tokio-runtime", "aimdb-core/connector-session", "tokio/net", "tokio/io-u
 # runs on a host over `TokioNet::tcp()`.
 embedded-io = ["net", "dep:embedded-io-async"]
 
-# Observability features
+# The facade's two destinations. Required, not cosmetic: the `log_*` macros
+# expand in this crate (`events.rs`), so each arm is selected by *this*
+# crate's features and `aimdb-core/{tracing,log}` alone would leave these call
+# sites unrouted.
 tracing = ["aimdb-core/tracing"]
+log = ["aimdb-core/log"]
+
+# Observability features
 observability = ["aimdb-core/observability", "tokio-runtime"]
 
 # Testing features
@@ -76,3 +82,8 @@ aimdb-client = { path = "../aimdb-client" }
 aimdb-uds-connector = { path = "../aimdb-uds-connector" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# `aimdb-core`'s log macros carry a `#[cfg(feature = "defmt")]` arm that
+# expands here; this crate never builds with defmt, so it only names it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }

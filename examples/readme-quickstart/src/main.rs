@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .tap(|ctx, consumer| async move {
                 let mut reader = consumer.subscribe();
                 while let Ok(t) = reader.recv().await {
-                    ctx.log().info(&format!("temp: {:.1}°C", t.celsius));
+                    ctx.log().info(&format!("temp: {:.1}°C", t.value.celsius));
                 }
             });
     });

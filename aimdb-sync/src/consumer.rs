@@ -1,6 +1,6 @@
 //! Synchronous consumer for typed records.
 
-use aimdb_core::{DbError, Reader};
+use aimdb_core::{DbError, Reader, Stamped};
 
 use crate::runtime::{Guarded, RuntimeRef};
 use crate::{SyncError, SyncResult};
@@ -35,18 +35,18 @@ use std::time::Instant;
 /// # fn example(consumer: &mut SyncConsumer<Temperature>) -> SyncResult<()> {
 /// // Get value (blocks until available)
 /// let temp = consumer.get()?;
-/// println!("Temperature: {}°C", temp.celsius);
+/// println!("Temperature: {}°C at {:?}", temp.value.celsius, temp.stamp());
 ///
 /// // Get with timeout
 /// use std::time::Duration;
 /// match consumer.get_with_timeout(Duration::from_millis(100)) {
-///     Ok(temp) => println!("Got: {}°C", temp.celsius),
+///     Ok(temp) => println!("Got: {}°C", temp.value.celsius),
 ///     Err(_) => println!("No data available"),
 /// }
 ///
 /// // Try to get (non-blocking)
 /// match consumer.try_get() {
-///     Ok(temp) => println!("Got: {}°C", temp.celsius),
+///     Ok(temp) => println!("Got: {}°C", temp.value.celsius),
 ///     Err(_) => println!("No data yet"),
 /// }
 /// # Ok(())
@@ -76,7 +76,7 @@ where
         }
     }
 
-    async fn get_impl(reader: &mut Reader<T>) -> SyncResult<T> {
+    async fn get_impl(reader: &mut Reader<T>) -> SyncResult<Stamped<T>> {
         let res = reader.recv().await;
         res.map_err(|e| match e {
             DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
@@ -124,7 +124,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get(&mut self) -> SyncResult<T> {
+    pub fn get(&mut self) -> SyncResult<Stamped<T>> {
         let (handle, reader) = self.reader.enter()?;
         handle.block_on(Self::get_impl(reader))
     }
@@ -172,7 +172,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+    pub fn get_with_timeout(&mut self, timeout: Duration) -> SyncResult<Stamped<T>> {
         let (handle, reader) = self.reader.enter()?;
         // Create the timer inside the async block. Creating it earlier would
         // panic because no Tokio reactor is active on this thread yet.
@@ -216,7 +216,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_get(&mut self) -> SyncResult<T> {
+    pub fn try_get(&mut self) -> SyncResult<Stamped<T>> {
         let res = self.reader.get()?.try_recv();
         res.map_err(|e| match e {
             DbError::BufferClosed { .. } => SyncError::RuntimeShutdown,
@@ -273,7 +273,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest(&mut self) -> SyncResult<T> {
+    pub fn get_latest(&mut self) -> SyncResult<Stamped<T>> {
         // 1) can simply sequence get_catch_up and try_get -
         //    no one else does it simultaneously thanks to &mut self
         // 2) if draining ends up with an error, we follow the previous impl
@@ -334,7 +334,7 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<T> {
+    pub fn get_latest_with_timeout(&mut self, timeout: Duration) -> SyncResult<Stamped<T>> {
         // see internal comments for get_latest
         let deadline = Instant::now() + timeout;
         let oldest = self.get_catch_up(Some(deadline))?;
@@ -344,7 +344,7 @@ where
 
     // Blocks until get() retrieves a value, or until the deadline is missed.
     // Skips BufferLagged occurring in the process, and raises all other errors
-    fn get_catch_up(&mut self, deadline: Option<Instant>) -> SyncResult<T> {
+    fn get_catch_up(&mut self, deadline: Option<Instant>) -> SyncResult<Stamped<T>> {
         loop {
             let res = match deadline {
                 Some(deadline) => {
@@ -367,7 +367,7 @@ where
         }
     }
 
-    fn drain_remaining(&mut self, mut cur: T) -> T {
+    fn drain_remaining(&mut self, mut cur: Stamped<T>) -> Stamped<T> {
         loop {
             match self.try_get() {
                 Ok(next) => cur = next,

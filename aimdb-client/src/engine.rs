@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -32,6 +32,7 @@ use crate::protocol::{
     version_compatible, InstanceInfoReply, PostLinkChunk, RecordMetadata, WelcomeMessage,
     POST_LINK_CHUNK_MAX, PROTOCOL_VERSION,
 };
+use aimdb_core::{Stamp, Stamped};
 
 /// Default deadline for the connect handshake (dial + `hello`/Welcome). Bounds
 /// the case where a peer accepts the socket but never replies — the engine has
@@ -40,12 +41,13 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Response from a `record.drain` call: the values accumulated since the
 /// previous drain for this connection's per-record cursor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DrainResponse {
     /// Echo of the queried record name.
     pub record_name: String,
-    /// Chronologically ordered values (raw JSON, as written by the producer).
-    pub values: Vec<serde_json::Value>,
+    /// Chronologically ordered values (raw JSON, as written by the producer),
+    /// each with the stamp of its write.
+    pub values: Vec<Stamped<serde_json::Value>>,
     /// Number of values returned.
     pub count: usize,
 }
@@ -70,6 +72,10 @@ pub struct RecordUpdate {
     /// attached to the frame they describe, and so one bad record cannot end a
     /// wildcard stream that fans in many.
     pub value: Option<serde_json::Value>,
+    /// When the value was written, in nanoseconds since the server instance
+    /// started (AimX 4.0 `ts`). Only comparable within one instance lifetime:
+    /// reset comparisons after a reconnect.
+    pub ts: Stamp,
     /// Updates lost between the previous delivered update and this one — `0`
     /// when delivery was lossless. Non-zero means the server-side buffer
     /// overran a slow consumer, so the value stream has a hole immediately
@@ -159,7 +165,8 @@ impl AimxConnection {
             sends_hello: false,
             ..ClientConfig::default()
         };
-        let (handle, engine_fut) = run_client(dialer, AimxCodec, config, Arc::new(TokioAdapter));
+        let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
+        let (handle, engine_fut) = run_client(dialer, AimxCodec, config, ctx);
         let engine = tokio::spawn(engine_fut);
 
         let server_info = async {
@@ -182,9 +189,10 @@ impl AimxConnection {
                     ),
                 })?;
             let welcome = from_payload::<WelcomeMessage>(&reply)?;
-            // Reverse gate: a pre-3.x server ignores our `version` and completes
-            // the handshake with an old-shaped `welcome`. Detect that here so a
-            // new client fails fast instead of tripping over the old reply shapes.
+            // Reverse gate: a server of another major (an older one ignores our
+            // `version`) completes the handshake with its own `welcome`. Detect
+            // that here so a new client fails fast instead of tripping over old
+            // reply shapes, such as 3.x values without `ts`.
             if !version_compatible(&welcome.version) {
                 return Err(ClientError::connection_failed(
                     label,
@@ -237,14 +245,22 @@ impl AimxConnection {
     /// (interleaving with [`drain_record`](Self::drain_record)) and is empty until
     /// the ring produces a value after the connection first reads it. Prefer
     /// [`drain_record`](Self::drain_record) for ring/history records.
-    pub async fn get_record(&self, name: &str) -> ClientResult<serde_json::Value> {
+    ///
+    /// The value comes with the stamp of its write; a reply without `ts` is a
+    /// [`ClientError::Protocol`].
+    pub async fn get_record(&self, name: &str) -> ClientResult<Stamped<serde_json::Value>> {
         let reply = self
             .call("record.get", to_payload(&json!({ "name": name }))?)
             .await?;
-        Ok(serde_json::from_slice(&reply)?)
+        crate::wire::decode_get(&reply)
     }
 
     /// Set a record's value (RPC; awaits the server's reply).
+    ///
+    /// Returns the server's reply: `{status, value, ts}` echoing the latest
+    /// write, or `{status}` when the record has no readable latest value. A
+    /// reply that echoes a `value` without an integer `ts` is a
+    /// [`ClientError::Protocol`].
     pub async fn set_record(
         &self,
         name: &str,
@@ -256,7 +272,7 @@ impl AimxConnection {
                 to_payload(&json!({ "name": name, "value": value }))?,
             )
             .await?;
-        Ok(serde_json::from_slice(&reply)?)
+        crate::wire::check_set(serde_json::from_slice(&reply)?)
     }
 
     /// Subscribe to a record or topic pattern.
@@ -303,7 +319,7 @@ impl AimxConnection {
         let reply = self
             .call("record.drain", to_payload(&json!({ "name": name }))?)
             .await?;
-        Ok(serde_json::from_slice(&reply)?)
+        drain_response(&reply)
     }
 
     /// Drain at most `limit` values from `name`.
@@ -318,7 +334,7 @@ impl AimxConnection {
                 to_payload(&json!({ "name": name, "limit": limit }))?,
             )
             .await?;
-        Ok(serde_json::from_slice(&reply)?)
+        drain_response(&reply)
     }
 
     /// Run a persistence query (requires the server's `with_persistence()`).
@@ -327,8 +343,8 @@ impl AimxConnection {
         Ok(serde_json::from_slice(&reply)?)
     }
 
-    /// Which build and which instance this is (`instance.info`, protocol
-    /// 3.1). `None` from a 3.0 server, which does not know the method.
+    /// Which build and which instance this is (`instance.info`, since protocol
+    /// 3.1). `None` from a server that does not know the method.
     pub async fn instance_info(&self) -> ClientResult<Option<InstanceInfoReply>> {
         match self.handle.call("instance.info", null_payload()).await {
             Ok(reply) => Ok(Some(from_payload(&reply)?)),
@@ -441,6 +457,7 @@ fn decode_updates(
                 // serializes record values as JSON — reported per item rather
                 // than fatal, so one bad record cannot end a wildcard stream.
                 value: serde_json::from_slice(&u.data).ok(),
+                ts: u.ts,
                 skipped: u.skipped,
                 snapshot_end: u.snapshot_end,
             }),
@@ -452,6 +469,17 @@ fn decode_updates(
         futures::future::ready(Some(out))
     });
     Box::pin(decoded)
+}
+
+/// Decodes a `record.drain` reply into its public shape.
+fn drain_response(reply: &[u8]) -> ClientResult<DrainResponse> {
+    let wire = crate::wire::decode_drain(reply)?;
+    let (record_name, count) = (wire.record_name.clone(), wire.count);
+    Ok(DrainResponse {
+        record_name,
+        values: wire.values(),
+        count,
+    })
 }
 
 /// Serialize a value into a record-value [`Payload`].
@@ -652,7 +680,9 @@ mod tests {
     }
 
     fn ok_update(payload: &str, skipped: u64) -> Result<SubUpdate, RpcError> {
-        Ok(SubUpdate::new(Payload::from(payload.as_bytes())).with_skipped(skipped))
+        // Stamped with the payload's length, so each test value has its own.
+        let ts = Stamp::from_nanos(payload.len() as u64);
+        Ok(SubUpdate::new(Payload::from(payload.as_bytes()), ts).with_skipped(skipped))
     }
 
     /// Collect a decoded stream, unwrapping every item as a delivered update.
@@ -669,6 +699,11 @@ mod tests {
 
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].value, Some(json!({ "n": 1 })));
+        assert_eq!(
+            out[0].ts,
+            Stamp::from_nanos(7),
+            "the frame's stamp reaches the caller"
+        );
         assert_eq!(out[0].skipped, 0);
         assert!(!out[0].has_gap());
         assert_eq!(out[1].value, Some(json!({ "n": 2 })));
@@ -682,9 +717,11 @@ mod tests {
     async fn snapshot_end_and_its_loss_reach_the_caller() {
         let out = decoded(vec![
             ok_update(r#"{"n":1}"#, 0),
-            Ok(SubUpdate::new(Payload::from(&b"{\"n\":2}"[..]))
-                .with_skipped(41)
-                .with_snapshot_end()),
+            Ok(
+                SubUpdate::new(Payload::from(&b"{\"n\":2}"[..]), Stamp::from_nanos(2))
+                    .with_skipped(41)
+                    .with_snapshot_end(),
+            ),
             ok_update(r#"{"n":3}"#, 0), // a live event, past the burst
         ])
         .await;
@@ -703,9 +740,11 @@ mod tests {
     async fn an_undecodable_burst_final_frame_still_closes_the_burst() {
         let out = decoded(vec![
             ok_update(r#"{"n":1}"#, 0),
-            Ok(SubUpdate::new(Payload::from(&b"not json"[..]))
-                .with_skipped(3)
-                .with_snapshot_end()),
+            Ok(
+                SubUpdate::new(Payload::from(&b"not json"[..]), Stamp::from_nanos(3))
+                    .with_skipped(3)
+                    .with_snapshot_end(),
+            ),
         ])
         .await;
 
@@ -721,10 +760,12 @@ mod tests {
     #[tokio::test]
     async fn topics_ride_along_and_rejection_ends_the_stream() {
         let raw = raw_stream(vec![
-            Ok(
-                SubUpdate::tagged(Arc::from("temp.vienna"), Payload::from(&b"1"[..]))
-                    .with_skipped(2),
-            ),
+            Ok(SubUpdate::tagged(
+                Arc::from("temp.vienna"),
+                Payload::from(&b"1"[..]),
+                Stamp::from_nanos(11),
+            )
+            .with_skipped(2)),
             Err(RpcError::Denied),
             ok_update("99", 0), // past the terminal item — never delivered
         ]);
@@ -734,6 +775,7 @@ mod tests {
         let first = out[0].as_ref().expect("delivered update");
         assert_eq!(first.topic.as_deref(), Some("temp.vienna"));
         assert_eq!(first.value, Some(json!(1)));
+        assert_eq!(first.ts, Stamp::from_nanos(11));
         assert_eq!(first.skipped, 2);
 
         // The refusal is an `Err` item rather than a silent EOF, so a caller can

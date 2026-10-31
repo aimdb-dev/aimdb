@@ -1,21 +1,23 @@
 //! Live Output Formatting (for watch command)
 
+use aimdb_client::Stamp;
 use chrono::Utc;
 use colored::Colorize;
 
 /// Format a subscription update for live display.
 ///
-/// The reshaped AimX wire drops the server-minted `timestamp`/`dropped`
-/// fields, so the watcher stamps the receipt time locally and tracks its own
-/// sequence counter; `data` is the decoded record value.
-pub fn format_event(seq: u64, data: &serde_json::Value, show_full: bool) -> String {
+/// Shows the local receipt time, the watcher's own sequence counter, the
+/// value's write stamp (`ts`, seconds since the server instance started, see
+/// [`format_watch_start`]) and the decoded record value.
+pub fn format_event(seq: u64, ts: Stamp, data: &serde_json::Value, show_full: bool) -> String {
     let time_str = Utc::now()
         .format("%Y-%m-%d %H:%M:%S%.3f")
         .to_string()
         .dimmed();
     let seq_str = format!("seq:{seq}").cyan();
+    let ts_str = format!("ts:{}", super::format_ts(ts)).dimmed();
 
-    let mut output = format!("{time_str} | {seq_str} | ");
+    let mut output = format!("{time_str} | {seq_str} | {ts_str} | ");
     if show_full {
         if let Ok(formatted) = serde_json::to_string_pretty(data) {
             output.push('\n');
@@ -29,11 +31,6 @@ pub fn format_event(seq: u64, data: &serde_json::Value, show_full: bool) -> Stri
     output
 }
 
-/// Print a live update to stdout.
-pub fn print_event(seq: u64, data: &serde_json::Value, show_full: bool) {
-    println!("{}", format_event(seq, data, show_full));
-}
-
 /// Format a delivery-gap notice: `skipped` updates were lost between the
 /// previous printed event and the next one.
 pub fn format_gap(skipped: u64) -> String {
@@ -43,12 +40,6 @@ pub fn format_gap(skipped: u64) -> String {
         .to_string()
 }
 
-/// Print a delivery-gap notice to stdout (immediately before the event that
-/// follows the gap).
-pub fn print_gap(skipped: u64) {
-    println!("{}", format_gap(skipped));
-}
-
 /// Format an undecodable-payload notice: the frame arrived and is accounted
 /// for, but its payload was not JSON the client could decode.
 pub fn format_undecodable(seq: u64) -> String {
@@ -56,11 +47,6 @@ pub fn format_undecodable(seq: u64) -> String {
     format!("{seq_str} | ⚠️  payload did not decode (malformed server frame)")
         .yellow()
         .to_string()
-}
-
-/// Print an undecodable-payload notice to stdout, in place of the event.
-pub fn print_undecodable(seq: u64) {
-    println!("{}", format_undecodable(seq));
 }
 
 /// Format the end of a late-join snapshot burst: every matched record's current
@@ -75,29 +61,29 @@ pub fn format_snapshot_complete(records: u64, lost: u64) -> String {
     line.dimmed().to_string()
 }
 
-/// Print the snapshot-burst completion line to stdout.
-pub fn print_snapshot_complete(records: u64, lost: u64) {
-    println!("{}", format_snapshot_complete(records, lost));
+/// Format the subscription start message.
+pub fn format_watch_start(record_name: &str) -> String {
+    format!(
+        "📡 Watching record: {}\n{}\n{}\n",
+        record_name.bold(),
+        "ts: time since instance start, in seconds".dimmed(),
+        "Press Ctrl+C to stop".dimmed()
+    )
 }
 
-/// Print subscription start message
-pub fn print_watch_start(record_name: &str) {
-    println!("📡 Watching record: {}", record_name.bold());
-    println!("{}", "Press Ctrl+C to stop".dimmed());
-    println!();
-}
-
-/// Print subscription stop message, reporting the total updates lost across the
-/// session (`0` stays silent — the common lossless case).
-pub fn print_watch_stop(skipped_total: u64) {
-    println!();
+/// Format the subscription stop message, reporting the total updates lost
+/// across the session (`0` stays silent — the common lossless case).
+pub fn format_watch_stop(skipped_total: u64) -> String {
+    let mut out = String::from("\n");
     if skipped_total > 0 {
-        println!(
-            "{}",
-            format!("⚠️  {skipped_total} update(s) dropped during this session").yellow()
+        out.push_str(
+            &format!("⚠️  {skipped_total} update(s) dropped during this session\n")
+                .yellow()
+                .to_string(),
         );
     }
-    println!("{}", "✅ Stopped watching".green());
+    out.push_str(&"✅ Stopped watching".green().to_string());
+    out
 }
 
 #[cfg(test)]
@@ -108,8 +94,9 @@ mod tests {
     #[test]
     fn test_format_event() {
         let data = json!({"temperature": 23.5});
-        let formatted = format_event(42, &data, false);
+        let formatted = format_event(42, Stamp::from_nanos(81_234_567_890), &data, false);
         assert!(formatted.contains("seq:42"));
+        assert!(formatted.contains("ts:81.234567"), "{formatted}");
         assert!(formatted.contains("temperature"));
     }
 
@@ -143,7 +130,7 @@ mod tests {
         // AimX wire does not carry dropped counts; format_event receives
         // only the decoded value. Verify data is still rendered correctly.
         let data = json!({"value": 1});
-        let formatted = format_event(42, &data, false);
+        let formatted = format_event(42, Stamp::from_nanos(0), &data, false);
         assert!(formatted.contains("seq:42"));
         assert!(formatted.contains("value"));
     }

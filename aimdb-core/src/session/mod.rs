@@ -10,6 +10,8 @@
 //! All contracts are `dyn`-safe and compile on `std` and `no_std + alloc`.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+
+use crate::clock::Stamp;
 use core::future::Future;
 use core::pin::Pin;
 
@@ -82,6 +84,9 @@ pub struct SubUpdate {
     pub topic: Option<Arc<str>>,
     /// The serialized record value.
     pub data: Payload,
+    /// When the value was written, on the producing instance's clock
+    /// (design 058). Mandatory on AimX 4.0 frames.
+    pub ts: Stamp,
     /// Count of skipped records
     pub skipped: u64,
     /// Set on the last update of the late-join snapshot burst, carrying its total `skipped`.
@@ -94,20 +99,22 @@ pub struct SubUpdate {
 
 impl SubUpdate {
     /// An untagged update (exact-topic subscription).
-    pub fn new(data: Payload) -> Self {
+    pub fn new(data: Payload, ts: Stamp) -> Self {
         Self {
             topic: None,
             data,
+            ts,
             skipped: 0,
             snapshot_end: false,
         }
     }
 
     /// A topic-tagged update (wildcard / bus subscription).
-    pub fn tagged(topic: Arc<str>, data: Payload) -> Self {
+    pub fn tagged(topic: Arc<str>, data: Payload, ts: Stamp) -> Self {
         Self {
             topic: Some(topic),
             data,
+            ts,
             skipped: 0,
             snapshot_end: false,
         }
@@ -330,6 +337,8 @@ pub enum Outbound<'a> {
         /// Concrete record topic that fired, when the subscription tags it
         /// (wildcard subscriptions fan in many records — see [`SubUpdate`]).
         topic: Option<&'a str>,
+        /// When the value was written (see [`SubUpdate::ts`]).
+        ts: Stamp,
         /// Unparsed record value.
         data: Payload,
     },
@@ -350,6 +359,8 @@ pub enum Outbound<'a> {
         last: bool,
         /// Topic the snapshot is for.
         topic: &'a str,
+        /// When the value was written (see [`SubUpdate::ts`]).
+        ts: Stamp,
         /// Unparsed record value.
         data: Payload,
     },
@@ -480,7 +491,10 @@ pub trait Session: Send {
     /// records, and when the final snapshot fails to encode or its frame is
     /// rejected — the flag rides that frame. Loss accounting survives all of
     /// these; only the end-of-burst signal is lost.
-    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
+    ///
+    /// Each entry is the record's topic, its payload, and the stamp of the
+    /// write that payload was read from (one read, design 058 §4.4).
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload, Stamp)> {
         let _ = topic;
         Vec::new()
     }
