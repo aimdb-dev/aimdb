@@ -23,10 +23,12 @@
 //! no re-escaping.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+use crate::clock::Stamp;
 use crate::session::{CodecError, EnvelopeCodec, Inbound, Outbound, Payload, RpcError};
 
 /// The zero-sized AimX NDJSON codec.
@@ -53,6 +55,11 @@ struct Frame<'a> {
     topic: Option<&'a str>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
     sub: Option<&'a str>,
+    /// Write stamp of a value frame (`event`, `snap`), in nanoseconds since
+    /// the instance started. Mandatory on those frames (AimX 4.0); a value
+    /// frame without it is malformed. Ordered before the payload fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ts: Option<u64>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
     params: Option<&'a RawValue>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
@@ -76,6 +83,7 @@ impl<'a> Frame<'a> {
             method: None,
             topic: None,
             sub: None,
+            ts: None,
             params: None,
             payload: None,
             data: None,
@@ -93,6 +101,40 @@ fn as_raw(bytes: &[u8]) -> Result<&RawValue, CodecError> {
 
 /// Slice a [`RawValue`]'s verbatim JSON bytes back out into an owned [`Payload`];
 /// a missing field decodes as the JSON literal `null`.
+/// The AimX 4.0 reply to `record.get`: `{"value":<value>,"ts":<ns>}`, with
+/// `value` the record's already-encoded JSON, spliced verbatim.
+///
+/// Two allocations: the reply is assembled in an exactly sized buffer, then
+/// moved into the shared [`Payload`]; the stamp is formatted on the stack.
+pub fn value_reply(value: &[u8], ts: Stamp) -> Payload {
+    let mut digits = [0u8; 20];
+    let ts = decimal(ts.as_nanos(), &mut digits);
+    let pieces: [&[u8]; 5] = [br#"{"value":"#, value, br#","ts":"#, ts, b"}"];
+    let mut reply = Vec::with_capacity(pieces.iter().map(|piece| piece.len()).sum());
+    for piece in pieces {
+        reply.extend_from_slice(piece);
+    }
+    Payload::from(reply)
+}
+
+/// `n` in decimal, written into the end of `buf`.
+fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            return &buf[start..];
+        }
+    }
+}
+
+/// A value frame's write stamp; its absence makes the frame malformed.
+fn stamp_of(ts: Option<u64>) -> Result<Stamp, CodecError> {
+    ts.map(Stamp::from_nanos).ok_or(CodecError::Malformed)
+}
+
 fn payload_of(raw: Option<&RawValue>) -> Payload {
     match raw {
         Some(r) => Arc::from(r.get().as_bytes()),
@@ -226,12 +268,14 @@ impl EnvelopeCodec for AimxCodec {
                 sub,
                 seq,
                 topic,
+                ts,
                 data,
             } => {
                 let mut frame = Frame::tagged("event");
                 frame.sub = Some(sub);
                 frame.seq = Some(seq);
                 frame.topic = topic;
+                frame.ts = Some(ts.as_nanos());
                 // `data` is spliced verbatim (Improvement A) — see
                 // `write_frame_splicing_data`.
                 write_frame_splicing_data(out, &frame, &data)
@@ -241,6 +285,7 @@ impl EnvelopeCodec for AimxCodec {
                 seq,
                 last,
                 topic,
+                ts,
                 data,
             } => {
                 let raw = as_raw(&data)?;
@@ -251,6 +296,7 @@ impl EnvelopeCodec for AimxCodec {
                 // stay byte-identical to before.
                 frame.last = last.then_some(true);
                 frame.topic = Some(topic);
+                frame.ts = Some(ts.as_nanos());
                 frame.data = Some(raw);
                 write_frame(out, &frame)
             }
@@ -318,6 +364,7 @@ impl EnvelopeCodec for AimxCodec {
                 sub: f.sub.ok_or(CodecError::Malformed)?,
                 seq: f.seq.ok_or(CodecError::Malformed)?,
                 topic: f.topic,
+                ts: stamp_of(f.ts)?,
                 data: payload_of(f.data),
             }),
             "snap" => Ok(Outbound::Snapshot {
@@ -325,6 +372,7 @@ impl EnvelopeCodec for AimxCodec {
                 seq: f.seq.ok_or(CodecError::Malformed)?,
                 last: f.last.unwrap_or(false),
                 topic: f.topic.ok_or(CodecError::Malformed)?,
+                ts: stamp_of(f.ts)?,
                 data: payload_of(f.data),
             }),
             "subscribed" => Ok(Outbound::Subscribed {
@@ -462,6 +510,7 @@ mod tests {
             sub: "5",
             seq: 2,
             topic: None,
+            ts: Stamp::from_nanos(81_234_567_000),
             data: payload("42"),
         });
         // The optional field skip-serializes — the exact-topic wire is unchanged.
@@ -471,9 +520,11 @@ mod tests {
                 sub,
                 seq,
                 topic,
+                ts,
                 data,
             } => {
                 assert_eq!((sub, seq, topic), ("5", 2, None));
+                assert_eq!(ts, Stamp::from_nanos(81_234_567_000));
                 assert_eq!(&data[..], b"42");
             }
             _ => panic!("expected Event"),
@@ -486,6 +537,7 @@ mod tests {
             sub: "5",
             seq: 9,
             topic: Some("temp.vienna"),
+            ts: Stamp::from_nanos(7),
             data: payload(r#"{"c":21.5}"#),
         });
         match AimxCodec.decode_outbound(&frame).unwrap() {
@@ -507,22 +559,24 @@ mod tests {
             sub: "5",
             seq: 9,
             topic: Some("temp.vienna"),
+            ts: Stamp::from_nanos(81_234_567_000),
             data: payload(r#"{"c":21.5,"a":[1,2,3]}"#),
         });
         assert_eq!(
             with_topic,
-            br#"{"t":"event","seq":9,"topic":"temp.vienna","sub":"5","data":{"c":21.5,"a":[1,2,3]}}"#
+            br#"{"t":"event","seq":9,"topic":"temp.vienna","sub":"5","ts":81234567000,"data":{"c":21.5,"a":[1,2,3]}}"#
         );
 
         let without_topic = encode_outbound(Outbound::Event {
             sub: "5",
             seq: 2,
             topic: None,
+            ts: Stamp::from_nanos(0),
             data: payload("42"),
         });
         assert_eq!(
             without_topic,
-            br#"{"t":"event","seq":2,"sub":"5","data":42}"#
+            br#"{"t":"event","seq":2,"sub":"5","ts":0,"data":42}"#
         );
     }
 
@@ -533,12 +587,13 @@ mod tests {
             seq: 3,
             last: false,
             topic: "temp.berlin",
+            ts: Stamp::from_nanos(42),
             data: payload(r#"{"c":18.0}"#),
         });
         // A mid-burst snapshot omits `last` entirely.
         assert_eq!(
             frame,
-            br#"{"t":"snap","seq":3,"topic":"temp.berlin","sub":"8","data":{"c":18.0}}"#
+            br#"{"t":"snap","seq":3,"topic":"temp.berlin","sub":"8","ts":42,"data":{"c":18.0}}"#
         );
         match AimxCodec.decode_outbound(&frame).unwrap() {
             Outbound::Snapshot {
@@ -546,9 +601,11 @@ mod tests {
                 seq,
                 last,
                 topic,
+                ts,
                 data,
             } => {
                 assert_eq!((sub, seq, last, topic), ("8", 3, false, "temp.berlin"));
+                assert_eq!(ts, Stamp::from_nanos(42));
                 assert_eq!(&data[..], br#"{"c":18.0}"#);
             }
             _ => panic!("expected Snapshot"),
@@ -564,6 +621,7 @@ mod tests {
             seq: 4,
             last: true,
             topic: "temp.berlin",
+            ts: Stamp::from_nanos(1),
             data: payload("1"),
         });
         match AimxCodec.decode_outbound(&frame).unwrap() {
@@ -572,12 +630,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn value_reply_splices_value_and_stamp() {
+        let reply = value_reply(br#"{"c":21.5}"#, Stamp::from_nanos(81_234_567_000));
+        assert_eq!(&reply[..], br#"{"value":{"c":21.5},"ts":81234567000}"#);
+        let edge = value_reply(b"null", Stamp::from_nanos(0));
+        assert_eq!(&edge[..], br#"{"value":null,"ts":0}"#);
+        let max = value_reply(b"1", Stamp::from_nanos(u64::MAX));
+        assert_eq!(&max[..], br#"{"value":1,"ts":18446744073709551615}"#);
+    }
+
+    /// AimX 4.0: `ts` is mandatory on every value frame. A 3.x-shaped `event`
+    /// or `snap` (no `ts`) is malformed rather than read with a made-up stamp.
+    #[test]
+    fn value_frame_without_ts_is_malformed() {
+        let event = br#"{"t":"event","seq":2,"sub":"5","data":42}"#;
+        let snap = br#"{"t":"snap","seq":1,"topic":"temp.berlin","sub":"8","data":1}"#;
+        for frame in [&event[..], &snap[..]] {
+            assert!(matches!(
+                AimxCodec.decode_outbound(frame),
+                Err(CodecError::Malformed)
+            ));
+        }
+    }
+
     /// A `snap` frame without `seq` is not decodable: snapshots share the
     /// subscription's sequence space, so an unnumbered one would silently
     /// defeat the client's gap accounting.
     #[test]
     fn snapshot_without_seq_is_malformed() {
-        let frame = br#"{"t":"snap","sub":"8","topic":"temp.berlin","data":1}"#;
+        let frame = br#"{"t":"snap","sub":"8","topic":"temp.berlin","ts":1,"data":1}"#;
         assert!(matches!(
             AimxCodec.decode_outbound(frame),
             Err(CodecError::Malformed)

@@ -94,6 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, wire)
 
+- **AimX 4.0 (#326).** `event` and `snap` frames carry `ts`, the value's
+  write stamp; a `?v=3.x` upgrade is refused.
+
 - **A late-join burst may carry several `snap` frames for the same topic** — one
   per granted record publishing there — where previously a topic produced at
   most one. Each rides its own `seq`, and `last` still closes the burst, so a

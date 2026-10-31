@@ -40,7 +40,7 @@ use futures_util::stream::unfold;
 pub(crate) fn stream_record_updates(
     db: &AimDb,
     record_key: &str,
-) -> DbResult<impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static> {
+) -> DbResult<impl Stream<Item = (crate::session::Payload, crate::Stamp, u64)> + Send + 'static> {
     let inner = db.inner();
     let id = inner
         .resolve_str(record_key)
@@ -72,14 +72,16 @@ pub(crate) fn stream_record_updates(
 fn record_updates(
     reader: crate::buffer::JsonReader,
     key: alloc::string::String,
-) -> impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static {
+) -> impl Stream<Item = (crate::session::Payload, crate::Stamp, u64)> + Send + 'static {
     let state = (reader, key, 0_u64);
     unfold(state, |(mut reader, key, mut skipped)| async move {
         loop {
             match reader.recv_json_bytes().await {
                 Ok(sample) => {
+                    // Payload and stamp from the same read (design 058 §4.4).
+                    let ts = sample.stamp();
                     let data = crate::session::Payload::from(sample.value);
-                    return Some(((data, skipped), (reader, key, 0)));
+                    return Some(((data, ts, skipped), (reader, key, 0)));
                 }
                 Err(DbError::BufferLagged { lag_count, .. }) => {
                     report(RecordStreamEvent::Lagged {
@@ -181,11 +183,11 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&values[0].0).unwrap(),
             serde_json::json!({"v": 1})
         );
-        assert_eq!(values[0].1, 0);
+        assert_eq!(values[0].2, 0);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&values[1].0).unwrap(),
             serde_json::json!({"v": 2})
         );
-        assert_eq!(values[1].1, 7);
+        assert_eq!(values[1].2, 7);
     }
 }

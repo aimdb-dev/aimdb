@@ -123,7 +123,12 @@ async fn worst_case_identity_fits_serial_frames() {
     tokio::spawn(engine);
 
     // The welcome carries the escaped name.
-    let welcome = call(&handle, "hello", json!({ "version": "3.1" })).await;
+    let welcome = call(
+        &handle,
+        "hello",
+        json!({ "version": aimdb_core::remote::PROTOCOL_VERSION }),
+    )
+    .await;
     assert!(framed_len(&welcome) <= DEFAULT_MAX_FRAME);
 
     let reply = call(&handle, "instance.info", json!(null)).await;

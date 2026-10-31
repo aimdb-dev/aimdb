@@ -208,7 +208,10 @@ impl McpServer {
             },
             Tool {
                 name: "get_record".to_string(),
-                description: "Get the current value of a specific record from an AimDB instance. Returns the record's current JSON value.".to_string(),
+                description: "Get the current value of a specific record from an AimDB instance. \
+                    Returns {\"value\": <the record's JSON value>, \"ts\": <write time>}, where ts is \
+                    nanoseconds since the AimDB instance started (not wall-clock time; only comparable \
+                    within one instance lifetime).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -294,7 +297,9 @@ impl McpServer {
             Tool {
                 name: "drain_record".to_string(),
                 description: "Drain all pending values from a record since the last drain call. \
-                    Returns values in chronological order. This is a destructive read — \
+                    Returns values in chronological order, each as {\"value\", \"ts\"} with ts the write \
+                    time in nanoseconds since the AimDB instance started (not wall-clock time). \
+                    This is a destructive read — \
                     drained values won't be returned again. Use this for batch analysis \
                     of accumulated data (e.g., time-series analysis, trend detection). \
                     The first drain call creates a reader and returns empty (cold start). \

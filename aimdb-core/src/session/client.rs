@@ -419,13 +419,15 @@ enum Delivery {
 /// advances. A repeated or reordered frame is still delivered — dropping it
 /// would discard data over a number — but it cannot rewind the cursor into
 /// reporting a gap that never happened.
+///
+/// `update` carries the frame's topic, value and stamp; `deliver` fills in the
+/// loss accounting (`skipped`, `snapshot_end`).
 fn deliver(
     subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
     last_seq: &mut HashMap<String, u64>,
     sub: &str,
     seq: u64,
-    topic: Option<Arc<str>>,
-    data: Payload,
+    mut update: SubUpdate,
     mode: Delivery,
 ) {
     let prev = last_seq.get(sub).copied().unwrap_or(0);
@@ -439,12 +441,8 @@ fn deliver(
         if mode == Delivery::BurstBody && tx.capacity().is_some_and(|cap| tx.len() + 1 >= cap) {
             return; // folds into the next delivered update's `skipped`
         }
-        let update = SubUpdate {
-            topic,
-            data,
-            skipped,
-            snapshot_end: mode == Delivery::BurstEnd,
-        };
+        update.skipped = skipped;
+        update.snapshot_end = mode == Delivery::BurstEnd;
         match tx.try_send(Ok(update)) {
             // Delivered — advance the per-sub cursor, never rewind it.
             Ok(()) => {
@@ -698,14 +696,17 @@ where
                         sub,
                         seq,
                         topic,
+                        ts,
                         data,
                     }) => deliver(
                         &mut subs,
                         &mut last_seq,
                         sub,
                         seq,
-                        topic.map(Arc::from),
-                        data,
+                        match topic {
+                            Some(topic) => SubUpdate::tagged(Arc::from(topic), data, ts),
+                            None => SubUpdate::new(data, ts),
+                        },
                         Delivery::Event,
                     ),
                     // Snapshots ride the same accounting as events (they share
@@ -720,14 +721,14 @@ where
                         seq,
                         last,
                         topic,
+                        ts,
                         data,
                     }) => deliver(
                         &mut subs,
                         &mut last_seq,
                         sub,
                         seq,
-                        Some(Arc::from(topic)),
-                        data,
+                        SubUpdate::tagged(Arc::from(topic), data, ts),
                         if last {
                             Delivery::BurstEnd
                         } else {
@@ -1480,8 +1481,7 @@ mod tests {
             last_seq,
             "1",
             seq,
-            None,
-            Payload::from(&b"x"[..]),
+            SubUpdate::new(Payload::from(&b"x"[..]), crate::Stamp::from_nanos(0)),
             Delivery::Event,
         );
     }
@@ -1554,12 +1554,11 @@ mod tests {
             };
             for (data, skipped) in [(&b"gapped"[..], 7u64), (&b"after"[..], 0)] {
                 events
-                    .send(Ok(SubUpdate {
-                        topic: None,
-                        data: Payload::from(data),
-                        skipped,
-                        snapshot_end: false,
-                    }))
+                    .send(Ok(SubUpdate::new(
+                        Payload::from(data),
+                        crate::Stamp::from_nanos(0),
+                    )
+                    .with_skipped(skipped)))
                     .await
                     .expect("the pump holds the receiver");
             }

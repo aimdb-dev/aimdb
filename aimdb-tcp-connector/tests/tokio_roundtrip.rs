@@ -73,8 +73,10 @@ async fn aimx_roundtrips_over_tcp_loopback() {
         .await
         .expect("rpc within timeout")
         .expect("rpc ok");
-    let value: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
-    assert_eq!(value, json!({ "level": 42 }));
+    // AimX 4.0: `{"value": <value>, "ts": <write stamp>}`.
+    let reply: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
+    assert_eq!(reply["value"], json!({ "level": 42 }));
+    assert!(reply["ts"].is_u64(), "the reply carries the write stamp: {reply}");
 
     let list = tokio::time::timeout(
         Duration::from_secs(5),

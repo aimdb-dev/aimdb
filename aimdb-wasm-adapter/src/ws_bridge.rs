@@ -404,7 +404,7 @@ impl Dialer for WasmWsDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         // Declare our AimX version in the URL so the server's upgrade-time gate
         // admits us — a browser cannot set custom WebSocket handshake headers,
-        // so the version rides the query string (`?v=3.0`).
+        // so the version rides the query string (`?v=4.0`).
         let url = aimdb_core::remote::ws_url_with_version(&self.url);
         let shared = self.shared.clone();
         Box::pin(SendFuture(async move {

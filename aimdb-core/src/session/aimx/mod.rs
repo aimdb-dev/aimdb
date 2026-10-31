@@ -14,7 +14,7 @@
 //! [`SessionServerConnector`](crate::session::SessionServerConnector) spine.
 
 mod codec;
-pub use codec::AimxCodec;
+pub use codec::{value_reply, AimxCodec};
 
 #[cfg(feature = "remote")]
 mod dispatch;

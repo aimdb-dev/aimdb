@@ -64,15 +64,19 @@ pub trait QueryHandler: Send + Sync + 'static {
 pub trait SnapshotProvider: Send + Sync + 'static {
     /// Return the latest serialized values for every topic matching `pattern`.
     /// As record keys now rule the broadcasting instead of topic,
-    /// return must be tuple of (record index, topic, payload)
-    fn snapshots(&self, pattern: &str) -> Vec<(usize, String, Vec<u8>)>;
+    /// return must be tuple of (record index, topic, payload, write stamp)
+    fn snapshots(&self, pattern: &str) -> Vec<Snapshot>;
 }
+
+/// One late-join snapshot: record index, topic, serialized value, and the
+/// stamp of the write the value came from (AimX 4.0 `ts`).
+pub type Snapshot = (usize, String, Vec<u8>, aimdb_core::Stamp);
 
 /// A snapshot provider that always returns nothing (late-join disabled or no data).
 pub struct NoSnapshot;
 
 impl SnapshotProvider for NoSnapshot {
-    fn snapshots(&self, _pattern: &str) -> Vec<(usize, String, Vec<u8>)> {
+    fn snapshots(&self, _pattern: &str) -> Vec<Snapshot> {
         Vec::new()
     }
 }

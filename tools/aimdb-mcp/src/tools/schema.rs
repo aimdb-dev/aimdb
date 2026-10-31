@@ -149,7 +149,8 @@ pub async fn query_schema(args: Option<Value>) -> McpResult<Value> {
     let value = client
         .get_record(&params.record_name)
         .await
-        .map_err(McpError::Client)?;
+        .map_err(McpError::Client)?
+        .value;
 
     debug!("📦 Retrieved record value, inferring schema...");
 

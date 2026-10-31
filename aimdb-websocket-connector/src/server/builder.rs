@@ -35,7 +35,7 @@ use super::{
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    session::{NoSnapshot, QueryHandler, SnapshotProvider},
+    session::{NoSnapshot, QueryHandler, Snapshot, SnapshotProvider},
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -367,14 +367,15 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
     }
 }
 
-/// Shared late-join cache: (RecordId, topic) → last serialized bytes.
-pub(crate) type SnapshotCache = Arc<Mutex<HashMap<(usize, String), Vec<u8>>>>;
+/// Shared late-join cache: (RecordId, topic) → last serialized bytes and the
+/// stamp of the write they came from.
+pub(crate) type SnapshotCache = Arc<Mutex<HashMap<(usize, String), (Vec<u8>, aimdb_core::Stamp)>>>;
 
 /// Pull every outbound record update and fan it out to subscribed clients.
 ///
-/// The bus carries raw record-value bytes tagged with the topic and the
-/// record's index; each connection's AimX codec applies the `event` envelope
-/// downstream. With late-join on, the latest bytes per (record, topic) are
+/// The bus carries raw record-value bytes tagged with the topic, the
+/// record's index and the value's write stamp; each connection's AimX codec
+/// applies the `event` envelope (with `ts`) downstream. With late-join on, the latest bytes per (record, topic) are
 /// cached for snapshots first. Returns once every outbound route has closed.
 async fn run_broadcast(
     mut outbound: OutboundRoutes,
@@ -383,13 +384,14 @@ async fn run_broadcast(
 ) {
     while let Some(msg) = outbound.next().await {
         let index = msg.route.record_index;
+        let ts = msg.stamp();
         let bytes = msg.payload.as_slice();
         if let Some(map) = &snapshot {
             map.lock()
                 .unwrap()
-                .insert((index, msg.topic.to_string()), bytes.to_vec());
+                .insert((index, msg.topic.to_string()), (bytes.to_vec(), ts));
         }
-        client_mgr.broadcast(msg.topic, index, bytes).await;
+        client_mgr.broadcast(msg.topic, index, bytes, ts).await;
     }
 }
 
@@ -401,13 +403,15 @@ async fn run_broadcast(
 struct DynMapSnapshot(SnapshotCache);
 
 impl SnapshotProvider for DynMapSnapshot {
-    fn snapshots(&self, pattern: &str) -> Vec<(usize, String, Vec<u8>)> {
+    fn snapshots(&self, pattern: &str) -> Vec<Snapshot> {
         let Ok(map) = self.0.lock() else {
             return Vec::new();
         };
         map.iter()
             .filter(|((_, topic), _)| topic_matches(pattern, topic))
-            .map(|((record_id, topic), bytes)| (*record_id, topic.clone(), bytes.clone()))
+            .map(|((record_id, topic), (bytes, ts))| {
+                (*record_id, topic.clone(), bytes.clone(), *ts)
+            })
             .collect()
     }
 }

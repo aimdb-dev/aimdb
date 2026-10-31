@@ -166,9 +166,9 @@ impl Session for ScriptSession {
             Ok(stream)
         })
     }
-    fn snapshots(&mut self, topic: &str) -> Vec<(alloc::string::String, Payload)> {
+    fn snapshots(&mut self, topic: &str) -> Vec<(alloc::string::String, Payload, crate::Stamp)> {
         if topic == "snapshot" {
-            vec![(topic.into(), Arc::from([]))]
+            vec![(topic.into(), Arc::from([]), crate::Stamp::from_nanos(0))]
         } else {
             Vec::new()
         }

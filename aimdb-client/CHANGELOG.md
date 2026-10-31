@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **AimX 4.0 (#326).** `get_record` returns `Stamped<Value>`,
+  `DrainResponse::values` are `Stamped<Value>` (no serde derives any more),
+  `RecordUpdate` gains `ts`, and `set_record` checks the reply. A value
+  without `ts` is the new `ClientError::Protocol`; 3.x servers are refused.
+  `Stamp`, `Stamped` and `WriteMetadata` are re-exported.
+
 ### Added
 
 - **`instance_info()` and `post_link()` (#331)**, both `None` against a 3.0

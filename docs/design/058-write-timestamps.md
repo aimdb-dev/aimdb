@@ -1,6 +1,6 @@
 # 058 — Write timestamps
 
-**Status:** 📝 Proposed
+**Status:** ✅ Implemented
 
 **Scope:** [#326](https://github.com/aimdb-dev/aimdb/issues/326), parts A and
 B. A mandatory write timestamp on every record value in `aimdb-core`, taken
@@ -465,7 +465,12 @@ in nanoseconds, as a JSON integer.
   `Frame` gains `ts: Option<u64>` for decoding only, and a value frame
   without it is malformed (`CodecError`), like a `snap` without `seq` today.
 - `record.get` and the ring fallback read the stamp with the value from the
-  same slot, never separately.
+  same slot, never separately. The reply is assembled around the encoded
+  value (`session::aimx::value_reply`, shared with the bench) in an exactly
+  sized buffer: one allocation more per `get` than the bare 3.x value. Event
+  frames are unchanged. Removing that allocation would take the first
+  `unsafe` block in core (filling an uninitialized `Arc<[u8]>`); not adopted
+  for one allocation on an RPC.
 - `record.set` echoes `value` and `ts` from a single readback after the
   write. The echo is the latest write observed, which under concurrent
   writers can be newer than this call's. When nothing is readable (a ring, or
@@ -486,7 +491,7 @@ consumers. A string would cost every Rust client a parse.
 - **`aimdb-client`:** `RecordUpdate` gains `ts: Stamp` (re-exported from
   `aimdb-core`). `get` returns `Stamped<serde_json::Value>`; `drain` returns
   a `DrainResponse` whose `values` are `Vec<Stamped<serde_json::Value>>`. An
-  event or reply without `ts` is a protocol error. A `set` reply that carries
+  event or reply without `ts` is a protocol error (`ClientError::Protocol`). A `set` reply that carries
   `value`, `null` included, must carry `ts`; `{status}` alone is valid. The
   client has no clock accessor.
 - **Wire decoding:** `Stamped<T>` and `WriteMetadata` in core have no serde

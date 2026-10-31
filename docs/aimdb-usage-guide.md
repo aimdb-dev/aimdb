@@ -466,6 +466,37 @@ the gateway pattern.
 
 ---
 
+## Write Timestamps
+
+Every record write is stamped from the instance's monotonic clock
+([design 058](design/058-write-timestamps.md)), and every read returns the
+stamp with the value. Readers yield a `Stamped<T>`: the value is `.value`, the
+write time `.stamp()`.
+
+```rust
+let mut reader = consumer.subscribe();
+while let Ok(sample) = reader.recv().await {
+    let age = db.now().since(sample.stamp()); // how long ago it was written
+    println!("{:?} (written {:?} ago)", sample.value, age);
+}
+```
+
+The same holds for `db.latest::<T>(key)`, `aimdb-sync`'s `get` family, and a
+join's `JoinTrigger::stamp()`.
+
+- **What it means:** when the value was written into *this* instance. A source
+  value is stamped when produced, a transform or join output when computed, an
+  inbound connector value when ingested. It is not wall-clock time, and not
+  when a sensor measured; keep measurement time in the record's own data.
+- **Scope:** nanoseconds since the instance started. Stamps compare within one
+  instance lifetime only.
+- **Remote access:** AimX 4.0 carries the stamp on every value as `ts`, and
+  3.x peers are refused. See the
+  [`aimdb-client` README](../aimdb-client/README.md#write-timestamps-aimx-40)
+  for the frame shapes and the JavaScript precision note.
+
+---
+
 ## Current Status & Limitations
 
 ### ✅ Ready for Use

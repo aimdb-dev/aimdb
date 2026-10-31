@@ -368,10 +368,24 @@ async fn server_late_join_snapshot() {
     // space (events continue after the burst) so a dropped snapshot shows up as
     // a gap rather than vanishing. `last` closes the burst — here the only
     // snapshot is also the final one.
+    let (snap, _ts) = without_ts(ws_recv(&mut c).await);
     assert_eq!(
-        ws_recv(&mut c).await,
+        snap,
         json!({"t":"snap","sub":"4","seq":1,"last":true,"topic":"sensors.temp","data":99})
     );
+}
+
+/// Splits a value frame into the frame without `ts` and its stamp. AimX 4.0:
+/// every value frame carries `ts` as an integer (nanoseconds since the
+/// server instance started); it varies run to run, so golden comparisons
+/// check it separately.
+fn without_ts(mut frame: Value) -> (Value, u64) {
+    let ts = frame
+        .as_object_mut()
+        .and_then(|o| o.remove("ts"))
+        .and_then(|ts| ts.as_u64())
+        .unwrap_or_else(|| panic!("a value frame carries an integer `ts`: {frame}"));
+    (frame, ts)
 }
 
 #[tokio::test]
@@ -614,6 +628,9 @@ async fn server_rejects_incompatible_protocol_version() {
     // before the socket opens — it never reaches the AimX frame loop.
     let stale = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?v=2.0")).await;
     assert!(stale.is_err(), "incompatible version must not upgrade");
+    // AimX 4.0 frames carry a mandatory `ts` a 3.x client does not expect.
+    let v3 = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?v=3.1")).await;
+    assert!(v3.is_err(), "a 3.x client must not upgrade");
     let missing = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await;
     assert!(
         missing.is_err(),
@@ -909,8 +926,9 @@ async fn golden_wire_frames() {
     let mut c = ws_connect(addr).await;
     ws_send(&mut c, json!({"t":"sub","id":1,"topic":"t"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
+    let (snap, snap_ts) = without_ts(ws_recv(&mut c).await);
     assert_eq!(
-        ws_recv(&mut c).await,
+        snap,
         json!({"t":"snap","sub":"1","seq":1,"last":true,"topic":"t","data":5})
     );
 
@@ -918,10 +936,12 @@ async fn golden_wire_frames() {
     // — a single counter over the whole subscription, so loss anywhere in it is
     // visible as a gap.
     inject(&db, "t", json!(42));
+    let (event, event_ts) = without_ts(ws_recv(&mut c).await);
     assert_eq!(
-        ws_recv(&mut c).await,
+        event,
         json!({"t":"event","sub":"1","seq":2,"topic":"t","data":42})
     );
+    assert!(event_ts > snap_ts, "a later write is stamped later");
 
     ws_send(&mut c, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"pong"}));

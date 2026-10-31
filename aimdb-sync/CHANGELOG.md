@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Write timestamps (#326).** `get`, `get_with_timeout`, `try_get`,
+  `get_latest` and `get_latest_with_timeout` return `Stamped<T>`: the value
+  is `.value`, its write time `.stamp()`.
+
 - **Issue #212:** Removed `SyncProducer::try_set`,
   `SyncProducer::try_set_value`, and `SyncError::SetTimeout`. Every built-in
   buffer overwrites rather than refusing a write, so these APIs duplicated

@@ -180,8 +180,13 @@ async fn a_policy_allowed_write_lands_through_the_built_server() {
         .await
         .expect("record.get within timeout")
         .expect("record.get ok");
-    let value: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
-    assert_eq!(value, serde_json::json!({ "level": 7 }));
+    // AimX 4.0: `{"value": <value>, "ts": <write stamp>}`.
+    let reply: serde_json::Value = serde_json::from_slice(&reply).expect("json reply");
+    assert_eq!(reply["value"], serde_json::json!({ "level": 7 }));
+    assert!(
+        reply["ts"].is_u64(),
+        "the reply carries the write stamp: {reply}"
+    );
 
     // `apply_writable` marks storage from the policy, and `record.list` is the
     // only place that marking surfaces. Without it a client cannot tell which

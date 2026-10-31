@@ -25,10 +25,11 @@ fn bench_shape(criterion: &mut Criterion, shape: PayloadShape) {
     let codec = AimxCodec;
     let topic = shape.topic();
     let data = shape.payload();
+    let ts = shape.ts();
 
     // Per-frame size is identical across strategies (byte-identical frames);
     // report it once, outside the timed windows.
-    let sample = SharedSuffix::new(topic, data.clone()).encode_one_owned("s0", 1_000_000);
+    let sample = SharedSuffix::new(topic, data.clone(), ts).encode_one_owned("s0", 1_000_000);
     eprintln!(
         "=== fanout_encode {}: payload {} B, event frame {} B ===",
         shape.name(),
@@ -49,6 +50,7 @@ fn bench_shape(criterion: &mut Criterion, shape: PayloadShape) {
                         &codec,
                         topic,
                         &data,
+                        ts,
                         &subscriber.sub,
                         subscriber.seq,
                         &mut frame,
@@ -65,7 +67,7 @@ fn bench_shape(criterion: &mut Criterion, shape: PayloadShape) {
             &count,
             |bencher, _| {
                 bencher.iter(|| {
-                    let validate_once = ValidateOnce::new(&data);
+                    let validate_once = ValidateOnce::new(&data, ts);
                     for subscriber in &subs {
                         let frame =
                             validate_once.encode_one_owned(topic, &subscriber.sub, subscriber.seq);
@@ -83,7 +85,7 @@ fn bench_shape(criterion: &mut Criterion, shape: PayloadShape) {
                 bencher.iter(|| {
                     // The per-broadcast precompute (escape `topic` once) is part
                     // of the measured cost, so it lives inside the timed loop.
-                    let shared = SharedSuffix::new(topic, data.clone());
+                    let shared = SharedSuffix::new(topic, data.clone(), ts);
                     for subscriber in &subs {
                         let frame = shared.encode_one_owned(&subscriber.sub, subscriber.seq);
                         black_box(frame);

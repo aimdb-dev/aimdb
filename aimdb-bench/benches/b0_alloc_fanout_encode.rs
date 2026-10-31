@@ -41,6 +41,7 @@ fn run_naive(
     codec: &AimxCodec,
     topic: &str,
     data: &aimdb_core::session::Payload,
+    ts: aimdb_core::Stamp,
     subs: &[aimdb_bench::fanout_encode::Subscriber],
 ) {
     for subscriber in subs {
@@ -49,6 +50,7 @@ fn run_naive(
             codec,
             topic,
             data,
+            ts,
             &subscriber.sub,
             subscriber.seq,
             &mut frame,
@@ -60,9 +62,10 @@ fn run_naive(
 fn run_validate_once(
     topic: &str,
     data: &aimdb_core::session::Payload,
+    ts: aimdb_core::Stamp,
     subs: &[aimdb_bench::fanout_encode::Subscriber],
 ) {
-    let validate_once = ValidateOnce::new(data);
+    let validate_once = ValidateOnce::new(data, ts);
     for subscriber in subs {
         let frame = validate_once.encode_one_owned(topic, &subscriber.sub, subscriber.seq);
         black_box(&frame);
@@ -72,9 +75,10 @@ fn run_validate_once(
 fn run_shared(
     topic: &str,
     data: &aimdb_core::session::Payload,
+    ts: aimdb_core::Stamp,
     subs: &[aimdb_bench::fanout_encode::Subscriber],
 ) {
-    let shared = SharedSuffix::new(topic, data.clone());
+    let shared = SharedSuffix::new(topic, data.clone(), ts);
     for subscriber in subs {
         let frame = shared.encode_one_owned(&subscriber.sub, subscriber.seq);
         black_box(&frame);
@@ -88,7 +92,8 @@ fn measure(shape: PayloadShape, rows: &mut Vec<Row>) {
     let codec = AimxCodec;
     let topic = shape.topic();
     let data = shape.payload();
-    let frame_bytes = SharedSuffix::new(topic, data.clone())
+    let ts = shape.ts();
+    let frame_bytes = SharedSuffix::new(topic, data.clone(), ts)
         .encode_one_owned("s0", 1_000_000)
         .len();
 
@@ -96,21 +101,21 @@ fn measure(shape: PayloadShape, rows: &mut Vec<Row>) {
         let subs = subscribers(count);
 
         for _ in 0..WARMUP_BROADCASTS {
-            run_naive(&codec, topic, &data, &subs);
+            run_naive(&codec, topic, &data, ts, &subs);
         }
         reset();
         for _ in 0..MEASURE_BROADCASTS {
-            run_naive(&codec, topic, &data, &subs);
+            run_naive(&codec, topic, &data, ts, &subs);
         }
         let (allocs, bytes) = snapshot();
         rows.push(row(shape, "naive", count, frame_bytes, allocs, bytes));
 
         for _ in 0..WARMUP_BROADCASTS {
-            run_validate_once(topic, &data, &subs);
+            run_validate_once(topic, &data, ts, &subs);
         }
         reset();
         for _ in 0..MEASURE_BROADCASTS {
-            run_validate_once(topic, &data, &subs);
+            run_validate_once(topic, &data, ts, &subs);
         }
         let (allocs, bytes) = snapshot();
         rows.push(row(
@@ -123,11 +128,11 @@ fn measure(shape: PayloadShape, rows: &mut Vec<Row>) {
         ));
 
         for _ in 0..WARMUP_BROADCASTS {
-            run_shared(topic, &data, &subs);
+            run_shared(topic, &data, ts, &subs);
         }
         reset();
         for _ in 0..MEASURE_BROADCASTS {
-            run_shared(topic, &data, &subs);
+            run_shared(topic, &data, ts, &subs);
         }
         let (allocs, bytes) = snapshot();
         rows.push(row(
