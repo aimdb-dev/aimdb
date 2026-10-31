@@ -1,7 +1,7 @@
 //! One KNX connection task, generic over core's [`DatagramBinder`] and
 //! [`Delay`], replacing the two hand-written socket loops.
 //!
-//! The clock stays `RuntimeOps::now_nanos`, a plain call; only *sleeping* goes
+//! The clock is the instance's [`InstanceClock`], a plain call; only *sleeping* goes
 //! through [`Delay`], so nothing is boxed per loop iteration.
 //!
 //! The task dispatches inbound telegrams into their records through an
@@ -21,7 +21,7 @@ use core::time::Duration;
 
 use aimdb_core::connector::TopicBuf;
 use aimdb_core::session::{Datagram, DatagramBinder, Delay, TransportError, TransportResult};
-use aimdb_core::{log_debug, OutboundRoutes, RouteId, RuntimeOps};
+use aimdb_core::{log_debug, InstanceClock, OutboundRoutes, RouteId};
 
 use crate::tunnel::{
     drain_actions, GroupWrite, LocalEndpoint, Millis, TunnelConfig, TunnelEngine, TunnelIo,
@@ -123,7 +123,7 @@ async fn drive_connection<U, D, S>(
     engine: &mut TunnelEngine,
     socket: &mut U,
     gateway: SocketAddr,
-    runtime: &Arc<dyn RuntimeOps>,
+    clock: &Arc<dyn InstanceClock>,
     delay: &D,
     sink: &S,
     outbound: &mut OutboundRoutes,
@@ -153,7 +153,7 @@ async fn drive_connection<U, D, S>(
         }
     }
 
-    let now_ms = || runtime.now_nanos() / 1_000_000;
+    let now_ms = || clock.now().as_nanos() / 1_000_000;
 
     // `select3` polls its arms in declaration order and takes the first ready
     // one — unlike the `tokio::select!` this task replaces, which picked among
@@ -231,7 +231,7 @@ async fn drive_connection<U, D, S>(
 pub async fn connection_task<B, D, S>(
     binder: B,
     gateway: SocketAddr,
-    runtime: Arc<dyn RuntimeOps>,
+    clock: Arc<dyn InstanceClock>,
     delay: D,
     sink: S,
     mut outbound: OutboundRoutes,
@@ -240,7 +240,7 @@ pub async fn connection_task<B, D, S>(
     D: Delay,
     S: TelegramSink + Sync,
 {
-    let now_ms = || runtime.now_nanos() / 1_000_000;
+    let now_ms = || clock.now().as_nanos() / 1_000_000;
     let mut engine = TunnelEngine::new(TunnelConfig::default(), now_ms());
 
     loop {
@@ -296,7 +296,7 @@ pub async fn connection_task<B, D, S>(
             &mut engine,
             &mut socket,
             gateway,
-            &runtime,
+            &clock,
             &delay,
             &sink,
             &mut outbound,
@@ -349,8 +349,8 @@ mod tests {
         OutboundRoutes::new(&db, "knx").expect("outbound routes")
     }
 
-    fn runtime() -> Arc<dyn RuntimeOps> {
-        Arc::new(TokioAdapter::new().expect("tokio adapter"))
+    fn clock() -> Arc<dyn InstanceClock> {
+        aimdb_core::RuntimeOps::new_clock(&TokioAdapter::new().expect("tokio adapter"))
     }
 
     const RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -364,7 +364,7 @@ mod tests {
         let task = connection_task(
             TokioNet::udp(Ipv4Addr::LOCALHOST),
             "127.0.0.1:3671".parse().expect("gateway addr"),
-            runtime(),
+            clock(),
             TokioDelay,
             VecSink::default(),
             no_outbound().await,
@@ -386,7 +386,7 @@ mod tests {
         let task = tokio::spawn(connection_task(
             TokioNet::udp(Ipv4Addr::LOCALHOST),
             gateway_addr,
-            runtime(),
+            clock(),
             TokioDelay,
             VecSink::default(),
             no_outbound().await,
@@ -432,7 +432,7 @@ mod tests {
         let task = tokio::spawn(connection_task(
             TokioNet::udp(Ipv4Addr::UNSPECIFIED),
             gateway_addr,
-            runtime(),
+            clock(),
             TokioDelay,
             VecSink::default(),
             no_outbound().await,
@@ -695,7 +695,7 @@ mod tests {
                     attempts: attempts.clone(),
                 },
                 gateway_addr,
-                runtime(),
+                clock(),
                 TokioDelay,
                 VecSink::default(),
                 no_outbound().await,
@@ -749,7 +749,7 @@ mod tests {
         let task = tokio::spawn(connection_task(
             FlappingBinder::default(),
             gateway_addr,
-            runtime(),
+            clock(),
             TokioDelay,
             VecSink::default(),
             no_outbound().await,

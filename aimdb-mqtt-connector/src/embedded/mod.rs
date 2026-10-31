@@ -123,7 +123,7 @@ where
             opts,
             write_buffer,
             settings,
-            db.runtime_ops(),
+            db.runtime_ctx().clock().clone(),
         )
     })
 }
@@ -181,7 +181,7 @@ where
             opts,
             backend.write_buffer,
             settings,
-            db.runtime_ops(),
+            db.runtime_ctx().clock().clone(),
         )
     })
 }
@@ -378,7 +378,7 @@ fn setup_manager<D>(
     opts: Vec<PublishOpts>,
     write_buffer: usize,
     settings: Settings,
-    runtime: Arc<dyn aimdb_core::RuntimeOps>,
+    clock: Arc<dyn aimdb_core::InstanceClock>,
 ) -> aimdb_core::DbResult<Vec<EmbassyBoxFuture>>
 where
     D: aimdb_core::session::StreamDialer
@@ -412,7 +412,7 @@ where
                     outbound,
                     opts,
                     write_buffer,
-                    runtime,
+                    clock,
                 )
                 .await
             }
@@ -437,7 +437,7 @@ fn setup_tls_manager<D>(
     opts: Vec<PublishOpts>,
     write_buffer: usize,
     settings: Settings,
-    runtime: Arc<dyn aimdb_core::RuntimeOps>,
+    clock: Arc<dyn aimdb_core::InstanceClock>,
 ) -> aimdb_core::DbResult<Vec<EmbassyBoxFuture>>
 where
     D: aimdb_core::session::StreamDialer
@@ -501,7 +501,7 @@ where
                         opts,
                         write_buffer,
                         delay,
-                        runtime,
+                        clock,
                     )
                     .await;
                 }

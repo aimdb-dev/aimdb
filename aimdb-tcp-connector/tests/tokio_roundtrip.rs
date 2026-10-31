@@ -57,11 +57,12 @@ async fn aimx_roundtrips_over_tcp_loopback() {
         sends_hello: false,
         ..ClientConfig::default()
     };
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         framed_dialer(TokioNet::tcp(), addr.ip().to_string(), addr.port()),
         AimxCodec,
         client_config,
-        Arc::new(TokioAdapter),
+        ctx,
     );
     tokio::spawn(engine);
 

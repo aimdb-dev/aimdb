@@ -3,7 +3,7 @@
 //! Implements [`RuntimeOps`] — the one trait a runtime adapter provides —
 //! on top of `std::time` and `tokio::time`.
 
-use aimdb_core::{DbResult, LogLevel, RuntimeOps};
+use aimdb_core::{DbResult, InstanceClock, LogLevel, RuntimeOps, Stamp};
 
 /// Tokio runtime adapter for std environments
 ///
@@ -44,71 +44,60 @@ impl Default for TokioAdapter {
     }
 }
 
-/// The instant `now_nanos` counts from in the current runtime: its first
-/// reading there, or `now` if this is the first.
+/// The instance clock (design 058 §3.2): Tokio's clock of the runtime that
+/// was current at `build()`, measured from that moment.
 ///
-/// Per runtime, because a paused clock belongs to its runtime: one process-wide
-/// anchor taken after a paused runtime advanced 60 s would sit in the future of
-/// every later runtime, pinning their `now_nanos` at zero (#333). Readings
-/// outside any runtime share one anchor on the real clock.
-///
-/// One entry per runtime that ever reads the clock, kept for the process'
-/// lifetime (tokio offers no hook on runtime drop); the thread-local cache
-/// keeps the lock off the hot path.
+/// A write from outside that runtime (an `aimdb-sync` producer on its own
+/// thread, another runtime) enters the captured runtime's context to read the
+/// clock, so under `tokio::time::pause` every write follows the instance
+/// runtime's paused time wherever it comes from.
 #[cfg(feature = "tokio-runtime")]
-fn clock_anchor(now: tokio::time::Instant) -> tokio::time::Instant {
-    use std::cell::Cell;
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock, PoisonError};
-    use tokio::runtime::{Handle, Id};
-    use tokio::time::Instant;
+struct TokioClock {
+    /// `None` only when `build()` was driven outside any Tokio runtime; then
+    /// every reading is taken in the caller's context.
+    handle: Option<tokio::runtime::Handle>,
+    origin: tokio::time::Instant,
+}
 
-    type Key = Option<Id>;
-    thread_local! {
-        static CACHED: Cell<Option<(Key, Instant)>> = const { Cell::new(None) };
+#[cfg(feature = "tokio-runtime")]
+impl TokioClock {
+    fn new() -> Self {
+        let handle = tokio::runtime::Handle::try_current().ok();
+        let origin = tokio::time::Instant::now();
+        Self { handle, origin }
     }
-    static ANCHORS: OnceLock<Mutex<HashMap<Key, Instant>>> = OnceLock::new();
+}
 
-    let key = Handle::try_current().ok().map(|h| h.id());
-    if let Some((cached_key, anchor)) = CACHED.get() {
-        if cached_key == key {
-            return anchor;
-        }
+#[cfg(feature = "tokio-runtime")]
+impl InstanceClock for TokioClock {
+    fn now(&self) -> Stamp {
+        use tokio::runtime::Handle;
+        use tokio::time::Instant;
+
+        let now = match &self.handle {
+            Some(handle) if Handle::try_current().map(|h| h.id()).ok() != Some(handle.id()) => {
+                // Selects the captured runtime's (possibly paused) clock.
+                let _guard = handle.enter();
+                Instant::now()
+            }
+            _ => Instant::now(),
+        };
+        aimdb_core::clock::stamp_from_duration(now.saturating_duration_since(self.origin))
     }
-    let anchor = *ANCHORS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(key)
-        .or_insert(now);
-    CACHED.set(Some((key, anchor)));
-    anchor
+
+    fn unix_time(&self) -> Option<(u64, u32)> {
+        // The OS wall clock, independent of the monotonic origin.
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| (d.as_secs(), d.subsec_nanos()))
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]
 impl RuntimeOps for TokioAdapter {
     fn name(&self) -> &'static str {
         "tokio"
-    }
-
-    fn now_nanos(&self) -> u64 {
-        // Tokio's clock, so paused time (`tokio::time::pause`, `test-util`)
-        // advances it the same way it advances `sleep`; outside paused time it
-        // is the system's monotonic clock. Nanoseconds since the current
-        // runtime's anchor (monotonic per runtime, arbitrary epoch).
-        let now = tokio::time::Instant::now();
-        now.saturating_duration_since(clock_anchor(now))
-            .as_nanos()
-            .min(u64::MAX as u128) as u64
-    }
-
-    fn unix_time(&self) -> Option<(u64, u32)> {
-        // The OS wall clock. `now_nanos()` is monotonic (for durations); this
-        // is the absolute time AimX metadata timestamps report.
-        std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .ok()
-            .map(|d| (d.as_secs(), d.subsec_nanos()))
     }
 
     fn sleep(&self, d: core::time::Duration) -> aimdb_core::BoxFuture {
@@ -139,6 +128,12 @@ impl RuntimeOps for TokioAdapter {
             LogLevel::Error => log::error!(target: "aimdb", "{msg}"),
         }
     }
+
+    /// The clock of the runtime current at this call, measured from now: one
+    /// clock for every reader, whatever thread or runtime it runs on.
+    fn new_clock(&self) -> std::sync::Arc<dyn InstanceClock> {
+        std::sync::Arc::new(TokioClock::new())
+    }
 }
 
 #[cfg(all(test, feature = "tokio-runtime"))]
@@ -157,34 +152,29 @@ mod runtime_ops_tests {
     #[tokio::test]
     async fn runtime_ops_sleep_advances_clock() {
         let ops: Arc<dyn RuntimeOps> = Arc::new(TokioAdapter);
-        let before = ops.now_nanos();
+        let clock = ops.new_clock();
+        let before = clock.now();
         ops.sleep(Duration::from_millis(10)).await;
-        let after = ops.now_nanos();
+        let elapsed = clock.now().since(before);
         assert!(
-            after - before >= 10_000_000,
-            "10ms sleep advanced now_nanos by only {}ns",
-            after - before
+            elapsed >= Duration::from_millis(10),
+            "10ms sleep advanced the clock by only {elapsed:?}"
         );
     }
 
-    /// #333: under paused time `sleep` advances Tokio's virtual clock
-    /// instantly; `now_nanos` must follow it, not the real clock.
+    /// Under paused time `sleep` advances Tokio's virtual clock instantly;
+    /// the clock must follow it, not the real clock (#333).
     #[tokio::test(start_paused = true)]
-    async fn now_nanos_follows_paused_tokio_time() {
+    async fn clock_follows_paused_sleep() {
         let ops: Arc<dyn RuntimeOps> = Arc::new(TokioAdapter);
-        let before = ops.now_nanos();
+        let clock = ops.new_clock();
+        let before = clock.now();
         ops.sleep(Duration::from_secs(10)).await;
-        let after = ops.now_nanos();
-        assert!(
-            after - before >= 10_000_000_000,
-            "a paused 10s sleep advanced now_nanos by only {}ns",
-            after - before
-        );
+        assert!(clock.now().since(before) >= Duration::from_secs(10));
     }
 
-    /// #333: a paused runtime that advanced before its first reading must not
-    /// move the epoch of a runtime after it. With one process-wide anchor the
-    /// second runtime read zero before and after its 10 s sleep.
+    /// #333: a paused runtime that advanced before must not move the origin of
+    /// a clock created in a later runtime: each clock starts at its creation.
     #[test]
     fn a_runtime_that_advanced_first_does_not_pin_the_next_one() {
         let paused = || {
@@ -196,19 +186,54 @@ mod runtime_ops_tests {
         };
 
         paused().block_on(async {
+            let clock = TokioAdapter.new_clock();
             tokio::time::sleep(Duration::from_secs(60)).await;
-            TokioAdapter.now_nanos();
+            clock.now();
         });
 
         paused().block_on(async {
-            let before = TokioAdapter.now_nanos();
+            let clock = TokioAdapter.new_clock();
+            let before = clock.now();
             tokio::time::sleep(Duration::from_secs(10)).await;
-            let after = TokioAdapter.now_nanos();
-            assert!(
-                after - before >= 10_000_000_000,
-                "a paused 10s sleep in the second runtime advanced now_nanos by only {}ns",
-                after - before
-            );
+            assert!(clock.now().since(before) >= Duration::from_secs(10));
         });
+    }
+
+    /// 058 R5: the instance clock starts at its creation and follows paused
+    /// time exactly.
+    #[tokio::test(start_paused = true)]
+    async fn instance_clock_follows_paused_time_exactly() {
+        let clock = TokioAdapter.new_clock();
+        assert_eq!(clock.now(), Stamp::from_nanos(0));
+        assert_eq!(clock.now(), Stamp::from_nanos(0));
+        let d = Duration::from_millis(1234);
+        tokio::time::advance(d).await;
+        assert_eq!(clock.now().since(Stamp::from_nanos(0)), d);
+    }
+
+    /// 058 R2: a reading from a plain thread, or from inside another runtime,
+    /// is taken on the instance runtime's (paused) clock.
+    #[tokio::test(start_paused = true)]
+    async fn instance_clock_is_the_same_from_any_thread_or_runtime() {
+        let clock = TokioAdapter.new_clock();
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let expected = clock.now();
+        assert_eq!(expected.as_nanos(), 5_000_000_000);
+
+        let c = clock.clone();
+        let from_thread = std::thread::spawn(move || c.now()).join().unwrap();
+        assert_eq!(from_thread, expected);
+
+        let c = clock.clone();
+        let from_other_runtime = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(async move { c.now() })
+        })
+        .join()
+        .unwrap();
+        assert_eq!(from_other_runtime, expected);
     }
 }

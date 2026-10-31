@@ -94,6 +94,7 @@ const _: () = {
 
 pub mod buffer;
 pub mod builder;
+pub mod clock;
 #[cfg(feature = "remote")]
 pub mod codec;
 pub mod connector;
@@ -115,6 +116,7 @@ mod router;
 #[cfg(feature = "connector-session")]
 pub mod session;
 pub mod signal;
+pub mod stamped;
 pub mod topic_pattern;
 pub mod transform;
 pub mod transport;
@@ -130,6 +132,10 @@ pub use log::{LogDebug, LogDisplay};
 // Runtime capability surface: the runtime travels as `Arc<dyn RuntimeOps>`,
 // the one trait an adapter implements.
 pub use executor::{BoxFuture, ExecutorError, ExecutorResult, LogLevel, RuntimeOps};
+
+// Write timestamps (design 058): the instance clock and the value envelope.
+pub use clock::{InstanceClock, Stamp};
+pub use stamped::{Stamped, WriteMetadata};
 
 // Producer-Consumer Pattern exports
 #[cfg(feature = "remote")]

@@ -149,6 +149,7 @@ async fn a_policy_allowed_write_lands_through_the_built_server() {
         .expect("seed setting");
     tokio::spawn(runner.run());
 
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         framed_dialer(TokioNet::tcp(), addr.ip().to_string(), addr.port()),
         AimxCodec,
@@ -156,7 +157,7 @@ async fn a_policy_allowed_write_lands_through_the_built_server() {
             sends_hello: false,
             ..ClientConfig::default()
         },
-        Arc::new(TokioAdapter),
+        ctx,
     );
     tokio::spawn(engine);
 

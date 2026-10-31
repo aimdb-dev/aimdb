@@ -6,15 +6,22 @@
 use alloc::sync::Arc;
 
 use super::traits::{DynBuffer, WriteHandle};
+use crate::clock::InstanceClock;
 
 pub(crate) struct RecordWriter<T: Clone + Send + 'static> {
     /// `None` for records without a configured buffer.
     buffer: Option<Arc<dyn DynBuffer<T>>>,
+    /// The instance clock writes are stamped from.
+    #[allow(dead_code)] // read once writes are stamped (design 058 §4.3)
+    clock: Arc<dyn InstanceClock>,
 }
 
 impl<T: Clone + Send + 'static> RecordWriter<T> {
-    pub(crate) fn new(buffer: Option<Arc<dyn DynBuffer<T>>>) -> Self {
-        Self { buffer }
+    pub(crate) fn new(
+        buffer: Option<Arc<dyn DynBuffer<T>>>,
+        clock: Arc<dyn InstanceClock>,
+    ) -> Self {
+        Self { buffer, clock }
     }
 }
 

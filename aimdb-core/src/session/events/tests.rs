@@ -283,6 +283,7 @@ impl Dialer for FailingDialer {
 #[tokio::test]
 async fn client_reports_dial_failure_and_reconnect_exhaustion() {
     let (observer, seen) = observer();
+    let ctx = crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
     let (_handle, engine) = run_client(
         FailingDialer,
         ScriptCodec,
@@ -291,7 +292,7 @@ async fn client_reports_dial_failure_and_reconnect_exhaustion() {
             reconnect: true,
             ..Default::default()
         },
-        Arc::new(crate::executor::test_support::NoopRuntimeOps),
+        ctx,
     );
     capture::future(observer, engine).await;
     assert_eq!(*seen.lock().unwrap(), [("dial", 0), ("exhausted", 1)]);

@@ -59,7 +59,7 @@ pub(crate) async fn run_sessions<D>(
     mut outbound: aimdb_core::OutboundRoutes,
     opts: alloc::vec::Vec<crate::publish_opts::PublishOpts>,
     write_buffer: usize,
-    runtime: alloc::sync::Arc<dyn aimdb_core::RuntimeOps>,
+    clock: alloc::sync::Arc<dyn aimdb_core::InstanceClock>,
 ) -> !
 where
     D: aimdb_core::session::StreamDialer + aimdb_core::session::Delay,
@@ -103,7 +103,7 @@ where
             &ring,
             &settings,
             &dialer,
-            runtime.as_ref(),
+            clock.as_ref(),
         )
         .await;
 

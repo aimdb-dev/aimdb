@@ -159,7 +159,8 @@ impl AimxConnection {
             sends_hello: false,
             ..ClientConfig::default()
         };
-        let (handle, engine_fut) = run_client(dialer, AimxCodec, config, Arc::new(TokioAdapter));
+        let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
+        let (handle, engine_fut) = run_client(dialer, AimxCodec, config, ctx);
         let engine = tokio::spawn(engine_fut);
 
         let server_info = async {

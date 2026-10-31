@@ -16,7 +16,7 @@ use core::net::SocketAddr;
 use core::pin::Pin;
 
 use aimdb_core::connector::{ConnectorBuilder, ConnectorUrl};
-use aimdb_core::{log_info, AimDb, DbError, DbResult, InboundDispatch, OutboundRoutes, RuntimeOps};
+use aimdb_core::{log_info, AimDb, DbError, DbResult, InboundDispatch, OutboundRoutes};
 
 use crate::client::connection_task;
 
@@ -78,7 +78,7 @@ where
             let gateway = self.gateway_addr()?;
             log_info!("Creating KNX connector for gateway {}", gateway);
 
-            let runtime: Arc<dyn RuntimeOps> = db.runtime_ops();
+            let clock = db.runtime_ctx().clock().clone();
             // Built here, so routes are subscribed before the task first runs:
             // a command produced while the tunnel connects waits in its record
             // buffer and goes out once the handshake completes.
@@ -87,7 +87,7 @@ where
             let task: BoxFuture = Box::pin(connection_task(
                 self.binder.clone(),
                 gateway,
-                runtime,
+                clock,
                 self.delay.clone(),
                 inbound,
                 outbound,

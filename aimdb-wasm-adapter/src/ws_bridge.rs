@@ -763,8 +763,8 @@ impl WsBridge {
             url: url.to_string(),
             shared: shared.clone(),
         };
-        let (handle, engine_fut) =
-            run_client(dialer, AimxCodec, engine_config, Arc::new(WasmAdapter));
+        let ctx = aimdb_core::RuntimeContext::new(Arc::new(WasmAdapter));
+        let (handle, engine_fut) = run_client(dialer, AimxCodec, engine_config, ctx);
         wasm_bindgen_futures::spawn_local(engine_fut);
 
         // One pump per configured pattern; the subscribe command queues offline

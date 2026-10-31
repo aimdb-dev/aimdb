@@ -814,11 +814,12 @@ async fn client_engine_receives_broadcast_over_real_socket() {
         reconnect: false,
         ..ClientConfig::default()
     };
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         WsDialer::new(format!("ws://{addr}/ws")),
         AimxCodec,
         config,
-        Arc::new(TokioAdapter),
+        ctx,
     );
     let driver = tokio::spawn(engine);
 

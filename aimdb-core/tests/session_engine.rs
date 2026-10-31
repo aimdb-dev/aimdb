@@ -458,6 +458,7 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     ));
 
     // Client engine: handshake-as-caller (Ping/Pong), no reconnect for the test.
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -470,7 +471,7 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
             max_offline_queue: 1024,
             sends_hello: true,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -525,6 +526,7 @@ async fn failed_subscribe_ends_stream_via_ack() {
         dispatch,
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -537,7 +539,7 @@ async fn failed_subscribe_ends_stream_via_ack() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -595,6 +597,7 @@ async fn oversized_snapshot_burst_completes_without_a_live_event() {
         dispatch,
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -607,7 +610,7 @@ async fn oversized_snapshot_burst_completes_without_a_live_event() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -748,6 +751,7 @@ async fn ended_subscription_frees_its_cap_slot() {
             acks_subscribe: false,
         },
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -760,7 +764,7 @@ async fn ended_subscription_frees_its_cap_slot() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -861,8 +865,8 @@ async fn read_request(peer: &mut Box<dyn Connection>) -> (u64, String, String) {
 #[tokio::test]
 async fn repeated_call_timeouts_leave_the_connection_usable() {
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
     let client = tokio::spawn(client_fut);
     // The test *is* the peer: it reads every request and answers only the last.
     let mut peer = listener.accept().await.expect("the client must dial");
@@ -908,8 +912,8 @@ async fn repeated_call_timeouts_leave_the_connection_usable() {
 #[tokio::test]
 async fn a_call_abandoned_before_dispatch_is_never_sent() {
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
 
     // Zero deadline: `timeout` polls the call once — enough to enqueue the
     // command — then gives up and drops it, all before the engine is driven.
@@ -955,8 +959,8 @@ async fn a_call_abandoned_before_dispatch_is_never_sent() {
 async fn a_concurrent_batch_of_timeouts_leaves_the_connection_usable() {
     const BATCH: usize = 256;
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
     let client = tokio::spawn(client_fut);
     let mut peer = listener.accept().await.expect("the client must dial");
 
@@ -1337,6 +1341,7 @@ async fn a_subscription_that_ends_on_its_own_is_reported() {
         }),
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -1349,7 +1354,7 @@ async fn a_subscription_that_ends_on_its_own_is_reported() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 

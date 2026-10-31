@@ -261,6 +261,12 @@ pub trait AnyRecord: Send + Sync {
     /// Used internally by the builder to apply security policy to records.
     fn set_writable_erased(&self, writable: bool);
 
+    /// Binds the instance clock every write to this record is stamped from.
+    ///
+    /// Called by `AimDbBuilder::build()` for every record before any task
+    /// runs (design 058 §3.3).
+    fn bind_clock(&mut self, clock: Arc<dyn crate::clock::InstanceClock>);
+
     /// Returns the record's JSON remote-access surface, if it has one.
     ///
     /// This accessor is the single place the `remote` cfg-gate lives
@@ -536,6 +542,9 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// a pre-resolved handle to the same buffer.
     buffer: Option<Arc<dyn DynBuffer<T>>>,
 
+    /// The instance clock, bound by `build()` before any writer exists.
+    clock: Option<Arc<dyn crate::clock::InstanceClock>>,
+
     /// Buffer configuration cached for metadata / dependency-graph reporting.
     /// Set via `set_buffer_cfg()` after `set_buffer()`.
     buffer_cfg: Option<crate::buffer::BufferCfg>,
@@ -590,6 +599,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             consumers: Mutex::new(Vec::new()),
             transform: Mutex::new(None),
             buffer: None,
+            clock: None,
             buffer_cfg: None,
             outbound_connectors: Vec::new(),
             inbound_connectors: Vec::new(),
@@ -922,7 +932,11 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     where
         T: Send + Clone + 'static,
     {
-        Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone()))
+        let clock = self
+            .clock
+            .clone()
+            .expect("build() binds the instance clock before any writer is created");
+        Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone(), clock))
     }
 
     /// Returns a clone of the buffer `Arc` (or `None` if no buffer is
@@ -1222,6 +1236,10 @@ impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
 impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn bind_clock(&mut self, clock: Arc<dyn crate::clock::InstanceClock>) {
+        self.clock = Some(clock);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
