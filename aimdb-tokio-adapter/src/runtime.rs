@@ -5,6 +5,9 @@
 
 use aimdb_core::{DbResult, InstanceClock, LogLevel, RuntimeOps, Stamp};
 
+#[cfg(feature = "tokio-runtime")]
+use crate::events::{report, AdapterEvent};
+
 /// Tokio runtime adapter for std environments
 ///
 /// Hand an `Arc<TokioAdapter>` to `AimDbBuilder::runtime` to run AimDB on
@@ -79,9 +82,7 @@ impl TokioClock {
                 origin: tokio::time::Instant::now(),
             },
             Err(_) => {
-                aimdb_core::log_debug!(
-                    "tokio clock created outside a runtime: reads real time, not tokio's paused time"
-                );
+                report(AdapterEvent::ClockOutsideRuntime);
                 Source::System {
                     origin: std::time::Instant::now(),
                 }
@@ -273,9 +274,18 @@ mod runtime_ops_tests {
     fn clock_created_outside_runtime_always_reads_system_time() {
         use std::time::Instant;
 
+        let reported = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observer = {
+            let reported = reported.clone();
+            Arc::new(move |event: &AdapterEvent| {
+                assert!(matches!(event, AdapterEvent::ClockOutsideRuntime));
+                reported.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
         let origin_before = Instant::now();
-        let clock = TokioAdapter.new_clock();
+        let clock = crate::events::capture::with(observer, || TokioAdapter.new_clock());
         let origin_after = Instant::now();
+        assert_eq!(reported.load(std::sync::atomic::Ordering::Relaxed), 1);
         let read_system_time = || {
             let before = Instant::now();
             let stamp = clock.now();

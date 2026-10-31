@@ -17,6 +17,8 @@
 compile_error!("tokio-adapter requires the std feature");
 
 pub mod buffer;
+#[cfg(feature = "tokio-runtime")]
+mod events;
 
 // Tokio implementations of core's runtime-neutral I/O traits, so connector
 // crates stay runtime-neutral.
