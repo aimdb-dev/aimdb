@@ -838,7 +838,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
             #[allow(unused_mut)]
-            let mut producer = crate::typed_api::Producer::new(self.writer_handle());
+            let mut producer = crate::typed_api::Producer::new(self.writer_handle()?);
 
             #[cfg(feature = "observability")]
             let profiling_arg = {
@@ -925,18 +925,28 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         self.buffer.as_deref()
     }
 
-    /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer.
-    /// Used at build time by the spawn machinery to pre-resolve `Producer<T>`
-    /// handles.
-    pub(crate) fn writer_handle(&self) -> Arc<dyn crate::buffer::WriteHandle<T>>
+    /// Returns a fresh `Arc<dyn WriteHandle<T>>` bound to this record's buffer
+    /// and the instance clock. Used at build time by the spawn machinery to
+    /// pre-resolve `Producer<T>` handles.
+    ///
+    /// Fails for a record that is not part of a built database: `build()`
+    /// binds the clock, and a write without one would go unstamped.
+    pub(crate) fn writer_handle(&self) -> crate::DbResult<Arc<dyn crate::buffer::WriteHandle<T>>>
     where
         T: Send + Clone + 'static,
     {
         let clock = self
             .clock
             .clone()
-            .expect("build() binds the instance clock before any writer is created");
-        Arc::new(crate::buffer::RecordWriter::new(self.buffer.clone(), clock))
+            .ok_or_else(|| crate::DbError::InvalidOperation {
+                operation: "write".to_string(),
+                reason: "the record has no instance clock; only records of a built database accept writes"
+                    .to_string(),
+            })?;
+        Ok(Arc::new(crate::buffer::RecordWriter::new(
+            self.buffer.clone(),
+            clock,
+        )))
     }
 
     /// Returns a clone of the buffer `Arc` (or `None` if no buffer is
@@ -1034,7 +1044,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     }
 
     #[cfg(feature = "remote")]
-    fn commit_remote_write(&self, value: T) {
+    fn commit_remote_write(&self, value: T) -> crate::DbResult<()> {
         log_debug!(
             "Successfully deserialized JSON to type: {}",
             core::any::type_name::<T>()
@@ -1042,12 +1052,13 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
         // Push through the unified write path. This also marks metadata as
         // updated, matching the original `set_from_json` path.
-        self.writer_handle().push(value);
+        self.writer_handle()?.push(value);
 
         log_info!(
             "Successfully set value from JSON for record: {}",
             core::any::type_name::<T>()
         );
+        Ok(())
     }
 
     /// Returns a reference to the registered outbound connectors
@@ -1172,7 +1183,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
             #[allow(unused_mut)]
-            let mut producer = crate::typed_api::Producer::new(self.writer_handle());
+            let mut producer = crate::typed_api::Producer::new(self.writer_handle()?);
 
             #[cfg(feature = "observability")]
             if let Some(entry) = self.profiling.source(0) {
@@ -1494,9 +1505,7 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             ))
         })?;
 
-        self.commit_remote_write(value);
-
-        Ok(())
+        self.commit_remote_write(value)
     }
 
     fn set_from_json_bytes(&self, bytes: &[u8]) -> crate::DbResult<()> {
@@ -1516,9 +1525,7 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             ))
         })?;
 
-        self.commit_remote_write(value);
-
-        Ok(())
+        self.commit_remote_write(value)
     }
 }
 

@@ -1110,7 +1110,7 @@ impl AimDb {
         // Single write path via WriteHandle. For hot paths,
         // prefer `db.producer::<T>(key)` once and reuse the returned handle.
         let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
-        typed_rec.writer_handle().push(value);
+        typed_rec.writer_handle()?.push(value);
         Ok(())
     }
 
@@ -1163,7 +1163,7 @@ impl AimDb {
         // handle to the record's buffer/snapshot/metadata directly
         let key_str: alloc::string::String = key.into();
         let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
-        Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()))
+        Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()?))
     }
 
     /// Creates a type-safe consumer for a specific record by key

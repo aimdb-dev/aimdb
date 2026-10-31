@@ -8,7 +8,6 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -120,6 +119,7 @@ mod tests {
     use aimdb_core::AimDbBuilder;
     use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
     use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+    use alloc::sync::Arc;
     use std::net::Ipv4Addr;
 
     async fn db() -> AimDb {

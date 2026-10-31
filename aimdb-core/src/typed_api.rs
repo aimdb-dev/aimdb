@@ -1042,16 +1042,17 @@ fn inbound_producer<T>(db: &AimDb, record_key: &str) -> Producer<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    let typed_rec = db
+    let writer = db
         .inner()
         .get_typed_record_by_key::<T>(record_key)
+        .and_then(|rec| rec.writer_handle())
         .unwrap_or_else(|e| {
             panic!(
-                "ingest factory: record '{record_key}' lookup failed ({e:?}) — \
+                "ingest factory: no producer for record '{record_key}' ({e:?}) — \
                  this is a bug in aimdb-core"
             )
         });
-    Producer::<T>::new(typed_rec.writer_handle())
+    Producer::<T>::new(writer)
 }
 
 /// Fused ingest factory: resolves the typed producer once at route-collection

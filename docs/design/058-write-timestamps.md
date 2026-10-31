@@ -92,41 +92,68 @@ impl Stamp {
 
 /// The instance's clock, created once by `build()`.
 pub trait InstanceClock: Send + Sync {
-    /// Time since instance start. Nondecreasing (consecutive readings may be
-    /// equal); saturates at `u64::MAX`.
+    /// Monotonic, instance-relative: time since instance start.
+    /// Nondecreasing (consecutive readings may be equal); saturates at
+    /// `u64::MAX`.
     fn now(&self) -> Stamp;
+    /// Absolute wall-clock time since the Unix epoch. Independent of `now()`'s
+    /// origin; may be adjusted, and is `None` without a wall clock.
+    fn unix_time(&self) -> Option<(u64, u32)>;
 }
 ```
 
-`RuntimeOps` gains `fn instance_clock(&self) -> Arc<dyn InstanceClock>`,
-which is infallible and called once from `AimDbBuilder::build()`. Each call
-creates a new clock whose origin is the moment of the call.
+**Time reads belong to the clock.** The clock carries both time sources an
+instance has, each with its own guarantee: `now()` is monotonic and relative
+to instance start; `unix_time()` is absolute, may be adjusted by clock
+corrections, and may be unavailable. Unix time is never derived from a stamp.
 
-**One notion of time per instance.** `RuntimeOps::now_nanos()` stays.
-`build()` wraps the adapter as `InstanceRuntime { ops, clock }`, a
-`RuntimeOps` whose `now_nanos()` reads the instance clock and which delegates
-everything else to the adapter. `AimDb::runtime_ops()` and `RuntimeContext`
-hand out this wrapper, so connectors, session idle timers and `ctx.time()`
-share the instance clock without code changes (R2). Profiling reads the
+`RuntimeOps` no longer reads time. It keeps identity, sleep and logging, and
+gains a clock factory; `now_nanos()` and `unix_time()` are removed:
+
+```rust
+pub trait RuntimeOps: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// A new clock whose monotonic origin is the moment of this call.
+    fn new_clock(&self) -> Arc<dyn InstanceClock>;
+    fn sleep(&self, d: Duration) -> BoxFuture;
+    fn log(&self, level: LogLevel, msg: &str);
+}
+```
+
+`new_clock()` is infallible. Only the adapter knows how to build a clock
+(a Tokio handle, an Embassy `Instant`, `performance.now()`), and the origin
+must be the instance start, not the adapter's construction, so the adapter
+provides a factory rather than a clock of its own.
+
+**One notion of time per instance.** `build()` calls `new_clock()` once and
+keeps the result. `RuntimeContext` holds the runtime and a clock
+(`{ ops, clock }`); every context the instance hands out
+(`AimDb::runtime_ctx()`, services, connectors, inbound dispatch, outbound
+routes) carries the instance clock, so connectors, session idle timers and
+`ctx.time()` read the clock that stamps writes (R2). `ctx.time().now()`
+returns a `Stamp`; `ctx.time().unix_time()` reads the clock's wall time.
+Engines that read time, such as the session client engine (`run_client`),
+take a `RuntimeContext`; connectors that only read time take the
+`Arc<dyn InstanceClock>`. Code outside an instance (a standalone client)
+creates its own clock with `RuntimeContext::new(ops)`. Profiling reads the
 instance clock directly and has no origin of its own.
 
 ### 3.2 Per adapter
 
 The origin is instance start on every adapter, captured in `build()`.
 
-| Adapter | `now()` | Origin |
-|---|---|---|
-| Tokio | `tokio::time::Instant::now()` read in the context of the runtime captured at `build()` | that `Instant` at `build()` |
-| Embassy | `embassy_time::Instant::now()` (µs × 1000, saturating) | that `Instant` at `build()`, not boot |
-| WASM | `performance.now()` | `performance.now()` at `build()` |
+| Adapter | `now()` | Origin | `unix_time()` |
+|---|---|---|---|
+| Tokio | `tokio::time::Instant::now()` read in the context of the runtime captured at `build()` | that `Instant` at `build()` | `SystemTime` |
+| Embassy | `embassy_time::Instant::now()` (µs × 1000, saturating) | that `Instant` at `build()`, not boot | boot anchor from `set_unix_time` plus uptime; `None` until set |
+| WASM | `performance.now()` | `performance.now()` at `build()` | `Date.now()` |
 
-**Tokio.** Today `TokioAdapter::now_nanos` measures from an anchor per
-calling runtime (`clock_anchor` keyed by `Handle::try_current()`, #333). A
-write from outside the runtime, such as `aimdb-sync`'s `SyncProducer::set`,
-which runs on the caller's thread, or a write from another runtime, would
-read a different origin and, under `test-util`, a different clock. The
-instance clock instead captures `Handle::current()` and an origin `Instant`
-in `build()` (which is `async`, so a runtime is always current). `now()`:
+**Tokio.** A clock must not depend on which runtime reads it: a write from
+outside the runtime, such as `aimdb-sync`'s `SyncProducer::set`, which runs
+on the caller's thread, or a write from another runtime, would otherwise read
+a different origin and, under `test-util`, a different clock. The clock
+instead captures `Handle::current()` and an origin `Instant` in
+`build()` (which is `async`, so a runtime is always current). `now()`:
 
 ```rust
 let now = if Handle::try_current().map(|h| h.id()) == Ok(self.handle.id()) {
@@ -143,9 +170,9 @@ The fast path costs one thread-local read; writes from foreign threads pay a
 context enter. With `tokio::time::pause()`, every write reads the paused
 clock of the instance's runtime, wherever it comes from (R5).
 
-The raw `TokioAdapter::now_nanos()` keeps its per-calling-runtime anchor
-(#333) and is documented as not being instance time. Code inside an instance
-reaches the wrapper from §3.1 instead.
+The per-runtime anchor `TokioAdapter::now_nanos()` used (#333) goes away
+with `now_nanos()`: each clock has its own origin, so a paused runtime that
+advanced earlier cannot shift a later clock.
 
 **Embassy.** `embassy_time::Instant` is global, so it is already one clock;
 the instance clock subtracts the `Instant` captured at `build()`.
@@ -159,7 +186,7 @@ same clamp to `0..=u64::MAX`.
 `build()` runs in this order:
 
 1. Aggregated validation of the configuration, unchanged.
-2. Bind the runtime and create the clock (`instance_clock()`).
+2. Bind the runtime and create the clock (`new_clock()`).
 3. Bind the clock to every record in a second pass over the record storages.
 4. Construct the database and start it.
 
@@ -298,7 +325,7 @@ The write metadata, and with it the stamp, is part of every read result:
 
 `AimDb::now() -> Stamp` reads the instance clock, so in-process code can
 compute a value's age (`db.now().since(v.stamp())`). `RuntimeContext`'s
-`time().now()` reads the same clock through the wrapper (§3.1).
+`time().now()` reads the same clock (§3.1).
 
 No `recv_stamped`/`recv` pair: callers that want only the value write
 `.value`. The migration is mechanical and the compiler finds every site.
@@ -462,7 +489,8 @@ consumers. A string would cost every Rust client a parse.
 
 | Area | Change |
 |---|---|
-| `RuntimeOps` | `instance_clock` added; out-of-tree adapters implement it. `now_nanos` stays. |
+| `RuntimeOps` | `now_nanos` and `unix_time` removed; `new_clock` added, which out-of-tree adapters implement. |
+| Clock and context | `InstanceClock` carries `now()` and `unix_time()`. `RuntimeContext` holds a clock; `ctx.time().now()` returns `Stamp`. `run_client` takes a `RuntimeContext` instead of `Arc<dyn RuntimeOps>`. |
 | Buffers | Element type `Stamped<T>`; `buffer_raw` / `buffer_with_cfg` signatures; custom and mock buffers. |
 | Envelope | New `Stamped<T>` (public `value`, private metadata) and opaque `WriteMetadata`. |
 | Readers | `recv` / `try_recv` / `latest` return `Stamped<T>`; `aimdb-sync` likewise. `RecordValue` gains `metadata()` / `stamp()`. |
@@ -491,7 +519,7 @@ Phase 2 depends on phase 1. Both should reach users in the same release, so
 | Crate | Cases |
 |---|---|
 | `aimdb-core` (envelope) | `map`, `try_map` and `as_ref` keep `metadata()` equal to the input's; `try_map` errors drop nothing else; `RecordValue`, `JoinTrigger` and `OutboundMessage` report the metadata of the write they carry; a transform output's metadata differs from its input's under a manual clock. |
-| `aimdb-core` | every write path stamps (source, `try_produce`, transform, join output, inbound dispatch, `record.set`); `latest` and `recv` return the same stamp for the same write; with a manual clock, write stamps equal the manual time and a transform output carries its own write time, not its input's; one writer's stamps are nondecreasing; `runtime_ops().now_nanos()`, `db.now()` and profiling read the same clock. |
+| `aimdb-core` | every write path stamps (source, `try_produce`, transform, join output, inbound dispatch, `record.set`); `latest` and `recv` return the same stamp for the same write; with a manual clock, write stamps equal the manual time and a transform output carries its own write time, not its input's; one writer's stamps are nondecreasing; `db.now()`, `ctx.time().now()` and profiling read the same clock. |
 | `aimdb-core` (JSON reads) | for one write, `latest_json`, `latest_json_bytes`, `try_latest_as_json*`, and each `JsonBufferReader` / `JsonReader` method (tree and bytes, poll and try) return the typed read's stamp; the trait-default byte paths keep it; a write landing between two reads never gives a payload the newer stamp (single-read check with a buffer whose `peek` is counted); encoded payloads equal the codec's output for `T` alone. |
 | `aimdb-core` (AimX) | `ts` on `event`, `snap`, `get`, `drain` and `set`; `set` on a ring replies `{status}`; a value frame without `ts` is malformed; a 3.x client is refused. |
 | `aimdb-tokio-adapter` | under `tokio::time::pause`, two writes with no `advance` share a stamp and `advance(d)` between them gives exactly `d`; readings from a `std::thread` and from a second runtime use the instance runtime's clock; an `aimdb-sync` `set` is stamped on the instance's paused clock. |
@@ -526,7 +554,12 @@ Phase 2 depends on phase 1. Both should reach users in the same release, so
 7. **Serialize `WriteMetadata` onto the wire as a whole.** Would let an
    internal field change protocol messages silently. The encoder picks
    fields explicitly (§5).
-8. **Keep 3.x compatibility.** Optional `ts`, reply negotiation and
+8. **Keep time reads on `RuntimeOps`, behind an instance wrapper.** An
+   `InstanceRuntime` whose `now_nanos()` reads the instance clock would have
+   kept connector code unchanged, but split ownership: monotonic reads through
+   the clock, wall-clock reads through the runtime. Moving both onto the clock
+   gives each time source one owner (§3.1).
+9. **Keep 3.x compatibility.** Optional `ts`, reply negotiation and
    unstamped API variants double the surface for a transition no deployment
    needs; a major version is cheaper.
 
