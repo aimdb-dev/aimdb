@@ -83,6 +83,8 @@ pub(crate) use writer::RecordWriter;
 #[cfg(feature = "remote")]
 pub use reader::JsonReader;
 #[cfg(feature = "remote")]
+pub(crate) use traits::json_tree_to_bytes;
+#[cfg(feature = "remote")]
 pub use traits::JsonBufferReader;
 
 // Buffer metrics (feature-gated; works in no_std with portable-atomic)

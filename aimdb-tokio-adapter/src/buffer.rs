@@ -611,12 +611,23 @@ impl<T: Clone + Send + Sync + 'static> Drop for TokioBuffer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::buffer::Reader;
 
-    /// Wrap a concrete `TokioBufferReader` in the ergonomic `Reader<T>` so the
-    /// tests can keep exercising `recv().await` / `try_recv()`.
-    fn rdr<T: Clone + Send + Sync + 'static>(buffer: &TokioBuffer<T>) -> Reader<T> {
-        Reader::new(Box::new(buffer.subscribe()))
+    /// The `recv().await` / `try_recv()` surface of core's
+    /// `Reader<T>` over a raw buffer reader. (Core's `Reader<T>` reads record
+    /// buffers, which hold `Stamped<T>`; these tests exercise the buffer.)
+    struct Rdr<T: Clone + Send + Sync + 'static>(TokioBufferReader<T>);
+
+    impl<T: Clone + Send + Sync + 'static> Rdr<T> {
+        async fn recv(&mut self) -> Result<T, DbError> {
+            core::future::poll_fn(|cx| self.0.poll_recv(cx)).await
+        }
+        fn try_recv(&mut self) -> Result<T, DbError> {
+            self.0.try_recv()
+        }
+    }
+
+    fn rdr<T: Clone + Send + Sync + 'static>(buffer: &TokioBuffer<T>) -> Rdr<T> {
+        Rdr(buffer.subscribe())
     }
 
     #[tokio::test]
@@ -998,13 +1009,15 @@ mod tests {
         use aimdb_core::buffer::test_support;
         // The one shared cross-runtime contract, run under the tokio executor.
         test_support::assert_single_latest_contract(|| {
-            TokioBuffer::<i32>::new(&BufferCfg::SingleLatest)
+            TokioBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SingleLatest)
         })
         .await;
-        test_support::assert_mailbox_contract(|| TokioBuffer::<i32>::new(&BufferCfg::Mailbox))
-            .await;
+        test_support::assert_mailbox_contract(|| {
+            TokioBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::Mailbox)
+        })
+        .await;
         test_support::assert_spmc_ring_contract(|| {
-            TokioBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 4 })
+            TokioBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 })
         })
         .await;
     }

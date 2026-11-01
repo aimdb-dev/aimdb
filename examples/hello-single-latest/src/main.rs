@@ -89,7 +89,7 @@ async fn rollout_observer_fast(ctx: RuntimeContext, consumer: Consumer<FeatureFl
     while let Ok(feature_flag) = reader.recv().await {
         ctx.log().info(&format!(
             "[fast] rollout: {}%",
-            feature_flag.rollout_percent
+            feature_flag.value.rollout_percent
         ));
     }
 }
@@ -102,7 +102,7 @@ async fn rollout_observer_slow(ctx: RuntimeContext, consumer: Consumer<FeatureFl
     while let Ok(feature_flag) = reader.recv().await {
         ctx.log().info(&format!(
             "[slow] rollout: {}%",
-            feature_flag.rollout_percent
+            feature_flag.value.rollout_percent
         ));
 
         time.sleep_millis(2000).await;

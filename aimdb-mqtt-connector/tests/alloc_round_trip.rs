@@ -203,7 +203,7 @@ async fn round_trip(
     n: u64,
 ) {
     producer.produce(n);
-    while pong.recv().await.expect("pong open") != n {}
+    while pong.recv().await.expect("pong open").value != n {}
 }
 
 /// An echo broker on its own thread; returns its port.

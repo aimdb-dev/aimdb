@@ -29,6 +29,7 @@ use aimdb_core::session::{
 /// keepalive, so the clock seam is never awaited and the shared no-op stub
 /// suffices.
 use aimdb_core::executor::test_support::NoopRuntimeOps as TestClock;
+use aimdb_core::Stamp;
 
 // ===========================================================================
 // Channel-backed transport (Layer 1)
@@ -114,6 +115,13 @@ fn transport_pair() -> (ChannelListener, ChannelDialer) {
 
 struct LineCodec;
 
+/// A frame's stamp field.
+fn stamp(s: &str) -> Result<Stamp, CodecError> {
+    s.parse()
+        .map(Stamp::from_nanos)
+        .map_err(|_| CodecError::Malformed)
+}
+
 fn payload_from(s: &str) -> Payload {
     Arc::from(s.as_bytes())
 }
@@ -185,13 +193,15 @@ impl EnvelopeCodec for LineCodec {
                 sub,
                 seq,
                 topic,
+                ts,
                 data,
             } => {
                 // `-` marks an untagged event (no per-record topic).
                 format!(
-                    "EVENT\n{}\n{}\n{}\n{}",
+                    "EVENT\n{}\n{}\n{}\n{}\n{}",
                     sub,
                     seq,
+                    ts.as_nanos(),
                     topic.unwrap_or("-"),
                     utf8(&data)?
                 )
@@ -201,14 +211,16 @@ impl EnvelopeCodec for LineCodec {
                 seq,
                 last,
                 topic,
+                ts,
                 data,
             } => {
                 // `L` marks the burst's final snapshot, `-` a mid-burst one.
                 format!(
-                    "SNAP\n{}\n{}\n{}\n{}\n{}",
+                    "SNAP\n{}\n{}\n{}\n{}\n{}\n{}",
                     sub,
                     seq,
                     if last { "L" } else { "-" },
+                    ts.as_nanos(),
                     topic,
                     utf8(&data)?
                 )
@@ -255,11 +267,13 @@ impl EnvelopeCodec for LineCodec {
             "EVENT" => {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (ts, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Event {
                     sub,
                     seq: seq.parse().map_err(|_| CodecError::Malformed)?,
                     topic: (topic != "-").then_some(topic),
+                    ts: stamp(ts)?,
                     data: payload_from(data),
                 })
             }
@@ -267,12 +281,14 @@ impl EnvelopeCodec for LineCodec {
                 let (sub, r) = rest.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (seq, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (last, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
+                let (ts, r) = r.split_once('\n').ok_or(CodecError::Malformed)?;
                 let (topic, data) = r.split_once('\n').unwrap_or((r, ""));
                 Ok(Outbound::Snapshot {
                     sub,
                     seq: seq.parse().map_err(|_| CodecError::Malformed)?,
                     last: last == "L",
                     topic,
+                    ts: stamp(ts)?,
                     data: payload_from(data),
                 })
             }
@@ -337,7 +353,9 @@ impl Session for EchoSession {
             }
             // Three synthetic updates derived from the topic, then end.
             let items: Vec<SubUpdate> = (1..=3)
-                .map(|i| SubUpdate::new(payload_from(&format!("{topic}#{i}"))))
+                .map(|i| {
+                    SubUpdate::new(payload_from(&format!("{topic}#{i}")), Stamp::from_nanos(i))
+                })
                 .collect();
             Ok(Box::pin(futures::stream::iter(items)) as BoxStream<'static, SubUpdate>)
         })
@@ -404,9 +422,15 @@ impl Session for SnapshotSession {
         Box::pin(async move { Ok(params) })
     }
 
-    fn snapshots(&mut self, _topic: &str) -> Vec<(String, Payload)> {
+    fn snapshots(&mut self, _topic: &str) -> Vec<(String, Payload, Stamp)> {
         (1..=SNAPSHOT_RECORDS)
-            .map(|i| (format!("rec.{i}"), payload_from(&format!("snap#{i}"))))
+            .map(|i| {
+                (
+                    format!("rec.{i}"),
+                    payload_from(&format!("snap#{i}")),
+                    Stamp::from_nanos(i as u64),
+                )
+            })
             .collect()
     }
 
@@ -458,6 +482,7 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     ));
 
     // Client engine: handshake-as-caller (Ping/Pong), no reconnect for the test.
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -470,7 +495,7 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
             max_offline_queue: 1024,
             sends_hello: true,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -486,6 +511,8 @@ async fn echo_roundtrip_rpc_streaming_and_write() {
     assert_eq!(&*e1.data, b"temp#1");
     assert_eq!(&*e2.data, b"temp#2");
     assert_eq!(&*e3.data, b"temp#3");
+    // Each event carries the stamp of the write it reports, end to end.
+    assert_eq!([e1.ts, e3.ts], [Stamp::from_nanos(1), Stamp::from_nanos(3)]);
 
     // 3) Fire-and-forget write, then a follow-up RPC. FIFO on the single
     //    connection guarantees the write frame is processed before the reply
@@ -525,6 +552,7 @@ async fn failed_subscribe_ends_stream_via_ack() {
         dispatch,
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -537,7 +565,7 @@ async fn failed_subscribe_ends_stream_via_ack() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -595,6 +623,7 @@ async fn oversized_snapshot_burst_completes_without_a_live_event() {
         dispatch,
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -607,7 +636,7 @@ async fn oversized_snapshot_burst_completes_without_a_live_event() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -699,7 +728,7 @@ async fn oversized_snapshot_burst_completes_without_a_live_event() {
 
     // --- and the sequence is closed, so live events resume clean ------------
     event_tx
-        .send(SubUpdate::new(payload_from("live")))
+        .send(SubUpdate::new(payload_from("live"), Stamp::from_nanos(99)))
         .expect("subscription stream should still be feeding");
     let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
         .await
@@ -748,6 +777,7 @@ async fn ended_subscription_frees_its_cap_slot() {
             acks_subscribe: false,
         },
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -760,7 +790,7 @@ async fn ended_subscription_frees_its_cap_slot() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 
@@ -861,8 +891,8 @@ async fn read_request(peer: &mut Box<dyn Connection>) -> (u64, String, String) {
 #[tokio::test]
 async fn repeated_call_timeouts_leave_the_connection_usable() {
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
     let client = tokio::spawn(client_fut);
     // The test *is* the peer: it reads every request and answers only the last.
     let mut peer = listener.accept().await.expect("the client must dial");
@@ -908,8 +938,8 @@ async fn repeated_call_timeouts_leave_the_connection_usable() {
 #[tokio::test]
 async fn a_call_abandoned_before_dispatch_is_never_sent() {
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
 
     // Zero deadline: `timeout` polls the call once — enough to enqueue the
     // command — then gives up and drops it, all before the engine is driven.
@@ -955,8 +985,8 @@ async fn a_call_abandoned_before_dispatch_is_never_sent() {
 async fn a_concurrent_batch_of_timeouts_leaves_the_connection_usable() {
     const BATCH: usize = 256;
     let (mut listener, dialer) = transport_pair();
-    let (handle, client_fut) =
-        run_client(dialer, LineCodec, silent_peer_config(), Arc::new(TestClock));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
+    let (handle, client_fut) = run_client(dialer, LineCodec, silent_peer_config(), ctx);
     let client = tokio::spawn(client_fut);
     let mut peer = listener.accept().await.expect("the client must dial");
 
@@ -1209,7 +1239,7 @@ async fn publish(
     value: &str,
 ) -> Vec<String> {
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _ = feed.send(SubUpdate::new(payload_from(value)));
+    let _ = feed.send(SubUpdate::new(payload_from(value), Stamp::from_nanos(0)));
     frames_within(conn, Duration::from_millis(200)).await
 }
 
@@ -1223,7 +1253,7 @@ async fn a_subscribe_reusing_a_live_id_is_refused() {
 
     conn.send(b"SUB\n2\nfeed").await.unwrap();
     let first = publish(&mut conn, &feed, "v1").await;
-    assert_eq!(first, ["EVENT\n2\n1\n-\nv1"]);
+    assert_eq!(first, ["EVENT\n2\n1\n0\n-\nv1"]);
 
     conn.send(b"SUB\n2\nfeed").await.unwrap();
     let refused = frames_within(&mut conn, Duration::from_millis(200)).await;
@@ -1232,7 +1262,7 @@ async fn a_subscribe_reusing_a_live_id_is_refused() {
     let after = publish(&mut conn, &feed, "v2").await;
     assert_eq!(
         after,
-        ["EVENT\n2\n2\n-\nv2"],
+        ["EVENT\n2\n2\n0\n-\nv2"],
         "the live subscription keeps delivering"
     );
     server.abort();
@@ -1247,7 +1277,7 @@ async fn an_id_reused_after_unsubscribe_keeps_delivering() {
     conn.send(b"SUB\n2\nfeed").await.unwrap();
     assert_eq!(
         publish(&mut conn, &feed, "v1").await,
-        ["EVENT\n2\n1\n-\nv1"]
+        ["EVENT\n2\n1\n0\n-\nv1"]
     );
 
     // Back to back: the old pump is cancelled but not yet reaped when the new
@@ -1259,7 +1289,7 @@ async fn an_id_reused_after_unsubscribe_keeps_delivering() {
         let got = publish(&mut conn, &feed, value).await;
         assert_eq!(
             got,
-            [format!("EVENT\n2\n{}\n-\n{value}", n + 1)],
+            [format!("EVENT\n2\n{}\n0\n-\n{value}", n + 1)],
             "the reused id must keep delivering"
         );
     }
@@ -1303,7 +1333,7 @@ async fn a_second_handshake_starts_a_new_session() {
     // B subscribes under A's id: delivered once per update.
     conn.send(b"SUB\n2\nfeed").await.unwrap();
     let b = publish(&mut conn, &feed, "v3").await;
-    assert_eq!(b, ["EVENT\n2\n1\n-\nv3"]);
+    assert_eq!(b, ["EVENT\n2\n1\n0\n-\nv3"]);
     assert_eq!(feed.receiver_count(), 1);
     server.abort();
 }
@@ -1317,7 +1347,7 @@ async fn the_first_handshake_keeps_earlier_subscriptions() {
     conn.send(b"SUB\n2\nfeed").await.unwrap();
     conn.send(b"REQ\n1\nhello\nA").await.unwrap();
     let got = publish(&mut conn, &feed, "v1").await;
-    assert_eq!(got, ["REPLY\n1\nOK\nA", "EVENT\n2\n1\n-\nv1"]);
+    assert_eq!(got, ["REPLY\n1\nOK\nA", "EVENT\n2\n1\n0\n-\nv1"]);
     server.abort();
 }
 
@@ -1337,6 +1367,7 @@ async fn a_subscription_that_ends_on_its_own_is_reported() {
         }),
         SessionConfig::default(),
     ));
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TestClock));
     let (handle, client_fut) = run_client(
         dialer,
         LineCodec,
@@ -1349,7 +1380,7 @@ async fn a_subscription_that_ends_on_its_own_is_reported() {
             max_offline_queue: 1024,
             sends_hello: false,
         },
-        Arc::new(TestClock),
+        ctx,
     );
     let client = tokio::spawn(client_fut);
 

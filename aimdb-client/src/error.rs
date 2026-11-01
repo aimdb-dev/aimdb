@@ -29,6 +29,11 @@ pub enum ClientError {
         details: Option<serde_json::Value>,
     },
 
+    /// The server's reply broke the AimX protocol, e.g. a value without its
+    /// mandatory `ts` (AimX 4.0).
+    #[error("Protocol error: {reason}")]
+    Protocol { reason: String },
+
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -43,6 +48,13 @@ pub enum ClientError {
 }
 
 impl ClientError {
+    /// Create a protocol error
+    pub fn protocol(reason: impl Into<String>) -> Self {
+        Self::Protocol {
+            reason: reason.into(),
+        }
+    }
+
     /// Create a connection failed error
     pub fn connection_failed(endpoint: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::ConnectionFailed {

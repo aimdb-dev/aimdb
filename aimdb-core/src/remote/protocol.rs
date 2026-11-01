@@ -12,14 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Version of the AimX wire protocol spoken by this crate.
-pub const PROTOCOL_VERSION: &str = "3.1";
+pub const PROTOCOL_VERSION: &str = "4.0";
 
 /// Query-parameter name a WebSocket client uses to declare its
 /// [`PROTOCOL_VERSION`] at the HTTP upgrade. The socket transports gate the
 /// version inside the `hello` handshake, but a browser cannot set custom
 /// headers on the WebSocket handshake **and** the WS server runs
 /// `reads_hello:false`, so the WS upgrade carries the version in the URL
-/// instead (`…/ws?v=3.1`) and the server refuses an incompatible/absent one
+/// instead (`…/ws?v=4.0`) and the server refuses an incompatible/absent one
 /// before the socket opens. See [`ws_url_with_version`].
 pub const VERSION_PARAM: &str = "v";
 
@@ -297,7 +297,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&hello).unwrap();
-        assert!(json.contains("\"version\":\"3.1\""));
+        assert!(json.contains("\"version\":\"4.0\""));
         assert!(json.contains("\"client\":\"test-client\""));
     }
 
@@ -371,11 +371,14 @@ mod tests {
     fn version_compatible_matches_on_major() {
         // Same major (current + a hypothetical future minor) → compatible.
         assert!(version_compatible(PROTOCOL_VERSION));
-        assert!(version_compatible("3.0"));
-        assert!(version_compatible("3.7"));
-        assert!(version_compatible("3")); // bare major
+        assert!(version_compatible("4.0"));
+        assert!(version_compatible("4.7"));
+        assert!(version_compatible("4")); // bare major
 
-        // Older major (the legacy WS-era wire) → refused.
+        // Older majors → refused: 3.x has no write stamps (`ts`), 2.x is the
+        // legacy WS-era wire.
+        assert!(!version_compatible("3.1"));
+        assert!(!version_compatible("3.0"));
         assert!(!version_compatible("2.0"));
         assert!(!version_compatible("1.0"));
 

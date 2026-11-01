@@ -94,7 +94,7 @@ async fn sensor_observer_fast(ctx: RuntimeContext, consumer: Consumer<Temperatur
 
     while let Ok(temp) = reader.recv().await {
         ctx.log()
-            .info(&format!("[fast] observed temperature {}", temp));
+            .info(&format!("[fast] observed temperature {}", temp.value));
     }
 }
 
@@ -104,7 +104,7 @@ async fn sensor_observer_slow(ctx: RuntimeContext, consumer: Consumer<Temperatur
 
     while let Ok(temp) = reader.recv().await {
         ctx.log()
-            .info(&format!("[slow] observed temperature {}", temp));
+            .info(&format!("[slow] observed temperature {}", temp.value));
 
         time.sleep_millis(100).await;
     }

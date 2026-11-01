@@ -42,7 +42,7 @@ async fn source_and_tap_stages_are_timed_and_named() {
                 let mut reader = consumer.subscribe();
                 while let Ok(reading) = reader.recv().await {
                     // Simulate per-value processing work (wall-clock).
-                    let _ = reading.value;
+                    let _ = reading.value.value;
                     ctx.time().sleep_millis(5).await;
                 }
             })
@@ -140,7 +140,7 @@ async fn transform_stage_is_timed_and_is_the_bottleneck() {
             .tap(|_ctx, consumer| async move {
                 let mut reader = consumer.subscribe();
                 while let Ok(doubled) = reader.recv().await {
-                    let _ = doubled.value;
+                    let _ = doubled.value.value;
                 }
             })
             .with_name("quick_consumer");

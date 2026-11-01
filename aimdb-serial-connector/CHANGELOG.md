@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking, wire)
+
+- **AimX 4.0 (#326).** Values carry their write stamp (`ts`); 3.x peers are
+  refused. `run_client` takes a `RuntimeContext`
+  (`RuntimeContext::new(Arc::new(adapter))` outside an instance).
+
 ### Fixed
 
 - **Reconnecting over serial works every time (#328).** Every other client

@@ -137,11 +137,24 @@ async fn wait_for_listen(addr: SocketAddr) {
 
 /// Grab a probably-free ephemeral port (the WS builder binds internally and does
 /// not surface `:0`'s assigned port, so we pick one up front).
+///
+/// Never hands out the same port twice in this process: the tests run in
+/// parallel, and the OS may reissue a port once its probe listener is dropped.
+/// Two fixtures on one port fail silently — the second server's bind fails,
+/// `wait_for_listen` finds the first one, and the client is judged by the
+/// other test's grants.
 fn free_addr() -> SocketAddr {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let a = l.local_addr().unwrap();
-    drop(l);
-    a
+    static ISSUED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut issued = ISSUED.lock().unwrap();
+    loop {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = l.local_addr().unwrap();
+        drop(l);
+        if !issued.contains(&a.port()) {
+            issued.push(a.port());
+            return a;
+        }
+    }
 }
 
 #[tokio::test]
@@ -1077,7 +1090,10 @@ async fn write_patterns_uphold_topic() {
     ws_send(&mut client, json!({"t":"ping"})).await;
     assert_eq!(ws_recv(&mut client).await, json!({"t":"pong"}));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(server_db.try_latest_as_json("cfg"), Some(json!({"v": 1})));
+    assert_eq!(
+        server_db.try_latest_as_json("cfg").map(|s| s.value),
+        Some(json!({"v": 1}))
+    );
 }
 
 #[tokio::test]

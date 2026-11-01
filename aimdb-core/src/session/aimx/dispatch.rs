@@ -37,7 +37,7 @@ use crate::session::{
     is_wildcard, topic_matches, AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo,
     RpcError, Session, SessionCtx, SubUpdate,
 };
-use crate::{AimDb, DbError};
+use crate::{AimDb, DbError, Stamped};
 
 /// The shared AimX dispatch — `authenticate` (peer-only) + the `AimxSession`
 /// factory. One `Arc<AimxDispatch>` is shared across every accepted connection.
@@ -136,14 +136,13 @@ impl Session for AimxSession {
             // Exact-topic fast path: resolve one key, untagged updates.
             let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
                 .map_err(map_db_err)?;
-            Ok(
-                Box::pin(stream.map(|(data, skipped)| SubUpdate::new(data).with_skipped(skipped)))
-                    as BoxStream<'static, SubUpdate>,
-            )
+            Ok(Box::pin(
+                stream.map(|(data, ts, skipped)| SubUpdate::new(data, ts).with_skipped(skipped)),
+            ) as BoxStream<'static, SubUpdate>)
         })
     }
 
-    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload, crate::Stamp)> {
         // Late-join state for wildcard subscriptions: the current value of every
         // matched record that has one. Exact-topic AimX subscribes stay
         // event-only (unchanged wire for UDS/serial/TCP clients).
@@ -153,8 +152,8 @@ impl Session for AimxSession {
         self.matched_keys(topic)
             .into_iter()
             .filter_map(|key| {
-                let value = self.db.try_latest_as_json(&key)?;
-                Some((key, to_payload(&value)))
+                let sample = self.db.try_latest_as_json(&key)?;
+                Some((key, to_payload(&sample.value), sample.stamp()))
             })
             .collect()
     }
@@ -201,8 +200,8 @@ impl AimxSession {
             match crate::remote::stream::stream_record_updates(&self.db, &key) {
                 Ok(stream) => {
                     let tag: Arc<str> = Arc::from(key.as_str());
-                    streams.push(Box::pin(stream.map(move |(data, skipped)| {
-                        SubUpdate::tagged(tag.clone(), data).with_skipped(skipped)
+                    streams.push(Box::pin(stream.map(move |(data, ts, skipped)| {
+                        SubUpdate::tagged(tag.clone(), data, ts).with_skipped(skipped)
                     })));
                 }
                 Err(_e) => {
@@ -274,7 +273,12 @@ impl AimxSession {
         Ok(DispatchReply::Value(value))
     }
 
-    /// `record.set` (RPC): permission-checked write that echoes the new value.
+    /// `record.set` (RPC): permission-checked write that echoes the new value
+    /// and its write stamp: `{status, value, ts}`, or `{status}` when the
+    /// record has no readable latest value (a ring).
+    ///
+    /// The echo is one read after the write, so under concurrent writers it can
+    /// be a newer write than this call's (design 058 §5.1).
     fn record_set(&self, params: Value) -> Result<Value, RpcError> {
         let name = str_field(&params, "name").ok_or(RpcError::Internal)?;
         let value = params.get("value").cloned().ok_or(RpcError::Internal)?;
@@ -282,14 +286,18 @@ impl AimxSession {
         self.db
             .set_record_from_json(&name, value)
             .map_err(map_db_err)?;
-        // Echo the updated value when available (matches the legacy reply shape).
         Ok(match self.db.try_latest_as_json(&name) {
-            Some(updated) => json!({ "status": "success", "value": updated }),
+            Some(updated) => json!({
+                "status": "success",
+                "ts": updated.stamp().as_nanos(),
+                "value": updated.value,
+            }),
             None => json!({ "status": "success" }),
         })
     }
 
-    /// `record.get`: the record's current value.
+    /// `record.get`: the record's current value and its write stamp,
+    /// `{"value": <value>, "ts": <ns>}`.
     ///
     /// A `SingleLatest`/state record exposes a non-destructive canonical latest
     /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)).
@@ -302,13 +310,13 @@ impl AimxSession {
     /// is first opened (a fresh broadcast reader starts at the tail). Use
     /// `record.drain` for a ring's full backlog.
     fn record_get(&mut self, name: &str) -> Result<Payload, RpcError> {
-        if let Some(bytes) = self.db.try_latest_as_json_bytes(name) {
-            return Ok(Payload::from(bytes));
+        if let Some(sample) = self.db.try_latest_as_json_bytes(name) {
+            return Ok(super::value_reply(&sample.value, sample.stamp()));
         }
         // Ring fallback: drain to the newest currently-available value (or NotFound).
         self.drain_values(name, usize::MAX)?
             .pop()
-            .map(|value| to_payload(&value))
+            .map(|sample| to_payload(&stamped_value_json(sample)))
             .ok_or(RpcError::NotFound)
     }
 
@@ -321,7 +329,11 @@ impl AimxSession {
             .and_then(|v| v.as_u64())
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(usize::MAX);
-        let values = self.drain_values(&name, limit)?;
+        let values: Vec<Value> = self
+            .drain_values(&name, limit)?
+            .into_iter()
+            .map(stamped_value_json)
+            .collect();
         let count = values.len();
         Ok(json!({ "record_name": name, "values": values, "count": count }))
     }
@@ -330,7 +342,7 @@ impl AimxSession {
     /// `limit` values accumulated since the previous read (oldest-first). Shared
     /// by [`record.drain`](Self::record_drain) and [`record.get`](Self::record_get)'s
     /// ring fallback, so both read from the same per-connection cursor.
-    fn drain_values(&mut self, name: &str, limit: usize) -> Result<Vec<Value>, RpcError> {
+    fn drain_values(&mut self, name: &str, limit: usize) -> Result<Vec<Stamped<Value>>, RpcError> {
         if !self.drain_readers.contains_key(name) {
             let id = self
                 .db
@@ -362,7 +374,7 @@ impl AimxSession {
         let mut values = Vec::new();
         while values.len() < limit {
             match reader.try_recv_json() {
-                Ok(val) => values.push(val),
+                Ok(sample) => values.push(sample),
                 Err(DbError::BufferEmpty) => break,
                 // Ring overflowed since the last read — cursor resets; keep going.
                 Err(DbError::BufferLagged { .. }) => continue,
@@ -487,6 +499,14 @@ impl AimxSession {
             SecurityPolicy::ReadWrite { .. } => Ok(()),
         }
     }
+}
+
+/// A value with its write stamp as the AimX 4.0 reply element
+/// `{"value": <value>, "ts": <ns>}`. The wire carries the stamp explicitly;
+/// other write metadata stays off the wire (design 058 §5).
+fn stamped_value_json(sample: Stamped<Value>) -> Value {
+    let ts = sample.stamp().as_nanos();
+    json!({ "value": sample.value, "ts": ts })
 }
 
 /// Serialize a JSON value into an owned record-value [`Payload`] — one serde

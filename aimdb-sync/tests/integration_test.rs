@@ -68,7 +68,7 @@ fn test_basic_producer_consumer() {
 
     // Consume the value
     let received = consumer.get().expect("Failed to consume");
-    assert_eq!(received, test_value);
+    assert_eq!(received.value, test_value);
 
     handle.detach().expect("Failed to detach");
 }
@@ -165,7 +165,7 @@ fn test_timeout_operations() {
     let received = consumer
         .get_with_timeout(Duration::from_secs(2))
         .expect("Failed to consume with timeout");
-    assert_eq!(received, test_value);
+    assert_eq!(received.value, test_value);
 
     handle.detach().expect("Failed to detach");
 }
@@ -188,7 +188,7 @@ fn test_non_blocking_consumer_operation() {
     let received = consumer
         .get_with_timeout(Duration::from_secs(1))
         .expect("Failed to receive value");
-    assert_eq!(received, test_value);
+    assert_eq!(received.value, test_value);
 
     // Now try_get on empty buffer again (should fail)
     let result = consumer.try_get();
@@ -291,7 +291,7 @@ fn test_runtime_shutdown_after_produce_read_error() {
     handle.detach().expect("Failed to detach");
 
     let result = consumer.get().expect("Failed to get the value");
-    assert_eq!(result, test_value);
+    assert_eq!(result.value, test_value);
 
     let result = consumer.get();
     println!("{:?}", result);
@@ -323,8 +323,8 @@ fn test_spmc_ring_semantics() {
     let c2_data = consumer2.get().expect("Consumer 2 failed");
 
     // Each consumer gets their own copy
-    assert_eq!(c1_data.id, 0);
-    assert_eq!(c2_data.id, 0);
+    assert_eq!(c1_data.value.id, 0);
+    assert_eq!(c2_data.value.id, 0);
 
     handle.detach().expect("Failed to detach");
 }
@@ -346,7 +346,7 @@ fn test_single_latest_semantics() {
 
     // Consume first value to establish the subscription
     let first = consumer.get().expect("Failed to consume initial value");
-    assert_eq!(first.id, 100);
+    assert_eq!(first.value.id, 100);
 
     // Now produce multiple values rapidly
     for i in 1..=5 {
@@ -359,9 +359,9 @@ fn test_single_latest_semantics() {
 
     // Should get the last value (5) since get_latest() drains the channel
     assert_eq!(
-        latest.id, 5,
+        latest.value.id, 5,
         "get_latest() should return the most recent value by draining the channel. Got {}",
-        latest.id
+        latest.value.id
     );
 
     // Verify channel is now empty
@@ -393,7 +393,7 @@ fn test_get_latest_with_timeout() {
         .get_latest_with_timeout(Duration::from_secs(1))
         .expect("Failed to get latest with timeout");
 
-    assert_eq!(latest.id, 5, "Should get the most recent value (5)");
+    assert_eq!(latest.value.id, 5, "Should get the most recent value (5)");
 
     handle.detach().expect("Failed to detach");
 }

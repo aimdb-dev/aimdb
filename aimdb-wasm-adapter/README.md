@@ -53,16 +53,17 @@ db.configureRecord('sensors.temperature.vienna', {
 
 await db.build();
 
-// Get (returns deserialized JS object validated by Rust serde)
+// Get: { value, ts } — the value validated by Rust serde, ts its write
+// stamp (BigInt nanoseconds on the instance clock)
 const temp = db.get('sensors.temperature.vienna');
-console.log(temp.celsius);
+console.log(temp.value.celsius, temp.ts);
 
 // Set (Rust serde validates the payload)
 db.set('sensors.temperature.vienna', { celsius: 22.5, timestamp: Date.now() });
 
 // Subscribe (callback fires on every buffer push)
-const unsub = db.subscribe('sensors.temperature.vienna', (value) => {
-  console.log('New temperature:', value.celsius);
+const unsub = db.subscribe('sensors.temperature.vienna', ({ value, ts }) => {
+  console.log('New temperature:', value.celsius, 'written at', ts);
 });
 ```
 

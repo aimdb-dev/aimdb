@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Write timestamps (#326).** `.buffer(cfg)` builds buffers of `Stamped<T>`.
+  `new_clock()` replaces `now_nanos`/`unix_time`: the clock follows the Tokio
+  runtime current at creation (paused time included) for readers on any
+  thread or runtime, and falls back to real time, reported as an
+  `AdapterEvent`, when created outside a runtime. New `log` feature.
+
 ### Fixed
 
 - **`now_nanos` follows Tokio's clock, so paused time advances it (#333).**

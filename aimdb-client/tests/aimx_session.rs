@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_client::AimxConnection;
+use aimdb_client::{AimxConnection, Stamp};
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
 use aimdb_core::AimDbBuilder;
@@ -84,7 +84,8 @@ async fn aimx_roundtrip_over_uds_production_server() {
 
     // RPC: record.get on the seeded record.
     let got = conn.get_record("setting").await.expect("get setting");
-    assert_eq!(got, json!({ "level": 1 }));
+    assert_eq!(got.value, json!({ "level": 1 }));
+    let seeded = got.stamp();
 
     // RPC: record.get on a missing record maps to a server error.
     assert!(conn.get_record("missing").await.is_err());
@@ -95,10 +96,13 @@ async fn aimx_roundtrip_over_uds_production_server() {
         .await
         .expect("set setting");
     assert_eq!(set.get("value").unwrap(), &json!({ "level": 7 }));
-    assert_eq!(
-        conn.get_record("setting").await.unwrap(),
-        json!({ "level": 7 })
-    );
+    // AimX 4.0: the echo carries the write's stamp, the same a get returns for
+    // that write, and a later write is never stamped earlier.
+    let set_ts = Stamp::from_nanos(set["ts"].as_u64().expect("an integer ts"));
+    let after_set = conn.get_record("setting").await.unwrap();
+    assert_eq!(after_set.value, json!({ "level": 7 }));
+    assert_eq!(after_set.stamp(), set_ts);
+    assert!(set_ts >= seeded);
 
     // Streaming: a producer feeds `events`; the subscription routes updates back.
     let producer = db.producer::<Reading>("events").expect("producer");
@@ -111,6 +115,7 @@ async fn aimx_roundtrip_over_uds_production_server() {
     // Each update carries the engine's gap count alongside the value; a
     // consumer that keeps up sees no gaps.
     let mut stream = conn.subscribe("events").expect("subscribe");
+    let mut last_ts = Stamp::from_nanos(0);
     for _ in 0..3 {
         let update = tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
@@ -118,6 +123,8 @@ async fn aimx_roundtrip_over_uds_production_server() {
             .expect("update")
             .expect("a live subscription is not a terminal error");
         assert_eq!(update.skipped, 0, "consumer keeps up, so no gap");
+        assert!(update.ts >= last_ts, "one producer's stamps never decrease");
+        last_ts = update.ts;
         assert!(!update.has_gap());
         let value = update.value.expect("the server sends decodable JSON");
         assert!(
@@ -152,7 +159,8 @@ async fn aimx_roundtrip_over_uds_production_server() {
     conn.write_record("setting", json!({ "level": 9 }))
         .expect("write");
     let after = conn.get_record("setting").await.expect("get after write");
-    assert_eq!(after, json!({ "level": 9 }));
+    assert_eq!(after.value, json!({ "level": 9 }));
+    assert!(after.stamp() >= set_ts);
 
     drop(conn); // stops the client engine
 }
@@ -283,7 +291,11 @@ async fn record_get_on_ring_falls_back_to_drain() {
         }
     }
     let got = got.expect("ring get returns a value after producing");
-    assert!(got.get("n").is_some(), "ring get yields a Reading: {got}");
+    assert!(
+        got.value.get("n").is_some(),
+        "ring get yields a Reading: {}",
+        got.value
+    );
 
     drop(conn);
 }

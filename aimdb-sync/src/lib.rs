@@ -74,7 +74,7 @@
 //!
 //! // Consumer: blocking operations
 //! let temp = consumer.get()?;
-//! println!("Temperature: {:.1}°C", temp.celsius);
+//! println!("Temperature: {:.1}°C", temp.value.celsius);
 //!
 //! // Clean shutdown
 //! handle.detach()?;
@@ -101,7 +101,7 @@
 //! });
 //!
 //! if let Ok(temp) = consumer.get() {
-//!     println!("Got: {:.1}°C", temp.celsius);
+//!     println!("Got: {:.1}°C", temp.value.celsius);
 //! };
 //! # }
 //! ```

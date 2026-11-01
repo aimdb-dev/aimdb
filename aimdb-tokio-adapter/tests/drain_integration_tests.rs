@@ -199,7 +199,7 @@ async fn test_drain_returns_accumulated_values() {
 
     // Verify values are in chronological order
     for (i, val) in response.values.iter().enumerate() {
-        let celsius = val["celsius"].as_f64().unwrap();
+        let celsius = val.value["celsius"].as_f64().unwrap();
         assert!(
             (celsius - (20.0 + i as f64)).abs() < f64::EPSILON,
             "Value {} should have celsius={}, got {}",
@@ -208,6 +208,14 @@ async fn test_drain_returns_accumulated_values() {
             celsius
         );
     }
+    // AimX 4.0: each drained value carries its write stamp, in write order.
+    assert!(
+        response
+            .values
+            .windows(2)
+            .all(|w| w[0].stamp() <= w[1].stamp()),
+        "one producer's stamps never decrease"
+    );
 
     drop(client);
     drop(db);
@@ -272,7 +280,7 @@ async fn test_drain_sequential_only_new_values() {
     );
 
     // Verify the values are from batch2
-    let first_celsius = response.values[0]["celsius"].as_f64().unwrap();
+    let first_celsius = response.values[0].value["celsius"].as_f64().unwrap();
     assert!(
         (first_celsius - 30.0).abs() < f64::EPSILON,
         "First value should be 30.0, got {}",
@@ -322,7 +330,7 @@ async fn test_drain_with_limit() {
 
     // Verify first 3 values
     for (i, val) in response.values.iter().enumerate() {
-        let celsius = val["celsius"].as_f64().unwrap();
+        let celsius = val.value["celsius"].as_f64().unwrap();
         assert!(
             (celsius - i as f64).abs() < f64::EPSILON,
             "Value {} should be {}, got {}",
@@ -337,7 +345,7 @@ async fn test_drain_with_limit() {
     assert_eq!(response.count, 7, "Should drain remaining 7 values");
 
     // First remaining value should be celsius=3
-    let celsius = response.values[0]["celsius"].as_f64().unwrap();
+    let celsius = response.values[0].value["celsius"].as_f64().unwrap();
     assert!(
         (celsius - 3.0).abs() < f64::EPSILON,
         "First remaining value should be 3.0, got {}",
@@ -381,7 +389,7 @@ async fn test_drain_single_latest_at_most_one() {
     );
 
     if response.count == 1 {
-        let value = response.values[0]["value"].as_u64().unwrap();
+        let value = response.values[0].value["value"].as_u64().unwrap();
         assert_eq!(value, 4, "Should be the last written value");
     }
 
@@ -472,7 +480,9 @@ async fn test_drain_with_ring_overflow() {
 
     // Values should be from the end of the sequence
     if !response.values.is_empty() {
-        let last_value = response.values.last().unwrap()["value"].as_u64().unwrap();
+        let last_value = response.values.last().unwrap().value["value"]
+            .as_u64()
+            .unwrap();
         assert!(
             last_value >= 16,
             "Last value should be near end of sequence (>=16), got {}",
@@ -572,9 +582,9 @@ async fn test_drain_response_structure() {
 
     // Verify JSON structure matches Temperature fields
     let val = &response.values[0];
-    assert!(val.is_object());
-    assert_eq!(val["celsius"], 25.5);
-    assert_eq!(val["sensor_id"], "test-sensor");
+    assert!(val.value.is_object());
+    assert_eq!(val.value["celsius"], 25.5);
+    assert_eq!(val.value["sensor_id"], "test-sensor");
 
     drop(client);
     drop(db);
@@ -662,7 +672,7 @@ async fn test_drain_independent_of_other_consumers() {
     // In-process reader consumes all 3
     for _ in 0..3 {
         let val = in_process_reader.recv().await.unwrap();
-        assert!(val.celsius >= 100.0);
+        assert!(val.value.celsius >= 100.0);
     }
 
     // Drain should ALSO return all 3 values (independent reader)

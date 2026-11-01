@@ -39,14 +39,14 @@ use crate::DbError;
 
 /// A monotonic-ish wall clock that returns nanoseconds since an arbitrary epoch.
 ///
-/// Built once per record at spawn time from the runtime adapter and shared
+/// Built once at `build()` over the instance clock and shared
 /// (cheaply, behind `Arc`) with the per-stage instrumentation.
 pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// Builds a [`Clock`] from the dyn-safe runtime capabilities.
-pub(crate) fn make_clock(rt: Arc<dyn crate::executor::RuntimeOps>) -> Clock {
-    let epoch = rt.now_nanos();
-    Arc::new(move || rt.now_nanos().saturating_sub(epoch))
+/// Builds a [`Clock`] over the instance clock. Profiling has no origin of
+/// its own: it reads instance time, like write stamps.
+pub(crate) fn make_clock(clock: Arc<dyn crate::clock::InstanceClock>) -> Clock {
+    Arc::new(move || clock.now().as_nanos())
 }
 
 /// Sentinel for "no previous `produce()` recorded yet".

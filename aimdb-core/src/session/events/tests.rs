@@ -166,9 +166,9 @@ impl Session for ScriptSession {
             Ok(stream)
         })
     }
-    fn snapshots(&mut self, topic: &str) -> Vec<(alloc::string::String, Payload)> {
+    fn snapshots(&mut self, topic: &str) -> Vec<(alloc::string::String, Payload, crate::Stamp)> {
         if topic == "snapshot" {
-            vec![(topic.into(), Arc::from([]))]
+            vec![(topic.into(), Arc::from([]), crate::Stamp::from_nanos(0))]
         } else {
             Vec::new()
         }
@@ -283,6 +283,7 @@ impl Dialer for FailingDialer {
 #[tokio::test]
 async fn client_reports_dial_failure_and_reconnect_exhaustion() {
     let (observer, seen) = observer();
+    let ctx = crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
     let (_handle, engine) = run_client(
         FailingDialer,
         ScriptCodec,
@@ -291,7 +292,7 @@ async fn client_reports_dial_failure_and_reconnect_exhaustion() {
             reconnect: true,
             ..Default::default()
         },
-        Arc::new(crate::executor::test_support::NoopRuntimeOps),
+        ctx,
     );
     capture::future(observer, engine).await;
     assert_eq!(*seen.lock().unwrap(), [("dial", 0), ("exhausted", 1)]);

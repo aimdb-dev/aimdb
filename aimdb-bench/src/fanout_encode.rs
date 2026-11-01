@@ -26,13 +26,14 @@ use std::io::Write as _;
 
 use aimdb_core::session::aimx::AimxCodec;
 use aimdb_core::session::{EnvelopeCodec, Outbound, Payload};
+use aimdb_core::Stamp;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
 /// Constant frame head up to (and including) the `seq` key. The AimX event
 /// frame serializes its fields in `Frame` declaration order — `t, seq, topic,
-/// sub, data` — so `seq` leads and everything after it is either shared per
-/// broadcast (`topic`, `data`) or a small per-subscriber scalar (`sub`).
+/// sub, ts, data` — so `seq` leads and everything after it is either shared per
+/// broadcast (`topic`, `ts`, `data`) or a small per-subscriber scalar (`sub`).
 const EVENT_HEAD: &[u8] = br#"{"t":"event","seq":"#;
 
 /// A deterministic record-payload shape used by the fan-out benchmark.
@@ -66,6 +67,12 @@ impl PayloadShape {
     /// subscriber of one exact-topic broadcast).
     pub const fn topic(self) -> &'static str {
         "plant/line-7/temperature"
+    }
+
+    /// The broadcast value's write stamp: one write, shared by every
+    /// subscriber. Eleven digits, as after ~81 s of instance uptime.
+    pub const fn ts(self) -> Stamp {
+        Stamp::from_nanos(81_234_567_000)
     }
 
     /// Deterministic already-serialized JSON record value.
@@ -116,9 +123,16 @@ pub fn subscribers(count: usize) -> Vec<Subscriber> {
 /// Encode one subscriber's event frame with the production codec (the naive
 /// per-subscriber baseline). Appends into `out`, which the caller supplies
 /// fresh per frame (each frame is an independent buffer bound for a socket).
-pub fn encode_naive(codec: &AimxCodec, topic: &str, data: &Payload, sub: &str, seq: u64) {
+pub fn encode_naive(
+    codec: &AimxCodec,
+    topic: &str,
+    data: &Payload,
+    ts: Stamp,
+    sub: &str,
+    seq: u64,
+) {
     let mut out = Vec::new();
-    encode_naive_into(codec, topic, data, sub, seq, &mut out);
+    encode_naive_into(codec, topic, data, ts, sub, seq, &mut out);
     // Discourage the optimizer from eliding the buffer entirely.
     std::hint::black_box(out);
 }
@@ -129,6 +143,7 @@ pub fn encode_naive_into(
     codec: &AimxCodec,
     topic: &str,
     data: &Payload,
+    ts: Stamp,
     sub: &str,
     seq: u64,
     out: &mut Vec<u8>,
@@ -139,6 +154,7 @@ pub fn encode_naive_into(
                 sub,
                 seq,
                 topic: Some(topic),
+                ts,
                 data: data.clone(),
             },
             out,
@@ -152,6 +168,9 @@ pub fn encode_naive_into(
 pub struct SharedSuffix {
     /// `,"topic":<escaped topic>,"sub":` — built once, reused for every frame.
     mid: Vec<u8>,
+    /// `,"ts":<stamp>,"data":` — the broadcast's write stamp, shared by every
+    /// frame like the record value it stamps.
+    tail: Vec<u8>,
     /// The shared already-serialized record value (spliced into every frame,
     /// exactly as the naive path copies it per subscriber).
     data: Payload,
@@ -161,12 +180,14 @@ impl SharedSuffix {
     /// Prepare the shared segments for one broadcast of `data` on `topic`.
     /// This is the fast path's per-broadcast fixed cost — it escapes `topic`
     /// exactly once, versus the naive path re-escaping it per subscriber.
-    pub fn new(topic: &str, data: Payload) -> Self {
+    pub fn new(topic: &str, data: Payload, ts: Stamp) -> Self {
         let mut mid = Vec::with_capacity(topic.len() + 24);
         mid.extend_from_slice(br#","topic":"#);
         serde_json::to_writer(&mut mid, topic).expect("topic escapes to valid JSON");
         mid.extend_from_slice(br#","sub":"#);
-        Self { mid, data }
+        let mut tail = Vec::with_capacity(36);
+        write!(tail, r#","ts":{},"data":"#, ts.as_nanos()).expect("write to Vec is infallible");
+        Self { mid, tail, data }
     }
 
     /// Stamp one subscriber's frame. Byte-identical to [`encode_naive`] for
@@ -175,7 +196,9 @@ impl SharedSuffix {
     /// spliced verbatim.
     pub fn encode_one(&self, sub: &str, seq: u64, out: &mut Vec<u8>) {
         out.clear();
-        out.reserve(EVENT_HEAD.len() + self.mid.len() + self.data.len() + sub.len() + 24);
+        out.reserve(
+            EVENT_HEAD.len() + self.mid.len() + self.tail.len() + self.data.len() + sub.len() + 24,
+        );
         out.extend_from_slice(EVENT_HEAD);
         write!(out, "{seq}").expect("write to Vec is infallible");
         out.extend_from_slice(&self.mid);
@@ -184,7 +207,7 @@ impl SharedSuffix {
         out.push(b'"');
         out.extend_from_slice(sub.as_bytes());
         out.push(b'"');
-        out.extend_from_slice(br#","data":"#);
+        out.extend_from_slice(&self.tail);
         out.extend_from_slice(&self.data);
         out.push(b'}');
     }
@@ -198,7 +221,7 @@ impl SharedSuffix {
 }
 
 /// Event frame subset mirroring `AimxCodec`'s private `Frame` in serialized
-/// field order (`t, seq, topic, sub, data`). Used by [`ValidateOnce`] to run
+/// field order (`t, seq, topic, sub, ts, data`). Used by [`ValidateOnce`] to run
 /// the same serde frame serialization as the codec while borrowing a record
 /// value that was validated once, rather than re-validating it per subscriber.
 #[derive(Serialize)]
@@ -208,6 +231,7 @@ struct EventFrameRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     topic: Option<&'a str>,
     sub: &'a str,
+    ts: u64,
     data: &'a RawValue,
 }
 
@@ -219,14 +243,15 @@ struct EventFrameRef<'a> {
 /// serde scaffolding the fast path additionally removes.
 pub struct ValidateOnce {
     raw: Box<RawValue>,
+    ts: Stamp,
 }
 
 impl ValidateOnce {
     /// Validate the record value a single time (the hoisted `as_raw`).
-    pub fn new(data: &Payload) -> Self {
+    pub fn new(data: &Payload, ts: Stamp) -> Self {
         let raw = serde_json::from_slice::<Box<RawValue>>(data)
             .expect("record payload must be one valid JSON value");
-        Self { raw }
+        Self { raw, ts }
     }
 
     /// Serialize one subscriber's frame via serde, reusing the pre-validated
@@ -237,6 +262,7 @@ impl ValidateOnce {
             seq,
             topic: Some(topic),
             sub,
+            ts: self.ts.as_nanos(),
             data: &self.raw,
         };
         serde_json::to_vec(&frame).expect("event frame serializes")
@@ -250,8 +276,9 @@ pub fn verify_byte_identity(shape: PayloadShape) -> Result<(), String> {
     let codec = AimxCodec;
     let topic = shape.topic();
     let data = shape.payload();
-    let shared = SharedSuffix::new(topic, data.clone());
-    let validate_once = ValidateOnce::new(&data);
+    let ts = shape.ts();
+    let shared = SharedSuffix::new(topic, data.clone(), ts);
+    let validate_once = ValidateOnce::new(&data, ts);
 
     for subscriber in subscribers(512) {
         let mut expected = Vec::new();
@@ -259,6 +286,7 @@ pub fn verify_byte_identity(shape: PayloadShape) -> Result<(), String> {
             &codec,
             topic,
             &data,
+            ts,
             &subscriber.sub,
             subscriber.seq,
             &mut expected,

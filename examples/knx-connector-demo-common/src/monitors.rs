@@ -7,7 +7,14 @@
 extern crate alloc;
 
 use crate::types::{LightState, TemperatureReading};
-use aimdb_core::{Consumer, RuntimeContext};
+use aimdb_core::{Consumer, RuntimeContext, Stamp};
+
+/// A write stamp as `@ <seconds>.<millis>s` since the instance started.
+/// Integer formatting only, so it stays cheap on embedded targets.
+fn at(stamp: Stamp) -> alloc::string::String {
+    let ms = stamp.as_nanos() / 1_000_000;
+    alloc::format!("@ {}.{:03}s", ms / 1000, ms % 1000)
+}
 
 // ============================================================================
 // TEMPERATURE MONITOR
@@ -33,12 +40,13 @@ pub async fn temperature_monitor(ctx: RuntimeContext, consumer: Consumer<Tempera
     let mut reader = consumer.subscribe();
 
     while let Ok(temp) = reader.recv().await {
-        let (whole, frac) = temp.display_parts();
+        let (whole, frac) = temp.value.display_parts();
         log.info(&alloc::format!(
-            "🌡️  {}: {}.{}°C",
-            temp.location,
+            "🌡️  {}: {}.{}°C {}",
+            temp.value.location,
             whole,
-            frac
+            frac,
+            at(temp.stamp())
         ));
     }
 }
@@ -58,9 +66,10 @@ pub async fn light_monitor(ctx: RuntimeContext, consumer: Consumer<LightState>) 
 
     while let Ok(state) = reader.recv().await {
         log.info(&alloc::format!(
-            "💡 Light {}: {}",
-            state.group_address,
-            state.state_display()
+            "💡 Light {}: {} {}",
+            state.value.group_address,
+            state.value.state_display(),
+            at(state.stamp())
         ));
     }
 }

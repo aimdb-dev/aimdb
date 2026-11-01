@@ -11,6 +11,17 @@
 //! | **State**     | `SingleLatest` | medium  |
 //! | **Command**   | `Mailbox`      | small   |
 
+use aimdb_core::{Stamp, Stamped, WriteMetadata};
+
+/// A message as a record buffer holds it: with the metadata of its write.
+///
+/// Record buffers store `Stamped<T>` (design 058), so the benches measure
+/// that slot type. In a database `RecordWriter` stamps each write from the
+/// instance clock; here the stamp is the message's sequence number.
+pub fn stamped<T>(msg: T, i: u64) -> Stamped<T> {
+    Stamped::new(msg, WriteMetadata::from_wire_stamp(Stamp::from_nanos(i)))
+}
+
 // ── Payload types ─────────────────────────────────────────────────────────────
 
 /// Small telemetry reading pushed at high frequency (Telemetry profile).

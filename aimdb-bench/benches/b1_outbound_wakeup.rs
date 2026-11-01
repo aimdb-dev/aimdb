@@ -156,7 +156,7 @@ async fn task_per_route(n: usize) -> (f64, f64) {
         let ack = ack.clone();
         tasks.push(tokio::spawn(async move {
             loop {
-                let v = reader.recv().await.expect("recv");
+                let v = reader.recv().await.expect("recv").value;
                 black_box((i, v));
                 ack.bump();
                 if v + 1 == WARMUP + MEASURE {

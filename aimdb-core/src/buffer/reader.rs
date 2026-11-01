@@ -16,7 +16,7 @@ use core::future::poll_fn;
 use core::task::{Context, Poll};
 
 use crate::buffer::BufferReader;
-use crate::DbError;
+use crate::{DbError, Stamped};
 
 #[cfg(feature = "remote")]
 use crate::buffer::JsonBufferReader;
@@ -26,13 +26,16 @@ use crate::buffer::JsonBufferReader;
 /// Returned by `Consumer::subscribe`. This is the "boxed lane": one indirect
 /// call per `recv`, zero AimDB-added heap allocations per message. (The generic
 /// monomorphized `Reader<T, B>` fast lane remains dormant.)
+///
+/// Every value comes with the metadata of the write that stored it
+/// ([`Stamped`]); read `.value` for the value alone.
 pub struct Reader<T: Clone + Send> {
-    inner: Box<dyn BufferReader<T> + Send>,
+    inner: Box<dyn BufferReader<Stamped<T>> + Send>,
 }
 
 impl<T: Clone + Send> Reader<T> {
     /// Wrap an erased reader in an ergonomic handle.
-    pub fn new(inner: Box<dyn BufferReader<T> + Send>) -> Self {
+    pub fn new(inner: Box<dyn BufferReader<Stamped<T>> + Send>) -> Self {
         Self { inner }
     }
 
@@ -45,7 +48,7 @@ impl<T: Clone + Send> Reader<T> {
     /// - **SPMC Ring**: Returns next value, or `Lagged(n)` if fell behind
     /// - **SingleLatest**: Waits for value change, returns most recent
     /// - **Mailbox**: Waits for slot value, takes and clears it
-    pub async fn recv(&mut self) -> Result<T, DbError> {
+    pub async fn recv(&mut self) -> Result<Stamped<T>, DbError> {
         poll_fn(|cx| self.inner.poll_recv(cx)).await
     }
 
@@ -56,14 +59,14 @@ impl<T: Clone + Send> Reader<T> {
     /// wake-ups are allowed. `Pending` does not always mean the buffer is
     /// empty: on Tokio a broadcast reader also returns it, with a self-wake,
     /// once the task's cooperative budget is spent.
-    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<T, DbError>> {
+    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<Stamped<T>, DbError>> {
         self.inner.poll_recv(cx)
     }
 
     /// Non-blocking receive — returns immediately.
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
-    pub fn try_recv(&mut self) -> Result<T, DbError> {
+    pub fn try_recv(&mut self) -> Result<Stamped<T>, DbError> {
         self.inner.try_recv()
     }
 }
@@ -86,26 +89,26 @@ impl JsonReader {
     }
 
     /// Receive the next value as JSON, awaiting until one is available.
-    pub async fn recv_json(&mut self) -> Result<serde_json::Value, DbError> {
+    pub async fn recv_json(&mut self) -> Result<Stamped<serde_json::Value>, DbError> {
         poll_fn(|cx| self.inner.poll_recv_json(cx)).await
     }
 
     /// Receive the next value as owned JSON bytes.
-    pub async fn recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
+    pub async fn recv_json_bytes(&mut self) -> Result<Stamped<Vec<u8>>, DbError> {
         poll_fn(|cx| self.inner.poll_recv_json_bytes(cx)).await
     }
 
     /// Non-blocking receive as JSON — returns immediately.
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
-    pub fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError> {
+    pub fn try_recv_json(&mut self) -> Result<Stamped<serde_json::Value>, DbError> {
         self.inner.try_recv_json()
     }
 
     /// Non-blocking receive as owned JSON bytes — returns immediately.
     ///
     /// Returns `Err(DbError::BufferEmpty)` if no pending values.
-    pub fn try_recv_json_bytes(&mut self) -> Result<Vec<u8>, DbError> {
+    pub fn try_recv_json_bytes(&mut self) -> Result<Stamped<Vec<u8>>, DbError> {
         self.inner.try_recv_json_bytes()
     }
 }
@@ -135,19 +138,27 @@ mod tests {
 
     struct SlotReader(Arc<Slot>);
 
-    impl BufferReader<u32> for SlotReader {
-        fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<u32, DbError>> {
+    /// A sample whose stamp equals its value.
+    fn sample(v: u32) -> Stamped<u32> {
+        Stamped::new(
+            v,
+            crate::WriteMetadata::new(crate::Stamp::from_nanos(u64::from(v))),
+        )
+    }
+
+    impl BufferReader<Stamped<u32>> for SlotReader {
+        fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<Stamped<u32>, DbError>> {
             self.0.waker.register(cx.waker());
             match self.0.value.swap(0, Ordering::AcqRel) {
                 0 => Poll::Pending,
-                v => Poll::Ready(Ok(v)),
+                v => Poll::Ready(Ok(sample(v))),
             }
         }
 
-        fn try_recv(&mut self) -> Result<u32, DbError> {
+        fn try_recv(&mut self) -> Result<Stamped<u32>, DbError> {
             match self.0.value.swap(0, Ordering::AcqRel) {
                 0 => Err(DbError::BufferEmpty),
-                v => Ok(v),
+                v => Ok(sample(v)),
             }
         }
     }
@@ -174,6 +185,6 @@ mod tests {
 
         slot.produce(7);
         assert!(flag.0.load(Ordering::Acquire));
-        assert!(matches!(reader.poll_recv(&mut cx), Poll::Ready(Ok(7))));
+        assert!(matches!(reader.poll_recv(&mut cx), Poll::Ready(Ok(ref s)) if *s == sample(7)));
     }
 }

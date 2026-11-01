@@ -178,8 +178,8 @@ pub trait DatagramBinder {
 ///
 /// [`RuntimeOps::sleep`](crate::executor::RuntimeOps::sleep) is `dyn` and must
 /// box; this one is generic and returns the adapter's own timer type with
-/// nothing on the heap. Only sleeping lives here — `RuntimeOps::now_nanos` is a
-/// plain call and stays the clock.
+/// nothing on the heap. Only sleeping lives here — the clock is the
+/// [`InstanceClock`](crate::InstanceClock), a plain call.
 ///
 /// The returned future borrows nothing, so a task holding a `D: Delay` still
 /// produces `'static` futures from it.

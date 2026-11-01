@@ -19,7 +19,7 @@ use core::task::Poll;
 use core::time::Duration;
 
 use aimdb_core::session::{ByteRead, ByteWrite, Delay};
-use aimdb_core::{InboundDispatch, OutboundRoutes, RouteId, RuntimeOps};
+use aimdb_core::{InboundDispatch, InstanceClock, OutboundRoutes, RouteId};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -90,7 +90,7 @@ pub(crate) async fn run_session<R, W, D>(
     ring: &WriteRing,
     settings: &Settings,
     delay: &D,
-    runtime: &dyn RuntimeOps,
+    clock: &dyn InstanceClock,
 ) -> Error
 where
     R: ByteRead,
@@ -110,7 +110,7 @@ where
         opts,
         settings,
         delay,
-        runtime,
+        clock,
     );
 
     match select3(read_into(rx, &inbound), ring.write_out(tx), session).await {
@@ -160,7 +160,7 @@ async fn client_loop<D: Delay>(
     opts: &[PublishOpts],
     settings: &Settings,
     delay: &D,
-    runtime: &dyn RuntimeOps,
+    clock: &dyn InstanceClock,
 ) -> Result<Infallible, Error> {
     let ping_interval = settings.ping_interval.as_millis() as u64;
     let max_silence = settings.connection_event_max_interval.as_millis() as u64;
@@ -169,7 +169,7 @@ async fn client_loop<D: Delay>(
     let mut state = ClientStateNoQueue::new();
     let mut reader = PacketReader::<PACKET_BUFFER_SIZE>::new();
 
-    let start = now_ms(runtime);
+    let start = now_ms(clock);
     let mut last_ack_ms = start;
     let mut last_ping_ms = start;
     // Set while an acknowledgement is outstanding, so a broker that never
@@ -194,7 +194,7 @@ async fn client_loop<D: Delay>(
     }
 
     loop {
-        let now = now_ms(runtime);
+        let now = now_ms(clock);
 
         // --- deadlines, checked before anything parks ----------------------
 
@@ -283,7 +283,7 @@ async fn client_loop<D: Delay>(
                     &mut state,
                     ring,
                     dispatch,
-                    runtime,
+                    clock,
                     &mut last_ack_ms,
                     &mut connected,
                     &mut broker_max,
@@ -299,7 +299,7 @@ async fn client_loop<D: Delay>(
 
         waiting_since = match (state.waiting_for_responses(), waiting_since) {
             (true, Some(since)) => Some(since),
-            (true, None) => Some(now_ms(runtime)),
+            (true, None) => Some(now_ms(clock)),
             (false, _) => None,
         };
     }
@@ -313,7 +313,7 @@ async fn drain_packets<const N: usize>(
     state: &mut ClientStateNoQueue,
     ring: &WriteRing,
     dispatch: &InboundDispatch,
-    runtime: &dyn RuntimeOps,
+    clock: &dyn InstanceClock,
     last_ack_ms: &mut u64,
     connected: &mut bool,
     broker_max: &mut Option<usize>,
@@ -359,7 +359,7 @@ async fn drain_packets<const N: usize>(
         reader.consume(total);
 
         // Every packet the state accepted proves the broker is alive.
-        *last_ack_ms = now_ms(runtime);
+        *last_ack_ms = now_ms(clock);
 
         // The CONNACK is whatever moved the state to `Connected`; nothing else
         // does, so there is no need to inspect packet types for it.
@@ -598,6 +598,7 @@ mod tests {
         let settings = Settings::default();
         let connection_settings = ConnectionSettings::unauthenticated("size-probe");
         let runtime = aimdb_core::executor::test_support::NoopRuntimeOps;
+        let clock = aimdb_core::executor::test_support::ZeroClock;
         let ring = WriteRing::new(64);
         let (db, _runner) = futures::executor::block_on(
             aimdb_core::AimDbBuilder::new()
@@ -620,7 +621,7 @@ mod tests {
             &ring,
             &settings,
             &NullDelay,
-            &runtime,
+            &clock,
         );
 
         let size = core::mem::size_of_val(&session);

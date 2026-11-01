@@ -85,7 +85,7 @@ async fn main() {
         db.set_record_from_json("counter", json!({ "n": n }))
             .expect("set counter");
         if let Some(echo) = db.try_latest_as_json("echo") {
-            println!("echo record = {echo}");
+            println!("echo record = {}", echo.value);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

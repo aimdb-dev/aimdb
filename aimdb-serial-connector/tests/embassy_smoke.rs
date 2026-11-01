@@ -139,7 +139,8 @@ fn embassy_clock_drives_client_engine_rpc_over_serial() {
     // The one-shot dialer over the real COBS framed connection — the exact
     // spine an MCU build uses.
     let dialer = OneShotDialer::new(framed(EmbassyUart::new(uart.clone(), uart)));
-    let (handle, engine_fut) = run_client(dialer, EchoCodec, config, clock);
+    let ctx = aimdb_core::RuntimeContext::new(clock);
+    let (handle, engine_fut) = run_client(dialer, EchoCodec, config, ctx);
 
     block_on(async move {
         futures::pin_mut!(engine_fut);

@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking) — write timestamps, AimX 4.0
+
+- **Every record value carries the time it was written (#326).** Writes are
+  stamped from one monotonic clock per instance, and reads return
+  `Stamped<T>` (`.value`, `.stamp()`). AimX 4.0 carries the stamp as `ts` on
+  every value and refuses 3.x peers. `aimdb watch`/`record get` and the MCP
+  tools show it. See [design 058](docs/design/058-write-timestamps.md).
+  ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-client](aimdb-client/CHANGELOG.md),
+  [aimdb-sync](aimdb-sync/CHANGELOG.md),
+  [aimdb-cli](tools/aimdb-cli/CHANGELOG.md),
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
+
 ### Added — build identity in the binary
 
 - **A running instance reports which build it is (#331).** The new

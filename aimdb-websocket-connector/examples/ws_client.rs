@@ -77,7 +77,7 @@ async fn main() {
         )
         .ok();
 
-        if let Some(v) = db.try_latest_as_json("counter") {
+        if let Some(v) = db.try_latest_as_json("counter").map(|s| s.value) {
             if last.as_ref() != Some(&v) {
                 println!("← counter from server: {v}");
                 last = Some(v);

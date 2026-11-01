@@ -20,6 +20,7 @@ fn current<T: Send + Clone + std::fmt::Debug + 'static>(
 ) -> Result<T, StatusCode> {
     db.latest::<T>(key)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(|sample| sample.value)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 

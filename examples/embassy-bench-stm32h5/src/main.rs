@@ -45,8 +45,9 @@ use alloc::boxed::Box;
 
 use aimdb_bench::alloc::CountingAllocator;
 use aimdb_bench::payloads::{
-    CommandMsg, StateMsg, TelemetryMsg, command_msg, state_msg, telemetry_msg,
+    CommandMsg, StateMsg, TelemetryMsg, command_msg, stamped, state_msg, telemetry_msg,
 };
+use aimdb_core::Stamped;
 use aimdb_core::buffer::{Buffer, Reader};
 use aimdb_embassy_adapter::EmbassyBuffer;
 use cortex_m::peripheral::DWT;
@@ -69,6 +70,7 @@ static HEAP: CountingAllocator<embedded_alloc::LlffHeap> =
     CountingAllocator(embedded_alloc::LlffHeap::empty());
 
 #[inline]
+
 fn reset_allocs() {
     aimdb_bench::alloc::reset();
 }
@@ -85,11 +87,12 @@ fn allocs() -> u32 {
 // Same backends as `aimdb_bench::profiles_embassy`, with smaller `CAP` to keep
 // the static `PubSubChannel` footprint modest on-target. The lockstep loops
 // keep at most one message in flight, so a small `CAP` never lags. `SUBS = 4`
-// on the Telemetry ring leaves room for the 1→4 fan-out.
+// on the Telemetry ring leaves room for the 1→4 fan-out. Slots hold
+// `Stamped<T>`, as a record's buffer does (design 058).
 
-type TelemetryBuffer = EmbassyBuffer<TelemetryMsg, 8, 4, 1, 1>;
-type StateBuffer = EmbassyBuffer<StateMsg, 1, 1, 1, 2>;
-type CommandBuffer = EmbassyBuffer<CommandMsg, 1, 1, 1, 1>;
+type TelemetryBuffer = EmbassyBuffer<Stamped<TelemetryMsg>, 8, 4, 1, 1>;
+type StateBuffer = EmbassyBuffer<Stamped<StateMsg>, 1, 1, 1, 2>;
+type CommandBuffer = EmbassyBuffer<Stamped<CommandMsg>, 1, 1, 1, 1>;
 
 const WARMUP: usize = 200;
 const BATCH: u32 = 512;
@@ -200,10 +203,10 @@ async fn main(_spawner: Spawner) {
         let buf: TelemetryBuffer = EmbassyBuffer::new_spmc();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
         for i in 0..WARMUP {
-            buf.push(telemetry_msg(i as u64));
+            buf.push(stamped(telemetry_msg(i as u64), i as u64));
             let _ = block_on(reader.recv());
         }
-        let (cycles, n_allocs) = measure!(reader, |i| buf.push(telemetry_msg(i)));
+        let (cycles, n_allocs) = measure!(reader, |i| buf.push(stamped(telemetry_msg(i), i)));
         report("Telemetry", "SpmcRing    ", cycles, n_allocs);
     }
 
@@ -212,10 +215,10 @@ async fn main(_spawner: Spawner) {
         let buf: StateBuffer = EmbassyBuffer::new_watch();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
         for i in 0..WARMUP {
-            buf.push(state_msg(i as u64));
+            buf.push(stamped(state_msg(i as u64), i as u64));
             let _ = block_on(reader.recv());
         }
-        let (cycles, n_allocs) = measure!(reader, |i| buf.push(state_msg(i)));
+        let (cycles, n_allocs) = measure!(reader, |i| buf.push(stamped(state_msg(i), i)));
         report("State    ", "SingleLatest", cycles, n_allocs);
     }
 
@@ -224,10 +227,10 @@ async fn main(_spawner: Spawner) {
         let buf: CommandBuffer = EmbassyBuffer::new_mailbox();
         let mut reader = Reader::new(Box::new(buf.subscribe()));
         for i in 0..WARMUP {
-            buf.push(command_msg(i as u64));
+            buf.push(stamped(command_msg(i as u64), i as u64));
             let _ = block_on(reader.recv());
         }
-        let (cycles, n_allocs) = measure!(reader, |i| buf.push(command_msg(i)));
+        let (cycles, n_allocs) = measure!(reader, |i| buf.push(stamped(command_msg(i), i)));
         report("Command  ", "Mailbox     ", cycles, n_allocs);
     }
 
@@ -242,7 +245,7 @@ async fn main(_spawner: Spawner) {
         let mut r2 = Reader::new(Box::new(buf.subscribe()));
         let mut r3 = Reader::new(Box::new(buf.subscribe()));
         for i in 0..WARMUP {
-            buf.push(telemetry_msg(i as u64));
+            buf.push(stamped(telemetry_msg(i as u64), i as u64));
             let _ = block_on(r0.recv());
             let _ = block_on(r1.recv());
             let _ = block_on(r2.recv());
@@ -251,7 +254,10 @@ async fn main(_spawner: Spawner) {
         reset_allocs();
         let start = DWT::cycle_count();
         for i in 0..BATCH {
-            buf.push(telemetry_msg(WARMUP as u64 + i as u64));
+            buf.push(stamped(
+                telemetry_msg(WARMUP as u64 + i as u64),
+                WARMUP as u64 + i as u64,
+            ));
             let _ = block_on(r0.recv());
             let _ = block_on(r1.recv());
             let _ = block_on(r2.recv());

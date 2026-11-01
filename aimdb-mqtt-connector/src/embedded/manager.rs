@@ -5,12 +5,12 @@
 
 use core::time::Duration;
 
-use aimdb_core::RuntimeOps;
+use aimdb_core::InstanceClock;
 use mountain_mqtt::client::ClientError;
 
 /// Monotonic milliseconds. Only differences are meaningful.
-pub(crate) fn now_ms(runtime: &dyn RuntimeOps) -> u64 {
-    runtime.now_nanos() / 1_000_000
+pub(crate) fn now_ms(clock: &dyn InstanceClock) -> u64 {
+    clock.now().as_nanos() / 1_000_000
 }
 
 /// Why a session ended.

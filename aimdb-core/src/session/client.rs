@@ -8,7 +8,7 @@
 //! mirrors records over the same engine.
 //!
 //! Runtime-neutral: the only runtime-specific primitive is *time* (reconnect
-//! backoff + keepalive), via the adapter's dyn-safe `RuntimeOps` clock; everything else is
+//! backoff + keepalive), via a [`RuntimeContext`](crate::RuntimeContext); everything else is
 //! `futures` channels. The demux loop uses the same **extract-then-act** shape as
 //! the server (compute a [`ClientStep`], then act once the arm borrows release).
 
@@ -26,8 +26,8 @@ use futures_util::{select_biased, FutureExt, StreamExt};
 use hashbrown::HashMap;
 
 use super::{
-    BoxFut, BoxStream, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload, RpcError,
-    SubUpdate, TransportError,
+    BoxFut, BoxStream, CodecError, Connection, Dialer, EnvelopeCodec, Inbound, Outbound, Payload,
+    RpcError, SubUpdate, TransportError,
 };
 use crate::AimDb;
 
@@ -326,15 +326,15 @@ impl ClientHandle {
 /// `ClientHandle` clones are dropped (graceful stop) — or, with
 /// [`ClientConfig::reconnect`] off, until the first disconnect.
 ///
-/// `clock` is the adapter's dyn-safe [`RuntimeOps`](crate::executor::RuntimeOps)
-/// (e.g. `db.runtime_ops()`); the engine uses it for the reconnect backoff and
-/// keepalive — the *only* runtime dependency, so the rest of the engine is
-/// runtime-neutral.
+/// `ctx` is a [`RuntimeContext`](crate::RuntimeContext) (`db.runtime_ctx()`
+/// inside an instance, `RuntimeContext::new(adapter)` outside one); the engine
+/// uses its clock and sleep for the reconnect backoff and keepalive — the
+/// *only* runtime dependency, so the rest of the engine is runtime-neutral.
 pub fn run_client<D, C>(
     dialer: D,
     codec: C,
     config: ClientConfig,
-    clock: Arc<dyn crate::executor::RuntimeOps>,
+    ctx: crate::RuntimeContext,
 ) -> (ClientHandle, BoxFut<'static, ()>)
 where
     D: Dialer + 'static,
@@ -351,7 +351,7 @@ where
         // protocols that want one.
         next_id: Arc::new(AtomicUsize::new(1)),
     };
-    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, prune_rx, clock));
+    let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, prune_rx, ctx));
     (handle, fut)
 }
 
@@ -380,13 +380,17 @@ impl Drop for DrainOnExit<'_> {
 }
 
 /// How an inbound update competes for room in its subscription's sink.
+///
+/// Every update stops one slot short of a full sink: that last slot belongs to
+/// the terminal error [`end_sub`] may still have to deliver, so a slow
+/// subscriber sees *why* its stream ended rather than a disconnect-shaped EOF.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Delivery {
     /// A live event: dropped when the sink is full.
     Event,
     /// A snapshot with more of its burst to come: dropped when the sink is
-    /// full, and additionally stops one slot short so [`Delivery::BurstEnd`]
-    /// always fits.
+    /// full, and additionally stops one more slot short so
+    /// [`Delivery::BurstEnd`] always fits.
     BurstBody,
     /// The burst's final snapshot: carries the burst's whole loss count and
     /// [`SubUpdate::snapshot_end`], delivered into the slot
@@ -419,39 +423,41 @@ enum Delivery {
 /// advances. A repeated or reordered frame is still delivered — dropping it
 /// would discard data over a number — but it cannot rewind the cursor into
 /// reporting a gap that never happened.
+///
+/// `update` carries the frame's topic, value and stamp; `deliver` fills in the
+/// loss accounting (`skipped`, `snapshot_end`).
 fn deliver(
     subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
     last_seq: &mut HashMap<String, u64>,
     sub: &str,
     seq: u64,
-    topic: Option<Arc<str>>,
-    data: Payload,
+    mut update: SubUpdate,
     mode: Delivery,
 ) {
     let prev = last_seq.get(sub).copied().unwrap_or(0);
     let skipped = seq.saturating_sub(prev.saturating_add(1));
     // `None` here is a late update for a dropped sub — ignore.
     if let Some(tx) = subs.get(sub) {
-        // Hold the last slot back for the burst's final snapshot. Only this
-        // loop ever sends, so `len()` can only *fall* before the `try_send`
-        // below — a slot seen free here stays free, making that final delivery
-        // infallible rather than merely likely.
-        if mode == Delivery::BurstBody && tx.capacity().is_some_and(|cap| tx.len() + 1 >= cap) {
-            return; // folds into the next delivered update's `skipped`
+        // Hold the last slot back for a terminal error, and a burst body one
+        // more for the burst's final snapshot. Only this loop ever sends, so
+        // `len()` can only *fall* before the `try_send` below — a slot seen
+        // free here stays free, making those deliveries infallible rather than
+        // merely likely.
+        let reserved = if mode == Delivery::BurstBody { 2 } else { 1 };
+        if tx.capacity().is_some_and(|cap| tx.len() + reserved >= cap) {
+            // Slow consumer: drop this update but leave `last_seq` so the
+            // shortfall folds into the next delivered update's `skipped`.
+            return;
         }
-        let update = SubUpdate {
-            topic,
-            data,
-            skipped,
-            snapshot_end: mode == Delivery::BurstEnd,
-        };
+        update.skipped = skipped;
+        update.snapshot_end = mode == Delivery::BurstEnd;
         match tx.try_send(Ok(update)) {
             // Delivered — advance the per-sub cursor, never rewind it.
             Ok(()) => {
                 last_seq.insert(sub.to_string(), seq.max(prev));
             }
-            // Slow consumer: drop this update but leave `last_seq` so the
-            // shortfall folds into the next delivered update's `skipped`.
+            // Full despite the check above: only a channel without a capacity
+            // gets here. Same as a slow consumer.
             Err(e) if e.is_full() => {}
             // Receiver gone — the sub was dropped; prune it.
             Err(_) => {
@@ -459,6 +465,22 @@ fn deliver(
                 last_seq.remove(sub);
             }
         }
+    }
+}
+
+/// End a subscription with a terminal `err` and drop its sink.
+///
+/// The error lands in the slot [`deliver`] never fills, so it reaches the
+/// subscriber even behind a full queue of buffered updates.
+fn end_sub(
+    subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
+    last_seq: &mut HashMap<String, u64>,
+    sub: &str,
+    err: RpcError,
+) {
+    if let Some(tx) = subs.remove(sub) {
+        let _ = tx.try_send(Err(err));
+        last_seq.remove(sub);
     }
 }
 
@@ -482,7 +504,7 @@ async fn client_loop<D, C>(
     config: ClientConfig,
     cmd_rx: Receiver<ClientCmd>,
     prune_rx: Receiver<()>,
-    clock: Arc<dyn crate::executor::RuntimeOps>,
+    ctx: crate::RuntimeContext,
 ) where
     D: Dialer,
     C: EnvelopeCodec,
@@ -507,16 +529,16 @@ async fn client_loop<D, C>(
                 if e == TransportError::Closed {
                     return;
                 }
-                match reconnect_after(&mut attempt, &config, &*clock).await {
+                match reconnect_after(&mut attempt, &config, &ctx).await {
                     true => continue,
                     false => return,
                 }
             }
         };
 
-        match drive_connection(conn, &codec, &cmd_rx, &prune_rx, &config, &*clock).await {
+        match drive_connection(conn, &codec, &cmd_rx, &prune_rx, &config, &ctx).await {
             Ended::HandlesDropped => return,
-            Ended::Disconnected => match reconnect_after(&mut attempt, &config, &*clock).await {
+            Ended::Disconnected => match reconnect_after(&mut attempt, &config, &ctx).await {
                 true => continue,
                 false => return,
             },
@@ -530,7 +552,7 @@ async fn client_loop<D, C>(
 async fn reconnect_after(
     attempt: &mut usize,
     config: &ClientConfig,
-    clock: &dyn crate::executor::RuntimeOps,
+    ctx: &crate::RuntimeContext,
 ) -> bool {
     if !config.reconnect {
         return false;
@@ -542,7 +564,7 @@ async fn reconnect_after(
         });
         return false;
     }
-    clock
+    ctx.time()
         .sleep(core::time::Duration::from_millis(backoff_delay(
             config, *attempt,
         )))
@@ -584,7 +606,7 @@ async fn drive_connection<C>(
     cmd_rx: &Receiver<ClientCmd>,
     prune_rx: &Receiver<()>,
     config: &ClientConfig,
-    clock: &dyn crate::executor::RuntimeOps,
+    ctx: &crate::RuntimeContext,
 ) -> Ended
 where
     C: EnvelopeCodec + ?Sized,
@@ -601,12 +623,15 @@ where
     let mut out = Vec::new();
     let keepalive_ms = config.keepalive_interval;
     // Keepalive is deadline-based: activity only records a timestamp (one dyn
-    // clock read, no allocation) and the boxed `clock.sleep` stays armed for a
+    // clock read, no allocation) and the boxed `ctx.time().sleep` stays armed for a
     // full idle window — re-created roughly once per interval, not on every
     // processed frame (`dyn RuntimeOps::sleep` heap-allocates its future).
-    let mut last_activity = clock.now_nanos();
-    let mut keepalive_timer =
-        keepalive_ms.map(|ms| clock.sleep(core::time::Duration::from_millis(ms)).fuse());
+    let mut last_activity = ctx.time().now().as_nanos();
+    let mut keepalive_timer = keepalive_ms.map(|ms| {
+        ctx.time()
+            .sleep(core::time::Duration::from_millis(ms))
+            .fuse()
+    });
 
     // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
     if config.sends_hello {
@@ -665,7 +690,7 @@ where
         // needs a Ping. A sweep is local bookkeeping with no wire traffic, so a
         // busy-cancelling caller must not suppress the keepalive with it.
         if !matches!(step, ClientStep::Keepalive | ClientStep::Prune) {
-            last_activity = clock.now_nanos();
+            last_activity = ctx.time().now().as_nanos();
         }
 
         match step {
@@ -685,24 +710,24 @@ where
                             // terminal error item before dropping the sink, so the
                             // subscriber can tell "denied" from a disconnect-shaped
                             // stream end instead of re-subscribing forever.
-                            if let Some(tx) = subs.remove(&id.to_string()) {
-                                let _ = tx.try_send(Err(err));
-                                last_seq.remove(&id.to_string());
-                            }
+                            end_sub(&mut subs, &mut last_seq, &id.to_string(), err);
                         }
                     }
                     Ok(Outbound::Event {
                         sub,
                         seq,
                         topic,
+                        ts,
                         data,
                     }) => deliver(
                         &mut subs,
                         &mut last_seq,
                         sub,
                         seq,
-                        topic.map(Arc::from),
-                        data,
+                        match topic {
+                            Some(topic) => SubUpdate::tagged(Arc::from(topic), data, ts),
+                            None => SubUpdate::new(data, ts),
+                        },
                         Delivery::Event,
                     ),
                     // Snapshots ride the same accounting as events (they share
@@ -717,14 +742,14 @@ where
                         seq,
                         last,
                         topic,
+                        ts,
                         data,
                     }) => deliver(
                         &mut subs,
                         &mut last_seq,
                         sub,
                         seq,
-                        Some(Arc::from(topic)),
-                        data,
+                        SubUpdate::tagged(Arc::from(topic), data, ts),
                         if last {
                             Delivery::BurstEnd
                         } else {
@@ -734,6 +759,12 @@ where
                     Ok(Outbound::Pong) => {}
                     // Explicit subscribe ack — informational; the sink already exists.
                     Ok(Outbound::Subscribed { .. }) => {}
+                    // A value without its stamp breaks the protocol for that
+                    // subscription: end it with an error the subscriber sees,
+                    // as a refusal does, instead of dropping the frame unseen.
+                    Err(CodecError::MissingStamp { sub }) => {
+                        end_sub(&mut subs, &mut last_seq, &sub, RpcError::Protocol)
+                    }
                     Err(_e) => continue, // skip a malformed frame, keep the connection
                 }
             }
@@ -745,7 +776,7 @@ where
             ClientStep::Keepalive => {
                 // `keepalive_timer` is `Some` whenever this step fires.
                 let interval_ms = keepalive_ms.unwrap_or(0);
-                let idle_ms = clock.now_nanos().saturating_sub(last_activity) / 1_000_000;
+                let idle_ms = ctx.time().now().as_nanos().saturating_sub(last_activity) / 1_000_000;
                 if idle_ms >= interval_ms {
                     // Genuinely idle for a full window: ping and re-arm.
                     out.clear();
@@ -754,9 +785,9 @@ where
                     {
                         return Ended::Disconnected;
                     }
-                    last_activity = clock.now_nanos();
+                    last_activity = ctx.time().now().as_nanos();
                     keepalive_timer = Some(
-                        clock
+                        ctx.time()
                             .sleep(core::time::Duration::from_millis(interval_ms))
                             .fuse(),
                     );
@@ -764,7 +795,7 @@ where
                     // Activity happened while the timer was armed: no ping,
                     // re-arm for the remainder of the idle window.
                     keepalive_timer = Some(
-                        clock
+                        ctx.time()
                             .sleep(core::time::Duration::from_millis(interval_ms - idle_ms))
                             .fuse(),
                     );
@@ -1074,7 +1105,8 @@ mod tests {
             keepalive_interval: None,
             ..Default::default()
         };
-        let clock = crate::executor::test_support::NoopRuntimeOps;
+        let ctx =
+            crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         // Never signalled: this asserts the by-id path reclaims on its own.
         let (_prune_tx, prune_rx) = async_channel::bounded::<()>(1);
         let engine = drive_connection(
@@ -1083,7 +1115,7 @@ mod tests {
             &cmd_rx,
             &prune_rx,
             &config,
-            &clock,
+            &ctx,
         );
 
         let exercise = async {
@@ -1285,14 +1317,15 @@ mod tests {
             keepalive_interval: None,
             ..Default::default()
         };
-        let clock = crate::executor::test_support::NoopRuntimeOps;
+        let ctx =
+            crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         let engine = drive_connection(
             Box::new(SilentPeer::default()),
             &NullCodec,
             &cmd_rx,
             &prune_rx,
             &config,
-            &clock,
+            &ctx,
         );
 
         let exercise = async {
@@ -1378,12 +1411,9 @@ mod tests {
             max_offline_queue: usize::MAX,
             ..Default::default()
         };
-        let (handle, _engine) = run_client(
-            UndialableRemote,
-            NullCodec,
-            config,
-            Arc::new(crate::executor::test_support::NoopRuntimeOps),
-        );
+        let ctx =
+            crate::RuntimeContext::new(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        let (handle, _engine) = run_client(UndialableRemote, NullCodec, config, ctx);
 
         handle
             .write("t", Payload::from(&b"x"[..]))
@@ -1478,8 +1508,7 @@ mod tests {
             last_seq,
             "1",
             seq,
-            None,
-            Payload::from(&b"x"[..]),
+            SubUpdate::new(Payload::from(&b"x"[..]), crate::Stamp::from_nanos(0)),
             Delivery::Event,
         );
     }
@@ -1523,6 +1552,24 @@ mod tests {
         assert_eq!(last_seq.get("1"), Some(&4));
     }
 
+    /// A slow subscriber whose sink is already full of updates must still see
+    /// the terminal error, not buffered values followed by a bare EOF.
+    #[tokio::test]
+    async fn a_terminal_error_survives_a_full_sink() {
+        let (mut subs, mut last_seq, rx) = test_sink();
+
+        for seq in 1..=(SUBSCRIBE_CHANNEL_CAP as u64 + 10) {
+            deliver_event(&mut subs, &mut last_seq, seq);
+        }
+        end_sub(&mut subs, &mut last_seq, "1", RpcError::Protocol);
+
+        let items: Vec<_> = core::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(items.len(), SUBSCRIBE_CHANNEL_CAP);
+        assert!(items[..items.len() - 1].iter().all(Result::is_ok));
+        assert!(matches!(items.last(), Some(Err(RpcError::Protocol))));
+        assert!(rx.is_closed(), "the sink is dropped after the error");
+    }
+
     /// The mirror's loss contract (see [`inbound_pump`]): a server-reported gap
     /// is stepped over, not treated as a fault. The update *carrying* `skipped`
     /// is itself produced into the local record — it is current state, which is
@@ -1552,12 +1599,11 @@ mod tests {
             };
             for (data, skipped) in [(&b"gapped"[..], 7u64), (&b"after"[..], 0)] {
                 events
-                    .send(Ok(SubUpdate {
-                        topic: None,
-                        data: Payload::from(data),
-                        skipped,
-                        snapshot_end: false,
-                    }))
+                    .send(Ok(SubUpdate::new(
+                        Payload::from(data),
+                        crate::Stamp::from_nanos(0),
+                    )
+                    .with_skipped(skipped)))
                     .await
                     .expect("the pump holds the receiver");
             }
