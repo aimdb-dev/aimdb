@@ -380,13 +380,17 @@ impl Drop for DrainOnExit<'_> {
 }
 
 /// How an inbound update competes for room in its subscription's sink.
+///
+/// Every update stops one slot short of a full sink: that last slot belongs to
+/// the terminal error [`end_sub`] may still have to deliver, so a slow
+/// subscriber sees *why* its stream ended rather than a disconnect-shaped EOF.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Delivery {
     /// A live event: dropped when the sink is full.
     Event,
     /// A snapshot with more of its burst to come: dropped when the sink is
-    /// full, and additionally stops one slot short so [`Delivery::BurstEnd`]
-    /// always fits.
+    /// full, and additionally stops one more slot short so
+    /// [`Delivery::BurstEnd`] always fits.
     BurstBody,
     /// The burst's final snapshot: carries the burst's whole loss count and
     /// [`SubUpdate::snapshot_end`], delivered into the slot
@@ -434,12 +438,16 @@ fn deliver(
     let skipped = seq.saturating_sub(prev.saturating_add(1));
     // `None` here is a late update for a dropped sub — ignore.
     if let Some(tx) = subs.get(sub) {
-        // Hold the last slot back for the burst's final snapshot. Only this
-        // loop ever sends, so `len()` can only *fall* before the `try_send`
-        // below — a slot seen free here stays free, making that final delivery
-        // infallible rather than merely likely.
-        if mode == Delivery::BurstBody && tx.capacity().is_some_and(|cap| tx.len() + 1 >= cap) {
-            return; // folds into the next delivered update's `skipped`
+        // Hold the last slot back for a terminal error, and a burst body one
+        // more for the burst's final snapshot. Only this loop ever sends, so
+        // `len()` can only *fall* before the `try_send` below — a slot seen
+        // free here stays free, making those deliveries infallible rather than
+        // merely likely.
+        let reserved = if mode == Delivery::BurstBody { 2 } else { 1 };
+        if tx.capacity().is_some_and(|cap| tx.len() + reserved >= cap) {
+            // Slow consumer: drop this update but leave `last_seq` so the
+            // shortfall folds into the next delivered update's `skipped`.
+            return;
         }
         update.skipped = skipped;
         update.snapshot_end = mode == Delivery::BurstEnd;
@@ -448,8 +456,8 @@ fn deliver(
             Ok(()) => {
                 last_seq.insert(sub.to_string(), seq.max(prev));
             }
-            // Slow consumer: drop this update but leave `last_seq` so the
-            // shortfall folds into the next delivered update's `skipped`.
+            // Full despite the check above: only a channel without a capacity
+            // gets here. Same as a slow consumer.
             Err(e) if e.is_full() => {}
             // Receiver gone — the sub was dropped; prune it.
             Err(_) => {
@@ -457,6 +465,22 @@ fn deliver(
                 last_seq.remove(sub);
             }
         }
+    }
+}
+
+/// End a subscription with a terminal `err` and drop its sink.
+///
+/// The error lands in the slot [`deliver`] never fills, so it reaches the
+/// subscriber even behind a full queue of buffered updates.
+fn end_sub(
+    subs: &mut HashMap<String, Sender<Result<SubUpdate, RpcError>>>,
+    last_seq: &mut HashMap<String, u64>,
+    sub: &str,
+    err: RpcError,
+) {
+    if let Some(tx) = subs.remove(sub) {
+        let _ = tx.try_send(Err(err));
+        last_seq.remove(sub);
     }
 }
 
@@ -686,10 +710,7 @@ where
                             // terminal error item before dropping the sink, so the
                             // subscriber can tell "denied" from a disconnect-shaped
                             // stream end instead of re-subscribing forever.
-                            if let Some(tx) = subs.remove(&id.to_string()) {
-                                let _ = tx.try_send(Err(err));
-                                last_seq.remove(&id.to_string());
-                            }
+                            end_sub(&mut subs, &mut last_seq, &id.to_string(), err);
                         }
                     }
                     Ok(Outbound::Event {
@@ -742,10 +763,7 @@ where
                     // subscription: end it with an error the subscriber sees,
                     // as a refusal does, instead of dropping the frame unseen.
                     Err(CodecError::MissingStamp { sub }) => {
-                        if let Some(tx) = subs.remove(&sub) {
-                            let _ = tx.try_send(Err(RpcError::Protocol));
-                            last_seq.remove(&sub);
-                        }
+                        end_sub(&mut subs, &mut last_seq, &sub, RpcError::Protocol)
                     }
                     Err(_e) => continue, // skip a malformed frame, keep the connection
                 }
@@ -1532,6 +1550,24 @@ mod tests {
             "only the real gap (2 missing between 1 and 3) may be reported"
         );
         assert_eq!(last_seq.get("1"), Some(&4));
+    }
+
+    /// A slow subscriber whose sink is already full of updates must still see
+    /// the terminal error, not buffered values followed by a bare EOF.
+    #[tokio::test]
+    async fn a_terminal_error_survives_a_full_sink() {
+        let (mut subs, mut last_seq, rx) = test_sink();
+
+        for seq in 1..=(SUBSCRIBE_CHANNEL_CAP as u64 + 10) {
+            deliver_event(&mut subs, &mut last_seq, seq);
+        }
+        end_sub(&mut subs, &mut last_seq, "1", RpcError::Protocol);
+
+        let items: Vec<_> = core::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(items.len(), SUBSCRIBE_CHANNEL_CAP);
+        assert!(items[..items.len() - 1].iter().all(Result::is_ok));
+        assert!(matches!(items.last(), Some(Err(RpcError::Protocol))));
+        assert!(rx.is_closed(), "the sink is dropped after the error");
     }
 
     /// The mirror's loss contract (see [`inbound_pump`]): a server-reported gap
