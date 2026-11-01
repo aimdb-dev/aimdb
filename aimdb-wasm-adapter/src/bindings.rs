@@ -214,8 +214,8 @@ impl WasmDb {
     /// Get the current value of a record as `{ value, ts }`, or `undefined`.
     ///
     /// The value is the latest snapshot — it does not wait for a new push.
-    /// `ts` is its write stamp, see [`stamped_to_js`]. Returns `undefined` if
-    /// no value has been produced yet.
+    /// `ts` is its write stamp in nanoseconds on the instance clock, as a
+    /// `BigInt`. Returns `undefined` if no value has been produced yet.
     pub fn get(&self, record_key: &str) -> Result<JsValue, JsError> {
         let (db, ops) = self.resolve(record_key)?;
         (ops.get)(db, record_key)
