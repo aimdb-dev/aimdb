@@ -138,11 +138,23 @@ impl QueryHandler for OneRecordQuery {
 // ── Harness ──────────────────────────────────────────────────────────
 
 /// Reserve an ephemeral port, then free it so the server can bind it.
+///
+/// Never hands out the same port twice in this process: the tests run in
+/// parallel, and the OS may reissue a port once its probe listener is dropped,
+/// leaving two servers racing for one address.
 fn free_addr() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
+    static ISSUED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut issued = ISSUED.lock().unwrap();
+    loop {
+        let a = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        if !issued.contains(&a.port()) {
+            issued.push(a.port());
+            return a;
+        }
+    }
 }
 
 /// Wait until the server is accepting connections at `addr`.

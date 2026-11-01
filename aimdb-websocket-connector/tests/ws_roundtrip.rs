@@ -26,11 +26,22 @@ struct Msg {
 
 /// Grab a probably-free ephemeral port (the WS builder binds internally and does
 /// not surface `:0`'s assigned port, so we pick one up front).
+///
+/// Never hands out the same port twice in this process: the tests run in
+/// parallel, and the OS may reissue a port once its probe listener is dropped,
+/// leaving two servers racing for one address.
 fn free_addr() -> SocketAddr {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let a = l.local_addr().unwrap();
-    drop(l);
-    a
+    static ISSUED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut issued = ISSUED.lock().unwrap();
+    loop {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = l.local_addr().unwrap();
+        drop(l);
+        if !issued.contains(&a.port()) {
+            issued.push(a.port());
+            return a;
+        }
+    }
 }
 
 /// Re-assert `db.<key>` reaches `want`, re-driving `push` each tick so the test is
