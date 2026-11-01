@@ -196,3 +196,103 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
 
     producer_task.await.unwrap();
 }
+
+#[derive(Clone, Debug)]
+struct Flow {
+    sample_id: u32,
+    celsius: f32,
+}
+
+#[derive(Clone, Debug)]
+struct Return {
+    sample_id: u32,
+    celsius: f32,
+}
+
+#[derive(Clone, Debug)]
+struct Difference {
+    sample_id: u32,
+    kelvin: f32,
+}
+
+/// The pairing pattern from the `JoinBuilder::on_triggers` docs: emit only when
+/// both inputs hold the same `sample_id`, then consume both. Flow 2 is replaced
+/// by Flow 3 before its Return arrives, so cycle 2 produces nothing.
+#[tokio::test]
+async fn transform_join_pairs_values_by_sample_id() {
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+
+    builder.configure::<Flow>("pair::Flow", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
+    });
+    builder.configure::<Return>("pair::Return", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
+    });
+    builder.configure::<Difference>("pair::Difference", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+            .transform_join(|b| {
+                b.input::<Flow>("pair::Flow")
+                    .input::<Return>("pair::Return")
+                    .on_triggers(|mut rx, producer| async move {
+                        let mut flow: Option<Flow> = None;
+                        let mut ret: Option<Return> = None;
+                        while let Ok(trigger) = rx.recv().await {
+                            match trigger.index() {
+                                0 => flow = trigger.as_input::<Flow>().cloned(),
+                                1 => ret = trigger.as_input::<Return>().cloned(),
+                                _ => {}
+                            }
+                            if let (Some(f), Some(r)) = (&flow, &ret) {
+                                if f.sample_id == r.sample_id {
+                                    producer.produce(Difference {
+                                        sample_id: f.sample_id,
+                                        kelvin: f.celsius - r.celsius,
+                                    });
+                                    flow = None;
+                                    ret = None;
+                                }
+                            }
+                        }
+                    })
+            });
+    });
+
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
+    let mut diff_rx = db.subscribe::<Difference>("pair::Difference").unwrap();
+    tokio::task::yield_now().await;
+
+    let flow = |sample_id, celsius| Flow { sample_id, celsius };
+    let ret = |sample_id, celsius| Return { sample_id, celsius };
+
+    db.produce::<Flow>("pair::Flow", flow(1, 60.0)).unwrap();
+    db.produce::<Return>("pair::Return", ret(1, 45.0)).unwrap();
+    let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((d.value.sample_id, d.value.kelvin), (1, 15.0));
+
+    // Each input is delivered in write order, so every interleaving of the
+    // two inputs ends with Flow 3 and Return 3 retained together.
+    db.produce::<Flow>("pair::Flow", flow(2, 61.0)).unwrap();
+    db.produce::<Flow>("pair::Flow", flow(3, 62.0)).unwrap();
+    db.produce::<Return>("pair::Return", ret(3, 50.0)).unwrap();
+    let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (d.value.sample_id, d.value.kelvin),
+        (3, 12.0),
+        "cycle 2 has no Return and must be skipped"
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), diff_rx.recv())
+            .await
+            .is_err(),
+        "no output beyond cycles 1 and 3"
+    );
+}
