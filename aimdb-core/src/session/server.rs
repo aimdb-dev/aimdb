@@ -63,6 +63,7 @@ struct SubEvent {
     /// Concrete record topic, when the subscription tags its updates
     /// (see [`SubUpdate::topic`]).
     topic: Option<Arc<str>>,
+    ts: crate::clock::Stamp,
     data: Payload,
 }
 
@@ -298,7 +299,7 @@ pub async fn run_session<C, D>(
                                 let total = snaps.len();
                                 let mut seq: u64 = 0;
                                 let mut send_failed = false;
-                                for (i, (snap_topic, data)) in snaps.into_iter().enumerate() {
+                                for (i, (snap_topic, data, ts)) in snaps.into_iter().enumerate() {
                                     seq += 1;
                                     out.clear();
                                     let encoded = codec.encode(
@@ -310,6 +311,7 @@ pub async fn run_session<C, D>(
                                             // loss total always lands.
                                             last: i + 1 == total,
                                             topic: &snap_topic,
+                                            ts,
                                             data,
                                         },
                                         &mut out,
@@ -397,6 +399,7 @@ async fn send_event<C: EnvelopeCodec + ?Sized>(
                 sub: &ev.sub,
                 seq: ev.seq,
                 topic: ev.topic.as_deref(),
+                ts: ev.ts,
                 data: ev.data,
             },
             out,
@@ -480,6 +483,7 @@ async fn pump_subscription(
             sub: sub_id.clone(),
             seq,
             topic: update.topic,
+            ts: update.ts,
             data: update.data,
         }) {
             Ok(()) => {}

@@ -105,6 +105,7 @@ struct RecordConfig {
 /// await db.build();
 /// db.set('sensors.temperature.vienna', { celsius: 22.5, timestamp: Date.now() });
 /// const t = db.get('sensors.temperature.vienna'); // validated by Rust serde
+/// // t = { value: { celsius: 22.5, ... }, ts: 1234567n }
 /// ```
 #[wasm_bindgen]
 pub struct WasmDb {
@@ -210,10 +211,11 @@ impl WasmDb {
         Ok(())
     }
 
-    /// Get the current value of a record (returns JS object or `undefined`).
+    /// Get the current value of a record as `{ value, ts }`, or `undefined`.
     ///
     /// The value is the latest snapshot — it does not wait for a new push.
-    /// Returns `undefined` if no value has been produced yet.
+    /// `ts` is its write stamp in nanoseconds on the instance clock, as a
+    /// `BigInt`. Returns `undefined` if no value has been produced yet.
     pub fn get(&self, record_key: &str) -> Result<JsValue, JsError> {
         let (db, ops) = self.resolve(record_key)?;
         (ops.get)(db, record_key)
@@ -230,7 +232,8 @@ impl WasmDb {
 
     /// Subscribe to record updates. Returns an unsubscribe function.
     ///
-    /// `callback` is invoked on every buffer push with the validated value.
+    /// `callback` is invoked on every buffer push with `{ value, ts }`, as
+    /// [`get`](Self::get) returns it.
     pub fn subscribe(
         &self,
         record_key: &str,
@@ -360,7 +363,7 @@ impl WasmDb {
 fn discover_impl(url: String) -> js_sys::Promise {
     js_sys::Promise::new(&mut move |resolve, reject| {
         // Declare our AimX version in the URL — the server gates the WS upgrade
-        // on it, and a browser cannot set handshake headers (`?v=3.0`).
+        // on it, and a browser cannot set handshake headers (`?v=4.0`).
         let url = aimdb_core::remote::ws_url_with_version(&url);
         let ws = match web_sys::WebSocket::new(&url) {
             Ok(ws) => ws,
@@ -571,14 +574,30 @@ where
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     match typed.latest() {
-        Some(val) => {
-            let serializer = serde_wasm_bindgen::Serializer::json_compatible();
-            val.get()
-                .serialize(&serializer)
-                .map_err(|e| JsError::new(&format!("Serialization failed: {e}")))
-        }
+        Some(val) => stamped_to_js(val.get(), val.stamp())
+            .map_err(|e| JsError::new(&format!("Serialization failed: {e}"))),
         None => Ok(JsValue::UNDEFINED),
     }
+}
+
+/// A read result for JavaScript: `{ value, ts }`, the value JSON-compatible
+/// and `ts` its write stamp in nanoseconds on the instance clock.
+///
+/// `ts` is a `BigInt`: stamps pass 2⁵³ after ~104 days of uptime, where a JS
+/// number would lose precision (design 058 §5.1).
+fn stamped_to_js<T: Serialize>(
+    value: &T,
+    stamp: aimdb_core::Stamp,
+) -> Result<JsValue, serde_wasm_bindgen::Error> {
+    let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+    let out = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&out, &"value".into(), &value.serialize(&serializer)?);
+    let _ = js_sys::Reflect::set(
+        &out,
+        &"ts".into(),
+        &js_sys::BigInt::from(stamp.as_nanos()).into(),
+    );
+    Ok(out.into())
 }
 
 /// Deserialize `JsValue` → `T` (contract enforcement), then push to buffer.
@@ -639,8 +658,7 @@ where
 
             match select(recv_fut, cancel_fut).await {
                 Either::Left((Ok(val), _)) => {
-                    let serializer = serde_wasm_bindgen::Serializer::json_compatible();
-                    if let Ok(js) = val.serialize(&serializer) {
+                    if let Ok(js) = stamped_to_js(&val.value, val.stamp()) {
                         let _ = callback.call1(&JsValue::NULL, &js);
                     }
                 }

@@ -1,33 +1,54 @@
 //! Runtime context for AimDB services
 //!
 //! Provides a unified interface to runtime capabilities (time, sleep, logging)
-//! as a concrete value wrapping `Arc<dyn RuntimeOps>` — no runtime type
-//! parameter.
+//! as a concrete value wrapping `Arc<dyn RuntimeOps>` and the clock time is
+//! read from — no runtime type parameter.
 
+use crate::clock::{InstanceClock, Stamp};
 use crate::executor::{BoxFuture, LogLevel, RuntimeOps};
 use alloc::sync::Arc;
 
 /// Unified runtime context for AimDB services
 ///
-/// Wraps the dyn-safe [`RuntimeOps`] capability surface so services can use
-/// timing and logging without knowing the runtime adapter type. Cheap to
-/// clone (one `Arc`).
+/// Wraps the dyn-safe [`RuntimeOps`] capability surface and a clock so
+/// services can use timing and logging without knowing the runtime adapter
+/// type. Cheap to clone (two `Arc`s).
+///
+/// Every context an `AimDb` hands out carries the instance clock, the one that
+/// stamps writes (design 058 §3.1).
 #[derive(Clone)]
 pub struct RuntimeContext {
     ops: Arc<dyn RuntimeOps>,
+    clock: Arc<dyn InstanceClock>,
 }
 
 impl RuntimeContext {
-    /// Create a new RuntimeContext from the dyn-safe runtime capabilities.
+    /// A context with a clock of its own, created now — for code outside an
+    /// instance, such as a standalone client engine. Inside an instance use
+    /// `AimDb::runtime_ctx()`, which shares the instance clock.
     pub fn new(ops: Arc<dyn RuntimeOps>) -> Self {
-        Self { ops }
+        let clock = ops.new_clock();
+        Self { ops, clock }
+    }
+
+    /// A context over `ops` that reads time from `clock`.
+    pub fn with_clock(ops: Arc<dyn RuntimeOps>, clock: Arc<dyn InstanceClock>) -> Self {
+        Self { ops, clock }
     }
 
     /// Access time utilities
     ///
     /// Returns a time accessor for clock reads and sleeping.
     pub fn time(&self) -> Time<'_> {
-        Time { ops: &*self.ops }
+        Time {
+            ops: &*self.ops,
+            clock: &*self.clock,
+        }
+    }
+
+    /// The clock this context reads time from.
+    pub fn clock(&self) -> &Arc<dyn InstanceClock> {
+        &self.clock
     }
 
     /// Access logging utilities
@@ -43,26 +64,25 @@ impl RuntimeContext {
 
 /// Time utilities accessor for RuntimeContext
 ///
-/// Durations are plain [`core::time::Duration`]; instants are `u64`
-/// nanoseconds from an arbitrary monotonic epoch (only differences between
-/// two readings are meaningful).
+/// Durations are plain [`core::time::Duration`]; instants are [`Stamp`]s
+/// on the context's clock.
 pub struct Time<'a> {
     ops: &'a dyn RuntimeOps,
+    clock: &'a dyn InstanceClock,
 }
 
 impl Time<'_> {
-    /// Monotonic clock reading in nanoseconds from an arbitrary epoch.
-    ///
-    /// Never decreases; saturates at `u64::MAX` rather than wrapping.
-    pub fn now(&self) -> u64 {
-        self.ops.now_nanos()
+    /// Monotonic reading of the context's clock: inside an instance, time
+    /// since the instance started, on the clock that stamps writes.
+    pub fn now(&self) -> Stamp {
+        self.clock.now()
     }
 
     /// Wall-clock time as `(seconds, nanoseconds)` since the Unix epoch, if
     /// the runtime has a real-time clock (`None` on e.g. a bare MCU without
-    /// an RTC anchor).
+    /// an RTC anchor). May be adjusted; unrelated to [`now`](Self::now).
     pub fn unix_time(&self) -> Option<(u64, u32)> {
-        self.ops.unix_time()
+        self.clock.unix_time()
     }
 
     /// Completes after at least `duration` has elapsed.

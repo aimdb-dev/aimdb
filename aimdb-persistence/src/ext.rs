@@ -52,8 +52,10 @@ where
             let mut reader = consumer.subscribe();
 
             loop {
+                // The backend stores its own persist time, not the write stamp
+                // (design 058 §5.1).
                 let value = match reader.recv().await {
-                    Ok(v) => v,
+                    Ok(sample) => sample.value,
                     Err(aimdb_core::DbError::BufferLagged { .. }) => continue,
                     Err(_) => break,
                 };

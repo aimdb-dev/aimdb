@@ -3,7 +3,7 @@
 use crate::error::{McpError, McpResult};
 use aimdb_client::{AimxConnection, ClientError};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tracing::debug;
 
@@ -180,9 +180,9 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let err = match client.get_record(&params.record_name).await {
-            Ok(value) => {
+            Ok(sample) => {
                 debug!("✅ Retrieved record '{}'", params.record_name);
-                return Ok(value);
+                return Ok(stamped_json(&sample));
             }
             Err(e) => e,
         };
@@ -320,14 +320,37 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         response.count, params.record_name
     );
 
-    serde_json::to_value(response)
-        .map_err(|e| McpError::Internal(format!("JSON serialization failed: {}", e)))
+    Ok(json!({
+        "record_name": response.record_name,
+        "values": response.values.iter().map(stamped_json).collect::<Vec<_>>(),
+        "count": response.count,
+    }))
+}
+
+/// A value with its write stamp, as AimX 4.0 carries it: `{"value", "ts"}`,
+/// `ts` in nanoseconds since the server instance started.
+fn stamped_json(sample: &aimdb_client::Stamped<Value>) -> Value {
+    json!({ "value": sample.value, "ts": sample.stamp().as_nanos() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `get_record` and every `drain_record` value: `{"value", "ts"}` with `ts`
+    /// in integer nanoseconds (AimX 4.0).
+    #[test]
+    fn values_carry_their_write_stamp() {
+        let sample = aimdb_client::Stamped::new(
+            json!({"c": 21.5}),
+            aimdb_client::WriteMetadata::from_wire_stamp(aimdb_client::Stamp::from_nanos(81)),
+        );
+        assert_eq!(
+            stamped_json(&sample),
+            json!({"value": {"c": 21.5}, "ts": 81})
+        );
+    }
 
     #[tokio::test]
     async fn test_list_records_missing_endpoint() {

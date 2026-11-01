@@ -93,17 +93,19 @@ async fn list_records(
 async fn get_record(name: &str, endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
     let client = connect_endpoint(endpoint).await?;
 
-    let value = client.get_record(name).await?;
+    let sample = client.get_record(name).await?;
 
     let output = match format {
-        OutputFormat::Table => {
-            // For single record, just show pretty JSON
-            serde_json::to_string_pretty(&value)?
-        }
-        OutputFormat::Json => serde_json::to_string_pretty(&value)?,
-        OutputFormat::JsonCompact => serde_json::to_string(&value)?,
+        // A single record: the pretty value, then when it was written.
+        OutputFormat::Table => format!(
+            "{}\nts: {} s since instance start",
+            serde_json::to_string_pretty(&sample.value)?,
+            crate::output::format_ts(sample.stamp())
+        ),
+        OutputFormat::Json => serde_json::to_string_pretty(&crate::output::stamped_json(&sample))?,
+        OutputFormat::JsonCompact => serde_json::to_string(&crate::output::stamped_json(&sample))?,
         #[cfg(feature = "yaml")]
-        OutputFormat::Yaml => serde_yaml::to_string(&value)
+        OutputFormat::Yaml => serde_yaml::to_string(&crate::output::stamped_json(&sample))
             .map_err(|e| anyhow::anyhow!("YAML serialization error: {}", e))?,
     };
 

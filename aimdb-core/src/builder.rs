@@ -77,6 +77,9 @@ pub struct AimDbInner {
 
     /// Build info, instance name and UID, checked at build().
     identity: crate::identity::Identity,
+
+    /// The instance clock every write is stamped from, created in build().
+    clock: Arc<dyn crate::clock::InstanceClock>,
 }
 
 impl AimDbInner {
@@ -213,9 +216,12 @@ impl AimDbInner {
     /// * `record_key` - The record key (e.g., "sensors.temperature")
     ///
     /// # Returns
-    /// `Some(JsonValue)` with the current record value, or `None`
+    /// `Some` with the current record value and its write metadata, or `None`
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json(&self, record_key: &str) -> Option<serde_json::Value> {
+    pub fn try_latest_as_json(
+        &self,
+        record_key: &str,
+    ) -> Option<crate::Stamped<serde_json::Value>> {
         let id = self.resolve_str(record_key)?;
         self.storages
             .get(id.index())?
@@ -231,7 +237,7 @@ impl AimDbInner {
     /// codec serializes the typed record directly; compatibility codecs may
     /// inherit a `Value`-based fallback.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json_bytes(&self, record_key: &str) -> Option<Vec<u8>> {
+    pub fn try_latest_as_json_bytes(&self, record_key: &str) -> Option<crate::Stamped<Vec<u8>>> {
         let id = self.resolve_str(record_key)?;
         self.storages
             .get(id.index())?
@@ -824,6 +830,14 @@ impl AimDbBuilder {
             _ => return Err(DbError::InvalidConfiguration { errors }),
         };
 
+        // The instance clock: created once and bound to every record before
+        // any task runs, so there is no unstamped write (design 058 §3.3).
+        // Every `RuntimeContext` the instance hands out reads it too.
+        let clock = runtime.new_clock();
+        for entry in &mut storages {
+            entry.record.bind_clock(clock.clone());
+        }
+
         log_debug!(
             "Dependency graph built successfully ({} nodes, {} edges, topo order: {:?})",
             dependency_graph.nodes.len(),
@@ -837,10 +851,11 @@ impl AimDbBuilder {
             dependency_graph,
             extensions: self.extensions,
             identity,
+            clock: clock.clone(),
         });
 
         #[cfg(feature = "observability")]
-        let profiling_clock = crate::profiling::make_clock(runtime.clone());
+        let profiling_clock = crate::profiling::make_clock(clock);
 
         let db = Arc::new(AimDb {
             inner: inner.clone(),
@@ -942,7 +957,7 @@ impl AimDbBuilder {
             log_debug!("Collecting {} on_start future(s)", self.start_fns.len());
 
             for start_fn in self.start_fns {
-                futures_acc.push(start_fn(crate::RuntimeContext::new(runtime.clone())));
+                futures_acc.push(start_fn(db.runtime_ctx()));
             }
         }
 
@@ -1098,7 +1113,7 @@ impl AimDb {
         // Single write path via WriteHandle. For hot paths,
         // prefer `db.producer::<T>(key)` once and reuse the returned handle.
         let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
-        typed_rec.writer_handle().push(value);
+        typed_rec.writer_handle()?.push(value);
         Ok(())
     }
 
@@ -1112,12 +1127,15 @@ impl AimDb {
     /// Unknown keys and mismatched types return the same errors as
     /// [`produce`](Self::produce). This read needs neither serialization nor
     /// remote-access registration and is available on both std and no_std.
-    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<T>>
+    ///
+    /// The value comes with the metadata of the write that stored it; read
+    /// `.value` for the value alone, `.stamp()` for its write time.
+    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<crate::Stamped<T>>>
     where
         T: Send + 'static + Debug + Clone,
     {
         let record = self.inner.get_typed_record_by_key::<T>(key)?;
-        Ok(record.latest().map(|value| value.into_inner()))
+        Ok(record.latest().map(|value| value.into_stamped()))
     }
 
     /// Subscribes to a specific record by key
@@ -1151,7 +1169,7 @@ impl AimDb {
         // handle to the record's buffer/snapshot/metadata directly
         let key_str: alloc::string::String = key.into();
         let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
-        Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()))
+        Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()?))
     }
 
     /// Creates a type-safe consumer for a specific record by key
@@ -1196,18 +1214,24 @@ impl AimDb {
 
     /// Returns an owned `Arc` handle to the runtime capabilities.
     ///
-    /// Connectors that hand the runtime to a `'static` engine future (e.g. the
-    /// session client engine, which needs the clock for reconnect
-    /// backoff/keepalive) clone it through here.
+    /// The runtime holds no clock reading of its own: code that reads time
+    /// takes [`runtime_ctx`](Self::runtime_ctx), whose clock is the instance's.
     pub fn runtime_ops(&self) -> Arc<dyn crate::executor::RuntimeOps> {
         self.runtime.clone()
+    }
+
+    /// The instance clock's current reading: time since this instance was
+    /// built, on the clock that stamps every write. With it, in-process code
+    /// computes a value's age: `db.now().since(v.stamp())`.
+    pub fn now(&self) -> crate::clock::Stamp {
+        self.inner.clock.now()
     }
 
     /// Returns a [`RuntimeContext`](crate::RuntimeContext) over this
     /// database's runtime — the value handed to services and context-aware
     /// (de)serializers.
     pub fn runtime_ctx(&self) -> crate::RuntimeContext {
-        crate::RuntimeContext::new(self.runtime.clone())
+        crate::RuntimeContext::with_clock(self.runtime.clone(), self.inner.clock.clone())
     }
 
     /// Lists all registered records (std only)
@@ -1250,7 +1274,10 @@ impl AimDb {
     /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
     /// for state you want to read latest-value style.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json(&self, record_name: &str) -> Option<serde_json::Value> {
+    pub fn try_latest_as_json(
+        &self,
+        record_name: &str,
+    ) -> Option<crate::Stamped<serde_json::Value>> {
         self.inner.try_latest_as_json(record_name)
     }
 
@@ -1261,7 +1288,7 @@ impl AimDb {
     /// `None`. AimX `record.get` retains its per-connection drain fallback for
     /// those records.
     #[cfg(feature = "remote")]
-    pub fn try_latest_as_json_bytes(&self, record_name: &str) -> Option<Vec<u8>> {
+    pub fn try_latest_as_json_bytes(&self, record_name: &str) -> Option<crate::Stamped<Vec<u8>>> {
         self.inner.try_latest_as_json_bytes(record_name)
     }
 
@@ -1400,5 +1427,31 @@ impl AimDb {
                     .filter(move |link| link.url.scheme() == scheme)
                     .map(move |link| (i, entry.type_id, link))
             })
+    }
+}
+
+#[cfg(test)]
+mod instance_clock_tests {
+    use crate::executor::test_support::ManualClockRuntimeOps;
+    use crate::Stamp;
+    use core::time::Duration;
+
+    /// 058 §3.1: one notion of time per instance. Everything an instance hands
+    /// out reads the clock `build()` created.
+    #[tokio::test]
+    async fn every_time_source_of_an_instance_reads_its_clock() {
+        let ops = ManualClockRuntimeOps::default();
+        let (db, _runner) = crate::AimDbBuilder::new()
+            .runtime(alloc::sync::Arc::new(ops.clone()))
+            .build()
+            .await
+            .unwrap();
+        ops.clock.advance(Duration::from_nanos(4242));
+
+        assert_eq!(db.now(), Stamp::from_nanos(4242));
+        assert_eq!(db.runtime_ctx().time().now(), Stamp::from_nanos(4242));
+        assert_eq!(db.runtime_ctx().clock().now(), Stamp::from_nanos(4242));
+        #[cfg(feature = "observability")]
+        assert_eq!((db.profiling_clock())(), 4242);
     }
 }

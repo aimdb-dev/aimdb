@@ -31,7 +31,8 @@ pub async fn log_tap<T>(
     let log = ctx.log();
     let mut reader = consumer.subscribe();
 
-    while let Ok(value) = reader.recv().await {
+    while let Ok(sample) = reader.recv().await {
+        let value = sample.value;
         log.info(&alloc::format!(
             "[{}] {}: {:?}{}",
             node_id,
@@ -86,8 +87,8 @@ where
         let gauge = self.signal_gauge(T::SIGNAL, T::UNIT);
         self.tap(move |_ctx, consumer| async move {
             let mut reader = consumer.subscribe();
-            while let Ok(value) = reader.recv().await {
-                gauge.update(value.signal().into());
+            while let Ok(sample) = reader.recv().await {
+                gauge.update(sample.value.signal().into());
             }
         })
         .with_name("observe")

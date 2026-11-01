@@ -108,7 +108,7 @@ async fn read_temperature(
     let log = ctx.log();
     log.info("🌡️  Starting temperature sensor...");
     loop {
-        let now = ctx.time().now() / 1_000_000;
+        let now = ctx.time().now().as_nanos() / 1_000_000;
         producer.produce(Temperature::new(22.0, now));
         Timer::after(Duration::from_secs(5)).await;
     }
@@ -120,7 +120,7 @@ async fn read_humidity(ctx: aimdb_core::RuntimeContext, producer: aimdb_core::Pr
     let log = ctx.log();
     log.info("💧 Starting humidity sensor...");
     loop {
-        let now = ctx.time().now() / 1_000_000;
+        let now = ctx.time().now().as_nanos() / 1_000_000;
         producer.produce(Humidity {
             percent: 55.0,
             timestamp: now,

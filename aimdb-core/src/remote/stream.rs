@@ -40,7 +40,7 @@ use futures_util::stream::unfold;
 pub(crate) fn stream_record_updates(
     db: &AimDb,
     record_key: &str,
-) -> DbResult<impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static> {
+) -> DbResult<impl Stream<Item = (crate::session::Payload, crate::Stamp, u64)> + Send + 'static> {
     let inner = db.inner();
     let id = inner
         .resolve_str(record_key)
@@ -72,14 +72,16 @@ pub(crate) fn stream_record_updates(
 fn record_updates(
     reader: crate::buffer::JsonReader,
     key: alloc::string::String,
-) -> impl Stream<Item = (crate::session::Payload, u64)> + Send + 'static {
+) -> impl Stream<Item = (crate::session::Payload, crate::Stamp, u64)> + Send + 'static {
     let state = (reader, key, 0_u64);
     unfold(state, |(mut reader, key, mut skipped)| async move {
         loop {
             match reader.recv_json_bytes().await {
-                Ok(bytes) => {
-                    let data = crate::session::Payload::from(bytes);
-                    return Some(((data, skipped), (reader, key, 0)));
+                Ok(sample) => {
+                    // Payload and stamp from the same read (design 058 §4.4).
+                    let ts = sample.stamp();
+                    let data = crate::session::Payload::from(sample.value);
+                    return Some(((data, ts, skipped), (reader, key, 0)));
                 }
                 Err(DbError::BufferLagged { lag_count, .. }) => {
                     report(RecordStreamEvent::Lagged {
@@ -118,26 +120,33 @@ mod tests {
         step: Arc<AtomicUsize>,
     }
 
+    fn sample(value: serde_json::Value) -> crate::Stamped<serde_json::Value> {
+        crate::Stamped::new(
+            value,
+            crate::WriteMetadata::new(crate::Stamp::from_nanos(0)),
+        )
+    }
+
     impl JsonBufferReader for FakeReader {
         fn poll_recv_json(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<Result<serde_json::Value, DbError>> {
+        ) -> Poll<Result<crate::Stamped<serde_json::Value>, DbError>> {
             let s = self.step.fetch_add(1, Ordering::SeqCst);
             Poll::Ready(match s {
-                0 => Ok(serde_json::json!({"v": 1})),
+                0 => Ok(sample(serde_json::json!({"v": 1}))),
                 1 => Err(DbError::BufferLagged {
                     buffer_name: "test".to_string(),
                     lag_count: 7,
                 }),
-                2 => Ok(serde_json::json!({"v": 2})),
+                2 => Ok(sample(serde_json::json!({"v": 2}))),
                 _ => Err(DbError::BufferClosed {
                     buffer_name: "test".to_string(),
                 }),
             })
         }
 
-        fn try_recv_json(&mut self) -> Result<serde_json::Value, DbError> {
+        fn try_recv_json(&mut self) -> Result<crate::Stamped<serde_json::Value>, DbError> {
             Err(DbError::BufferEmpty)
         }
     }
@@ -174,11 +183,11 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&values[0].0).unwrap(),
             serde_json::json!({"v": 1})
         );
-        assert_eq!(values[0].1, 0);
+        assert_eq!(values[0].2, 0);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&values[1].0).unwrap(),
             serde_json::json!({"v": 2})
         );
-        assert_eq!(values[1].1, 7);
+        assert_eq!(values[1].2, 7);
     }
 }

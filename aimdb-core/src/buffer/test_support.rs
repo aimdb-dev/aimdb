@@ -22,6 +22,10 @@
 //! under any executor — including a bare `futures::executor::block_on` on a
 //! single-threaded host — without hanging.
 //!
+//! Buffers hold `Stamped<i32>` values, as record buffers hold `Stamped<T>`.
+//! Each sample's stamp equals its value, so comparing whole samples also checks
+//! that a buffer carries write metadata through unchanged.
+//!
 //! Each `assert_*` takes an `mk` closure that constructs a fresh buffer of the
 //! kind under test. The closure (rather than a [`BufferCfg`]) lets each adapter
 //! supply its own concrete type and const-generic sizing — e.g. the embassy
@@ -33,10 +37,15 @@
 use alloc::boxed::Box;
 
 use super::{Buffer, DynBuffer, Reader};
-use crate::DbError;
+use crate::{DbError, Stamp, Stamped, WriteMetadata};
+
+/// A sample whose stamp equals its value.
+pub fn sample(v: i32) -> Stamped<i32> {
+    Stamped::new(v, WriteMetadata::new(Stamp::from_nanos(v as u64)))
+}
 
 /// Wrap a freshly-subscribed reader in the ergonomic [`Reader`] handle.
-fn reader<B: Buffer<i32>>(buffer: &B) -> Reader<i32> {
+fn reader<B: Buffer<Stamped<i32>>>(buffer: &B) -> Reader<i32> {
     Reader::new(Box::new(buffer.subscribe()))
 }
 
@@ -47,17 +56,17 @@ fn reader<B: Buffer<i32>>(buffer: &B) -> Reader<i32> {
 /// [`peek`](DynBuffer::peek).
 pub async fn assert_single_latest_contract<B, F>(mk: F)
 where
-    B: Buffer<i32> + DynBuffer<i32>,
+    B: Buffer<Stamped<i32>> + DynBuffer<Stamped<i32>>,
     F: Fn() -> B,
 {
     // 1. Fresh subscriber observes a value published *before* it subscribed,
     //    exactly once — the core cross-runtime guarantee.
     let buffer = mk();
-    Buffer::push(&buffer, 42);
+    Buffer::push(&buffer, sample(42));
     let mut r = reader(&buffer);
     assert_eq!(
         r.recv().await.unwrap(),
-        42,
+        sample(42),
         "fresh SingleLatest subscriber must observe the current value once"
     );
     assert!(
@@ -72,18 +81,18 @@ where
         matches!(r.try_recv(), Err(DbError::BufferEmpty)),
         "nothing produced yet must read empty, not a spurious value or closure"
     );
-    Buffer::push(&buffer, 7);
-    assert_eq!(r.recv().await.unwrap(), 7);
+    Buffer::push(&buffer, sample(7));
+    assert_eq!(r.recv().await.unwrap(), sample(7));
 
     // 3. Overwrite: intermediate values collapse to the latest.
     let buffer = mk();
     let mut r = reader(&buffer);
-    Buffer::push(&buffer, 1);
-    Buffer::push(&buffer, 2);
-    Buffer::push(&buffer, 3);
+    Buffer::push(&buffer, sample(1));
+    Buffer::push(&buffer, sample(2));
+    Buffer::push(&buffer, sample(3));
     assert_eq!(
         r.recv().await.unwrap(),
-        3,
+        sample(3),
         "SingleLatest keeps only the newest value"
     );
 
@@ -94,12 +103,12 @@ where
         None,
         "peek before any push must be None"
     );
-    Buffer::push(&buffer, 10);
-    Buffer::push(&buffer, 20);
-    assert_eq!(DynBuffer::peek(&buffer), Some(20));
+    Buffer::push(&buffer, sample(10));
+    Buffer::push(&buffer, sample(20));
+    assert_eq!(DynBuffer::peek(&buffer), Some(sample(20)));
     assert_eq!(
         DynBuffer::peek(&buffer),
-        Some(20),
+        Some(sample(20)),
         "peek must be non-destructive"
     );
 }
@@ -110,18 +119,18 @@ where
 /// and non-destructive [`peek`](DynBuffer::peek) of the pending slot.
 pub async fn assert_mailbox_contract<B, F>(mk: F)
 where
-    B: Buffer<i32> + DynBuffer<i32>,
+    B: Buffer<Stamped<i32>> + DynBuffer<Stamped<i32>>,
     F: Fn() -> B,
 {
     // Overwrite: an unconsumed value is replaced by a newer push.
     let buffer = mk();
     let mut r = reader(&buffer);
-    Buffer::push(&buffer, 1);
-    Buffer::push(&buffer, 2);
-    Buffer::push(&buffer, 3);
+    Buffer::push(&buffer, sample(1));
+    Buffer::push(&buffer, sample(2));
+    Buffer::push(&buffer, sample(3));
     assert_eq!(
         r.recv().await.unwrap(),
-        3,
+        sample(3),
         "Mailbox keeps only the latest unconsumed value"
     );
     // Take-on-read empties the slot.
@@ -138,11 +147,11 @@ where
     // peek() reflects the pending slot without draining it.
     let buffer = mk();
     assert_eq!(DynBuffer::peek(&buffer), None);
-    Buffer::push(&buffer, 7);
-    assert_eq!(DynBuffer::peek(&buffer), Some(7));
+    Buffer::push(&buffer, sample(7));
+    assert_eq!(DynBuffer::peek(&buffer), Some(sample(7)));
     assert_eq!(
         DynBuffer::peek(&buffer),
-        Some(7),
+        Some(sample(7)),
         "peek must not drain the mailbox slot"
     );
 }
@@ -157,7 +166,7 @@ where
 /// it — every adapter's own tests already use a small capacity (e.g. 4).
 pub async fn assert_spmc_ring_contract<B, F>(mk: F)
 where
-    B: Buffer<i32> + DynBuffer<i32>,
+    B: Buffer<Stamped<i32>> + DynBuffer<Stamped<i32>>,
     F: Fn() -> B,
 {
     // Far more pushes than any test ring capacity, so a reader that never
@@ -168,12 +177,12 @@ where
     let buffer = mk();
     let mut a = reader(&buffer);
     let mut b = reader(&buffer);
-    Buffer::push(&buffer, 1);
-    Buffer::push(&buffer, 2);
-    assert_eq!(a.recv().await.unwrap(), 1);
-    assert_eq!(b.recv().await.unwrap(), 1);
-    assert_eq!(a.recv().await.unwrap(), 2);
-    assert_eq!(b.recv().await.unwrap(), 2);
+    Buffer::push(&buffer, sample(1));
+    Buffer::push(&buffer, sample(2));
+    assert_eq!(a.recv().await.unwrap(), sample(1));
+    assert_eq!(b.recv().await.unwrap(), sample(1));
+    assert_eq!(a.recv().await.unwrap(), sample(2));
+    assert_eq!(b.recv().await.unwrap(), sample(2));
     assert!(
         matches!(a.try_recv(), Err(DbError::BufferEmpty)),
         "a caught-up reader reads empty"
@@ -184,7 +193,7 @@ where
     let buffer = mk();
     let mut r = reader(&buffer);
     for i in 0..LAG_PUSHES {
-        Buffer::push(&buffer, i);
+        Buffer::push(&buffer, sample(i));
     }
     assert!(
         matches!(r.recv().await, Err(DbError::BufferLagged { .. })),

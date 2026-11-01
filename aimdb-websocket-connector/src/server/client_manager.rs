@@ -172,7 +172,13 @@ impl ClientManager {
     /// A full channel drops the update (slow-client protection) but records it on
     /// the subscription's `dropped` counter, folded into the next delivered
     /// update's `skipped` so the loss still surfaces as a `seq` gap.
-    pub async fn broadcast(&self, topic: &str, record_index: usize, payload_bytes: &[u8]) {
+    pub async fn broadcast(
+        &self,
+        topic: &str,
+        record_index: usize,
+        payload_bytes: &[u8],
+        ts: aimdb_core::Stamp,
+    ) {
         // A record could comes with multiple topic, or none
         // But a client may not have access to some records due to server's authorization process
         // Broadcasting must check for allowed records of each client
@@ -194,7 +200,7 @@ impl ClientManager {
             // broadcast-stage loss rides this update's `skipped` into a `seq`
             // gap. Take them now; restore on failure so nothing is lost.
             let carried = entry.dropped.swap(0, Ordering::Relaxed);
-            let update = SubUpdate::tagged(tag.clone(), payload.clone()).with_skipped(carried);
+            let update = SubUpdate::tagged(tag.clone(), payload.clone(), ts).with_skipped(carried);
             // Bounded: drop on a full queue (slow-client protection), prune only
             // when the receiver is gone (stream dropped).
             match entry.tx.try_send(update) {
@@ -256,7 +262,13 @@ mod tests {
         let record_perms = simple_record_perms();
         let (_id, mut stream) = mgr.subscribe("sensors.#", record_perms);
 
-        mgr.broadcast("sensors.temp.vienna", 0, b"22.5").await;
+        mgr.broadcast(
+            "sensors.temp.vienna",
+            0,
+            b"22.5",
+            aimdb_core::Stamp::from_nanos(0),
+        )
+        .await;
 
         // Delivery is the raw payload tagged with the real topic — even for the
         // wildcard sub; the envelope is the per-connection codec's job.
@@ -271,7 +283,8 @@ mod tests {
         let mgr = ClientManager::new(256);
         let record_perms = simple_record_perms();
         let (_id, mut stream) = mgr.subscribe("commands.#", record_perms);
-        mgr.broadcast("sensors.temp", 0, b"22.5").await;
+        mgr.broadcast("sensors.temp", 0, b"22.5", aimdb_core::Stamp::from_nanos(0))
+            .await;
         // Nothing queued: the next() future is not ready.
         assert!(stream.next().now_or_never().is_none());
     }
@@ -285,9 +298,12 @@ mod tests {
         let record_perms = simple_record_perms();
         let (_id, mut stream) = mgr.subscribe("#", record_perms);
 
-        mgr.broadcast("t", 0, b"1").await; // fills the one slot
-        mgr.broadcast("t", 0, b"2").await; // full → dropped (counter = 1)
-        mgr.broadcast("t", 0, b"3").await; // full → dropped (counter = 2)
+        mgr.broadcast("t", 0, b"1", aimdb_core::Stamp::from_nanos(0))
+            .await; // fills the one slot
+        mgr.broadcast("t", 0, b"2", aimdb_core::Stamp::from_nanos(0))
+            .await; // full → dropped (counter = 1)
+        mgr.broadcast("t", 0, b"3", aimdb_core::Stamp::from_nanos(0))
+            .await; // full → dropped (counter = 2)
 
         // First delivery is the update that got through, lossless.
         let first = stream.next().await.expect("first update");
@@ -296,7 +312,8 @@ mod tests {
 
         // With the slot now free, the next broadcast is delivered and carries the
         // two drops that happened while the channel was full.
-        mgr.broadcast("t", 0, b"4").await;
+        mgr.broadcast("t", 0, b"4", aimdb_core::Stamp::from_nanos(0))
+            .await;
         let second = stream.next().await.expect("second update");
         assert_eq!(&second.data[..], b"4");
         assert_eq!(
@@ -312,7 +329,8 @@ mod tests {
         let mut streams: Vec<_> = (0..5)
             .map(|_| mgr.subscribe("#", record_perms.clone()).1)
             .collect();
-        mgr.broadcast("any/topic", 0, b"\"v\"").await;
+        mgr.broadcast("any/topic", 0, b"\"v\"", aimdb_core::Stamp::from_nanos(0))
+            .await;
         for s in &mut streams {
             let update = s.next().await.unwrap();
             assert_eq!(update.topic.as_deref(), Some("any/topic"));
@@ -339,11 +357,13 @@ mod tests {
         assert_eq!(mgr.subscription_count(), 1);
 
         // Non-matching patterns survive the prune
-        mgr.broadcast("false_pattern", 0, b"v").await;
+        mgr.broadcast("false_pattern", 0, b"v", aimdb_core::Stamp::from_nanos(0))
+            .await;
         assert_eq!(mgr.subscription_count(), 1);
 
         // Matched pattern get pruned
-        mgr.broadcast("dropped_channel", 0, b"v").await;
+        mgr.broadcast("dropped_channel", 0, b"v", aimdb_core::Stamp::from_nanos(0))
+            .await;
         assert_eq!(mgr.subscription_count(), 0);
     }
 
@@ -356,7 +376,8 @@ mod tests {
         let mut streams: Vec<_> = (0..8)
             .map(|_| mgr.subscribe("#", record_perms.clone()).1)
             .collect();
-        mgr.broadcast("t", 0, b"123").await;
+        mgr.broadcast("t", 0, b"123", aimdb_core::Stamp::from_nanos(0))
+            .await;
         let mut updates = Vec::new();
         for s in &mut streams {
             updates.push(s.next().await.unwrap());

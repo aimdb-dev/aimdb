@@ -95,29 +95,40 @@ fn global_set_timeout(callback: &js_sys::Function, delay_ms: i32) {
     let _ = set_timeout.call2(&global, callback, &delay_ms.into());
 }
 
-// ─── RuntimeOps (dyn-safe capability surface) ─────────────────────────────
+// ─── Instance clock ───────────────────────────────────────────────────────
 
-impl aimdb_core::RuntimeOps for WasmAdapter {
-    fn name(&self) -> &'static str {
-        "wasm"
+/// The instance clock (design 058 §3.2): the realm's `performance.now()`,
+/// measured from `build()`.
+struct WasmClock {
+    /// `performance.now()` at `build()`, in milliseconds.
+    #[cfg_attr(
+        not(all(feature = "wasm-runtime", target_arch = "wasm32")),
+        allow(dead_code)
+    )]
+    origin_ms: f64,
+}
+
+impl WasmClock {
+    fn new() -> Self {
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
+        let origin_ms = global_performance_now();
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
+        let origin_ms = 0.0;
+        Self { origin_ms }
     }
+}
 
-    fn now_nanos(&self) -> u64 {
-        // `Performance.now()` is monotonic milliseconds since page load.
+impl aimdb_core::InstanceClock for WasmClock {
+    fn now(&self) -> aimdb_core::Stamp {
         #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
         {
-            let nanos = global_performance_now().max(0.0) * 1_000_000.0;
-            if nanos >= u64::MAX as f64 {
-                u64::MAX
-            } else {
-                nanos as u64
-            }
+            aimdb_core::clock::stamp_from_millis_f64(global_performance_now() - self.origin_ms)
         }
 
         #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
         {
             // Fallback for native-target unit tests — clock pinned at 0
-            0
+            aimdb_core::Stamp::from_nanos(0)
         }
     }
 
@@ -138,6 +149,14 @@ impl aimdb_core::RuntimeOps for WasmAdapter {
         {
             None
         }
+    }
+}
+
+// ─── RuntimeOps (dyn-safe capability surface) ─────────────────────────────
+
+impl aimdb_core::RuntimeOps for WasmAdapter {
+    fn name(&self) -> &'static str {
+        "wasm"
     }
 
     fn sleep(&self, d: core::time::Duration) -> aimdb_core::BoxFuture {
@@ -185,6 +204,10 @@ impl aimdb_core::RuntimeOps for WasmAdapter {
             let _ = (level, msg);
         }
     }
+
+    fn new_clock(&self) -> alloc::sync::Arc<dyn aimdb_core::InstanceClock> {
+        alloc::sync::Arc::new(WasmClock::new())
+    }
 }
 
 #[cfg(test)]
@@ -216,8 +239,9 @@ mod runtime_ops_tests {
     fn runtime_ops_sync_surface() {
         let ops: Arc<dyn RuntimeOps> = Arc::new(WasmAdapter);
         assert_eq!(ops.name(), "wasm");
-        let t0 = ops.now_nanos();
-        assert!(ops.now_nanos() >= t0);
-        assert_eq!(ops.unix_time(), None);
+        let clock = ops.new_clock();
+        let s0 = clock.now();
+        assert!(clock.now() >= s0);
+        assert_eq!(clock.unix_time(), None);
     }
 }

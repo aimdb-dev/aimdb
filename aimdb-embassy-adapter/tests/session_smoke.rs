@@ -118,7 +118,8 @@ fn embassy_clock_drives_client_engine_rpc() {
         sends_hello: false,
         ..ClientConfig::default()
     };
-    let (handle, engine_fut) = run_client(StubDialer, EchoCodec, config, clock);
+    let ctx = aimdb_core::RuntimeContext::new(clock);
+    let (handle, engine_fut) = run_client(StubDialer, EchoCodec, config, ctx);
 
     block_on(async move {
         futures::pin_mut!(engine_fut);

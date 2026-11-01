@@ -1,6 +1,6 @@
 //! `instance.info` and `instance.post_link` (protocol 3.1) through
 //! [`AimxConnection`]: against the production UDS server, whose frames are
-//! newline-delimited, and against a 3.0 server that does not know the methods.
+//! newline-delimited, and that a 3.x server is refused at connect.
 
 #![cfg(feature = "transport-uds")]
 
@@ -75,7 +75,7 @@ async fn instance_info_and_post_link_over_uds() {
     let found = InstanceInfo::from((PathBuf::from(&sock), conn.server_info().clone()));
     assert_eq!(found.name.as_deref(), Some("uds-1"));
 
-    let info = conn.instance_info().await.unwrap().expect("a 3.1 server");
+    let info = conn.instance_info().await.unwrap().expect("a 4.0 server");
     assert!(!info.aimdb_version.is_empty());
     assert_eq!(info.instance.name.as_deref(), Some("uds-1"));
     assert_eq!(info.instance.uid.as_deref(), Some("0035"));
@@ -93,7 +93,7 @@ async fn without_build_info() {
     let sock = serve(AimDbBuilder::new(), &dir).await;
     let conn = AimxConnection::connect(&sock).await.expect("connect");
     assert_eq!(conn.server_info().instance_name, None);
-    let info = conn.instance_info().await.unwrap().expect("a 3.1 server");
+    let info = conn.instance_info().await.unwrap().expect("a 4.0 server");
     assert_eq!(info.build, None);
     assert_eq!(info.instance.name, None);
     assert_eq!(conn.post_link().await.unwrap(), None);
@@ -151,9 +151,9 @@ async fn serve_fake(
     (path.to_str().unwrap().to_owned(), requests)
 }
 
-/// A protocol 3.0 server: it does not know the 3.1 methods.
-async fn serve_v30(dir: &tempfile::TempDir) -> String {
-    serve_fake(dir, "3.0", Box::new(|_| None)).await.0
+/// A protocol 3.x server: it sends values without write stamps.
+async fn serve_v3(dir: &tempfile::TempDir) -> String {
+    serve_fake(dir, "3.1", Box::new(|_| None)).await.0
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -174,7 +174,7 @@ async fn post_link_reads_every_chunk_of_a_consistent_server() {
     let data: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
     let served = data.clone();
     let (sock, requests) =
-        serve_fake(&dir, "3.1", Box::new(move |p| Some(honest(&served, p)))).await;
+        serve_fake(&dir, "4.0", Box::new(move |p| Some(honest(&served, p)))).await;
     let conn = AimxConnection::connect(&sock).await.expect("connect");
     assert_eq!(conn.post_link().await.unwrap(), Some(data));
     assert_eq!(
@@ -237,7 +237,7 @@ async fn post_link_rejects_inconsistent_chunks() {
     ];
     for (case, post_link, expected_requests) in cases {
         let dir = tempfile::tempdir().unwrap();
-        let (sock, requests) = serve_fake(&dir, "3.1", post_link).await;
+        let (sock, requests) = serve_fake(&dir, "4.0", post_link).await;
         let conn = AimxConnection::connect(&sock).await.expect("connect");
         let err = conn.post_link().await.expect_err(case);
         assert!(
@@ -249,15 +249,18 @@ async fn post_link_rejects_inconsistent_chunks() {
     }
 }
 
+/// AimX 4.0 makes `ts` mandatory, so a 3.x server is refused at connect
+/// instead of failing later on its unstamped replies.
 #[tokio::test]
-async fn a_3_0_server_reports_nothing() {
+async fn a_3_x_server_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let sock = serve_v30(&dir).await;
-    let conn = AimxConnection::connect(&sock)
-        .await
-        .expect("3.0 is compatible");
-    assert_eq!(conn.server_info().version, "3.0");
-    assert_eq!(conn.server_info().instance_name, None);
-    assert_eq!(conn.instance_info().await.unwrap(), None);
-    assert_eq!(conn.post_link().await.unwrap(), None);
+    let sock = serve_v3(&dir).await;
+    let Err(err) = AimxConnection::connect(&sock).await else {
+        panic!("a 3.x server must be refused");
+    };
+    assert!(
+        err.to_string()
+            .contains("protocol version mismatch: server speaks 3.1"),
+        "{err}"
+    );
 }

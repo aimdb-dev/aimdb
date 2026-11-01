@@ -78,13 +78,12 @@ use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 /// type MyBuffer = EmbassyBuffer<u32, 32, 4, 2, 4>;
 ///
 /// # async fn example() {
-/// use aimdb_core::buffer::Reader;
 /// let buffer: MyBuffer = MyBuffer::new_spmc();
-/// // `subscribe()` yields the concrete reader; wrap it in the ergonomic,
-/// // allocation-free `Reader<T>` handle for `recv().await`.
-/// let mut reader = Reader::new(Box::new(buffer.subscribe()));
+/// // `subscribe()` yields the concrete reader. (A record's buffer holds
+/// // `Stamped<T>`, which a consumer reads through `Reader<T>`.)
+/// let mut reader = buffer.subscribe();
 /// buffer.push(42);
-/// let value = reader.recv().await.unwrap();
+/// let value = reader.try_recv().unwrap();
 /// # }
 /// ```
 pub struct EmbassyBuffer<
@@ -867,12 +866,28 @@ mod tests {
         use aimdb_core::buffer::test_support;
         use futures::executor::block_on;
 
-        // CAP=4, SUBS=4, PUBS=2, WATCH_N=4.
-        type B = EmbassyBuffer<i32, 4, 4, 2, 4>;
+        // CAP=4, SUBS=4, PUBS=2, WATCH_N=4. Records store `Stamped<T>`.
+        type B = EmbassyBuffer<aimdb_core::Stamped<i32>, 4, 4, 2, 4>;
 
         block_on(test_support::assert_single_latest_contract(B::new_watch));
         block_on(test_support::assert_mailbox_contract(B::new_mailbox));
         block_on(test_support::assert_spmc_ring_contract(B::new_spmc));
+    }
+
+    /// Design 058 §4.5: the write stamp costs every slot. The buffer keeps
+    /// its slots behind one allocation, so the budget is the slot type: for
+    /// the default `.buffer(cfg)` sizing (`CAP = 16`) of an `f32` record,
+    /// element storage grows from 64 to 256 bytes. Pinned so a change to
+    /// `WriteMetadata` shows in review.
+    #[test]
+    fn stamped_slot_size_budget() {
+        use aimdb_core::Stamped;
+        use core::mem::size_of;
+
+        const CAP: usize = 16;
+        assert_eq!(size_of::<Stamped<f32>>(), 16);
+        assert_eq!(CAP * size_of::<f32>(), 64);
+        assert_eq!(CAP * size_of::<Stamped<f32>>(), 256);
     }
 
     // ========================================================================

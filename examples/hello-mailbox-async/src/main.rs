@@ -43,7 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ctx.time().sleep_millis(100).await;
 
                 match reader.recv().await {
-                    Ok(msg) => println!("   ✓ Got: {:?}  ← only the latest survived", msg.color),
+                    Ok(msg) => println!(
+                        "   ✓ Got: {:?}  ← only the latest survived",
+                        msg.value.color
+                    ),
                     Err(_) => println!("   (mailbox was already empty)"),
                 }
             });

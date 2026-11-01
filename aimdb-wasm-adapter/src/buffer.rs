@@ -478,12 +478,12 @@ impl CancelHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aimdb_core::buffer::Reader;
+    use aimdb_core::buffer::BufferReader;
 
-    /// Wrap a concrete `WasmBufferReader` in the ergonomic `Reader<T>` so the
-    /// tests can use `try_recv()`, mirroring the tokio adapter's `rdr` helper.
-    fn rdr<T: Clone + Send + 'static>(buffer: &WasmBuffer<T>) -> Reader<T> {
-        Reader::new(Box::new(buffer.subscribe()))
+    /// A fresh reader on `buffer`; `try_recv()` comes from [`BufferReader`].
+    /// (Core's `Reader<T>` reads record buffers, which hold `Stamped<T>`.)
+    fn rdr<T: Clone + Send + 'static>(buffer: &WasmBuffer<T>) -> WasmBufferReader<T> {
+        buffer.subscribe()
     }
 
     // ── SingleLatest fresh-subscriber regression tests ──────────────────────
@@ -550,13 +550,13 @@ mod tests {
         use futures::executor::block_on;
 
         block_on(test_support::assert_single_latest_contract(|| {
-            WasmBuffer::<i32>::new(&BufferCfg::SingleLatest)
+            WasmBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SingleLatest)
         }));
         block_on(test_support::assert_mailbox_contract(|| {
-            WasmBuffer::<i32>::new(&BufferCfg::Mailbox)
+            WasmBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::Mailbox)
         }));
         block_on(test_support::assert_spmc_ring_contract(|| {
-            WasmBuffer::<i32>::new(&BufferCfg::SpmcRing { capacity: 4 })
+            WasmBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 })
         }));
     }
 

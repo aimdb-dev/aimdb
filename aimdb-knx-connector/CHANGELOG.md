@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Write timestamps (#326).** `client::connection_task` takes the instance
+  clock (`Arc<dyn InstanceClock>`) instead of `Arc<dyn RuntimeOps>`.
+
 - **`KnxConnector::new(binder, delay, url)` no longer takes `&'static
   Channels`**. The connection task dispatches inbound telegrams
   into their records and pulls outbound values from their record buffers

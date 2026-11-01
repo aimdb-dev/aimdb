@@ -74,7 +74,7 @@ fn test_consumer_get() {
 
     // Assert the consumer received the producer's published value
     match consumer_handle.join() {
-        Ok(val) => assert_eq!(val, test_value),
+        Ok(val) => assert_eq!(val.value, test_value),
         Err(_) => panic!("Failed to join consumer handle"),
     }
 
@@ -116,7 +116,7 @@ fn test_consumer_get_ordering() {
         ready_sender.send(()).expect("Failed to send ready signal");
 
         for _ in 0..10 {
-            received_values.push(consumer.get().expect("Failed to consume"));
+            received_values.push(consumer.get().expect("Failed to consume").value);
         }
 
         received_values
@@ -276,7 +276,7 @@ fn test_consumer_get_with_timeout() {
 
     // Assert consumer received the value producer sent
     match consumer_get_handle.join() {
-        Ok(val) => assert_eq!(val, test_send_value),
+        Ok(val) => assert_eq!(val.value, test_send_value),
         Err(_) => panic!("Failed to join consumer handle"),
     }
 
@@ -329,7 +329,7 @@ fn test_consumer_try_get() {
 
     // Assert the consumer received the value correctly
     match consumer_handle.join() {
-        Ok(val) => assert_eq!(val, test_value),
+        Ok(val) => assert_eq!(val.value, test_value),
         Err(_) => panic!("Failed to join consumer handle"),
     }
 

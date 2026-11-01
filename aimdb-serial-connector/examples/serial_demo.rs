@@ -172,6 +172,7 @@ async fn run_raw(device: String, baud: u32, method: String, name: String) {
 async fn run_set_mode(device: String, baud: u32) {
     println!("[set] writing `setting` over {device} @ {baud} baud");
 
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         SerialPortDialer::new(device, baud),
         AimxCodec,
@@ -179,7 +180,7 @@ async fn run_set_mode(device: String, baud: u32) {
             sends_hello: false,
             ..ClientConfig::default()
         },
-        Arc::new(TokioAdapter),
+        ctx,
     );
     tokio::spawn(engine);
 
@@ -250,6 +251,7 @@ async fn run_server(device: String, baud: u32) {
 async fn run_client_mode(device: String, baud: u32) {
     println!("[client] querying AimX over {device} @ {baud} baud");
 
+    let ctx = aimdb_core::RuntimeContext::new(Arc::new(TokioAdapter));
     let (handle, engine) = run_client(
         SerialPortDialer::new(device, baud),
         AimxCodec,
@@ -257,7 +259,7 @@ async fn run_client_mode(device: String, baud: u32) {
             sends_hello: false,
             ..ClientConfig::default()
         },
-        Arc::new(TokioAdapter),
+        ctx,
     );
     tokio::spawn(engine);
 

@@ -191,7 +191,7 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
         _ = runner.run() => panic!("the session loop returned"),
         _ = broker => panic!("the broker returned"),
         received = async {
-            let value = inbound.recv().await.expect("inbound record");
+            let value = inbound.recv().await.expect("inbound record").value;
             while seen_for_wait.lock().unwrap().published.is_empty() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -318,7 +318,7 @@ async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option
     let mut received = None;
     let observe = async {
         loop {
-            received = Some(reader.recv().await.expect("record open"));
+            received = Some(reader.recv().await.expect("record open").value);
         }
     };
     tokio::select! {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking, wire)
+
+- **AimX 4.0 (#326).** `ts` (write stamp, integer nanoseconds since instance
+  start) is mandatory on `event` and `snap`; `record.get` replies
+  `{value, ts}`, `record.drain` values are `{value, ts}`, `record.set` echoes
+  `{status, value, ts}`. A value frame without `ts` is malformed; 3.x peers
+  are refused at `hello`. `session::aimx::value_reply` builds the `get` reply.
+
 ### Added
 
 - **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
@@ -110,6 +118,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   several readers at once. `recv` is unchanged.
 
 ### Changed (breaking, API)
+
+- **Write timestamps (#326, design 058).** Every record write is stamped from
+  one monotonic clock per instance, and every read returns the stamp:
+  `Reader::recv`/`try_recv`, `AimDb::latest`, the JSON reads and
+  `RecordValue` (`metadata()`, `stamp()`) yield `Stamped<T>` (`.value`,
+  `.stamp()`), with the metadata in an opaque `WriteMetadata`. Buffers hold
+  `Stamped<T>`. `JoinTrigger::Input` gains the input's `metadata` (now
+  `#[non_exhaustive]`; `metadata()`/`stamp()`), `OutboundMessage` gains
+  `metadata`. Time reads moved to the new `InstanceClock` (`now()`,
+  `unix_time()`): `RuntimeOps` drops `now_nanos`/`unix_time` and gains
+  `new_clock()`, `RuntimeContext` carries the clock (`ctx.time().now()`
+  returns a `Stamp`), `run_client` takes a `RuntimeContext`, and
+  `AimDb::now()` reads the instance clock.
 
 - **`GraphNode` has two new public fields, `schema` and `outbound_links`
   (#332).** Code that builds a `GraphNode` with a struct literal must set

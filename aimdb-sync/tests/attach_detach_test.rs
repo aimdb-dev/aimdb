@@ -124,7 +124,7 @@ fn producer_and_consumer_work_through_the_attached_runtime() {
     let got = consumer
         .get_with_timeout(Duration::from_secs(5))
         .expect("get");
-    assert_eq!(got, Reading { value: 42 });
+    assert_eq!(got.value, Reading { value: 42 });
 
     handle.detach().expect("detach");
 }

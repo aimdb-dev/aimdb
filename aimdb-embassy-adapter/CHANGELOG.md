@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Write timestamps (#326).** `.buffer(cfg)` builds buffers of `Stamped<T>`.
+  `new_clock()` replaces `now_nanos`/`unix_time`; its origin is `build()`, and
+  `unix_time()` comes from the `set_unix_time` anchor.
+
 ### Removed (breaking)
 
 - **`EmbassySinkRaw`, `EmbassySink`, `EmbassySourceRaw` and `EmbassySource`**.

@@ -185,7 +185,7 @@ impl Session for WsSession {
         })
     }
 
-    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload)> {
+    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload, aimdb_core::Stamp)> {
         if !self.late_join {
             return Vec::new();
         }
@@ -194,8 +194,8 @@ impl Session for WsSession {
         self.snapshot_provider
             .snapshots(topic)
             .into_iter()
-            .filter(|(record_id, _, _)| self.info.record_perms.is_allowed(*record_id))
-            .map(|(_, topic, bytes)| (topic, Payload::from(bytes.as_slice())))
+            .filter(|(record_id, _, _, _)| self.info.record_perms.is_allowed(*record_id))
+            .map(|(_, topic, bytes, ts)| (topic, Payload::from(bytes.as_slice()), ts))
             .collect()
     }
 

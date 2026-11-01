@@ -3,7 +3,7 @@
 //! An `embedded-tls` 1.3 session over the caller's transport, split into halves
 //! the session loop reads and writes exactly as it does a plaintext socket.
 //! Certificate verification is `rustpki` against the application-embedded root
-//! CA, dated by the runtime's wall clock; entropy comes from the injected TRNG
+//! CA, dated by the instance clock's wall-clock time; entropy comes from the injected TRNG
 //! ([`TlsOptions::new`]). The dialer resolves the host, so there is no network
 //! stack here.
 
@@ -53,7 +53,7 @@ pub struct TlsOptions {
     pub(crate) read_buf: &'static mut [u8],
     pub(crate) write_buf: &'static mut [u8],
     /// Where the certificate-validity clock comes from on a board with no RTC.
-    /// `None` means the runtime's own wall clock answers.
+    /// `None` means the instance clock's `unix_time()` answers.
     #[cfg(feature = "embassy-tls")]
     pub(crate) sntp: Option<(aimdb_embassy_adapter::connectors::NetStack, &'static str)>,
 }
@@ -88,7 +88,7 @@ impl TlsOptions {
     /// Take the certificate-validity clock from SNTP over `stack`.
     ///
     /// Needed only where the runtime has no wall clock of its own — an MCU
-    /// with no RTC. A host runtime answers `unix_time()` and needs no task.
+    /// with no RTC. A host clock answers `unix_time()` and needs no task.
     #[cfg(feature = "embassy-tls")]
     pub fn with_sntp(
         mut self,
@@ -258,7 +258,7 @@ where
 /// Unix seconds for certificate validity, refreshed before each handshake.
 ///
 /// A global because `embedded_tls::TlsClock::now` is a static method. Fed by
-/// the runtime's wall clock, or by the SNTP task on an MCU with no RTC — and
+/// the instance clock's `unix_time()`, or by the SNTP task on an MCU with no RTC — and
 /// process-wide, so two TLS connectors share one reading rather than keeping a
 /// clock each. Harmless while they agree on what time it is, which any two
 /// sources of wall-clock time had better.
@@ -328,7 +328,7 @@ pub(crate) async fn run_tls<D>(
     opts: Vec<crate::publish_opts::PublishOpts>,
     write_buffer: usize,
     delay: D,
-    runtime: Arc<dyn aimdb_core::RuntimeOps>,
+    clock: Arc<dyn aimdb_core::InstanceClock>,
 ) -> !
 where
     D: aimdb_core::session::StreamDialer + aimdb_core::session::Delay,
@@ -352,16 +352,16 @@ where
     let ring = WriteRing::new(write_buffer);
 
     loop {
-        // Certificate validity needs real time. Take it from the runtime when
+        // Certificate validity needs real time. Take it from the instance clock when
         // it has a wall clock; otherwise wait for whatever feeds `WallClock`
         // (the SNTP task, on a board with no RTC).
-        if let Some((secs, _)) = runtime.unix_time() {
+        if let Some((secs, _)) = clock.unix_time() {
             WallClock::set_unix_secs(secs as u32);
         }
         if WallClock::unix_secs().is_none() {
             report(MqttEvent::TlsWaitingForClock);
             while WallClock::unix_secs().is_none() {
-                if let Some((secs, _)) = runtime.unix_time() {
+                if let Some((secs, _)) = clock.unix_time() {
                     WallClock::set_unix_secs(secs as u32);
                 }
                 aimdb_core::session::Delay::sleep(&delay, core::time::Duration::from_millis(500))
@@ -413,7 +413,7 @@ where
             &ring,
             &settings,
             &delay,
-            runtime.as_ref(),
+            clock.as_ref(),
         )
         .await;
 

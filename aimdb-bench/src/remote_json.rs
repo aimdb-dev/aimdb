@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use aimdb_core::buffer::{BufferCfg, JsonBufferReader};
-use aimdb_core::session::aimx::AimxCodec;
+use aimdb_core::session::aimx::{value_reply, AimxCodec};
 use aimdb_core::{
     AimDb, AimDbBuilder, EnvelopeCodec, Outbound, Payload, Producer, RecordRegistrar,
 };
@@ -118,19 +118,24 @@ impl RemoteJsonHarness {
 
     /// Encode canonical latest state into a production AimX reply frame.
     pub fn record_get_frame(&mut self, path: RemoteJsonPath) -> &[u8] {
+        // The AimX 4.0 `record.get` reply: `{"value":…,"ts":…}` around the
+        // encoded value, as `AimxDispatch` builds it.
         let payload = match path {
             RemoteJsonPath::Tree => {
-                let value = self
+                let sample = self
                     .db
                     .try_latest_as_json(RECORD_KEY)
                     .expect("bench latest JSON tree");
-                Payload::from(serde_json::to_vec(&value).expect("bench tree serialization"))
+                let value = serde_json::to_vec(&sample.value).expect("bench tree serialization");
+                value_reply(&value, sample.stamp())
             }
-            RemoteJsonPath::Direct => Payload::from(
-                self.db
+            RemoteJsonPath::Direct => {
+                let sample = self
+                    .db
                     .try_latest_as_json_bytes(RECORD_KEY)
-                    .expect("bench latest JSON bytes"),
-            ),
+                    .expect("bench latest JSON bytes");
+                value_reply(&sample.value, sample.stamp())
+            }
         };
 
         self.frame.clear();
@@ -152,19 +157,23 @@ impl RemoteJsonHarness {
         self.sequence = self.sequence.wrapping_add(1);
         self.producer.produce(sample(self.sequence));
 
-        let payload = match path {
+        let (payload, ts) = match path {
             RemoteJsonPath::Tree => {
-                let value = self
+                let sample = self
                     .reader
                     .try_recv_json()
                     .expect("bench subscription JSON tree");
-                Payload::from(serde_json::to_vec(&value).expect("bench tree serialization"))
+                let bytes = serde_json::to_vec(&sample.value).expect("bench tree serialization");
+                (Payload::from(bytes), sample.stamp())
             }
-            RemoteJsonPath::Direct => Payload::from(
-                self.reader
+            RemoteJsonPath::Direct => {
+                let sample = self
+                    .reader
                     .try_recv_json_bytes()
-                    .expect("bench subscription JSON bytes"),
-            ),
+                    .expect("bench subscription JSON bytes");
+                let ts = sample.stamp();
+                (Payload::from(sample.value), ts)
+            }
         };
 
         self.frame.clear();
@@ -174,6 +183,7 @@ impl RemoteJsonHarness {
                     sub: "1",
                     seq: self.sequence,
                     topic: None,
+                    ts,
                     data: payload,
                 },
                 &mut self.frame,
@@ -183,7 +193,24 @@ impl RemoteJsonHarness {
     }
 }
 
-/// Assert that both paths produce equivalent JSON/AimX semantics.
+/// Removes the write stamp at `path` (an integer, as AimX 4.0 requires), so
+/// frames from two separate instances compare on everything else.
+fn without_ts(mut frame: serde_json::Value, path: &[&str]) -> serde_json::Value {
+    let mut node = &mut frame;
+    for key in path {
+        node = node.get_mut(*key).expect("frame has the stamped object");
+    }
+    let ts = node
+        .as_object_mut()
+        .and_then(|object| object.remove("ts"))
+        .expect("a value carries `ts`");
+    assert!(ts.is_u64(), "`ts` is an integer: {ts}");
+    frame
+}
+
+/// Assert that both paths produce equivalent JSON/AimX semantics. The two
+/// harnesses are separate instances, so their stamps differ; each frame must
+/// carry one, and the rest must match.
 pub async fn verify_remote_json_paths() {
     let mut tree = RemoteJsonHarness::new().await;
     let mut direct = RemoteJsonHarness::new().await;
@@ -194,7 +221,10 @@ pub async fn verify_remote_json_paths() {
     let direct_get: serde_json::Value =
         serde_json::from_slice(direct.record_get_frame(RemoteJsonPath::Direct))
             .expect("direct get frame");
-    assert_eq!(tree_get, direct_get);
+    assert_eq!(
+        without_ts(tree_get, &["ok"]),
+        without_ts(direct_get, &["ok"])
+    );
 
     let tree_event: serde_json::Value =
         serde_json::from_slice(tree.subscription_event_frame(RemoteJsonPath::Tree))
@@ -202,7 +232,7 @@ pub async fn verify_remote_json_paths() {
     let direct_event: serde_json::Value =
         serde_json::from_slice(direct.subscription_event_frame(RemoteJsonPath::Direct))
             .expect("direct event frame");
-    assert_eq!(tree_event, direct_event);
+    assert_eq!(without_ts(tree_event, &[]), without_ts(direct_event, &[]));
 }
 
 #[cfg(test)]

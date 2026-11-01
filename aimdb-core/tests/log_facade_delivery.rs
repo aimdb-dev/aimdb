@@ -21,19 +21,15 @@ impl RuntimeOps for StubRuntime {
         "stub"
     }
 
-    fn now_nanos(&self) -> u64 {
-        0
-    }
-
-    fn unix_time(&self) -> Option<(u64, u32)> {
-        None
-    }
-
     fn sleep(&self, _d: core::time::Duration) -> BoxFuture {
         Box::pin(core::future::pending())
     }
 
     fn log(&self, _level: LogLevel, _msg: &str) {}
+
+    fn new_clock(&self) -> std::sync::Arc<dyn aimdb_core::InstanceClock> {
+        std::sync::Arc::new(aimdb_core::executor::test_support::ZeroClock)
+    }
 }
 
 /// Counts what it is handed, so criterion 4 can check "once each". Hand-written

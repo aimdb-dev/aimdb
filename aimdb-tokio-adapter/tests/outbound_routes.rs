@@ -503,3 +503,27 @@ async fn a_rejected_message_is_counted_beside_sent() {
     let stats = o.stats(0).unwrap();
     assert_eq!((stats.sent, stats.rejected), (1, 1));
 }
+
+/// Design 058 §4.4: a message carries the write metadata of the value it
+/// serialized, the same a subscriber reads for that write.
+#[tokio::test]
+async fn a_message_carries_the_stamp_of_the_write_it_serialized() {
+    let db = db(vec![spmc(0, 16)]).await;
+    let mut o = OutboundRoutes::new(&db, "test").unwrap();
+    let mut reader = db.subscribe::<V>(KEYS[0]).unwrap();
+    for v in 0..3 {
+        produce(&db, 0, v);
+        // Distinct stamps, so a mix-up between writes would show.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    for v in 0..3 {
+        let written = reader.recv().await.unwrap();
+        let m = o.next().await.unwrap();
+        assert_eq!(
+            (m.stamp(), m.metadata),
+            (written.stamp(), *written.metadata())
+        );
+        assert_eq!(value(&m.payload.into_vec()), v);
+        assert_eq!(written.value.0, v);
+    }
+}
