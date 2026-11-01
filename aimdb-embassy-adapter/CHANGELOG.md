@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs its own task and pulls from `OutboundRoutes`. The `into_box_future`
   helper and `NetStack` remain.
 
+### Fixed
+
+- **`EmbassyUart` could stall mid-reply on embassy-stm32 0.6.0 (#382).**
+  `BufferedUart::write` parks without a waker when a chunk exceeds the TX
+  ring's free space, so the first large reply after boot hung until RX
+  traffic arrived. `write_all` now flushes after each chunk, which keeps the
+  ring empty and the waker registered. To be removed once an embassy-stm32
+  release includes the upstream fix.
+
 ### Changed
 
 - **`EmbassyTcpListener` no longer yields before returning an accept error
