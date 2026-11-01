@@ -298,8 +298,8 @@ where
     /// - Values produced together by one source are better published as one
     ///   compound record, which needs no join.
     ///
-    /// `transform_join_pairs_values_by_sample_id` in the Tokio adapter's
-    /// integration tests runs this handler.
+    /// `transform_join_pairs_values_by_timestamp` in the Tokio adapter's
+    /// integration tests runs this handler, matching on timestamps.
     pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O>
     where
         F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,

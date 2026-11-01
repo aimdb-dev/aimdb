@@ -197,29 +197,35 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
     producer_task.await.unwrap();
 }
 
+/// `measured_at` is time since an application-defined epoch, set by whoever
+/// takes the reading. AimDB does not interpret it.
 #[derive(Clone, Debug)]
 struct Flow {
-    sample_id: u32,
+    measured_at: Duration,
     celsius: f32,
 }
 
 #[derive(Clone, Debug)]
 struct Return {
-    sample_id: u32,
+    measured_at: Duration,
     celsius: f32,
 }
 
 #[derive(Clone, Debug)]
 struct Difference {
-    sample_id: u32,
+    measured_at: Duration,
     kelvin: f32,
 }
 
-/// The pairing pattern from the `JoinBuilder::on_triggers` docs: emit only when
-/// both inputs hold the same `sample_id`, then consume both. Flow 2 is replaced
-/// by Flow 3 before its Return arrives, so cycle 2 produces nothing.
+/// The pairing pattern from the `JoinBuilder::on_triggers` docs, matching on
+/// application timestamps: emit only when both inputs were measured within
+/// `TOLERANCE` of each other, then consume both. The 500 ms Flow is replaced by
+/// the 1000 ms Flow before a Return close to it arrives, so that cycle
+/// produces nothing.
 #[tokio::test]
-async fn transform_join_pairs_values_by_sample_id() {
+async fn transform_join_pairs_values_by_timestamp() {
+    const TOLERANCE: Duration = Duration::from_millis(20);
+
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
@@ -244,9 +250,9 @@ async fn transform_join_pairs_values_by_sample_id() {
                                 _ => {}
                             }
                             if let (Some(f), Some(r)) = (&flow, &ret) {
-                                if f.sample_id == r.sample_id {
+                                if f.measured_at.abs_diff(r.measured_at) <= TOLERANCE {
                                     producer.produce(Difference {
-                                        sample_id: f.sample_id,
+                                        measured_at: f.measured_at,
                                         kelvin: f.celsius - r.celsius,
                                     });
                                     flow = None;
@@ -263,36 +269,46 @@ async fn transform_join_pairs_values_by_sample_id() {
     let mut diff_rx = db.subscribe::<Difference>("pair::Difference").unwrap();
     tokio::task::yield_now().await;
 
-    let flow = |sample_id, celsius| Flow { sample_id, celsius };
-    let ret = |sample_id, celsius| Return { sample_id, celsius };
+    let ms = Duration::from_millis;
+    let flow = |at, celsius| Flow {
+        measured_at: ms(at),
+        celsius,
+    };
+    let ret = |at, celsius| Return {
+        measured_at: ms(at),
+        celsius,
+    };
 
-    db.produce::<Flow>("pair::Flow", flow(1, 60.0)).unwrap();
-    db.produce::<Return>("pair::Return", ret(1, 45.0)).unwrap();
+    // 5 ms apart, within tolerance; the Return is the earlier of the two.
+    db.produce::<Return>("pair::Return", ret(0, 45.0)).unwrap();
+    db.produce::<Flow>("pair::Flow", flow(5, 60.0)).unwrap();
     let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((d.value.sample_id, d.value.kelvin), (1, 15.0));
+    assert_eq!((d.value.measured_at, d.value.kelvin), (ms(5), 15.0));
 
     // Each input is delivered in write order, so every interleaving of the
-    // two inputs ends with Flow 3 and Return 3 retained together.
-    db.produce::<Flow>("pair::Flow", flow(2, 61.0)).unwrap();
-    db.produce::<Flow>("pair::Flow", flow(3, 62.0)).unwrap();
-    db.produce::<Return>("pair::Return", ret(3, 50.0)).unwrap();
+    // two inputs ends with the 1000 ms Flow and the 1012 ms Return retained
+    // together; the 500 ms Flow never comes within tolerance of a Return.
+    db.produce::<Flow>("pair::Flow", flow(500, 61.0)).unwrap();
+    db.produce::<Flow>("pair::Flow", flow(1000, 62.0)).unwrap();
+    db.produce::<Return>("pair::Return", ret(1012, 50.0))
+        .unwrap();
     let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        (d.value.sample_id, d.value.kelvin),
-        (3, 12.0),
-        "cycle 2 has no Return and must be skipped"
+        (d.value.measured_at, d.value.kelvin),
+        (ms(1000), 12.0),
+        "the 500 ms Flow has no Return within tolerance and must be skipped"
     );
 
     assert!(
         tokio::time::timeout(Duration::from_millis(100), diff_rx.recv())
             .await
             .is_err(),
-        "no output beyond cycles 1 and 3"
+        "no output beyond the two matched pairs"
     );
 }
