@@ -21,6 +21,25 @@ use aimdb_core::session::{ByteRead, ByteStream, ByteWrite, TransportError, Trans
 
 use crate::SendFutureWrapper;
 
+/// Write `buf`, then flush it out of the UART's TX ring (#382).
+///
+/// embassy-stm32 0.6.0's `BufferedUart::write` returns `Pending` without
+/// registering a waker when the ring has less free space than the chunk, so a
+/// write that does not fit can park until an unrelated RX interrupt re-polls
+/// it. `flush` does register the waker and leaves the ring empty, and core
+/// writes in chunks no larger than the ring, so the next chunk always fits.
+/// Costs a short gap on the line per chunk. Drop once an embassy-stm32
+/// release carries upstream `560ad7e91`.
+async fn write_all_flushed<Wr: embedded_io_async::Write>(
+    tx: &mut Wr,
+    buf: &[u8],
+) -> TransportResult<()> {
+    tx.write_all(buf)
+        .await
+        .map_err(|_| TransportError::Closed)?;
+    tx.flush().await.map_err(|_| TransportError::Closed)
+}
+
 /// A UART, or any `embedded-io-async` read/write pair, as one [`ByteStream`] —
 /// so the connector names no `embedded-io-async` types of its own.
 pub struct EmbassyUart<Rd, Wr> {
@@ -54,12 +73,7 @@ where
         &'a mut self,
         buf: &'a [u8],
     ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
-        SendFutureWrapper(async move {
-            self.tx
-                .write_all(buf)
-                .await
-                .map_err(|_| TransportError::Closed)
-        })
+        SendFutureWrapper(write_all_flushed(&mut self.tx, buf))
     }
 
     fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
@@ -108,12 +122,7 @@ where
         &'a mut self,
         buf: &'a [u8],
     ) -> impl Future<Output = TransportResult<()>> + Send + 'a {
-        SendFutureWrapper(async move {
-            self.0
-                .write_all(buf)
-                .await
-                .map_err(|_| TransportError::Closed)
-        })
+        SendFutureWrapper(write_all_flushed(self.0, buf))
     }
 
     fn flush(&mut self) -> impl Future<Output = TransportResult<()>> + Send + '_ {
@@ -221,7 +230,21 @@ mod tests {
             uart.flush().await.unwrap();
         });
         assert_eq!(uart.tx.written, b"payload");
-        assert_eq!(uart.tx.flushes, 1);
+        assert_eq!(uart.tx.flushes, 2, "write_all flushes too (#382)");
+    }
+
+    /// Every chunk is flushed before the next is written, on both the whole
+    /// stream and its split write half (#382).
+    #[test]
+    fn uart_flushes_after_every_write_all() {
+        let mut uart = EmbassyUart::new(MockRx(vec![]), MockTx::default());
+        block_on(async {
+            uart.write_all(b"one").await.unwrap();
+            let (_, mut tx) = uart.split();
+            tx.write_all(b"two").await.unwrap();
+        });
+        assert_eq!(uart.tx.written, b"onetwo");
+        assert_eq!(uart.tx.flushes, 2);
     }
 
     /// The UART drives core's framed connection, which is what the serial

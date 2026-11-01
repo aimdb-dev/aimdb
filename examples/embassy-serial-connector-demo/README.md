@@ -54,7 +54,7 @@ demo dir pins a different toolchain/target). Replace the device with yours
 ```bash
 cd ../..   # workspace root
 cargo run -p aimdb-serial-connector --example serial_demo \
-    --features _test-tokio -- client /dev/ttyACM0 115200
+    --features std -- client /dev/ttyACM0 115200
 ```
 
 Expected output — the `counter` values are produced **on the MCU** and read back
@@ -73,13 +73,13 @@ over serial:
 
 ```bash
 cargo run -p aimdb-serial-connector --example serial_demo \
-    --features _test-tokio -- set /dev/cu.usbmodem14303 115200
+    --features std -- set /dev/ttyACM0 115200
 ```
 
 ```
-[set] record.set setting={"level":1} -> {"value":{"level":1}}
+[set] record.set setting={"level":1} -> {"status":"success","value":{"level":1}}
 [set] record.get setting    -> {"level":1}
-[set] record.set setting={"level":2} -> {"value":{"level":2}}
+[set] record.set setting={"level":2} -> {"status":"success","value":{"level":2}}
 ...
 ```
 
@@ -91,9 +91,9 @@ pair (needs `socat`):
 ```bash
 socat -d -d pty,raw,echo=0 pty,raw,echo=0      # prints two /dev/pts/N device names
 # terminal A — host acts as the board:
-cargo run -p aimdb-serial-connector --example serial_demo --features _test-tokio -- server /dev/pts/3
+cargo run -p aimdb-serial-connector --example serial_demo --features std -- server /dev/pts/3
 # terminal B — host client:
-cargo run -p aimdb-serial-connector --example serial_demo --features _test-tokio -- client /dev/pts/4
+cargo run -p aimdb-serial-connector --example serial_demo --features std -- client /dev/pts/4
 ```
 
 ## Troubleshooting
