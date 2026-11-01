@@ -260,6 +260,46 @@ where
     ///     }
     /// })
     /// ```
+    ///
+    /// # Pairing values that belong together
+    ///
+    /// The handler above pairs each new value with the other input's latest.
+    /// When both inputs change at about the same time, the first output pairs
+    /// a new value with an old one. If the inputs carry a field that says
+    /// which values belong together, emit only when it matches and consume
+    /// both values:
+    ///
+    /// ```rust,ignore
+    /// .on_triggers(|mut rx, producer| async move {
+    ///     let mut flow: Option<Flow> = None;
+    ///     let mut ret: Option<Return> = None;
+    ///     while let Ok(trigger) = rx.recv().await {
+    ///         match trigger.index() {
+    ///             0 => flow = trigger.as_input::<Flow>().cloned(),
+    ///             1 => ret = trigger.as_input::<Return>().cloned(),
+    ///             _ => {}
+    ///         }
+    ///         if let (Some(f), Some(r)) = (&flow, &ret) {
+    ///             // Or a tolerance on an application timestamp. `trigger.stamp()`
+    ///             // is the write time: "written within", not "measured within".
+    ///             if f.sample_id == r.sample_id {
+    ///                 producer.produce(Difference::of(f, r));
+    ///                 flow = None;
+    ///                 ret = None;
+    ///             }
+    ///         }
+    ///     }
+    /// })
+    /// ```
+    ///
+    /// - One value is retained per input, so an input running ahead skips
+    ///   cycles: Flow 2, Flow 3, Return 3 emits only cycle 3.
+    /// - Which cycles are skipped depends on the arrival order between inputs.
+    /// - Values produced together by one source are better published as one
+    ///   compound record, which needs no join.
+    ///
+    /// `transform_join_pairs_values_by_timestamp` in the Tokio adapter's
+    /// integration tests runs this handler, matching on timestamps.
     pub fn on_triggers<F, Fut>(self, handler: F) -> JoinPipeline<O>
     where
         F: FnOnce(JoinEventRx, crate::Producer<O>) -> Fut + Send + 'static,

@@ -196,3 +196,119 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
 
     producer_task.await.unwrap();
 }
+
+/// `measured_at` is time since an application-defined epoch, set by whoever
+/// takes the reading. AimDB does not interpret it.
+#[derive(Clone, Debug)]
+struct Flow {
+    measured_at: Duration,
+    celsius: f32,
+}
+
+#[derive(Clone, Debug)]
+struct Return {
+    measured_at: Duration,
+    celsius: f32,
+}
+
+#[derive(Clone, Debug)]
+struct Difference {
+    measured_at: Duration,
+    kelvin: f32,
+}
+
+/// The pairing pattern from the `JoinBuilder::on_triggers` docs, matching on
+/// application timestamps: emit only when both inputs were measured within
+/// `TOLERANCE` of each other, then consume both. The 500 ms Flow is replaced by
+/// the 1000 ms Flow before a Return close to it arrives, so that cycle
+/// produces nothing.
+#[tokio::test]
+async fn transform_join_pairs_values_by_timestamp() {
+    const TOLERANCE: Duration = Duration::from_millis(20);
+
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+
+    builder.configure::<Flow>("pair::Flow", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
+    });
+    builder.configure::<Return>("pair::Return", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
+    });
+    builder.configure::<Difference>("pair::Difference", |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+            .transform_join(|b| {
+                b.input::<Flow>("pair::Flow")
+                    .input::<Return>("pair::Return")
+                    .on_triggers(|mut rx, producer| async move {
+                        let mut flow: Option<Flow> = None;
+                        let mut ret: Option<Return> = None;
+                        while let Ok(trigger) = rx.recv().await {
+                            match trigger.index() {
+                                0 => flow = trigger.as_input::<Flow>().cloned(),
+                                1 => ret = trigger.as_input::<Return>().cloned(),
+                                _ => {}
+                            }
+                            if let (Some(f), Some(r)) = (&flow, &ret) {
+                                if f.measured_at.abs_diff(r.measured_at) <= TOLERANCE {
+                                    producer.produce(Difference {
+                                        measured_at: f.measured_at,
+                                        kelvin: f.celsius - r.celsius,
+                                    });
+                                    flow = None;
+                                    ret = None;
+                                }
+                            }
+                        }
+                    })
+            });
+    });
+
+    let (db, runner) = builder.build().await.unwrap();
+    tokio::spawn(runner.run());
+    let mut diff_rx = db.subscribe::<Difference>("pair::Difference").unwrap();
+    tokio::task::yield_now().await;
+
+    let ms = Duration::from_millis;
+    let flow = |at, celsius| Flow {
+        measured_at: ms(at),
+        celsius,
+    };
+    let ret = |at, celsius| Return {
+        measured_at: ms(at),
+        celsius,
+    };
+
+    // 5 ms apart, within tolerance; the Return is the earlier of the two.
+    db.produce::<Return>("pair::Return", ret(0, 45.0)).unwrap();
+    db.produce::<Flow>("pair::Flow", flow(5, 60.0)).unwrap();
+    let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((d.value.measured_at, d.value.kelvin), (ms(5), 15.0));
+
+    // Each input is delivered in write order, so every interleaving of the
+    // two inputs ends with the 1000 ms Flow and the 1012 ms Return retained
+    // together; the 500 ms Flow never comes within tolerance of a Return.
+    db.produce::<Flow>("pair::Flow", flow(500, 61.0)).unwrap();
+    db.produce::<Flow>("pair::Flow", flow(1000, 62.0)).unwrap();
+    db.produce::<Return>("pair::Return", ret(1012, 50.0))
+        .unwrap();
+    let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (d.value.measured_at, d.value.kelvin),
+        (ms(1000), 12.0),
+        "the 500 ms Flow has no Return within tolerance and must be skipped"
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), diff_rx.recv())
+            .await
+            .is_err(),
+        "no output beyond the two matched pairs"
+    );
+}
