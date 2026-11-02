@@ -32,55 +32,54 @@ The same monitor functions, data types, and business logic work across all platf
      └─────────────┘  └─────────────┘  └─────────────┘
 ```
 
+## Contents
+
+- **Records** (`types`): `TemperatureReading`, `LightState`, `LightControl`, and the `ButtonEvent` a toggle input yields (`LightControl: From<ButtonEvent>`).
+- **Keys** (`keys`): `TemperatureKey`, `LightKey`, `LightControlKey`, each with its group address in `#[link_address]`.
+- **DPT codecs** (`dpt`): `temperature_at(location)`, `light_state_at(group_address)` and `switch`, written once instead of per record.
+- **Monitors** (`monitors`): `temperature_monitor`, `light_monitor`.
+
 ## Features
 
-- `std` - Enable std support (enables serde serialization)
-- `alloc` - Enable allocator support (required for String types)
+- `std` - Enable std support
 - `defmt` - Enable defmt integration for embedded logging
 
 ## Usage
 
+The wiring is the same on both runtimes; only the buffer differs. A group
+telegram carries only the value, so the decoders take what the payload does
+not (the location, the group address) and the links use them as
+deserializers.
+
 ### Tokio (Edge/Cloud)
 
 ```rust
-use knx_connector_demo_common::{
-    TemperatureReading, LightState, LightControl,
-    temperature_monitor, light_monitor,
-    types::addresses,
-};
-use aimdb_knx_connector::dpt::Dpt9;
+use aimdb_core::InboundLink;
+use knx_connector_demo_common::{dpt, temperature_monitor, TemperatureKey, TemperatureReading};
 
-builder.configure::<TemperatureReading>("temp.livingroom", |reg| {
+let knx = builder.connect(KnxConnector::new(TokioNet::udp(Ipv4Addr::UNSPECIFIED), TokioDelay, gateway_url));
+
+builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
        .tap(temperature_monitor)
-       .link_from("knx://9/1/0")
-       .with_deserializer(|data: &[u8]| {
-           let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-           Ok(TemperatureReading::new("Living Room", celsius))
-       })
-       .finish();
+       .input(
+           InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
+               .with_deserializer(dpt::temperature_at("Living Room")),
+       );
 });
 ```
 
 ### Embassy (MCU)
 
 ```rust
-use knx_connector_demo_common::{
-    TemperatureReading, LightState, LightControl,
-    temperature_monitor, light_monitor,
-};
-use aimdb_knx_connector::dpt::Dpt9;
-
 // Same business logic, different buffer configuration
-builder.configure::<TemperatureReading>("temp.livingroom", |reg| {
+builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
     reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
        .tap(temperature_monitor)  // Same monitor works!
-       .link_from("knx://9/1/0")
-       .with_deserializer(|data: &[u8]| {
-           let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-           Ok(TemperatureReading::new("Living Room", celsius))
-       })
-       .finish();
+       .input(
+           InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
+               .with_deserializer(dpt::temperature_at("Living Room")),
+       );
 });
 ```
 

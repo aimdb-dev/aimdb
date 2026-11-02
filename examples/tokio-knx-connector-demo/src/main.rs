@@ -7,9 +7,17 @@
 //!
 //! ## Shared Code
 //!
-//! This demo uses `knx-connector-demo-common` for data types and monitors,
-//! demonstrating AimDB's "write once, run anywhere" capability. The same
-//! business logic runs on MCU (Embassy), edge (Tokio), and cloud (Tokio).
+//! This demo uses `knx-connector-demo-common` for the records, keys, DPT
+//! codecs and monitors, demonstrating AimDB's "write once, run anywhere"
+//! capability. The same business logic runs on MCU (Embassy), edge (Tokio),
+//! and cloud (Tokio).
+//!
+//! ## Wiring
+//!
+//! The KNX connector is registered with `connect`, which returns a handle.
+//! Records link through it with `InboundLink::on` / `OutboundLink::on`. The
+//! ENTER key is an input that yields `ButtonEvent`s, and `LightControl` is
+//! built from them with `From`.
 //!
 //! ## Running
 //!
@@ -23,54 +31,60 @@
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
-use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
-use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
+use aimdb_core::{
+    AimDbBuilder, DbResult, InboundLink, Input, OutboundLink, RecordKey, RecordRegistrar,
+};
 use aimdb_knx_connector::KnxConnector;
 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_uds_connector::UdsServer;
+use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-// Import shared types, monitors, and keys from common crate
+// Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    light_monitor, temperature_monitor, LightControl, LightControlKey, LightKey, LightState,
-    TemperatureKey, TemperatureReading,
+    dpt, light_monitor, temperature_monitor, ButtonEvent, LightControl, LightControlKey, LightKey,
+    LightState, TemperatureKey, TemperatureReading,
 };
 
 // ============================================================================
-// HANDLERS (platform-specific: stdin only available on std)
+// INPUT (platform-specific: stdin only available on std)
 // ============================================================================
 
-/// Keyboard input handler - toggles light on ENTER
-async fn input_handler(ctx: RuntimeContext, producer: Producer<LightControl>) {
-    let log = ctx.log();
-    log.info("\n⌨️  Input handler started. Press ENTER to toggle light on 1/0/6");
-    log.info("   (This sends GroupValueWrite to the KNX bus)\n");
+/// The ENTER key as a push button: each press yields a [`ButtonEvent`], for
+/// every record type built `From<ButtonEvent>`.
+struct EnterKey;
 
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
-    let mut line = String::new();
-    let mut light_on = false;
+impl<T> Input<T> for EnterKey
+where
+    T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.source(|ctx, producer| async move {
+            let log = ctx.log();
+            log.info("\n⌨️  Press ENTER to toggle light on 1/0/6");
+            log.info("   (This sends GroupValueWrite to the KNX bus)\n");
 
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break, // EOF
-            Ok(_) => {
-                // Toggle light state
-                light_on = !light_on;
-
-                let state = LightControl::new("1/0/6", light_on);
-
-                producer.produce(state);
+            let mut reader = BufReader::new(tokio::io::stdin());
+            let mut line = String::new();
+            let mut press = 0;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        press += 1;
+                        producer.produce(T::from(ButtonEvent { press }));
+                    }
+                    Err(e) => {
+                        log.error(&format!("Error reading input: {e}"));
+                        break;
+                    }
+                }
             }
-            Err(e) => {
-                log.error(&format!("Error reading input: {}", e));
-                break;
-            }
-        }
+        });
     }
 }
 
@@ -107,48 +121,42 @@ async fn main() -> DbResult<()> {
     // tunnelling protocol.
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
-        .with_connector(KnxConnector::new(
-            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
-            TokioDelay,
-            "knx://192.168.1.4:3671",
-        ))
         .with_connector(UdsServer::from_config(remote_config));
+    let knx = builder.connect(KnxConnector::new(
+        TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+        TokioDelay,
+        "knx://192.168.1.4:3671",
+    ));
 
     // Temperature sensors (inbound) - using link_address() from key metadata
     builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Living Room", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Living Room")),
+            );
     });
 
     builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::Bedroom.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Bedroom", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::Bedroom.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Bedroom")),
+            );
     });
 
     builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::Kitchen.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Kitchen", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::Kitchen.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Kitchen")),
+            );
     });
 
     // Light monitors (inbound) - using link_address() from key metadata
@@ -156,38 +164,31 @@ async fn main() -> DbResult<()> {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
-            .link_from(LightKey::Main.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
-                Ok(LightState::new("1/0/7", is_on))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, LightKey::Main.link_address().unwrap())
+                    .with_deserializer(dpt::light_state_at("1/0/7")),
+            );
     });
 
     builder.configure::<LightState>(LightKey::Hallway, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
-            .link_from(LightKey::Hallway.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
-                Ok(LightState::new("1/0/8", is_on))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, LightKey::Hallway.link_address().unwrap())
+                    .with_deserializer(dpt::light_state_at("1/0/8")),
+            );
     });
 
     // Light control (outbound) - using link_address() from key metadata
     builder.configure::<LightControl>(LightControlKey::Control, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .source(input_handler)
-            .link_to(LightControlKey::Control.link_address().unwrap())
-            .with_serializer(|_ctx, state: &LightControl| {
-                let mut buf = [0u8; 1];
-                let len = Dpt1::Switch.encode(state.is_on, &mut buf).unwrap_or(0);
-                Ok(buf[..len].to_vec())
-            })
-            .finish();
+            .input(EnterKey)
+            .output(
+                OutboundLink::on(knx, LightControlKey::Control.link_address().unwrap())
+                    .with_serializer(dpt::switch),
+            );
     });
 
     println!("Press ENTER to toggle light (1/0/6). Press Ctrl+C to stop.\n");

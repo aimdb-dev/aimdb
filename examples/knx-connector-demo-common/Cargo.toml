@@ -8,24 +8,20 @@ description = "Shared business logic for KNX demos - runs on MCU, edge, and clou
 
 [features]
 default = []
-std = ["alloc", "aimdb-core/std", "serde"]
-alloc = ["aimdb-core/alloc"]
-derive = ["aimdb-core/derive"]
-# serde derive on the shared types — works in `no_std + alloc` too, so an
-# embassy demo can expose these records over a remote-access (serial) server.
-serde = ["dep:serde"]
-
+std = ["aimdb-core/std", "serde/std"]
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]
 
 [dependencies]
-# Core AimDB - runtime agnostic
-aimdb-core = { path = "../../aimdb-core", default-features = false }
-# KNX DPT types (no runtime features needed for types only)
+# Core AimDB - runtime agnostic; `derive` for the `RecordKey` keys
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+# KNX DPT encoding (no runtime features needed for the codecs)
 aimdb-knx-connector = { path = "../../aimdb-knx-connector", default-features = false }
-
-# Serialization (std only)
-serde = { workspace = true, features = ["derive"], optional = true }
+# Serialize/Deserialize on the shared types, for remote access
+serde = { workspace = true }
 
 # Optional defmt for embedded logging
 defmt = { workspace = true, optional = true }

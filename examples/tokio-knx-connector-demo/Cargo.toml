@@ -23,7 +23,6 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 # Shared demo types and monitors
 knx-connector-demo-common = { path = "../knx-connector-demo-common", features = [
     "std",
-    "derive",
 ] }
 
 # KNX connector

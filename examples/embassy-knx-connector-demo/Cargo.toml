@@ -41,11 +41,7 @@ aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-featur
 
 # Shared demo types and monitors. `serde` makes the shared types serde-codec'able
 # in no_std so they can be exposed over the serial remote-access server.
-knx-connector-demo-common = { path = "../knx-connector-demo-common", default-features = false, features = [
-    "alloc",
-    "derive",
-    "serde",
-] }
+knx-connector-demo-common = { path = "../knx-connector-demo-common" }
 
 # Embassy ecosystem - STM32H563ZI with Ethernet
 embassy-stm32 = { workspace = true, features = [
