@@ -302,6 +302,10 @@ pub struct AimDbBuilder {
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder>>,
 
+    /// Identifies this builder in the
+    /// [`ConnectorHandle`](crate::connector::ConnectorHandle)s it returns.
+    builder_id: u32,
+
     /// Per-record future collectors with their keys.
     spawn_fns: Vec<(StringKey, SpawnFnType)>,
 
@@ -336,6 +340,7 @@ impl AimDbBuilder {
             record_index: HashMap::new(),
             runtime: None,
             connector_builders: Vec::new(),
+            builder_id: crate::connector::next_builder_id(),
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: Extensions::new(),
@@ -447,6 +452,9 @@ impl AimDbBuilder {
     ///      **no links** — registering it is how a server stands up remote access
     ///      (this replaces the old `with_remote_access(config)`).
     ///
+    /// To keep a handle to the connector, register it with
+    /// [`connect`](Self::connect) instead.
+    ///
     /// # Examples
     ///
     /// Illustrative (not compiled: the connector types live in downstream
@@ -478,6 +486,30 @@ impl AimDbBuilder {
     ) -> Self {
         self.connector_builders.push(Box::new(builder));
         self
+    }
+
+    /// Registers a connector, exactly like [`with_connector`](Self::with_connector),
+    /// and returns a [`ConnectorHandle`](crate::connector::ConnectorHandle) for it.
+    ///
+    /// Takes `&mut self`, so it follows the by-value setup chain, like
+    /// [`configure`](Self::configure):
+    ///
+    /// ```rust,ignore
+    /// let mut b = AimDbBuilder::new().runtime(rt);
+    /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
+    /// ```
+    pub fn connect(
+        &mut self,
+        builder: impl crate::connector::ConnectorBuilder + 'static,
+    ) -> crate::connector::ConnectorHandle {
+        let index = self.connector_builders.len();
+        self.connector_builders.push(Box::new(builder));
+        // Nobody registers more than u16::MAX connectors; saturating leaves an
+        // index that matches no connector rather than wrapping onto one.
+        crate::connector::ConnectorHandle {
+            builder: self.builder_id,
+            index: u16::try_from(index).unwrap_or(u16::MAX),
+        }
     }
 
     // NOTE: a remote-access **server** is registered like any other connector —
@@ -1455,5 +1487,50 @@ mod instance_clock_tests {
         assert_eq!(db.runtime_ctx().clock().now(), Stamp::from_nanos(4242));
         #[cfg(feature = "observability")]
         assert_eq!((db.profiling_clock())(), 4242);
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use crate::connector::ConnectorBuilder;
+    use crate::{AimDb, AimDbBuilder, DbResult};
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+    use core::future::Future;
+    use core::pin::Pin;
+
+    struct Scheme(&'static str);
+
+    impl ConnectorBuilder for Scheme {
+        fn build<'a>(
+            &'a self,
+            _db: &'a AimDb,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn scheme(&self) -> &str {
+            self.0
+        }
+    }
+
+    #[test]
+    fn connect_hands_out_one_handle_per_connector() {
+        let mut a = AimDbBuilder::new();
+        let mqtt = a.connect(Scheme("mqtt"));
+        let knx = a.connect(Scheme("knx"));
+        let other = AimDbBuilder::new().connect(Scheme("mqtt"));
+
+        assert_eq!((mqtt.index, knx.index), (0, 1));
+        assert_eq!(mqtt.builder, knx.builder);
+        assert_ne!(mqtt.builder, other.builder);
+        let schemes: Vec<&str> = a.connector_builders.iter().map(|c| c.scheme()).collect();
+        assert_eq!(schemes, ["mqtt", "knx"]);
     }
 }

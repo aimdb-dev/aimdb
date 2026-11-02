@@ -2142,6 +2142,21 @@ mod tests {
         assert!(drain_errors(&mut rec).is_empty());
     }
 
+    /// A connector registered with `connect` serves links exactly like one
+    /// registered with `with_connector`.
+    #[tokio::test]
+    async fn connected_connector_serves_links() {
+        let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+        let _mqtt = builder.connect(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(InboundLink::new("mqtt://a").with_deserializer(de));
+        });
+        let (db, _runner) = builder.build().await.expect("builds");
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(inbound.route_count(), 1);
+    }
+
     /// Two inbound links on one record are fan-in, through `.input()` as
     /// through `.link_from()`.
     #[tokio::test]

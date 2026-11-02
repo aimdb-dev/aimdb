@@ -209,6 +209,27 @@ impl core::fmt::Write for TopicBuf<'_> {
     }
 }
 
+/// A connector registered with [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+///
+/// The handle is `Copy` and names its connector by position, not by scheme,
+/// so it holds no string. It is only valid in the builder that returned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectorHandle {
+    /// The [`AimDbBuilder`](crate::AimDbBuilder) that returned the handle.
+    pub(crate) builder: u32,
+    /// Position in that builder's connector list.
+    pub(crate) index: u16,
+}
+
+/// A fresh id per [`AimDbBuilder`](crate::AimDbBuilder), so a
+/// [`ConnectorHandle`] from one builder is told apart from another's. Starts
+/// at 1; tests use 0 as a fixed id.
+pub(crate) fn next_builder_id() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Address of a record link: `scheme://resource` (e.g. `mqtt://sensors/temp`).
 ///
 /// A link address names a topic/resource on a connector's already-configured
