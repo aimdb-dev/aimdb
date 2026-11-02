@@ -39,7 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   option and connector extension (`with_qos`, `with_link_codec`,
   `with_depth`, …) and are checked like `link_to` / `link_from`.
   `builder.connect(..)` returns a handle to start links from without a
-  scheme: `OutboundLink::on(mqtt, "sensors/temp")` (#390).
+  scheme: `OutboundLink::on(mqtt, "sensors/temp")` (#390). For `Linkable`
+  contracts, `publish(mqtt, "sensors/temp")` / `subscribe(..)` bring the
+  contract's own codec (#391). The MQTT demos use them, with inputs built
+  `From<Event>` on owned device channels, and the usage guide documents
+  these conventions.
   ([aimdb-core](aimdb-core/CHANGELOG.md),
   [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md),
   [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`publish(handle, address)` / `subscribe(handle, address)` (#391)** for
+  `Linkable` contracts: a link in the contract's own codec that reports its
+  schema, for `reg.output(..)` / `reg.input(..)`. Connector options apply as
+  on any link. `linked_to` / `linked_from` now share their implementation,
+  unchanged in behaviour. A type that is not `Linkable` gets a readable
+  compile error.
 - `LinkCodecBuilderExt::with_link_codec` also applies to detached links
   (`OutboundLink` / `InboundLink`, #389).
 
