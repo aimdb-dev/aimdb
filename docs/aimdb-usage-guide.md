@@ -198,91 +198,82 @@ mountain-mqtt-embassy = { git = "https://github.com/aimdb-dev/mountain-mqtt.git"
 #![no_std]
 #![no_main]
 
-use aimdb_core::prelude::*;
-use aimdb_embassy_adapter::EmbassyAdapter;
+use aimdb_core::{AimDbBuilder, Input, RecordRegistrar};
+use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
+use core::fmt::Debug;
 use embassy_executor::Spawner;
 use embassy_rp as hal;
-use embassy_rp::gpio::{Input, Pull};
+use embassy_rp::gpio::{Input as Pin, Pull};
 
+/// What the button yields: one press.
+#[derive(Debug, Clone, Copy)]
+struct ButtonEvent {
+    press: u32,
+}
+
+/// The record, built from the event.
 #[derive(Debug, Clone)]
 struct ButtonPress {
     count: u32,
-    timestamp: u64,
 }
 
-/// Button handler that produces events on button press
-async fn button_handler(
-    ctx: RuntimeContext,
-    producer: Producer<ButtonPress>,
-    mut button: Input<'static>,
-) {
-    let log = ctx.log();
-    log.info("🔘 Button handler started - press button to generate events\n");
-    
-    let mut count = 0;
-    
-    loop {
-        // Wait for button press (assuming active low)
-        button.wait_for_falling_edge().await;
-        
-        // Debounce delay
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
-        
-        count += 1;
-        let press = ButtonPress {
-            count,
-            timestamp: embassy_time::Instant::now().as_micros(),
-        };
-        
-        let _ = producer.produce(press).await;
-        
-        // Wait for button release
-        button.wait_for_rising_edge().await;
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
+impl From<ButtonEvent> for ButtonPress {
+    fn from(event: ButtonEvent) -> Self {
+        ButtonPress { count: event.press }
+    }
+}
+
+/// A push button input: one event per debounced press, for every record
+/// type built `From<ButtonEvent>`. It owns its pin.
+struct PushButton(Pin<'static>);
+
+impl<T> Input<T> for PushButton
+where
+    T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        let PushButton(mut pin) = self;
+        reg.source(move |ctx, producer| async move {
+            let mut press = 0;
+            loop {
+                pin.wait_for_falling_edge().await; // active low
+                ctx.time().sleep_millis(50).await; // debounce
+                press += 1;
+                producer.produce(T::from(ButtonEvent { press }));
+                pin.wait_for_rising_edge().await;
+                ctx.time().sleep_millis(50).await;
+            }
+        });
     }
 }
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = hal::init(Default::default());
-    
-    // Setup button pin (example: GPIO 15 with pull-up)
-    let button = Input::new(p.PIN_15, Pull::Up);
-    
-    // Create Embassy runtime adapter
+
+    // The pin is moved into the input: it cannot feed a second record.
+    let button = PushButton(Pin::new(p.PIN_15, Pull::Up));
+
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
-    
-    // Build database
-    let db = AimDbBuilder::new()
-        .runtime(runtime)
-        .configure::<ButtonPress>("button.press", |reg| {
-            reg.buffer_sized::<1, 1>(BufferType::SingleLatest)
-            
-            // Use button as data source with context
-            .source_with_context(button, button_handler)
-            
-            // Process button press events
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+    builder.configure::<ButtonPress>("button.press", |reg| {
+        reg.buffer_sized::<1, 1>(EmbassyBufferType::SingleLatest)
+            .input(button)
             .tap(|_, consumer| async move {
-                let mut reader = consumer.subscribe().unwrap();
+                let mut reader = consumer.subscribe();
                 while let Ok(press) = reader.recv().await {
-                    defmt::info!("🔘 Button pressed! Count: {}, Time: {}", 
-                                 press.value.count, press.value.timestamp);
+                    defmt::info!("🔘 Button pressed! Count: {}", press.value.count);
                 }
             });
-        })
-        .build().await.unwrap();
-    
-    db.run().await.unwrap()
+    });
+
+    builder.run().await.unwrap()
 }
 ```
 
 **Note:** Embassy examples require target-specific configuration. See [embassy-knx-connector-demo](../examples/embassy-knx-connector-demo) or [embassy-mqtt-connector-demo](../examples/embassy-mqtt-connector-demo) for complete working examples.
 
 ---
-
-## Using Connectors
-
-AimDB connectors enable integration with external protocols and systems. KNX and MQTT run on both Tokio and Embassy; the Zenoh connector is `std` only for now.
 
 ---
 
@@ -359,6 +350,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+This example uses the raw `link_from(..).with_deserializer(..).finish()`
+builder: the escape hatch for a payload that is not a contract's wire format
+(here a single KNX byte). Records of contract types link with `subscribe` /
+`publish`, as in the MQTT example below.
+
 **See also:**
 - [tokio-knx-connector-demo](../examples/tokio-knx-connector-demo) - Full Tokio example
 - [embassy-knx-connector-demo](../examples/embassy-knx-connector-demo) - Full Embassy example
@@ -381,48 +377,63 @@ mountain-mqtt = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch
 mountain-mqtt-embassy = { git = "https://github.com/aimdb-dev/mountain-mqtt.git", branch = "main" }
 ```
 
-**Example (Tokio):**
+**Example (Tokio):** a record linked to MQTT through a connector handle. The
+record type is a contract (`Linkable`), so `subscribe` / `publish` use its own
+wire format and nothing restates it:
+
+```toml
+aimdb-data-contracts = { version = "0.2", features = ["linkable-json"] }
+serde = { version = "1", features = ["derive"] }
+```
+
 ```rust
-use aimdb_core::prelude::*;
-use aimdb_tokio_adapter::TokioAdapter;
-use aimdb_mqtt_connector::MqttConnector;
+use aimdb_core::buffer::BufferCfg;
+use aimdb_core::{AimDbBuilder, DbResult};
+use aimdb_data_contracts::{publish, subscribe, Linkable, SchemaType};
+use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+/// The contract: JSON on the wire, from `#[derive(Linkable)]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Linkable)]
 struct SensorReading {
     temperature: f32,
     humidity: f32,
 }
 
+impl SchemaType for SensorReading {
+    const NAME: &'static str = "sensor_reading";
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> DbResult<()> {
     let runtime = Arc::new(TokioAdapter::new()?);
-    
-    let db = AimDbBuilder::new()
-        .runtime(runtime)
-        .with_connector(MqttConnector::new("mqtt://broker.example.com:1883"))
-        .configure::<SensorReading>("sensor.reading", |reg| {
-            reg.buffer(BufferCfg::SingleLatest)
-               .link_from("mqtt://sensor/room1")
-               .with_deserializer(|data: &[u8]| {
-                   let reading: SensorReading = serde_json::from_slice(data)?;
-                   Ok(Box::new(reading))
-               })
-               .finish();
-            
-            reg.tap(|_, consumer| async move {
-                let mut reader = consumer.subscribe().unwrap();
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+    // `connect` registers the connector and returns a handle to link through.
+    let mqtt = builder.connect(MqttConnector::new("mqtt://broker.example.com:1883"));
+
+    builder.configure::<SensorReading>("sensor.reading", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .input(subscribe(mqtt, "sensor/room1").with_qos(1))
+            .output(publish(mqtt, "sensor/room1/latest").with_qos(1))
+            .tap(|_, consumer| async move {
+                let mut reader = consumer.subscribe();
                 while let Ok(reading) = reader.recv().await {
-                    println!("📊 Temp: {:.1}°C, Humidity: {:.1}%", 
+                    println!("📊 Temp: {:.1}°C, Humidity: {:.1}%",
                              reading.value.temperature, reading.value.humidity);
                 }
             });
-        })
-        .build().await?;
-    
-    db.run().await
+    });
+
+    builder.run().await
 }
 ```
+
+The address needs no scheme; a full URL from a `#[link_address]` key works
+too if its scheme is the connector's. For a type that is not a contract, or
+a per-link serializer, use the raw builders (see the KNX example above and
+[Links as values](#links-as-values)).
 
 **See also:**
 - [tokio-mqtt-connector-demo](../examples/tokio-mqtt-connector-demo) - Full Tokio example
@@ -508,6 +519,80 @@ or `.transform()` is a `build()` error. A link that is neither registered nor
 `reg.input(..)` / `reg.output(..)` take anything implementing
 `Input<T>` / `Output<T>`, so a device driver can provide its own input; a link
 for the wrong record type or direction does not compile.
+
+### Inputs and contracts: conventions
+
+Wiring is meant to fail at compile time where it can. Four conventions get
+there; the MQTT demos
+([tokio](../examples/tokio-mqtt-connector-demo),
+[embassy](../examples/embassy-mqtt-connector-demo), and their shared
+[common crate](../examples/mqtt-connector-demo-common)) follow all of them.
+
+**Inputs yield an event; records are built with `From<Event>`.** An input is
+generic over its record and bounded by `T: From<Event>`:
+
+```rust
+impl<T> Input<T> for PushButton
+where
+    T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.source(move |ctx, producer| async move {
+            /* wait for an edge, debounce */
+            producer.produce(T::from(ButtonEvent { /* … */ }));
+        });
+    }
+}
+
+impl From<ButtonEvent> for ButtonPress { /* … */ }
+```
+
+One input type then serves every contract that can be built from its event
+(start trigger, door contact, counter pulse), with no producer function per
+record. A device that sends its own payload over a connection is an input
+too: `subscribe` for a contract's wire format, or `InboundLink` /
+`link_from` with `with_deserializer`, mapping with `T::from`.
+
+**Device channels are owned, non-`Clone` values.** A board hands out its
+inputs once, as struct fields, and an input takes one by value:
+
+```rust
+let board = board::init(spawner).await;
+let NucleoInputs { b1 } = board.inputs;
+
+builder.configure::<ButtonPress>(ButtonKey::B1, |reg| {
+    reg.buffer_sized::<8, 3>(EmbassyBufferType::SpmcRing)
+        .input(PushButton::on(b1))
+        .output(publish(mqtt, ButtonKey::B1.link_address().unwrap()));
+});
+```
+
+Using `b1` for a second record is `use of moved value`. Pins never leave the
+board module. This is a pattern, not a type in AimDB.
+
+**Where the `From<Event>` impls live.** The orphan rule allows
+`impl From<E> for C` only in the crate of `E` or of `C`. Convention: driver
+crates own their event types and ship their inputs with them; contract
+crates implement `From<Event>` for the events they accept. When neither
+crate can (a contract and a driver from two other crates), use a newtype
+around the contract, or a `.transform()` from a record of the driver's own
+type.
+
+**What is checked where.**
+
+| Mistake | Caught |
+|---|---|
+| Record not buildable from the input's event (`From` missing) | compile time (E0277) |
+| Contract without a wire format (not `Linkable`) at `publish` / `subscribe` | compile time (E0277) |
+| Link or input for the wrong record type or direction | compile time (E0277) |
+| One device channel wired into two records | compile time (E0382) |
+| Link to a connector that was never registered | compile time with a handle; `build()` with a URL |
+| Address scheme not the handle's connector | `build()` |
+| Two writers of different kinds on one record (`.input(src)` + inbound link) | `build()` |
+
+"One input per record" is not a compile error: a second source, or a source
+next to an inbound link, fails `build()` as it always has, and several
+inbound links on one record are allowed (fan-in).
 
 ---
 

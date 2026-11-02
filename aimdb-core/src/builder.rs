@@ -498,7 +498,10 @@ impl AimDbBuilder {
     /// let mut b = AimDbBuilder::new().runtime(rt);
     /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
     /// b.configure::<Temperature>("temp.indoor", |r| {
-    ///     r.output(OutboundLink::on(mqtt, "sensors/temp/indoor").with_serializer(ser));
+    ///     // A contract (`Linkable`) brings its own wire format:
+    ///     r.output(aimdb_data_contracts::publish(mqtt, "sensors/temp/indoor"));
+    ///     // Any other type, with a serializer of its own:
+    ///     r.output(OutboundLink::on(mqtt, "sensors/temp/raw").with_serializer(ser));
     /// });
     /// ```
     pub fn connect(
