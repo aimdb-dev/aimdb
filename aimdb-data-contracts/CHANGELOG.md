@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `LinkCodecBuilderExt::with_link_codec` also applies to detached links
+  (`OutboundLink` / `InboundLink`, #389).
+
 - **Records report their contract's schema to core (#332).** `linked_to`,
   `linked_from`, `linked_*_with` and `observe` set the record's schema to
   `T::NAME`/`T::VERSION` (`RecordRegistrar::schema`), so `graph.nodes` and

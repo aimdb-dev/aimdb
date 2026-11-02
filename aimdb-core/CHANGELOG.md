@@ -15,7 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{status, value, ts}`. A value frame without `ts` is malformed; 3.x peers
   are refused at `hello`. `session::aimx::value_reply` builds the `get` reply.
 
+### Changed
+
+- **Link builders are generic over what they are attached to (#389).**
+  Options live on `OutboundLinkBuilder<T, R>` / `InboundLinkBuilder<T, R>`;
+  `OutboundConnectorBuilder` / `InboundConnectorBuilder` remain as aliases,
+  so existing `link_to(..)…finish()` code and extension impls compile
+  unchanged. Both builders are `#[must_use]`: a link that is never finished
+  or registered now warns (fails under `-D warnings`) instead of being
+  dropped silently.
+- The "conflicting writers" build error names origin kinds
+  (`source + inbound link`) instead of methods.
+
 ### Added
+
+- **Links as values: `reg.input(..)` / `reg.output(..)` (#389).**
+  `OutboundLink::new(url)` / `InboundLink::new(url)` build a link before its
+  record exists; `RecordRegistrar::output` / `input` register it through the
+  same validation as `finish()`. Both take anything implementing the new
+  `Input<T>` / `Output<T>` traits; a link for the wrong record type or
+  direction is a compile error with a readable message.
 
 - **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
   `instance_name` and `instance_uid` (checked by `build()`), and

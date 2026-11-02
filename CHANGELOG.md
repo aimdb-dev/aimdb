@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — links as values
+
+- **A link can be built before its record and attached with `reg.input(..)` /
+  `reg.output(..)` (#389).** `OutboundLink` / `InboundLink` take every link
+  option and connector extension (`with_qos`, `with_link_codec`,
+  `with_depth`, …) and are checked like `link_to` / `link_from`.
+  ([aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md),
+  [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))
+
 ### Changed (breaking) — write timestamps, AimX 4.0
 
 - **Every record value carries the time it was written (#326).** Writes are
