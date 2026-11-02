@@ -720,6 +720,100 @@ where
     pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
         InboundLink::new(url).attach(self)
     }
+
+    /// Wires `input` as a writer of this record.
+    ///
+    /// Takes anything implementing [`Input<T>`], such as an [`InboundLink`].
+    /// Conflicting writers are reported by `build()`, exactly as for
+    /// `.source()` and `.link_from()`; several inbound links on one record
+    /// are allowed (fan-in).
+    pub fn input(&mut self, input: impl Input<T>) -> &mut Self {
+        input.wire(self);
+        self
+    }
+
+    /// Wires `output` as a reader of this record.
+    ///
+    /// Takes anything implementing [`Output<T>`], such as an
+    /// [`OutboundLink`]. A following [`with_name`](Self::with_name) names the
+    /// stage the output registered, as after `.link_to(..).finish()`.
+    pub fn output(&mut self, output: impl Output<T>) -> &mut Self {
+        output.wire(self);
+        self
+    }
+}
+
+// ============================================================================
+// Input / Output - what `.input()` and `.output()` accept
+// ============================================================================
+
+/// Something that can write into a `T` record, passed to
+/// [`RecordRegistrar::input`].
+///
+/// [`InboundLink<T>`] implements it. `wire` receives the full registrar, so an
+/// input may call `.source()`, `.link_from()`, `.buffer()` or anything else a
+/// `configure` closure can; inputs are expected to only add a writer.
+///
+/// ```
+/// use aimdb_core::{Input, RecordRegistrar};
+/// use core::fmt::Debug;
+///
+/// /// Produces 0, 1, 2 into any record built from an `i32`.
+/// struct Counter;
+///
+/// impl<T> Input<T> for Counter
+/// where
+///     T: From<i32> + Send + Sync + 'static + Debug + Clone,
+/// {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///         reg.source(|_ctx, producer| async move {
+///             for i in 0..3 {
+///                 producer.produce(T::from(i));
+///             }
+///         });
+///     }
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be the input of a `{T}` record",
+    label = "not an input for `{T}`",
+    note = "an input implements `Input<{T}>`; device inputs usually do so for every `T: From<Event>`"
+)]
+pub trait Input<T: Send + Sync + 'static + Debug + Clone> {
+    /// Registers this input's writer on the record.
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+}
+
+/// Something that can read from a `T` record, passed to
+/// [`RecordRegistrar::output`].
+///
+/// [`OutboundLink<T>`] implements it. Like [`Input`], `wire` receives the
+/// full registrar.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be an output of a `{T}` record",
+    label = "not an output for `{T}`"
+)]
+pub trait Output<T: Send + Sync + 'static + Debug + Clone> {
+    /// Registers this output's reader on the record.
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+}
+
+impl<T> Input<T> for InboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.push_inbound(self);
+    }
+}
+
+impl<T> Output<T> for OutboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.push_outbound(self);
+    }
 }
 
 // ============================================================================
@@ -741,7 +835,7 @@ pub type OutboundConnectorBuilder<'r, 'a, T> =
     OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
 
 /// Outbound link not attached to a record yet, built with
-/// [`OutboundLink::new`].
+/// [`OutboundLink::new`] and registered by [`RecordRegistrar::output`].
 pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 
 /// Builder for configuring outbound connector links (AimDB → External)
@@ -750,12 +844,17 @@ pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 /// returns the attached form, [`OutboundConnectorBuilder`], which
 /// [`finish()`](OutboundLinkBuilder::finish) registers on its record.
 /// [`OutboundLink::new`] builds the detached form, [`OutboundLink`], before
-/// any record exists; it is checked when it is registered on one, not when
-/// it is built.
+/// any record exists; [`RecordRegistrar::output`] registers it, and checks
+/// it then, not when it is built. Both register the same link:
+///
+/// ```rust,ignore
+/// reg.link_to("mqtt://out").with_serializer(ser).finish();
+/// reg.output(OutboundLink::new("mqtt://out").with_serializer(ser));
+/// ```
 ///
 /// The option methods below, and the connector crates' extension traits,
 /// work on both forms.
-#[must_use = "a link does nothing until it is registered; call `.finish()`"]
+#[must_use = "a link does nothing until it is passed to `.output()` or finished with `.finish()`"]
 pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
@@ -1025,7 +1124,7 @@ type TypedMatchDeserializerFn<T> = Arc<
 pub type InboundConnectorBuilder<'r, 'a, T> = InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
 
 /// Inbound link not attached to a record yet, built with
-/// [`InboundLink::new`].
+/// [`InboundLink::new`] and registered by [`RecordRegistrar::input`].
 pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
 
 /// Builder for configuring inbound connector links (External → AimDB)
@@ -1034,12 +1133,17 @@ pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
 /// returns the attached form, [`InboundConnectorBuilder`], which
 /// [`finish()`](InboundLinkBuilder::finish) registers on its record.
 /// [`InboundLink::new`] builds the detached form, [`InboundLink`], before
-/// any record exists; it is checked when it is registered on one, not when
-/// it is built.
+/// any record exists; [`RecordRegistrar::input`] registers it, and checks
+/// it then, not when it is built. Both register the same link:
+///
+/// ```rust,ignore
+/// reg.link_from("mqtt://in").with_deserializer(de).finish();
+/// reg.input(InboundLink::new("mqtt://in").with_deserializer(de));
+/// ```
 ///
 /// The option methods below, and the connector crates' extension traits,
 /// work on both forms.
-#[must_use = "a link does nothing until it is registered; call `.finish()`"]
+#[must_use = "a link does nothing until it is passed to `.input()` or finished with `.finish()`"]
 pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
@@ -1824,6 +1928,257 @@ mod tests {
             Some("2")
         );
         assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    // ====================================================================
+    // Detached links via .input() / .output()
+    // ====================================================================
+
+    /// Runs `wire` on a fresh buffered `TestRecord` with an `mqtt` connector
+    /// registered, and returns the record.
+    fn registered(
+        wire: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>),
+    ) -> crate::typed_record::TypedRecord<TestRecord> {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        wire(&mut make_registrar(&mut rec, &builders, &extensions));
+        rec
+    }
+
+    fn ser(_ctx: crate::RuntimeContext, r: &TestRecord) -> Result<Vec<u8>, SerializeError> {
+        Ok(r.value.to_le_bytes().to_vec())
+    }
+
+    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, String> {
+        Ok(TestRecord { value: 0 })
+    }
+
+    fn match_de(
+        _ctx: &crate::RuntimeContext,
+        _m: &crate::TopicMatch<'_>,
+        _bytes: &[u8],
+    ) -> Result<TestRecord, String> {
+        Ok(TestRecord { value: 0 })
+    }
+
+    /// The same options, applied to an attached or a detached builder.
+    fn outbound_options<R>(
+        b: OutboundLinkBuilder<TestRecord, R>,
+    ) -> OutboundLinkBuilder<TestRecord, R> {
+        b.with_config("qos", "1")
+            .with_serializer(ser)
+            .with_config(crate::connector::WIRE_FORMAT_KEY, "le")
+            .with_timeout_ms(50)
+    }
+
+    fn inbound_options<R>(
+        b: InboundLinkBuilder<TestRecord, R>,
+    ) -> InboundLinkBuilder<TestRecord, R> {
+        b.with_config("qos", "1")
+            .with_match_deserializer(match_de)
+            .with_config(crate::connector::WIRE_FORMAT_KEY, "le")
+            .key("d", 4)
+            .with_topic_resolver(|| None)
+    }
+
+    #[test]
+    fn detached_inbound_link_registers_like_link_from() {
+        let mut attached = registered(|reg| {
+            inbound_options(reg.link_from("mqtt://temp/{d}")).finish();
+        });
+        let mut detached = registered(|reg| {
+            reg.input(inbound_options(InboundLink::new("mqtt://temp/{d}")));
+        });
+
+        let (a, d) = (attached.inbound_connectors(), detached.inbound_connectors());
+        assert_eq!((a.len(), d.len()), (1, 1));
+        assert_eq!(a[0].url.to_string(), d[0].url.to_string());
+        assert_eq!(a[0].config, d[0].config);
+        assert!(d[0].config.iter().any(|(k, v)| k == "qos" && v == "1"));
+        assert_eq!(a[0].key, d[0].key);
+        assert!(d[0].key.is_some());
+        assert!(a[0].topic_resolver.is_some() && d[0].topic_resolver.is_some());
+        assert!(drain_errors(&mut attached).is_empty());
+        assert!(drain_errors(&mut detached).is_empty());
+    }
+
+    #[test]
+    fn detached_outbound_links_register_like_link_to() {
+        let mut attached = registered(|reg| {
+            outbound_options(reg.link_to("mqtt://out")).finish();
+            reg.with_name("out");
+        });
+        let mut detached = registered(|reg| {
+            reg.output(outbound_options(OutboundLink::new("mqtt://out")))
+                .with_name("out");
+        });
+
+        let (a, d) = (
+            attached.outbound_connectors(),
+            detached.outbound_connectors(),
+        );
+        assert_eq!((a.len(), d.len()), (1, 1));
+        assert_eq!(a[0].url.to_string(), d[0].url.to_string());
+        assert_eq!(a[0].config, d[0].config);
+        assert!(d[0]
+            .config
+            .iter()
+            .any(|(k, v)| k == "timeout_ms" && v == "50"));
+
+        #[cfg(feature = "observability")]
+        for rec in [&attached, &detached] {
+            let links = rec.profiling().links();
+            assert_eq!(links.len(), 1, "one profiling stage per link");
+            assert_eq!(links[0].name.as_deref(), Some("out"));
+        }
+        assert!(drain_errors(&mut attached).is_empty());
+        assert!(drain_errors(&mut detached).is_empty());
+    }
+
+    #[test]
+    fn detached_links_record_the_same_errors_as_attached_ones() {
+        /// Links registered and errors recorded (url, message).
+        type Outcome = (usize, Vec<(Option<String>, String)>);
+        fn outcome(mut rec: crate::typed_record::TypedRecord<TestRecord>) -> Outcome {
+            let links = rec.outbound_connectors().len() + rec.inbound_connectors().len();
+            let errors = drain_errors(&mut rec)
+                .into_iter()
+                .map(|e| (e.url, e.message))
+                .collect();
+            (links, errors)
+        }
+
+        // Each case runs once through `link_to`/`link_from` + `finish()`
+        // and once through `.output()`/`.input()`; `$b` is the builder.
+        macro_rules! same_errors {
+            (out $url:expr, |$b:ident| $opts:expr, $msg:expr) => {{
+                let attached = outcome(registered(|reg| {
+                    let $b = reg.link_to($url);
+                    $opts.finish();
+                }));
+                let detached = outcome(registered(|reg| {
+                    let $b = OutboundLink::new($url);
+                    reg.output($opts);
+                }));
+                assert_eq!(attached, detached, "outbound {}", $url);
+                assert_eq!(detached.0, 0, "nothing registered for {}", $url);
+                assert_eq!(detached.1.len(), 1, "one error for {}", $url);
+                assert!(detached.1[0].1.contains($msg), "{:?}", detached.1);
+            }};
+            (in $url:expr, |$b:ident| $opts:expr, $msg:expr) => {{
+                let attached = outcome(registered(|reg| {
+                    let $b = reg.link_from($url);
+                    $opts.finish();
+                }));
+                let detached = outcome(registered(|reg| {
+                    let $b = InboundLink::new($url);
+                    reg.input($opts);
+                }));
+                assert_eq!(attached, detached, "inbound {}", $url);
+                assert_eq!(detached.0, 0, "nothing registered for {}", $url);
+                assert_eq!(detached.1.len(), 1, "one error for {}", $url);
+                assert!(detached.1[0].1.contains($msg), "{:?}", detached.1);
+            }};
+        }
+
+        same_errors!(out "no-scheme", |b| b.with_serializer(ser), "Invalid connector URL");
+        same_errors!(out "mqtt://a/{x}", |b| b.with_serializer(ser), "cannot contain");
+        same_errors!(out "mqtt://a", |b| b, "requires a serializer");
+        same_errors!(out "kafka://a", |b| b.with_serializer(ser), "No connector registered");
+
+        same_errors!(in "no-scheme", |b| b.with_deserializer(de), "Invalid connector URL");
+        same_errors!(in "mqtt://a", |b| b, "requires a deserializer");
+        same_errors!(
+            in "mqtt://a",
+            |b| b.with_deserializer(de).with_match_deserializer(match_de),
+            "not both"
+        );
+        same_errors!(in "kafka://a", |b| b.with_deserializer(de), "No connector registered");
+        same_errors!(
+            in "mqtt://t/{d}",
+            |b| b.with_deserializer(de).key("x", 2),
+            "is not a capture"
+        );
+        same_errors!(
+            in "mqtt://t/{d}",
+            |b| b.with_deserializer(de).key("d", 0),
+            "at least 1"
+        );
+    }
+
+    impl From<i32> for TestRecord {
+        fn from(value: i32) -> Self {
+            TestRecord { value }
+        }
+    }
+
+    /// A custom input, generic over every record type it can produce.
+    struct Counter;
+
+    impl<T> Input<T> for Counter
+    where
+        T: From<i32> + Send + Sync + 'static + Debug + Clone,
+    {
+        fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+            reg.source(|_ctx, producer| async move {
+                for i in 0..3 {
+                    producer.produce(T::from(i));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn custom_input_wires_a_source() {
+        let mut rec = registered(|reg| {
+            reg.input(Counter);
+        });
+        assert!(rec.has_producer());
+        assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    /// Two inbound links on one record are fan-in, through `.input()` as
+    /// through `.link_from()`.
+    #[tokio::test]
+    async fn two_inbound_inputs_fan_in() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(InboundLink::new("mqtt://a").with_deserializer(de))
+                .input(InboundLink::new("mqtt://b").with_deserializer(de));
+        });
+        let (db, _runner) = builder.build().await.expect("fan-in builds");
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(inbound.route_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn input_source_and_link_conflict() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(Counter)
+                .input(InboundLink::new("mqtt://a").with_deserializer(de));
+        });
+        let errors = config_errors(builder.build().await);
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(errors[0].record_key, "rec.in");
+        assert!(
+            errors[0]
+                .message
+                .contains("conflicting writers: record has source + inbound link"),
+            "got: {}",
+            errors[0].message
+        );
     }
 
     #[test]
