@@ -10,9 +10,19 @@
 //!
 //! ## Shared Code
 //!
-//! This demo uses `knx-connector-demo-common` for data types and monitors,
-//! demonstrating AimDB's "write once, run anywhere" capability. The same
-//! business logic runs on MCU (Embassy), edge (Tokio), and cloud (Tokio).
+//! This demo uses `knx-connector-demo-common` for the records, keys, DPT
+//! codecs and monitors, demonstrating AimDB's "write once, run anywhere"
+//! capability. The same business logic runs on MCU (Embassy), edge (Tokio),
+//! and cloud (Tokio).
+//!
+//! ## Layout
+//!
+//! - `board.rs` owns the hardware: heap, clocks, Ethernet, USART3, and the
+//!   user button B1 as an owned input (`NucleoInputs { b1 }`), plus the
+//!   `PushButton` input that turns it into `ButtonEvent`s.
+//! - `main.rs` is the application: the KNX connector and the records, each
+//!   linked through the connector's handle (`InboundLink::on` /
+//!   `OutboundLink::on`).
 //!
 //! ## Hardware Requirements
 //!
@@ -28,9 +38,10 @@
 //!
 //! 3. Update group addresses to match your KNX installation
 //!
-//! 4. Flash to target:
+//! 4. Flash to target from this directory (its `.cargo/config.toml` selects
+//!    the thumbv8m target and the probe-rs runner):
 //! ```bash
-//! cargo run --example embassy-knx-connector-demo --features embassy-runtime
+//! cargo run
 //! ```
 //!
 //! 5. Trigger KNX events by:
@@ -40,92 +51,28 @@
 
 extern crate alloc;
 
+mod board;
+
 use aimdb_core::remote::SecurityPolicy;
-use aimdb_core::{AimDbBuilder, RecordKey, RuntimeContext};
+use aimdb_core::{AimDbBuilder, InboundLink, OutboundLink, RecordKey};
 use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::net::{EmbassyDelay, EmbassyNet};
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_knx_connector::connector::KnxConnector;
-use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 use aimdb_serial_connector::SerialServer;
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_net::StackResources;
 use embassy_net::udp::PacketMetadata;
-use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue};
-use embassy_stm32::exti::{self, ExtiInput};
-use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::peripherals::ETH;
-use embassy_stm32::rng::Rng;
-use embassy_stm32::usart::{BufferedUart, Config as UartConfig};
-use embassy_stm32::{Config, bind_interrupts, eth, interrupt, peripherals, rng, usart};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-// Import shared types, monitors, and keys from common crate
+use board::PushButton;
+// Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    LightControl, LightControlKey, LightKey, LightState, TemperatureKey, TemperatureReading,
+    LightControl, LightControlKey, LightKey, LightState, TemperatureKey, TemperatureReading, dpt,
     light_monitor, temperature_monitor,
 };
-
-// Simple embedded allocator (required by some dependencies)
-#[global_allocator]
-static ALLOCATOR: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
-
-// Interrupt bindings for Ethernet, RNG, and EXTI
-bind_interrupts!(struct Irqs {
-    ETH => eth::InterruptHandler;
-    RNG => rng::InterruptHandler<peripherals::RNG>;
-    EXTI13 => exti::InterruptHandler<interrupt::typelevel::EXTI13>;
-    USART3 => usart::BufferedInterruptHandler<peripherals::USART3>;
-});
-
-type Device =
-    Ethernet<'static, ETH, GenericPhy<embassy_stm32::eth::Sma<'static, peripherals::ETH_SMA>>>;
-
-/// Network task that runs the embassy-net stack
-#[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
-    runner.run().await
-}
-
-// ============================================================================
-// BUTTON HANDLER (platform-specific: GPIO only on embedded)
-// ============================================================================
-
-/// Button handler that toggles light on button press
-async fn button_handler(
-    ctx: RuntimeContext,
-    producer: aimdb_core::Producer<LightControl>,
-    mut button: ExtiInput<'static, embassy_stm32::mode::Async>,
-) {
-    let log = ctx.log();
-    let time = ctx.time();
-
-    log.info("🔘 Button handler started - press USER button to toggle light\n");
-
-    let mut light_on = false;
-
-    loop {
-        button.wait_for_falling_edge().await;
-
-        // Debounce
-        time.sleep_millis(50).await;
-        if button.is_high() {
-            continue;
-        }
-
-        light_on = !light_on;
-
-        let state = LightControl::new("1/0/6", light_on);
-
-        producer.produce(state);
-
-        button.wait_for_rising_edge().await;
-        time.sleep_millis(50).await;
-    }
-}
 
 // ============================================================================
 // KNX CONFIGURATION
@@ -139,109 +86,14 @@ const KNX_GATEWAY_PORT: u16 = 3671;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Initialize heap for the allocator
-    {
-        use core::mem::MaybeUninit;
-        const HEAP_SIZE: usize = 98304; // 96KB heap (KNX + serial AimX server JSON)
-        static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe {
-            let heap_ptr = core::ptr::addr_of_mut!(HEAP);
-            ALLOCATOR.init((*heap_ptr).as_ptr() as usize, HEAP_SIZE)
-        }
-    }
-
     info!("🚀 Starting Embassy KNX Connector Demo");
     info!("   Using shared types from knx-connector-demo-common");
 
-    // Configure MCU clocks for STM32H563ZI
-    let mut config = Config::default();
-    {
-        use embassy_stm32::rcc::*;
-        use embassy_stm32::time::Hertz;
-
-        config.rcc.hsi = None;
-        config.rcc.hsi48 = Some(Default::default());
-        config.rcc.hse = Some(Hse {
-            freq: Hertz(8_000_000),
-            mode: HseMode::BypassDigital,
-        });
-        config.rcc.pll1 = Some(Pll {
-            source: PllSource::HSE,
-            prediv: PllPreDiv::DIV2,
-            mul: PllMul::MUL125,
-            divp: Some(PllDiv::DIV2),
-            divq: Some(PllDiv::DIV2),
-            divr: None,
-        });
-        config.rcc.ahb_pre = AHBPrescaler::DIV1;
-        config.rcc.apb1_pre = APBPrescaler::DIV1;
-        config.rcc.apb2_pre = APBPrescaler::DIV1;
-        config.rcc.apb3_pre = APBPrescaler::DIV1;
-        config.rcc.sys = Sysclk::PLL1_P;
-        config.rcc.voltage_scale = VoltageScale::Scale0;
-    }
-    let p = embassy_stm32::init(config);
-
-    info!("✅ MCU initialized");
-
-    let mut led = Output::new(p.PB0, Level::Low, Speed::Low);
-    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::Down, Irqs);
-
-    let mut rng = Rng::new(p.RNG, Irqs);
-    let mut seed = [0; 8];
-    rng.fill_bytes(&mut seed);
-    let seed = u64::from_le_bytes(seed);
-
-    info!("🔧 Initializing Ethernet...");
-
-    let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-
-    static PACKETS: StaticCell<PacketQueue<4, 4>> = StaticCell::new();
-
-    let device = Ethernet::new(
-        PACKETS.init(PacketQueue::<4, 4>::new()),
-        p.ETH,
-        Irqs,
-        p.PA1,
-        p.PA7,
-        p.PC4,
-        p.PC5,
-        p.PG13,
-        p.PB15,
-        p.PG11,
-        mac_addr,
-        p.ETH_SMA,
-        p.PA2,
-        p.PC1,
-    );
-
-    let config = embassy_net::Config::dhcpv4(Default::default());
-
-    static RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
-    static STACK_CELL: StaticCell<embassy_net::Stack<'static>> = StaticCell::new();
-
-    let (stack_obj, runner) =
-        embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
-
-    let stack: &'static _ = STACK_CELL.init(stack_obj);
-
-    spawner.spawn(unwrap!(net_task(runner)));
-
-    info!("⏳ Waiting for network configuration (DHCP)...");
-
-    stack.wait_config_up().await;
-
-    info!("✅ Network ready!");
-    if let Some(config) = stack.config_v4() {
-        info!("   IP address: {}", config.address);
-    }
-
-    for _ in 0..3 {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(100)).await;
-    }
+    let board = board::init(spawner).await;
+    let stack = board.stack;
+    let mut led = board.led;
+    let (serial_tx, serial_rx) = (board.serial_tx, board.serial_rx);
+    let board::NucleoInputs { b1 } = board.inputs;
 
     info!("🔌 Initializing KNX client...");
 
@@ -249,28 +101,6 @@ async fn main(spawner: Spawner) {
 
     use alloc::format;
     let gateway_url = format!("knx://{}:{}", KNX_GATEWAY_IP, KNX_GATEWAY_PORT);
-
-    // ── AimX-over-serial: serve this db over USART3 (ST-LINK VCP, PD8=TX/PD9=RX) ──
-    // A *second* connector alongside KNX. With no extra cabling on a Nucleo-H563ZI
-    // it appears on the host as /dev/ttyACM0; read the live records with:
-    //   aimdb --features transport-serial \
-    //         --connect serial:///dev/ttyACM0?baud=115200 record list
-    // defmt logs ride RTT (SWD), so they don't collide with this data UART.
-    static TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
-    static RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
-    let mut uart_config = UartConfig::default();
-    uart_config.baudrate = 115_200;
-    let uart = BufferedUart::new(
-        p.USART3,
-        p.PD9, // RX
-        p.PD8, // TX
-        TX_BUF.init([0; 256]),
-        RX_BUF.init([0; 256]),
-        Irqs,
-        uart_config,
-    )
-    .unwrap();
-    let (serial_tx, serial_rx) = uart.split();
 
     // The adapter owns the UDP socket and the clock; the connector owns the
     // tunnelling protocol. Socket buffers are `'static`, as on any MCU.
@@ -286,15 +116,20 @@ async fn main(spawner: Spawner) {
         KNX_TX_BUF.init([0; 1024]),
     );
 
-    // Read-only: KNX owns the writer for every record (single-writer-per-key), so
+    // ── AimX-over-serial: serve this db over USART3 (ST-LINK VCP, PD8=TX/PD9=RX) ──
+    // A *second* connector alongside KNX. With no extra cabling on a Nucleo-H563ZI
+    // it appears on the host as /dev/ttyACM0; read the live records with:
+    //   aimdb --features transport-serial \
+    //         --connect serial:///dev/ttyACM0?baud=115200 record list
+    // defmt logs ride RTT (SWD), so they don't collide with this data UART.
+    // Read-only: each record has a single writer (KNX, or the button), so
     // remote `record.set` is refused — peers can list/get/subscribe, not write.
-    let mut builder = AimDbBuilder::new()
-        .runtime(runtime.clone())
-        .with_connector(KnxConnector::new(knx_binder, EmbassyDelay, &gateway_url))
-        .with_connector(
-            SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
-                .security_policy(SecurityPolicy::read_only()),
-        );
+    // The serial server takes no links, so it needs no handle.
+    let mut builder = AimDbBuilder::new().runtime(runtime.clone()).with_connector(
+        SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
+            .security_policy(SecurityPolicy::read_only()),
+    );
+    let knx = builder.connect(KnxConnector::new(knx_binder, EmbassyDelay, &gateway_url));
 
     // ========================================================================
     // TEMPERATURE SENSORS (inbound: KNX → AimDB)
@@ -305,36 +140,30 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::LivingRoom.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Living Room", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Living Room")),
+            );
     });
 
     builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::Bedroom.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Bedroom", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::Bedroom.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Bedroom")),
+            );
     });
 
     builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
-            .link_from(TemperatureKey::Kitchen.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
-                Ok(TemperatureReading::new("Kitchen", celsius))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, TemperatureKey::Kitchen.link_address().unwrap())
+                    .with_deserializer(dpt::temperature_at("Kitchen")),
+            );
     });
 
     // ========================================================================
@@ -346,24 +175,20 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
-            .link_from(LightKey::Main.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
-                Ok(LightState::new("1/0/7", is_on))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, LightKey::Main.link_address().unwrap())
+                    .with_deserializer(dpt::light_state_at("1/0/7")),
+            );
     });
 
     builder.configure::<LightState>(LightKey::Hallway, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
-            .link_from(LightKey::Hallway.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| {
-                let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
-                Ok(LightState::new("1/0/8", is_on))
-            })
-            .finish();
+            .input(
+                InboundLink::on(knx, LightKey::Hallway.link_address().unwrap())
+                    .with_deserializer(dpt::light_state_at("1/0/8")),
+            );
     });
 
     // ========================================================================
@@ -374,14 +199,11 @@ async fn main(spawner: Spawner) {
     builder.configure::<LightControl>(LightControlKey::Control, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
-            .source_with_context(button, button_handler)
-            .link_to(LightControlKey::Control.link_address().unwrap())
-            .with_serializer(|_ctx, state: &LightControl| {
-                let mut buf = [0u8; 1];
-                let len = Dpt1::Switch.encode(state.is_on, &mut buf).unwrap_or(0);
-                Ok(buf[..len].to_vec())
-            })
-            .finish();
+            .input(PushButton::on(b1))
+            .output(
+                OutboundLink::on(knx, LightControlKey::Control.link_address().unwrap())
+                    .with_serializer(dpt::switch),
+            );
     });
 
     info!("✅ Database configured:");

@@ -43,7 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts, `publish(mqtt, "sensors/temp")` / `subscribe(..)` bring the
   contract's own codec (#391). The MQTT demos use them, with inputs built
   `From<Event>` on owned device channels, and the usage guide documents
-  these conventions.
+  these conventions. The KNX demos link through `connect` handles with
+  shared DPT codecs and take their toggle as an input.
   ([aimdb-core](aimdb-core/CHANGELOG.md),
   [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md),
   [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))

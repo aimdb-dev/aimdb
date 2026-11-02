@@ -29,16 +29,21 @@ Edit `src/main.rs` to match your KNX setup:
 ```rust
 // The adapter owns the UDP socket and the clock; the connector owns the
 // tunnelling protocol. Only the gateway URL needs changing.
-.with_connector(KnxConnector::new(
+let knx = builder.connect(KnxConnector::new(
     TokioNet::udp(Ipv4Addr::UNSPECIFIED),
     TokioDelay,
     "knx://YOUR_GATEWAY_IP:3671",  // Change to your gateway IP
-))
+));
+```
 
-// Group addresses
-.link_from("knx://1/0/7")   // Inbound: light switch
-.link_to("knx://1/0/6")     // Outbound: light control
-.link_from("knx://1/1/10")  // Inbound: temperature sensor
+Group addresses live in the record keys (`#[link_address = "knx://1/0/7"]` in
+`knx-connector-demo-common`); records link through the handle:
+
+```rust
+.input(InboundLink::on(knx, LightKey::Main.link_address().unwrap())        // Inbound: light switch
+    .with_deserializer(dpt::light_state_at("1/0/7")))
+.output(OutboundLink::on(knx, LightControlKey::Control.link_address().unwrap()) // Outbound: light control
+    .with_serializer(dpt::switch))
 ```
 
 ### Finding Your Group Addresses
@@ -185,7 +190,7 @@ For more DPT types, see the [KNX DPT specification](https://www.knx.org/).
 │  │   Record    │           │   Record    │            │
 │  └──────┬──────┘           └──────┬──────┘            │
 │         │                         │                    │
-│         │ link_to/link_from      │ link_from          │
+│         │ .input / .output       │ .input             │
 │         ▼                         ▼                    │
 │  ┌──────────────────────────────────────┐             │
 │  │      KNX Connector (Tokio)           │             │

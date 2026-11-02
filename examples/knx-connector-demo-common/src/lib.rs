@@ -9,39 +9,37 @@
 //!
 //! This crate demonstrates AimDB's core strength: **write once, run anywhere**.
 //!
-//! The same monitor functions, data types, and business logic work across all
-//! platforms by being generic over the `RuntimeAdapter` trait. Only the
-//! platform-specific initialization (hardware setup, network stack) differs.
+//! Everything here is runtime-agnostic: the records ([`types`]), the record
+//! keys and their group addresses ([`keys`]), the DPT (de)serializers
+//! ([`dpt`]) and the monitors ([`monitors`]). A demo adds only its platform
+//! setup, its inputs and the record wiring:
 //!
-//! # Example Usage
+//! ```rust,ignore
+//! let knx = builder.connect(KnxConnector::new(..));
 //!
-//! ```ignore
-//! use knx_demo_common::{TemperatureReading, LightState, temperature_monitor, light_monitor};
-//!
-//! // Same code works with TokioAdapter or EmbassyAdapter
-//! builder.configure::<TemperatureReading>("temp.livingroom", |reg| {
-//!     reg.buffer(...)
-//!        .tap(temperature_monitor("Living Room", "🏠"))
-//!        .link_from("knx://9/1/0")
-//!        .with_deserializer(TemperatureReading::from_dpt9)
-//!        .finish();
+//! builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+//!     reg.buffer(BufferCfg::SingleLatest)
+//!         .tap(temperature_monitor)
+//!         .input(
+//!             InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
+//!                 .with_deserializer(dpt::temperature_at("Living Room")),
+//!         );
 //! });
 //! ```
+//!
+//! A toggle input (a key, a push button) yields [`ButtonEvent`]s;
+//! [`LightControl`] is built from them with `From`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
+pub mod dpt;
+pub mod keys;
 pub mod monitors;
 pub mod types;
 
-#[cfg(feature = "derive")]
-pub mod keys;
-
 // Re-export main types
-pub use monitors::{light_monitor, temperature_monitor};
-pub use types::{LightControl, LightState, TemperatureReading};
-
-// Re-export keys when derive feature is enabled
-#[cfg(feature = "derive")]
 pub use keys::{LightControlKey, LightKey, TemperatureKey};
+pub use monitors::{light_monitor, temperature_monitor};
+pub use types::{ButtonEvent, LightControl, LightState, TemperatureReading};

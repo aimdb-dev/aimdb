@@ -6,7 +6,6 @@ extern crate alloc;
 
 use alloc::string::String;
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -17,8 +16,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Uses DPT 9.001 (2-byte floating point) for temperature values.
 /// The location field identifies which sensor this reading came from.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TemperatureReading {
     /// Sensor location identifier (e.g., "Living Room", "Kitchen")
     pub location: String,
@@ -51,8 +49,7 @@ impl TemperatureReading {
 /// Light switch state received from KNX bus
 ///
 /// Uses DPT 1.001 (1-bit boolean) for switch state.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LightState {
     /// KNX group address this state came from (e.g., "1/0/7")
     pub group_address: String,
@@ -82,8 +79,7 @@ impl LightState {
 /// Light control command to send to KNX bus
 ///
 /// Uses DPT 1.001 (1-bit boolean) for switch command.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LightControl {
     /// Target KNX group address (e.g., "1/0/6")
     pub group_address: String,
@@ -107,6 +103,26 @@ impl LightControl {
 }
 
 // ============================================================================
+// BUTTON EVENT
+// ============================================================================
+
+/// What a push button yields: one press. An input's event, not a record;
+/// [`LightControl`] is built from it with `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ButtonEvent {
+    /// Presses since start, counting from 1.
+    pub press: u32,
+}
+
+/// Each press toggles the light on group address 1/0/6: odd presses switch
+/// it on, even ones off.
+impl From<ButtonEvent> for LightControl {
+    fn from(event: ButtonEvent) -> Self {
+        LightControl::new(addresses::LIGHT_CONTROL, event.press % 2 == 1)
+    }
+}
+
+// ============================================================================
 // KNX GROUP ADDRESS CONSTANTS
 // ============================================================================
 
@@ -123,4 +139,18 @@ pub mod addresses {
 
     // Light control (DPT 1.001)
     pub const LIGHT_CONTROL: &str = "1/0/6";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn button_presses_toggle_the_light() {
+        let control = |press| LightControl::from(ButtonEvent { press });
+        assert!(control(1).is_on);
+        assert!(!control(2).is_on);
+        assert!(control(3).is_on);
+        assert_eq!(control(1).group_address, addresses::LIGHT_CONTROL);
+    }
 }
