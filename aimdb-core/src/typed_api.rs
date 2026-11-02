@@ -757,6 +757,15 @@ where
 /// input may call `.source()`, `.link_from()`, `.buffer()` or anything else a
 /// `configure` closure can; inputs are expected to only add a writer.
 ///
+/// Two conventions make wiring mistakes compile errors:
+///
+/// - **An input yields an event, and records are built with `From`.** A
+///   device input implements `Input<T>` for every `T: From<Event>`, so one
+///   input type serves every contract that can be built from its event.
+/// - **A device channel is an owned value that is not `Clone`.** A board
+///   hands out its channels once, and an input takes one by value, so wiring
+///   one device into two records is `use of moved value`.
+///
 /// ```
 /// use aimdb_core::{Input, RecordRegistrar};
 /// use core::fmt::Debug;
@@ -775,6 +784,45 @@ where
 ///             }
 ///         });
 ///     }
+/// }
+/// ```
+///
+/// A channel used for a second record does not compile:
+///
+/// ```compile_fail,E0382
+/// # use aimdb_core::{Input, RecordRegistrar};
+/// # use core::fmt::Debug;
+/// /// A device channel, handed out once by the board. Not `Clone`.
+/// struct Channel;
+///
+/// /// An input on one channel.
+/// struct Sensor(Channel);
+///
+/// impl<T> Input<T> for Sensor
+/// where
+///     T: From<u8> + Send + Sync + 'static + Debug + Clone,
+/// {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///         reg.source(|_ctx, producer| async move { producer.produce(T::from(0)) });
+///     }
+/// }
+///
+/// #[derive(Clone, Debug)]
+/// struct Level(u8);
+///
+/// impl From<u8> for Level {
+///     fn from(raw: u8) -> Self {
+///         Level(raw)
+///     }
+/// }
+///
+/// fn wire(
+///     first: &mut RecordRegistrar<'_, Level>,
+///     second: &mut RecordRegistrar<'_, Level>,
+///     channel: Channel,
+/// ) {
+///     first.input(Sensor(channel));
+///     second.input(Sensor(channel)); // use of moved value: `channel`
 /// }
 /// ```
 #[diagnostic::on_unimplemented(
