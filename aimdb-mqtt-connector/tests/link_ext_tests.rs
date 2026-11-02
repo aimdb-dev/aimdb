@@ -7,7 +7,7 @@
 #![cfg(feature = "std")]
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::{AimDbBuilder, InboundDispatch, OutboundRoutes};
+use aimdb_core::{AimDbBuilder, InboundDispatch, InboundLink, OutboundLink, OutboundRoutes};
 use aimdb_data_contracts::{link_codecs, LinkCodec, LinkCodecBuilderExt};
 use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
@@ -130,4 +130,71 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
         reader.try_recv().expect("Postcard ingest").value.value,
         17.5
     );
+}
+
+/// The knobs and the codec verb work on detached links too, and push the
+/// same config as on `link_to` / `link_from`.
+#[tokio::test]
+async fn detached_links_take_the_same_knobs() {
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
+        MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-detached"),
+    );
+
+    builder.configure::<Reading>("test.reading.attached", |reg| {
+        reg.buffer(BufferCfg::SingleLatest);
+        reg.link_to("mqtt://sensors/attached")
+            .with_link_codec(link_codecs::Postcard::<64>)
+            .with_qos(2)
+            .with_retain(true)
+            .finish();
+        reg.link_from("mqtt://commands/attached")
+            .with_link_codec(link_codecs::Postcard::<64>)
+            .with_qos(0)
+            .finish();
+    });
+    builder.configure::<Reading>("test.reading.detached", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .output(
+                OutboundLink::new("mqtt://sensors/detached")
+                    .with_link_codec(link_codecs::Postcard::<64>)
+                    .with_qos(2)
+                    .with_retain(true),
+            )
+            .input(
+                InboundLink::new("mqtt://commands/detached")
+                    .with_link_codec(link_codecs::Postcard::<64>)
+                    .with_qos(0),
+            );
+    });
+
+    let (db, _runner) = builder.build().await.expect("build must succeed");
+
+    let record = |key: &str| {
+        let id = db.inner().resolve_str(key).unwrap();
+        db.inner().storage(id).unwrap()
+    };
+    let (attached, detached) = (
+        record("test.reading.attached"),
+        record("test.reading.detached"),
+    );
+    assert_eq!(
+        attached.outbound_connectors()[0].config,
+        detached.outbound_connectors()[0].config
+    );
+    assert_eq!(
+        attached.inbound_connectors()[0].config,
+        detached.inbound_connectors()[0].config
+    );
+    let out = &detached.outbound_connectors()[0].config;
+    assert!(out.contains(&("qos".to_string(), "2".to_string())));
+    assert!(out.contains(&("retain".to_string(), "true".to_string())));
+
+    let outbound = OutboundRoutes::new(&db, "mqtt").expect("outbound routes");
+    let payload_capacities: Vec<usize> = outbound
+        .routes()
+        .iter()
+        .map(|r| r.payload_capacity)
+        .collect();
+    assert_eq!(payload_capacities, [64, 64], "both take the bounded path");
 }

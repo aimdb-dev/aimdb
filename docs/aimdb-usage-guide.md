@@ -464,6 +464,39 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
 See [AimDB and ROS 2](aimdb-and-ros2.md) for message types, domains, QoS and
 the gateway pattern.
 
+### Links as values
+
+`link_to` / `link_from` build a link on the record being configured.
+`OutboundLink::new` / `InboundLink::new` build the same link as a value,
+before any record exists; `reg.output(..)` / `reg.input(..)` register it:
+
+```rust
+use aimdb_core::{InboundLink, OutboundLink};
+use aimdb_data_contracts::{link_codecs::Json, LinkCodecBuilderExt};
+use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
+
+let command = InboundLink::new("mqtt://cell4/setpoint/set").with_link_codec(Json).with_qos(1);
+let report = OutboundLink::new("mqtt://cell4/setpoint")
+    .with_link_codec(Json)
+    .with_qos(1)
+    .with_retain(true);
+
+builder.configure::<Setpoint>("cell4.setpoint", |reg| {
+    reg.buffer(BufferCfg::SingleLatest).input(command).output(report);
+});
+```
+
+Every option and connector extension works on both forms, and both are
+checked the same way when registered: mistakes (bad URL, missing codec,
+unregistered scheme) are reported together by `build()`. Several inbound
+links on one record are allowed; an inbound link together with a `.source()`
+or `.transform()` is a `build()` error. A link that is neither registered nor
+`.finish()`ed is a `must_use` warning.
+
+`reg.input(..)` / `reg.output(..)` take anything implementing
+`Input<T>` / `Output<T>`, so a device driver can provide its own input; a link
+for the wrong record type or direction does not compile.
+
 ---
 
 ## Write Timestamps

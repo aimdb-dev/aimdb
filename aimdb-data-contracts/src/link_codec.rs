@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use aimdb_core::connector::{SerializeError, WIRE_FORMAT_KEY};
-use aimdb_core::typed_api::{InboundConnectorBuilder, OutboundConnectorBuilder};
+use aimdb_core::typed_api::{InboundLinkBuilder, OutboundLinkBuilder};
 
 /// The encoding a [`Linkable`](crate::Linkable) or [`LinkCodec`] speaks.
 ///
@@ -260,7 +260,7 @@ where
         C: LinkCodec<T>;
 }
 
-impl<'r, 'a, T> LinkCodecBuilderExt<T> for OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> LinkCodecBuilderExt<T> for OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + Clone + Debug + 'static,
 {
@@ -288,7 +288,7 @@ where
     }
 }
 
-impl<'r, 'a, T> LinkCodecBuilderExt<T> for InboundConnectorBuilder<'r, 'a, T>
+impl<T, R> LinkCodecBuilderExt<T> for InboundLinkBuilder<T, R>
 where
     T: Send + Sync + Clone + Debug + 'static,
 {
@@ -860,6 +860,56 @@ mod tests {
                 .map(|(topic, format, n)| (topic.as_str(), *format, *n))
                 .collect();
             assert_eq!(actual, expected);
+        });
+    }
+
+    /// `with_link_codec` on detached links: the same codec and wire format
+    /// as on `link_to` / `link_from`.
+    #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
+    #[test]
+    fn codec_verb_applies_to_detached_links() {
+        use super::WireFormat;
+        use aimdb_core::{InboundLink, OutboundLink};
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new()
+                .runtime(Arc::new(NoopRuntimeOps))
+                .with_connector(NoopConnector);
+            builder.configure::<Reading>("reading.out", |registrar| {
+                registrar
+                    .buffer_raw(Box::new(CannedBuffer { value: reading }))
+                    .output(
+                        OutboundLink::new("test://postcard")
+                            .with_link_codec(link_codecs::Postcard::<64>),
+                    );
+            });
+            builder.configure::<Reading>("reading.in", |registrar| {
+                registrar
+                    .buffer_raw(Box::new(CapturingBuffer {
+                        latest: Arc::new(std::sync::Mutex::new(None)),
+                    }))
+                    .input(InboundLink::new("test://json-in").with_link_codec(link_codecs::Json));
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let outbound = OutboundRoutes::new(&db, "test").expect("outbound routes");
+            let route = &outbound.routes()[0];
+            assert_eq!(
+                WireFormat::recorded_in(&route.config.protocol_options),
+                WireFormat::Postcard
+            );
+            assert_eq!(route.payload_capacity, 64, "bounded codec path");
+
+            let inbound = InboundDispatch::new(&db, "test", &aimdb_core::ExactGrammar)
+                .expect("inbound routes");
+            assert_eq!(
+                WireFormat::recorded_in(&inbound.routes()[0].config.protocol_options),
+                WireFormat::Json
+            );
         });
     }
 

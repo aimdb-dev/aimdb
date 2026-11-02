@@ -10,7 +10,7 @@
 
 use std::string::ToString;
 
-use aimdb_core::{InboundConnectorBuilder, OutboundConnectorBuilder};
+use aimdb_core::{InboundLinkBuilder, OutboundLinkBuilder};
 use core::fmt::Debug;
 
 use crate::ros2::{DEPTH_KEY, RELIABILITY_KEY};
@@ -27,7 +27,7 @@ pub trait Ros2LinkExt: Sized {
     fn with_reliability(self, reliability: Reliability) -> Self;
 }
 
-impl<'r, 'a, T> Ros2LinkExt for OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> Ros2LinkExt for OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -40,7 +40,7 @@ where
     }
 }
 
-impl<'r, 'a, T> Ros2LinkExt for InboundConnectorBuilder<'r, 'a, T>
+impl<T, R> Ros2LinkExt for InboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
