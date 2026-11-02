@@ -15,18 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{status, value, ts}`. A value frame without `ts` is malformed; 3.x peers
   are refused at `hello`. `session::aimx::value_reply` builds the `get` reply.
 
-### Changed
-
-- **Link builders are generic over what they are attached to (#389,
-  design 059).** `OutboundLinkBuilder<T, R>` / `InboundLinkBuilder<T, R>`
-  carry the option methods; `OutboundConnectorBuilder` /
-  `InboundConnectorBuilder` stay as aliases for the attached form, so
-  `link_to(..)…finish()` and existing extension impls keep compiling. The
-  detached form `OutboundLink<T>` / `InboundLink<T>` (`Detached` marker) is
-  built with `new(url)`. Validation moved into the registrar, unchanged.
-  Both builders are `#[must_use]`: a link whose `.finish()` is missing now
-  warns (an error under `-D warnings`) instead of being dropped silently.
-
 ### Added
 
 - **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
