@@ -8,7 +8,9 @@
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::{AimDbBuilder, InboundDispatch, InboundLink, OutboundLink, OutboundRoutes};
-use aimdb_data_contracts::{link_codecs, LinkCodec, LinkCodecBuilderExt};
+use aimdb_data_contracts::{
+    link_codecs, publish, subscribe, LinkCodec, LinkCodecBuilderExt, Linkable, SchemaType,
+};
 use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,23 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Reading {
     value: f32,
+}
+
+impl SchemaType for Reading {
+    const NAME: &'static str = "test.reading";
+}
+
+impl Linkable for Reading {
+    fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        let bytes = data.try_into().map_err(|_| "need 4 bytes".to_string())?;
+        Ok(Reading {
+            value: f32::from_le_bytes(bytes),
+        })
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        Ok(self.value.to_le_bytes().to_vec())
+    }
 }
 
 #[tokio::test]
@@ -197,4 +216,39 @@ async fn detached_links_take_the_same_knobs() {
         .map(|r| r.payload_capacity)
         .collect();
     assert_eq!(payload_capacities, [64, 64], "both take the bounded path");
+}
+
+/// `publish` / `subscribe` take the MQTT knobs like any other link.
+#[tokio::test]
+async fn publish_and_subscribe_take_the_knobs() {
+    let runtime = Arc::new(TokioAdapter::new().unwrap());
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+    let mqtt = builder
+        .connect(MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-publish"));
+
+    builder.configure::<Reading>("test.reading.contract", move |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .output(
+                publish(mqtt, "sensors/contract")
+                    .with_qos(2)
+                    .with_retain(true),
+            )
+            .input(subscribe(mqtt, "commands/contract").with_qos(0));
+    });
+
+    let (db, _runner) = builder.build().await.expect("build must succeed");
+
+    let id = db.inner().resolve_str("test.reading.contract").unwrap();
+    let record = db.inner().storage(id).unwrap();
+    let out = &record.outbound_connectors()[0];
+    assert_eq!(out.url.to_string(), "mqtt://sensors/contract");
+    assert!(out.config.contains(&("qos".to_string(), "2".to_string())));
+    assert!(out
+        .config
+        .contains(&("retain".to_string(), "true".to_string())));
+    let inbound = &record.inbound_connectors()[0];
+    assert_eq!(inbound.url.to_string(), "mqtt://commands/contract");
+    assert!(inbound
+        .config
+        .contains(&("qos".to_string(), "0".to_string())));
 }

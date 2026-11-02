@@ -862,6 +862,7 @@ pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
+    schema: Option<(String, u32)>,
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
@@ -893,6 +894,7 @@ where
             at: Detached,
             url: url.to_string(),
             connector: None,
+            schema: None,
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
@@ -905,6 +907,7 @@ where
             at,
             url: self.url,
             connector: self.connector,
+            schema: self.schema,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
@@ -922,12 +925,25 @@ where
             at: Detached,
             url: self.url,
             connector: self.connector,
+            schema: self.schema,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
             topic_writer: self.topic_writer,
         };
         (self.at, link)
+    }
+
+    /// Reports `name` / `version` as the record's data-contract schema when
+    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    ///
+    /// Reported even if the link itself is rejected, like a `schema()` call
+    /// before it. A different schema on the same record fails `build()`.
+    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
+    /// contract type.
+    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+        self.schema = Some((name.to_string(), version));
+        self
     }
 
     /// Adds a configuration option to the connector
@@ -1170,6 +1186,7 @@ pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
+    schema: Option<(String, u32)>,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
@@ -1202,6 +1219,7 @@ where
             at: Detached,
             url: url.to_string(),
             connector: None,
+            schema: None,
             config: Vec::new(),
             context_deserializer: None,
             match_deserializer: None,
@@ -1215,6 +1233,7 @@ where
             at,
             url: self.url,
             connector: self.connector,
+            schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1233,6 +1252,7 @@ where
             at: Detached,
             url: self.url,
             connector: self.connector,
+            schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1240,6 +1260,18 @@ where
             topic_resolver: self.topic_resolver,
         };
         (self.at, link)
+    }
+
+    /// Reports `name` / `version` as the record's data-contract schema when
+    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    ///
+    /// Reported even if the link itself is rejected, like a `schema()` call
+    /// before it. A different schema on the same record fails `build()`.
+    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
+    /// contract type.
+    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+        self.schema = Some((name.to_string(), version));
+        self
     }
 
     /// Adds a configuration option to the connector
@@ -1365,6 +1397,10 @@ where
     fn push_outbound(&mut self, mut link: OutboundLink<T>) {
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
+
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
 
         let record_key = self.record_key.clone();
 
@@ -1529,6 +1565,9 @@ where
 
     /// Validates and registers an inbound link, or records why not.
     fn push_inbound(&mut self, mut link: InboundLink<T>) {
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
         match self.inbound_link(&mut link) {
             Ok(inbound) => self.rec.add_inbound_connector(inbound),
             Err(message) => {
@@ -2331,6 +2370,61 @@ mod tests {
                     && e.message == "Connector handle belongs to a different AimDbBuilder"));
             }
         }
+    }
+
+    /// `with_schema` reports the record's schema on registration, in both
+    /// directions and on both forms, even when the link is rejected; a second
+    /// schema conflicts as with `reg.schema(..)`.
+    #[test]
+    fn with_schema_reports_the_record_schema() {
+        let schema_of = |rec: &crate::typed_record::TypedRecord<TestRecord>| {
+            rec.schema().map(|s| (s.name.clone(), s.version))
+        };
+        let expected = Some(("contract".to_string(), 2));
+
+        let mut detached = registered(|reg| {
+            reg.output(
+                OutboundLink::new("mqtt://out")
+                    .with_serializer(ser)
+                    .with_schema("contract", 2),
+            )
+            .input(
+                InboundLink::new("mqtt://in")
+                    .with_deserializer(de)
+                    .with_schema("contract", 2),
+            );
+        });
+        assert_eq!(schema_of(&detached), expected);
+        assert_eq!(detached.outbound_connectors().len(), 1);
+        assert!(drain_errors(&mut detached).is_empty());
+
+        let mut attached = registered(|reg| {
+            reg.link_from("mqtt://in")
+                .with_deserializer(de)
+                .with_schema("contract", 2)
+                .finish();
+        });
+        assert_eq!(schema_of(&attached), expected);
+        assert!(drain_errors(&mut attached).is_empty());
+
+        // Rejected (no serializer), yet the schema is reported.
+        let mut rejected = registered(|reg| {
+            reg.output(OutboundLink::new("mqtt://out").with_schema("contract", 2));
+        });
+        assert_eq!(schema_of(&rejected), expected);
+        assert!(rejected.outbound_connectors().is_empty());
+        assert_eq!(drain_errors(&mut rejected).len(), 1);
+
+        let mut conflicting = registered(|reg| {
+            reg.schema("contract", 1).output(
+                OutboundLink::new("mqtt://out")
+                    .with_serializer(ser)
+                    .with_schema("contract", 2),
+            );
+        });
+        let errors = drain_errors(&mut conflicting);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("already carries contract v1"));
     }
 
     /// A connector registered with `connect` serves links exactly like one
