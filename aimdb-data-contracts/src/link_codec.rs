@@ -863,6 +863,65 @@ mod tests {
         });
     }
 
+    /// `publish` / `subscribe` register what `linked_to` / `linked_from` do:
+    /// the same links, config and schema, from a bare address or a full URL.
+    #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]
+    #[test]
+    fn publish_and_subscribe_register_like_the_linked_verbs() {
+        use crate::{publish, subscribe, LinkableRegistrarExt};
+
+        futures::executor::block_on(async {
+            let reading = Reading {
+                value: 1.0,
+                sequence: 1,
+            };
+            let mut builder = AimDbBuilder::new().runtime(Arc::new(NoopRuntimeOps));
+            let test = builder.connect(NoopConnector);
+            let linked_reading = reading.clone();
+            builder.configure::<Reading>("linked", move |registrar| {
+                registrar.buffer_raw(Box::new(CannedBuffer {
+                    value: linked_reading,
+                }));
+                registrar.linked_to("test://out").linked_from("test://in");
+            });
+            builder.configure::<Reading>("handle", move |registrar| {
+                registrar
+                    .buffer_raw(Box::new(CannedBuffer { value: reading }))
+                    .output(publish(test, "out"))
+                    // A full URL, as a `#[link_address]` key gives.
+                    .input(subscribe(test, "test://in"));
+            });
+            let (db, _runner) = builder.build().await.expect("build");
+
+            let record = |key: &str| {
+                let id = db.inner().resolve_str(key).unwrap();
+                db.inner().storage(id).unwrap()
+            };
+            let (linked, handle) = (record("linked"), record("handle"));
+            let urls = |r: &dyn aimdb_core::AnyRecord| {
+                (
+                    r.outbound_connectors()[0].url.to_string(),
+                    r.inbound_connectors()[0].url.to_string(),
+                )
+            };
+            assert_eq!(urls(linked), urls(handle));
+            assert_eq!(
+                linked.outbound_connectors()[0].config,
+                handle.outbound_connectors()[0].config
+            );
+            assert_eq!(
+                linked.inbound_connectors()[0].config,
+                handle.inbound_connectors()[0].config
+            );
+
+            let graph = db.inner().dependency_graph();
+            let schema = |key: &str| graph.node(key).unwrap().schema.clone();
+            assert_eq!(schema("linked"), schema("handle"));
+            let schema = schema("handle").expect("publish/subscribe report the schema");
+            assert_eq!((schema.name.as_str(), schema.version), (Reading::NAME, 1));
+        });
+    }
+
     /// `with_link_codec` on detached links: the same codec and wire format
     /// as on `link_to` / `link_from`.
     #[cfg(all(feature = "linkable-json", feature = "linkable-postcard"))]

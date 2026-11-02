@@ -89,7 +89,7 @@ mod linkable;
 pub use link_codec::{link_codecs, LinkCodec, LinkCodecBuilderExt, WireFormat};
 
 #[cfg(feature = "linkable")]
-pub use linkable::{LinkCodecRegistrarExt, LinkableRegistrarExt};
+pub use linkable::{publish, subscribe, LinkCodecRegistrarExt, LinkableRegistrarExt};
 
 /// JSON `#[derive(Linkable)]` (feature `linkable-json`) — see [`Linkable`] and
 /// `aimdb_derive::Linkable`'s docs.
@@ -249,10 +249,10 @@ pub trait Observable: SchemaType {
 
 /// Types that can be serialized/deserialized for connector links.
 ///
-/// Implement this trait, then call
-/// [`LinkableRegistrarExt::linked_from`] /
-/// [`linked_to`](linkable::LinkableRegistrarExt::linked_to) to wire `link_from`
-/// / `link_to` in AimDB connectors (MQTT, KNX, etc.) with the codec defaulted to
+/// Implement this trait, then link records with [`publish`] / [`subscribe`]
+/// on a connector handle, or with [`LinkableRegistrarExt::linked_from`] /
+/// [`linked_to`](linkable::LinkableRegistrarExt::linked_to) from a full URL,
+/// in AimDB connectors (MQTT, KNX, etc.) with the codec defaulted to
 /// `from_bytes`/`to_bytes`. This provides the wire format for transporting
 /// schema types across network boundaries.
 ///
@@ -268,16 +268,21 @@ pub trait Observable: SchemaType {
 /// Not compiled: the snippet needs `aimdb-core`'s builder types in scope.
 ///
 /// ```rust,ignore
-/// use aimdb_data_contracts::{Linkable, LinkableRegistrarExt};
+/// use aimdb_data_contracts::subscribe;
 /// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
-/// // In connector configuration:
+/// let mqtt = builder.connect(MqttConnector::new(broker_url));
 /// builder.configure::<Temperature>(NODE_ID, |reg| {
-///     reg.buffer(BufferCfg::SingleLatest);
-///     reg.linked_from("mqtt://sensors/temperature");
+///     reg.buffer(BufferCfg::SingleLatest)
+///         .input(subscribe(mqtt, "sensors/temperature"));
 /// });
 /// ```
 #[cfg(feature = "linkable")]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a `Linkable` contract",
+    label = "`{Self}` has no wire format",
+    note = "`publish`, `subscribe` and the `linked_*` verbs encode with the record's own codec: derive or implement `Linkable` for `{Self}`"
+)]
 pub trait Linkable: SchemaType + Sized {
     /// Preferred reusable scratch capacity for [`encode_into`](Self::encode_into).
     ///
