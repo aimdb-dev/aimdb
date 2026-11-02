@@ -88,9 +88,9 @@ impl std::error::Error for SerializeError {}
 
 /// Writes an outbound link's destination for each value (outbound only).
 ///
-/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundConnectorBuilder::with_topic_fn)
+/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundLinkBuilder::with_topic_fn)
 /// takes one directly. A writer type goes to
-/// [`with_topic_writer`](crate::typed_api::OutboundConnectorBuilder::with_topic_writer).
+/// [`with_topic_writer`](crate::typed_api::OutboundLinkBuilder::with_topic_writer).
 ///
 /// # Example
 ///
@@ -451,7 +451,7 @@ impl ConnectorLink {
 
 /// Fused inbound ingest callback: deserialize + produce in one typed closure
 ///
-/// Built where the record type `T` is known (`InboundConnectorBuilder::finish`),
+/// Built where the record type `T` is known (`RecordRegistrar::push_inbound`),
 /// so no `Box<dyn Any>` crosses the connector boundary per message. The closure
 /// captures the typed producer and deserializer; callers only see bytes.
 ///

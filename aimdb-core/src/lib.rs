@@ -146,7 +146,8 @@ pub use builder::{AimDb, AimDbBuilder};
 pub use connector::ConnectorBuilder;
 pub use transport::{ConnectorConfig, PublishError};
 pub use typed_api::{
-    Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
+    Consumer, Detached, InboundConnectorBuilder, InboundLink, InboundLinkBuilder,
+    OutboundConnectorBuilder, OutboundLink, OutboundLinkBuilder, Producer, RecordRegistrar,
     StageKind,
 };
 #[cfg(feature = "remote")]
