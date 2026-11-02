@@ -143,10 +143,11 @@ pub use buffer::JsonReader;
 pub use buffer::Reader;
 pub use buffer::TryProduceError;
 pub use builder::{AimDb, AimDbBuilder};
-pub use connector::ConnectorBuilder;
+pub use connector::{ConnectorBuilder, ConnectorHandle};
 pub use transport::{ConnectorConfig, PublishError};
 pub use typed_api::{
-    Consumer, InboundConnectorBuilder, OutboundConnectorBuilder, Producer, RecordRegistrar,
+    Consumer, Detached, InboundConnectorBuilder, InboundLink, InboundLinkBuilder, Input,
+    OutboundConnectorBuilder, OutboundLink, OutboundLinkBuilder, Output, Producer, RecordRegistrar,
     StageKind,
 };
 #[cfg(feature = "remote")]

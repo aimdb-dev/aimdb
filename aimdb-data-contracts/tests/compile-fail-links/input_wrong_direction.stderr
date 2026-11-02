@@ -1,0 +1,22 @@
+error[E0277]: `OutboundLinkBuilder<Temp, Detached>` cannot be the input of a `Temp` record
+ --> tests/compile-fail-links/input_wrong_direction.rs:7:15
+  |
+7 |     reg.input(OutboundLink::<Temp>::new("mqtt://out"));
+  |         ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not an input for `Temp`
+  |         |
+  |         required by a bound introduced by this call
+  |
+  = help: the trait `aimdb_core::Input<Temp>` is not implemented for `OutboundLinkBuilder<Temp, Detached>`
+  = note: an input implements `Input<Temp>`; device inputs usually do so for every `T: From<Event>`
+help: the trait `aimdb_core::Input<T>` is implemented for `InboundLinkBuilder<T, Detached>`
+ --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  |
+  | / impl<T> Input<T> for InboundLink<T>
+  | | where
+  | |     T: Send + Sync + 'static + Debug + Clone,
+  | |_____________________________________________^
+note: required by a bound in `RecordRegistrar::<'a, T>::input`
+ --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  |
+  |     pub fn input(&mut self, input: impl Input<T>) -> &mut Self {
+  |                                         ^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T>::input`

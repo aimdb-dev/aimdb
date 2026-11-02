@@ -1,0 +1,22 @@
+error[E0277]: `OutboundLinkBuilder<Temp, Detached>` cannot be an output of a `Other` record
+  --> tests/compile-fail-links/output_wrong_record.rs:10:16
+   |
+10 |     reg.output(OutboundLink::<Temp>::new("mqtt://out"));
+   |         ------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not an output for `Other`
+   |         |
+   |         required by a bound introduced by this call
+   |
+help: the trait `Output<Other>` is not implemented for `OutboundLinkBuilder<Temp, Detached>`
+      but trait `Output<Temp>` is implemented for it
+  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+   |
+   | / impl<T> Output<T> for OutboundLink<T>
+   | | where
+   | |     T: Send + Sync + 'static + Debug + Clone,
+   | |_____________________________________________^
+   = help: for that trait implementation, expected `Temp`, found `Other`
+note: required by a bound in `RecordRegistrar::<'a, T>::output`
+  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+   |
+   |     pub fn output(&mut self, output: impl Output<T>) -> &mut Self {
+   |                                           ^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T>::output`

@@ -1,16 +1,16 @@
 //! Shared Data Types for MQTT Demo
 //!
-//! These types work in both `std` and `no_std` environments using `alloc::string::String`.
+//! The demo's contracts. They work in both `std` and `no_std` environments
+//! using `alloc::string::String`, and their wire format is JSON through
+//! `#[derive(Linkable)]` on every target, so `publish` / `subscribe` and
+//! remote access use the same encoding on Tokio and Embassy.
 
 extern crate alloc;
 
 use alloc::string::String;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "data-contracts")]
 use aimdb_data_contracts::{Linkable, SchemaType};
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // TEMPERATURE READING
@@ -19,9 +19,7 @@ use aimdb_data_contracts::{Linkable, SchemaType};
 /// Temperature reading from a sensor
 ///
 /// Represents a temperature measurement that can be published to MQTT.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "data-contracts", derive(Linkable))]
+#[derive(Clone, Debug, Serialize, Deserialize, Linkable)]
 pub struct Temperature {
     /// Sensor identifier (e.g., "indoor-001", "outdoor-001")
     pub sensor_id: String,
@@ -29,7 +27,6 @@ pub struct Temperature {
     pub celsius: f32,
 }
 
-#[cfg(feature = "data-contracts")]
 impl SchemaType for Temperature {
     const NAME: &'static str = "mqtt_demo.temperature";
 }
@@ -55,32 +52,6 @@ impl Temperature {
             "📊"
         }
     }
-
-    /// Serialize to JSON format (works on both std and no_std)
-    pub fn to_json_vec(&self) -> alloc::vec::Vec<u8> {
-        #[cfg(feature = "std")]
-        {
-            serde_json::to_vec(self).unwrap_or_default()
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            use alloc::format;
-            // Manual float formatting with 1 decimal place for no_std
-            // This produces identical JSON to the serde path for interop
-            let whole = self.celsius as i32;
-            let frac = ((self.celsius - whole as f32).abs() * 10.0 + 0.5) as i32 % 10;
-            let sign = if self.celsius < 0.0 && whole == 0 {
-                "-"
-            } else {
-                ""
-            };
-            format!(
-                r#"{{"sensor_id":"{}","celsius":{}{}.{}}}"#,
-                self.sensor_id, sign, whole, frac
-            )
-            .into_bytes()
-        }
-    }
 }
 
 // ============================================================================
@@ -88,9 +59,7 @@ impl Temperature {
 // ============================================================================
 
 /// Command for controlling temperature sensors (inbound from MQTT)
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "data-contracts", derive(Linkable))]
+#[derive(Clone, Debug, Serialize, Deserialize, Linkable)]
 pub struct TemperatureCommand {
     /// Action to perform (e.g., "read", "calibrate", "reset")
     pub action: String,
@@ -98,7 +67,6 @@ pub struct TemperatureCommand {
     pub sensor_id: String,
 }
 
-#[cfg(feature = "data-contracts")]
 impl SchemaType for TemperatureCommand {
     const NAME: &'static str = "mqtt_demo.temperature_command";
 }
@@ -111,51 +79,40 @@ impl TemperatureCommand {
             sensor_id: sensor_id.into(),
         }
     }
+}
 
-    /// Parse from JSON bytes (works on both std and no_std)
-    pub fn from_json(data: &[u8]) -> Result<Self, alloc::string::String> {
-        #[cfg(feature = "std")]
-        {
-            serde_json::from_slice(data)
-                .map_err(|e| alloc::format!("Failed to deserialize command: {}", e))
+// ============================================================================
+// BUTTON PRESS
+// ============================================================================
+
+/// What a push button yields: one press. A driver's event, not a contract;
+/// contracts are built from it with `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ButtonEvent {
+    /// Which button (e.g. "b1").
+    pub button: &'static str,
+    /// Presses since start, counting from 1.
+    pub press: u32,
+}
+
+/// A button press (outbound to MQTT)
+#[derive(Clone, Debug, Serialize, Deserialize, Linkable)]
+pub struct ButtonPress {
+    /// Button identifier (e.g. "b1")
+    pub button: String,
+    /// Presses since start, counting from 1
+    pub press: u32,
+}
+
+impl SchemaType for ButtonPress {
+    const NAME: &'static str = "mqtt_demo.button_press";
+}
+
+impl From<ButtonEvent> for ButtonPress {
+    fn from(event: ButtonEvent) -> Self {
+        Self {
+            button: event.button.into(),
+            press: event.press,
         }
-        #[cfg(not(feature = "std"))]
-        {
-            Self::parse_json_no_std(data)
-        }
-    }
-
-    /// Simple JSON parser for no_std environments
-    #[cfg(not(feature = "std"))]
-    fn parse_json_no_std(data: &[u8]) -> Result<Self, alloc::string::String> {
-        use alloc::string::ToString;
-        use alloc::vec::Vec;
-
-        let text = core::str::from_utf8(data).map_err(|_| "Invalid UTF-8".to_string())?;
-
-        let mut action = String::new();
-        let mut sensor_id = String::new();
-
-        for pair in text.trim_matches(|c| c == '{' || c == '}').split(',') {
-            let parts: Vec<&str> = pair.split(':').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-
-            let key = parts[0].trim().trim_matches('"');
-            let value = parts[1].trim().trim_matches('"');
-
-            match key {
-                "action" => action = value.into(),
-                "sensor_id" => sensor_id = value.into(),
-                _ => {}
-            }
-        }
-
-        if action.is_empty() || sensor_id.is_empty() {
-            return Err("Missing required fields".to_string());
-        }
-
-        Ok(TemperatureCommand { action, sensor_id })
     }
 }

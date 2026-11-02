@@ -54,6 +54,16 @@ pub enum CommandKey {
     TempOutdoor,
 }
 
+/// Record keys for push buttons (outbound: AimDB → MQTT)
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
+#[key_prefix = "button."]
+pub enum ButtonKey {
+    /// User button B1
+    #[key = "b1"]
+    #[link_address = "mqtt://sensors/button/b1"]
+    B1,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

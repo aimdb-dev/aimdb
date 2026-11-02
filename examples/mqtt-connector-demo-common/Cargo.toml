@@ -8,33 +8,23 @@ description = "Shared business logic for MQTT demos - runs on MCU, edge, and clo
 
 [features]
 default = []
-std = ["alloc", "aimdb-core/std", "serde", "serde_json"]
-alloc = ["aimdb-core/alloc"]
-derive = ["aimdb-core/derive"]
-# serde derive on the shared types — works in `no_std + alloc` too (no serde_json
-# needed: the no_std JSON paths are hand-rolled), so an embassy demo can expose
-# these records over a remote-access (serial) server.
-serde = ["dep:serde"]
-# `SchemaType` + JSON `#[derive(Linkable)]`. `no_std + alloc`
-# compatible (`linkable-json` uses serde_json's alloc-only configuration).
-# Not enabled by default: the
-# embassy demo's hand-rolled no_std JSON path is an intentional illustration,
-# left untouched; only the tokio demo opts into this feature.
-data-contracts = ["alloc", "serde", "dep:aimdb-data-contracts"]
-
+std = ["aimdb-core/std", "aimdb-data-contracts/std", "serde/std"]
 # Embassy-specific features (no_std)
 defmt = ["dep:defmt"]
 
 [dependencies]
-# Core AimDB - runtime agnostic
-aimdb-core = { path = "../../aimdb-core", default-features = false }
-# Serialization (std only)
-serde = { workspace = true, features = ["derive"], optional = true }
-serde_json = { workspace = true, optional = true }
-# Optional: SchemaType + JSON #[derive(Linkable)] (no_std + alloc)
-aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false, optional = true, features = [
+# Core AimDB - runtime agnostic; `derive` for the `RecordKey` keys
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+# The contracts' wire format: JSON `#[derive(Linkable)]`, `no_std + alloc`
+# compatible (serde_json's alloc-only configuration), for publish/subscribe
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false, features = [
     "linkable-json",
 ] }
+# Serialize/Deserialize on the contracts: the wire format, and remote access
+serde = { workspace = true }
 
 # Optional defmt for embedded logging
 defmt = { workspace = true, optional = true }

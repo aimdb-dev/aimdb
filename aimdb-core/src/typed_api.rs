@@ -430,7 +430,7 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
 
 /// Type alias for typed context-aware serializer callbacks
 ///
-/// Stays typed until `finish()` fuses it with the consumer — no per-message
+/// Stays typed until registration fuses it with the consumer — no per-message
 /// erasure.
 type TypedContextSerializerFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
@@ -439,7 +439,7 @@ type TypedContextSerializerFn<T> = Arc<
         + 'static,
 >;
 
-/// Typed into-slice serializer stored by [`OutboundConnectorBuilder`].
+/// Typed into-slice serializer stored by [`OutboundLinkBuilder`].
 type TypedContextSerializerIntoFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::SerializeError>
         + Send
@@ -470,6 +470,9 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     pub(crate) rec: &'a mut TypedRecord<T>,
     /// Connector builders indexed by scheme
     pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder>],
+    /// The builder's id, checked against
+    /// [`ConnectorHandle`](crate::ConnectorHandle)s on links.
+    pub(crate) builder_id: u32,
     /// The record key for this record
     pub(crate) record_key: String,
     /// Extension storage from the builder — allows external crates (e.g.
@@ -711,9 +714,235 @@ where
     ///
     /// Subscribes to buffer updates and publishes them to an external system.
     pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T> {
-        OutboundConnectorBuilder {
-            registrar: self,
+        OutboundLink::new(url).attach(self)
+    }
+
+    /// Link FROM external system (inbound: External → AimDB)
+    ///
+    /// Subscribes to an external data source and produces values into this record's buffer.
+    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
+        InboundLink::new(url).attach(self)
+    }
+
+    /// Wires `input` as a writer of this record.
+    ///
+    /// Takes anything implementing [`Input<T>`], such as an [`InboundLink`].
+    /// Conflicting writers are reported by `build()`, exactly as for
+    /// `.source()` and `.link_from()`; several inbound links on one record
+    /// are allowed (fan-in).
+    pub fn input(&mut self, input: impl Input<T>) -> &mut Self {
+        input.wire(self);
+        self
+    }
+
+    /// Wires `output` as a reader of this record.
+    ///
+    /// Takes anything implementing [`Output<T>`], such as an
+    /// [`OutboundLink`]. A following [`with_name`](Self::with_name) names the
+    /// stage the output registered, as after `.link_to(..).finish()`.
+    pub fn output(&mut self, output: impl Output<T>) -> &mut Self {
+        output.wire(self);
+        self
+    }
+}
+
+// ============================================================================
+// Input / Output - what `.input()` and `.output()` accept
+// ============================================================================
+
+/// Something that can write into a `T` record, passed to
+/// [`RecordRegistrar::input`].
+///
+/// [`InboundLink<T>`] implements it. `wire` receives the full registrar, so an
+/// input may call `.source()`, `.link_from()`, `.buffer()` or anything else a
+/// `configure` closure can; inputs are expected to only add a writer.
+///
+/// Two conventions make wiring mistakes compile errors:
+///
+/// - **An input yields an event, and records are built with `From`.** A
+///   device input implements `Input<T>` for every `T: From<Event>`, so one
+///   input type serves every contract that can be built from its event.
+/// - **A device channel is an owned value that is not `Clone`.** A board
+///   hands out its channels once, and an input takes one by value, so wiring
+///   one device into two records is `use of moved value`.
+///
+/// ```
+/// use aimdb_core::{Input, RecordRegistrar};
+/// use core::fmt::Debug;
+///
+/// /// Produces 0, 1, 2 into any record built from an `i32`.
+/// struct Counter;
+///
+/// impl<T> Input<T> for Counter
+/// where
+///     T: From<i32> + Send + Sync + 'static + Debug + Clone,
+/// {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///         reg.source(|_ctx, producer| async move {
+///             for i in 0..3 {
+///                 producer.produce(T::from(i));
+///             }
+///         });
+///     }
+/// }
+/// ```
+///
+/// A channel used for a second record does not compile:
+///
+/// ```compile_fail,E0382
+/// # use aimdb_core::{Input, RecordRegistrar};
+/// # use core::fmt::Debug;
+/// /// A device channel, handed out once by the board. Not `Clone`.
+/// struct Channel;
+///
+/// /// An input on one channel.
+/// struct Sensor(Channel);
+///
+/// impl<T> Input<T> for Sensor
+/// where
+///     T: From<u8> + Send + Sync + 'static + Debug + Clone,
+/// {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///         reg.source(|_ctx, producer| async move { producer.produce(T::from(0)) });
+///     }
+/// }
+///
+/// #[derive(Clone, Debug)]
+/// struct Level(u8);
+///
+/// impl From<u8> for Level {
+///     fn from(raw: u8) -> Self {
+///         Level(raw)
+///     }
+/// }
+///
+/// fn wire(
+///     first: &mut RecordRegistrar<'_, Level>,
+///     second: &mut RecordRegistrar<'_, Level>,
+///     channel: Channel,
+/// ) {
+///     first.input(Sensor(channel));
+///     second.input(Sensor(channel)); // use of moved value: `channel`
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be the input of a `{T}` record",
+    label = "not an input for `{T}`",
+    note = "an input implements `Input<{T}>`; device inputs usually do so for every `T: From<Event>`"
+)]
+pub trait Input<T: Send + Sync + 'static + Debug + Clone> {
+    /// Registers this input's writer on the record.
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+}
+
+/// Something that can read from a `T` record, passed to
+/// [`RecordRegistrar::output`].
+///
+/// [`OutboundLink<T>`] implements it. Like [`Input`], `wire` receives the
+/// full registrar.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be an output of a `{T}` record",
+    label = "not an output for `{T}`"
+)]
+pub trait Output<T: Send + Sync + 'static + Debug + Clone> {
+    /// Registers this output's reader on the record.
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+}
+
+impl<T> Input<T> for InboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.push_inbound(self);
+    }
+}
+
+impl<T> Output<T> for OutboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        reg.push_outbound(self);
+    }
+}
+
+// ============================================================================
+// Link builders - Fluent connector link configuration
+// ============================================================================
+
+/// Marks a link builder that is not attached to a record yet.
+///
+/// See [`OutboundLink`] and [`InboundLink`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Detached;
+
+/// Outbound link builder attached to a record: what
+/// [`RecordRegistrar::link_to`] returns.
+///
+/// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
+/// registrar's own borrow of the record being configured.
+pub type OutboundConnectorBuilder<'r, 'a, T> =
+    OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+
+/// Outbound link not attached to a record yet, built with
+/// [`OutboundLink::new`] and registered by [`RecordRegistrar::output`].
+pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
+
+/// Builder for configuring outbound connector links (AimDB → External)
+///
+/// `R` is what the builder is attached to. [`RecordRegistrar::link_to`]
+/// returns the attached form, [`OutboundConnectorBuilder`], which
+/// [`finish()`](OutboundLinkBuilder::finish) registers on its record.
+/// [`OutboundLink::new`] builds the detached form, [`OutboundLink`], before
+/// any record exists; [`RecordRegistrar::output`] registers it, and checks
+/// it then, not when it is built. Both register the same link:
+///
+/// ```rust,ignore
+/// reg.link_to("mqtt://out").with_serializer(ser).finish();
+/// reg.output(OutboundLink::new("mqtt://out").with_serializer(ser));
+/// ```
+///
+/// The option methods below, and the connector crates' extension traits,
+/// work on both forms.
+#[must_use = "a link does nothing until it is passed to `.output()` or finished with `.finish()`"]
+pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    at: R,
+    url: String,
+    connector: Option<crate::ConnectorHandle>,
+    schema: Option<(String, u32)>,
+    config: Vec<(String, String)>,
+    context_serializer: Option<TypedContextSerializerFn<T>>,
+    context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
+    topic_writer: Option<TopicWriterCfg<T>>,
+}
+
+impl<T> OutboundLinkBuilder<T, Detached>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    /// Starts an outbound link to `address` on a connector registered with
+    /// [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+    ///
+    /// `address` is the part after `scheme://`; the connector supplies the
+    /// scheme. A full URL (as a `#[link_address]` key gives) is accepted if
+    /// its scheme is the connector's. A different scheme, or a handle from
+    /// another builder, is reported by `build()` once the link is passed to
+    /// [`RecordRegistrar::output`].
+    pub fn on(connector: crate::ConnectorHandle, address: &str) -> Self {
+        Self {
+            connector: Some(connector),
+            ..Self::new(address)
+        }
+    }
+
+    /// Starts an outbound link to `url` that is not attached to a record yet.
+    pub fn new(url: &str) -> Self {
+        Self {
+            at: Detached,
             url: url.to_string(),
+            connector: None,
+            schema: None,
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
@@ -721,43 +950,50 @@ where
         }
     }
 
-    /// Link FROM external system (inbound: External → AimDB)
-    ///
-    /// Subscribes to an external data source and produces values into this record's buffer.
-    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
-        InboundConnectorBuilder {
-            registrar: self,
-            url: url.to_string(),
-            config: Vec::new(),
-            context_deserializer: None,
-            match_deserializer: None,
-            key: None,
-            topic_resolver: None,
+    fn attach<R>(self, at: R) -> OutboundLinkBuilder<T, R> {
+        OutboundLinkBuilder {
+            at,
+            url: self.url,
+            connector: self.connector,
+            schema: self.schema,
+            config: self.config,
+            context_serializer: self.context_serializer,
+            context_serializer_into: self.context_serializer_into,
+            topic_writer: self.topic_writer,
         }
     }
 }
 
-// ============================================================================
-// OutboundConnectorBuilder - Fluent outbound connector configuration
-// ============================================================================
-
-/// Builder for configuring outbound connector links (AimDB → External)
-///
-/// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
-/// registrar's own borrow of the record being configured.
-pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
-    registrar: &'r mut RecordRegistrar<'a, T>,
-    url: String,
-    config: Vec<(String, String)>,
-    context_serializer: Option<TypedContextSerializerFn<T>>,
-    context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
-    topic_writer: Option<TopicWriterCfg<T>>,
-}
-
-impl<'r, 'a, T> OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    fn detach(self) -> (R, OutboundLink<T>) {
+        let link = OutboundLinkBuilder {
+            at: Detached,
+            url: self.url,
+            connector: self.connector,
+            schema: self.schema,
+            config: self.config,
+            context_serializer: self.context_serializer,
+            context_serializer_into: self.context_serializer_into,
+            topic_writer: self.topic_writer,
+        };
+        (self.at, link)
+    }
+
+    /// Reports `name` / `version` as the record's data-contract schema when
+    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    ///
+    /// Reported even if the link itself is rejected, like a `schema()` call
+    /// before it. A different schema on the same record fails `build()`.
+    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
+    /// contract type.
+    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+        self.schema = Some((name.to_string(), version));
+        self
+    }
+
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
         self.config.push((key.to_string(), value.to_string()));
@@ -877,7 +1113,12 @@ where
     {
         self.with_topic_writer(capacity, f)
     }
+}
 
+impl<'r, 'a, T> OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     /// Finalizes the connector registration
     ///
     /// Configuration mistakes — an invalid URL, a missing serializer, or an
@@ -890,157 +1131,14 @@ where
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_to()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{ConnectorLink, LinkAddress};
-        use crate::error::ConfigError;
-
-        let record_key = self.registrar.record_key.clone();
-
-        let Ok(url) = LinkAddress::parse(&self.url) else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Invalid connector URL",
-            ));
-            return self.registrar;
-        };
-
-        let url_string = url.to_string();
-        let scheme = url.scheme().to_string();
-
-        if url.resource_id().contains(['{', '}']) {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Outbound topics cannot contain '{' or '}'",
-            ));
-            return self.registrar;
-        }
-
-        // Adapt the stored serializer to the fused calling convention. Stays
-        // typed: fused with the consumer below, no `Box<dyn Any>` per message
-        //.
-        let serialize: FusedSerializeFn<T> = if let Some(ser) = self.context_serializer {
-            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
-        } else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Outbound connector requires a serializer. Call .with_serializer()",
-            ));
-            return self.registrar;
-        };
-
-        let serialize_into: Option<(usize, FusedSerializeIntoFn<T>)> =
-            self.context_serializer_into.map(|(capacity, ser)| {
-                let adapted: FusedSerializeIntoFn<T> = Arc::new(
-                    move |ctx: &crate::RuntimeContext, value: &T, out: &mut [u8]| {
-                        ser(ctx.clone(), value, out)
-                    },
-                );
-                (capacity, adapted)
-            });
-
-        // Validation: Check that connector builder is registered
-        let has_connector = self
-            .registrar
-            .connector_builders
-            .iter()
-            .any(|b| b.scheme() == scheme);
-
-        if !has_connector {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(url_string),
-                alloc::format!(
-                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
-                ),
-            ));
-            return self.registrar;
-        }
-
-        // Register the link as a profiling stage (so `.with_name()` can name it
-        // and the consumer it creates can be timed).
-        #[cfg(feature = "observability")]
-        let link_metrics = {
-            let (idx, metrics) = self.registrar.rec.profiling_mut().push_link();
-            self.registrar.last_stage = Some((StageKind::Link, idx));
-            metrics
-        };
-        #[cfg(not(feature = "observability"))]
-        {
-            self.registrar.last_stage = Some((StageKind::Link, 0));
-        }
-
-        // Resolves the record and builds a `Consumer<T>` bound to its buffer
-        // handle, once per route (not per message) — same pattern as the
-        // build-time path in `TypedRecord::collect_consumer_futures`.
-        //
-        // The factories run during build() after every record is registered
-        // and validated (including the linked-records-need-a-buffer check),
-        // so failures here are aimdb bugs, not user mistakes.
-        #[allow(
-            clippy::panic,
-            reason = "the factory returns no Result and these lookups were validated at build() time"
-        )]
-        let make_consumer: ConsumerFactoryFn<T> = {
-            let record_key = self.registrar.record_key.clone();
-            Arc::new(move |db: &AimDb| {
-                let typed_rec = db
-                    .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
-                             this is a bug in aimdb-core"
-                        )
-                    });
-                let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
-                    panic!(
-                        "outbound link: record '{record_key}' has no buffer despite \
-                         build()-time validation — this is a bug in aimdb-core"
-                    )
-                });
-
-                #[allow(unused_mut)]
-                let mut consumer = Consumer::<T>::new(buffer);
-                #[cfg(feature = "observability")]
-                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
-                consumer
-            })
-        };
-
-        // Subscribed when `OutboundRoutes` is built.
-        let route_factory: crate::outbound::RouteFactoryFn = {
-            let topic_writer = self.topic_writer;
-            Arc::new(move |db: &AimDb| {
-                let (topic_capacity, writer) = match &topic_writer {
-                    Some((capacity, writer)) => (*capacity, Some(writer.clone())),
-                    None => (0, None),
-                };
-                crate::outbound::RouteParts {
-                    route: Box::new(TypedRoute {
-                        reader: make_consumer(db).subscribe(),
-                        writer,
-                        serialize: serialize.clone(),
-                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
-                    }),
-                    topic_capacity,
-                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
-                }
-            })
-        };
-
-        let mut link = ConnectorLink::new(url, route_factory);
-        link.config = self.config;
-
-        // Routes are built later, when a connector builds its `OutboundRoutes`.
-        self.registrar.rec.add_outbound_connector(link);
-        self.registrar
+        let (registrar, link) = self.detach();
+        registrar.push_outbound(link);
+        registrar
     }
 }
 
 // ============================================================================
-// InboundConnectorBuilder - Fluent inbound connector configuration
+// InboundLinkBuilder - Fluent inbound connector configuration
 // ============================================================================
 
 /// The producer an inbound ingest factory writes to. Factories run during
@@ -1091,8 +1189,8 @@ where
 
 /// Type alias for typed context-aware deserializer callbacks
 ///
-/// Stays typed until `finish()` fuses it with the producer — no per-message
-/// erasure.
+/// Stays typed until registration fuses it with the producer — no
+/// per-message erasure.
 type TypedContextDeserializerFn<T> =
     Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
@@ -1104,13 +1202,39 @@ type TypedMatchDeserializerFn<T> = Arc<
         + 'static,
 >;
 
-/// Builder for configuring inbound connector links (External → AimDB)
+/// Inbound link builder attached to a record: what
+/// [`RecordRegistrar::link_from`] returns.
 ///
 /// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
-    registrar: &'r mut RecordRegistrar<'a, T>,
+pub type InboundConnectorBuilder<'r, 'a, T> = InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+
+/// Inbound link not attached to a record yet, built with
+/// [`InboundLink::new`] and registered by [`RecordRegistrar::input`].
+pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
+
+/// Builder for configuring inbound connector links (External → AimDB)
+///
+/// `R` is what the builder is attached to. [`RecordRegistrar::link_from`]
+/// returns the attached form, [`InboundConnectorBuilder`], which
+/// [`finish()`](InboundLinkBuilder::finish) registers on its record.
+/// [`InboundLink::new`] builds the detached form, [`InboundLink`], before
+/// any record exists; [`RecordRegistrar::input`] registers it, and checks
+/// it then, not when it is built. Both register the same link:
+///
+/// ```rust,ignore
+/// reg.link_from("mqtt://in").with_deserializer(de).finish();
+/// reg.input(InboundLink::new("mqtt://in").with_deserializer(de));
+/// ```
+///
+/// The option methods below, and the connector crates' extension traits,
+/// work on both forms.
+#[must_use = "a link does nothing until it is passed to `.input()` or finished with `.finish()`"]
+pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    at: R,
     url: String,
+    connector: Option<crate::ConnectorHandle>,
+    schema: Option<(String, u32)>,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
@@ -1118,10 +1242,86 @@ pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Cl
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
-impl<'r, 'a, T> InboundConnectorBuilder<'r, 'a, T>
+impl<T> InboundLinkBuilder<T, Detached>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Starts an inbound link from `address` on a connector registered with
+    /// [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+    ///
+    /// `address` is the part after `scheme://`; the connector supplies the
+    /// scheme. A full URL (as a `#[link_address]` key gives) is accepted if
+    /// its scheme is the connector's. A different scheme, or a handle from
+    /// another builder, is reported by `build()` once the link is passed to
+    /// [`RecordRegistrar::input`].
+    pub fn on(connector: crate::ConnectorHandle, address: &str) -> Self {
+        Self {
+            connector: Some(connector),
+            ..Self::new(address)
+        }
+    }
+
+    /// Starts an inbound link from `url` that is not attached to a record yet.
+    pub fn new(url: &str) -> Self {
+        Self {
+            at: Detached,
+            url: url.to_string(),
+            connector: None,
+            schema: None,
+            config: Vec::new(),
+            context_deserializer: None,
+            match_deserializer: None,
+            key: None,
+            topic_resolver: None,
+        }
+    }
+
+    fn attach<R>(self, at: R) -> InboundLinkBuilder<T, R> {
+        InboundLinkBuilder {
+            at,
+            url: self.url,
+            connector: self.connector,
+            schema: self.schema,
+            config: self.config,
+            context_deserializer: self.context_deserializer,
+            match_deserializer: self.match_deserializer,
+            key: self.key,
+            topic_resolver: self.topic_resolver,
+        }
+    }
+}
+
+impl<T, R> InboundLinkBuilder<T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn detach(self) -> (R, InboundLink<T>) {
+        let link = InboundLinkBuilder {
+            at: Detached,
+            url: self.url,
+            connector: self.connector,
+            schema: self.schema,
+            config: self.config,
+            context_deserializer: self.context_deserializer,
+            match_deserializer: self.match_deserializer,
+            key: self.key,
+            topic_resolver: self.topic_resolver,
+        };
+        (self.at, link)
+    }
+
+    /// Reports `name` / `version` as the record's data-contract schema when
+    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    ///
+    /// Reported even if the link itself is rejected, like a `schema()` call
+    /// before it. A different schema on the same record fails `build()`.
+    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
+    /// contract type.
+    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+        self.schema = Some((name.to_string(), version));
+        self
+    }
+
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
         self.config.push((key.to_string(), value.to_string()));
@@ -1208,7 +1408,12 @@ where
         self.topic_resolver = Some(Arc::new(resolver));
         self
     }
+}
 
+impl<'r, 'a, T> InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     /// Finalizes the inbound connector registration
     ///
     /// Configuration mistakes — an invalid URL, a missing deserializer, an
@@ -1221,32 +1426,231 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
-    pub fn finish(mut self) -> &'r mut RecordRegistrar<'a, T> {
-        match self.link() {
-            Ok(link) => self.registrar.rec.add_inbound_connector(link),
-            Err(message) => {
-                let key = self.registrar.record_key.clone();
-                let error = crate::error::ConfigError::new(key, Some(self.url), message);
-                self.registrar.rec.push_config_error(error);
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
+        let (registrar, link) = self.detach();
+        registrar.push_inbound(link);
+        registrar
+    }
+}
+
+// ============================================================================
+// Link registration - the one validation path for attached and detached links
+// ============================================================================
+
+impl<'a, T> RecordRegistrar<'a, T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    /// Validates and registers an outbound link, or records why not.
+    fn push_outbound(&mut self, mut link: OutboundLink<T>) {
+        use crate::connector::{ConnectorLink, LinkAddress};
+        use crate::error::ConfigError;
+
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
+
+        let record_key = self.record_key.clone();
+
+        if let Some(handle) = link.connector {
+            match crate::connector::resolve_link_url(
+                self.builder_id,
+                self.connector_builders,
+                handle,
+                &link.url,
+            ) {
+                Ok(url) => link.url = url,
+                Err(message) => {
+                    self.rec.push_config_error(ConfigError::new(
+                        record_key,
+                        Some(link.url),
+                        message,
+                    ));
+                    return;
+                }
             }
         }
-        self.registrar
+
+        let Ok(url) = LinkAddress::parse(&link.url) else {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Invalid connector URL",
+            ));
+            return;
+        };
+
+        let url_string = url.to_string();
+        let scheme = url.scheme().to_string();
+
+        if url.resource_id().contains(['{', '}']) {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Outbound topics cannot contain '{' or '}'",
+            ));
+            return;
+        }
+
+        // Adapt the stored serializer to the fused calling convention. Stays
+        // typed: fused with the consumer below, no `Box<dyn Any>` per message
+        //.
+        let serialize: FusedSerializeFn<T> = if let Some(ser) = link.context_serializer {
+            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
+        } else {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Outbound connector requires a serializer. Call .with_serializer()",
+            ));
+            return;
+        };
+
+        let serialize_into: Option<(usize, FusedSerializeIntoFn<T>)> =
+            link.context_serializer_into.map(|(capacity, ser)| {
+                let adapted: FusedSerializeIntoFn<T> = Arc::new(
+                    move |ctx: &crate::RuntimeContext, value: &T, out: &mut [u8]| {
+                        ser(ctx.clone(), value, out)
+                    },
+                );
+                (capacity, adapted)
+            });
+
+        // Validation: Check that connector builder is registered
+        let has_connector = self.connector_builders.iter().any(|b| b.scheme() == scheme);
+
+        if !has_connector {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(url_string),
+                alloc::format!(
+                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
+                ),
+            ));
+            return;
+        }
+
+        // Register the link as a profiling stage (so `.with_name()` can name it
+        // and the consumer it creates can be timed).
+        #[cfg(feature = "observability")]
+        let link_metrics = {
+            let (idx, metrics) = self.rec.profiling_mut().push_link();
+            self.last_stage = Some((StageKind::Link, idx));
+            metrics
+        };
+        #[cfg(not(feature = "observability"))]
+        {
+            self.last_stage = Some((StageKind::Link, 0));
+        }
+
+        // Resolves the record and builds a `Consumer<T>` bound to its buffer
+        // handle, once per route (not per message) — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures`.
+        //
+        // The factories run during build() after every record is registered
+        // and validated (including the linked-records-need-a-buffer check),
+        // so failures here are aimdb bugs, not user mistakes.
+        #[allow(
+            clippy::panic,
+            reason = "the factory returns no Result and these lookups were validated at build() time"
+        )]
+        let make_consumer: ConsumerFactoryFn<T> = {
+            let record_key = self.record_key.clone();
+            Arc::new(move |db: &AimDb| {
+                let typed_rec = db
+                    .inner()
+                    .get_typed_record_by_key::<T>(&record_key)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
+                             this is a bug in aimdb-core"
+                        )
+                    });
+                let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
+                    panic!(
+                        "outbound link: record '{record_key}' has no buffer despite \
+                         build()-time validation — this is a bug in aimdb-core"
+                    )
+                });
+
+                #[allow(unused_mut)]
+                let mut consumer = Consumer::<T>::new(buffer);
+                #[cfg(feature = "observability")]
+                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                consumer
+            })
+        };
+
+        // Subscribed when `OutboundRoutes` is built.
+        let route_factory: crate::outbound::RouteFactoryFn = {
+            let topic_writer = link.topic_writer;
+            Arc::new(move |db: &AimDb| {
+                let (topic_capacity, writer) = match &topic_writer {
+                    Some((capacity, writer)) => (*capacity, Some(writer.clone())),
+                    None => (0, None),
+                };
+                crate::outbound::RouteParts {
+                    route: Box::new(TypedRoute {
+                        reader: make_consumer(db).subscribe(),
+                        writer,
+                        serialize: serialize.clone(),
+                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
+                    }),
+                    topic_capacity,
+                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
+                }
+            })
+        };
+
+        // Named `out`, not `link`: `out.config = link.config` must read the
+        // user's link, not the new one.
+        let mut out = ConnectorLink::new(url, route_factory);
+        out.config = link.config;
+
+        // Routes are built later, when a connector builds its `OutboundRoutes`.
+        self.rec.add_outbound_connector(out);
     }
 
-    /// The link `finish()` registers, or why it is rejected.
+    /// Validates and registers an inbound link, or records why not.
+    fn push_inbound(&mut self, mut link: InboundLink<T>) {
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
+        match self.inbound_link(&mut link) {
+            Ok(inbound) => self.rec.add_inbound_connector(inbound),
+            Err(message) => {
+                let key = self.record_key.clone();
+                let error = crate::error::ConfigError::new(key, Some(link.url), message);
+                self.rec.push_config_error(error);
+            }
+        }
+    }
+
+    /// The link `push_inbound()` registers, or why it is rejected.
     ///
     /// The buffer requirement and mutual exclusion with local producers
     /// (.source()/.transform()) are validated by `build()`: `.buffer()` may
     /// legitimately be called after `.link_from()`.
-    fn link(&mut self) -> Result<crate::connector::InboundConnectorLink, String> {
+    fn inbound_link(
+        &self,
+        link: &mut InboundLink<T>,
+    ) -> Result<crate::connector::InboundConnectorLink, String> {
         use crate::connector::{InboundConnectorLink, LinkAddress};
 
-        let url = LinkAddress::parse(&self.url).map_err(|_| "Invalid connector URL")?;
-        let record_key = self.registrar.record_key.clone();
+        if let Some(handle) = link.connector {
+            link.url = crate::connector::resolve_link_url(
+                self.builder_id,
+                self.connector_builders,
+                handle,
+                &link.url,
+            )?;
+        }
+        let url = LinkAddress::parse(&link.url).map_err(|_| "Invalid connector URL")?;
+        let record_key = self.record_key.clone();
 
         let deser: TypedMatchDeserializerFn<T> = match (
-            self.context_deserializer.take(),
-            self.match_deserializer.take(),
+            link.context_deserializer.take(),
+            link.match_deserializer.take(),
         ) {
             (Some(deser), None) => Arc::new(move |ctx, _m, bytes| deser(ctx.clone(), bytes)),
             (None, Some(deser)) => deser,
@@ -1266,7 +1670,7 @@ where
         // The `{…}` syntax; the connector checks the rest.
         let pattern = crate::TopicPattern::parse(url.resource_id()).map_err(|e| e.to_string())?;
 
-        let key = match self.key.take() {
+        let key = match link.key.take() {
             None => None,
             Some((capture, capacity)) => {
                 let Some(capacity) = core::num::NonZeroU16::new(capacity) else {
@@ -1279,7 +1683,7 @@ where
                         "key '{capture}' is not a capture of the topic"
                     ));
                 }
-                let links = self.registrar.rec.inbound_connectors();
+                let links = self.rec.inbound_connectors();
                 if let Some((_, other)) = links.iter().find_map(|l| l.key.as_ref()) {
                     if *other != capacity {
                         return Err(alloc::format!(
@@ -1293,22 +1697,18 @@ where
         };
 
         let scheme = url.scheme();
-        if !self
-            .registrar
-            .connector_builders
-            .iter()
-            .any(|b| b.scheme() == scheme)
-        {
+        if !self.connector_builders.iter().any(|b| b.scheme() == scheme) {
             return Err(alloc::format!(
                 "No connector registered for scheme '{scheme}'. Register via .with_connector()"
             ));
         }
 
-        let mut link = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
-        link.config = core::mem::take(&mut self.config);
-        link.key = key;
-        link.topic_resolver = self.topic_resolver.take();
-        Ok(link)
+        // Named `inbound`, not `link`, for the same reason as in `push_outbound`.
+        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
+        inbound.config = core::mem::take(&mut link.config);
+        inbound.key = key;
+        inbound.topic_resolver = link.topic_resolver.take();
+        Ok(inbound)
     }
 }
 
@@ -1350,7 +1750,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Test infrastructure for InboundConnectorBuilder deserializer tests
+    // Test infrastructure for InboundLinkBuilder deserializer tests
     // ====================================================================
 
     /// Minimal mock runtime for context tests — the builder only needs the
@@ -1406,6 +1806,7 @@ mod tests {
         RecordRegistrar {
             rec,
             connector_builders: builders,
+            builder_id: TEST_BUILDER,
             record_key: "test::Record".to_string(),
             extensions,
             last_stage: None,
@@ -1641,6 +2042,491 @@ mod tests {
             "broker/topic"
         );
         assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    /// A detached link keeps its options when registered: `push_outbound` /
+    /// `push_inbound` must copy the config from the user's link, not from
+    /// the link they build.
+    #[test]
+    fn detached_links_keep_their_config() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.push_outbound(
+            OutboundLink::new("mqtt://out")
+                .with_config("qos", "1")
+                .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec())),
+        );
+        reg.push_inbound(
+            InboundLink::new("mqtt://in")
+                .with_config("qos", "2")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+
+        let qos = |config: &[(String, String)]| {
+            config
+                .iter()
+                .find(|(k, _)| k == "qos")
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            qos(&rec.outbound_connectors()[0].config).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            qos(&rec.inbound_connectors()[0].config).as_deref(),
+            Some("2")
+        );
+        assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    // ====================================================================
+    // Detached links via .input() / .output()
+    // ====================================================================
+
+    /// Runs `wire` on a fresh buffered `TestRecord` with an `mqtt` connector
+    /// registered, and returns the record.
+    fn registered(
+        wire: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>),
+    ) -> crate::typed_record::TypedRecord<TestRecord> {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        wire(&mut make_registrar(&mut rec, &builders, &extensions));
+        rec
+    }
+
+    fn ser(_ctx: crate::RuntimeContext, r: &TestRecord) -> Result<Vec<u8>, SerializeError> {
+        Ok(r.value.to_le_bytes().to_vec())
+    }
+
+    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, String> {
+        Ok(TestRecord { value: 0 })
+    }
+
+    fn match_de(
+        _ctx: &crate::RuntimeContext,
+        _m: &crate::TopicMatch<'_>,
+        _bytes: &[u8],
+    ) -> Result<TestRecord, String> {
+        Ok(TestRecord { value: 0 })
+    }
+
+    /// The same options, applied to an attached or a detached builder.
+    fn outbound_options<R>(
+        b: OutboundLinkBuilder<TestRecord, R>,
+    ) -> OutboundLinkBuilder<TestRecord, R> {
+        b.with_config("qos", "1")
+            .with_serializer(ser)
+            .with_config(crate::connector::WIRE_FORMAT_KEY, "le")
+            .with_timeout_ms(50)
+    }
+
+    fn inbound_options<R>(
+        b: InboundLinkBuilder<TestRecord, R>,
+    ) -> InboundLinkBuilder<TestRecord, R> {
+        b.with_config("qos", "1")
+            .with_match_deserializer(match_de)
+            .with_config(crate::connector::WIRE_FORMAT_KEY, "le")
+            .key("d", 4)
+            .with_topic_resolver(|| None)
+    }
+
+    #[test]
+    fn detached_inbound_link_registers_like_link_from() {
+        let mut attached = registered(|reg| {
+            inbound_options(reg.link_from("mqtt://temp/{d}")).finish();
+        });
+        let mut detached = registered(|reg| {
+            reg.input(inbound_options(InboundLink::new("mqtt://temp/{d}")));
+        });
+
+        let (a, d) = (attached.inbound_connectors(), detached.inbound_connectors());
+        assert_eq!((a.len(), d.len()), (1, 1));
+        assert_eq!(a[0].url.to_string(), d[0].url.to_string());
+        assert_eq!(a[0].config, d[0].config);
+        assert!(d[0].config.iter().any(|(k, v)| k == "qos" && v == "1"));
+        assert_eq!(a[0].key, d[0].key);
+        assert!(d[0].key.is_some());
+        assert!(a[0].topic_resolver.is_some() && d[0].topic_resolver.is_some());
+        assert!(drain_errors(&mut attached).is_empty());
+        assert!(drain_errors(&mut detached).is_empty());
+    }
+
+    #[test]
+    fn detached_outbound_links_register_like_link_to() {
+        let mut attached = registered(|reg| {
+            outbound_options(reg.link_to("mqtt://out")).finish();
+            reg.with_name("out");
+        });
+        let mut detached = registered(|reg| {
+            reg.output(outbound_options(OutboundLink::new("mqtt://out")))
+                .with_name("out");
+        });
+
+        let (a, d) = (
+            attached.outbound_connectors(),
+            detached.outbound_connectors(),
+        );
+        assert_eq!((a.len(), d.len()), (1, 1));
+        assert_eq!(a[0].url.to_string(), d[0].url.to_string());
+        assert_eq!(a[0].config, d[0].config);
+        assert!(d[0]
+            .config
+            .iter()
+            .any(|(k, v)| k == "timeout_ms" && v == "50"));
+
+        #[cfg(feature = "observability")]
+        for rec in [&attached, &detached] {
+            let links = rec.profiling().links();
+            assert_eq!(links.len(), 1, "one profiling stage per link");
+            assert_eq!(links[0].name.as_deref(), Some("out"));
+        }
+        assert!(drain_errors(&mut attached).is_empty());
+        assert!(drain_errors(&mut detached).is_empty());
+    }
+
+    #[test]
+    fn detached_links_record_the_same_errors_as_attached_ones() {
+        /// Links registered and errors recorded (url, message).
+        type Outcome = (usize, Vec<(Option<String>, String)>);
+        fn outcome(mut rec: crate::typed_record::TypedRecord<TestRecord>) -> Outcome {
+            let links = rec.outbound_connectors().len() + rec.inbound_connectors().len();
+            let errors = drain_errors(&mut rec)
+                .into_iter()
+                .map(|e| (e.url, e.message))
+                .collect();
+            (links, errors)
+        }
+
+        // Each case runs once through `link_to`/`link_from` + `finish()`
+        // and once through `.output()`/`.input()`; `$b` is the builder.
+        macro_rules! same_errors {
+            (out $url:expr, |$b:ident| $opts:expr, $msg:expr) => {{
+                let attached = outcome(registered(|reg| {
+                    let $b = reg.link_to($url);
+                    $opts.finish();
+                }));
+                let detached = outcome(registered(|reg| {
+                    let $b = OutboundLink::new($url);
+                    reg.output($opts);
+                }));
+                assert_eq!(attached, detached, "outbound {}", $url);
+                assert_eq!(detached.0, 0, "nothing registered for {}", $url);
+                assert_eq!(detached.1.len(), 1, "one error for {}", $url);
+                assert!(detached.1[0].1.contains($msg), "{:?}", detached.1);
+            }};
+            (in $url:expr, |$b:ident| $opts:expr, $msg:expr) => {{
+                let attached = outcome(registered(|reg| {
+                    let $b = reg.link_from($url);
+                    $opts.finish();
+                }));
+                let detached = outcome(registered(|reg| {
+                    let $b = InboundLink::new($url);
+                    reg.input($opts);
+                }));
+                assert_eq!(attached, detached, "inbound {}", $url);
+                assert_eq!(detached.0, 0, "nothing registered for {}", $url);
+                assert_eq!(detached.1.len(), 1, "one error for {}", $url);
+                assert!(detached.1[0].1.contains($msg), "{:?}", detached.1);
+            }};
+        }
+
+        same_errors!(out "no-scheme", |b| b.with_serializer(ser), "Invalid connector URL");
+        same_errors!(out "mqtt://a/{x}", |b| b.with_serializer(ser), "cannot contain");
+        same_errors!(out "mqtt://a", |b| b, "requires a serializer");
+        same_errors!(out "kafka://a", |b| b.with_serializer(ser), "No connector registered");
+
+        same_errors!(in "no-scheme", |b| b.with_deserializer(de), "Invalid connector URL");
+        same_errors!(in "mqtt://a", |b| b, "requires a deserializer");
+        same_errors!(
+            in "mqtt://a",
+            |b| b.with_deserializer(de).with_match_deserializer(match_de),
+            "not both"
+        );
+        same_errors!(in "kafka://a", |b| b.with_deserializer(de), "No connector registered");
+        same_errors!(
+            in "mqtt://t/{d}",
+            |b| b.with_deserializer(de).key("x", 2),
+            "is not a capture"
+        );
+        same_errors!(
+            in "mqtt://t/{d}",
+            |b| b.with_deserializer(de).key("d", 0),
+            "at least 1"
+        );
+    }
+
+    impl From<i32> for TestRecord {
+        fn from(value: i32) -> Self {
+            TestRecord { value }
+        }
+    }
+
+    /// A custom input, generic over every record type it can produce.
+    struct Counter;
+
+    impl<T> Input<T> for Counter
+    where
+        T: From<i32> + Send + Sync + 'static + Debug + Clone,
+    {
+        fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+            reg.source(|_ctx, producer| async move {
+                for i in 0..3 {
+                    producer.produce(T::from(i));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn custom_input_wires_a_source() {
+        let mut rec = registered(|reg| {
+            reg.input(Counter);
+        });
+        assert!(rec.has_producer());
+        assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    // ====================================================================
+    // Links through a connector handle: `OutboundLink::on` / `InboundLink::on`
+    // ====================================================================
+
+    /// The builder id `make_registrar` uses; real builders start at 1.
+    const TEST_BUILDER: u32 = 0;
+
+    /// Runs `wire` on a fresh buffered `TestRecord` with connectors
+    /// `[mqtt, knx]`, so a handle with index 1 really selects `knx`.
+    fn registered_mqtt_knx(
+        wire: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>),
+    ) -> crate::typed_record::TypedRecord<TestRecord> {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> = vec![
+            Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            }),
+            Box::new(MockConnectorBuilder {
+                scheme: "knx".to_string(),
+            }),
+        ];
+        let extensions = crate::extensions::Extensions::new();
+        wire(&mut make_registrar(&mut rec, &builders, &extensions));
+        rec
+    }
+
+    fn handle(builder: u32, index: u16) -> crate::ConnectorHandle {
+        crate::ConnectorHandle { builder, index }
+    }
+
+    #[test]
+    fn handle_links_take_the_connector_scheme() {
+        let (mqtt, knx) = (handle(TEST_BUILDER, 0), handle(TEST_BUILDER, 1));
+        let mut rec = registered_mqtt_knx(|reg| {
+            reg.input(InboundLink::on(knx, "1/0/7").with_deserializer(de))
+                .output(OutboundLink::on(knx, "1/2/3").with_serializer(ser))
+                // A full URL, as a `#[link_address]` key gives, when it matches.
+                .output(OutboundLink::on(mqtt, "mqtt://sensors/temp").with_serializer(ser));
+        });
+
+        assert!(drain_errors(&mut rec).is_empty());
+        assert_eq!(rec.inbound_connectors()[0].url.to_string(), "knx://1/0/7");
+        let out: Vec<String> = rec
+            .outbound_connectors()
+            .iter()
+            .map(|l| l.url.to_string())
+            .collect();
+        assert_eq!(out, ["knx://1/2/3", "mqtt://sensors/temp"]);
+    }
+
+    #[test]
+    fn handle_links_reject_wrong_scheme_and_foreign_handles() {
+        let (mqtt, knx) = (handle(TEST_BUILDER, 0), handle(TEST_BUILDER, 1));
+        let foreign = handle(TEST_BUILDER + 1, 0);
+        let out_of_range = handle(TEST_BUILDER, 7);
+        let mut rec = registered_mqtt_knx(|reg| {
+            reg.output(OutboundLink::on(mqtt, "knx://1/2/3").with_serializer(ser))
+                .input(InboundLink::on(knx, "mqtt://x").with_deserializer(de))
+                .output(OutboundLink::on(foreign, "a").with_serializer(ser))
+                .input(InboundLink::on(foreign, "a").with_deserializer(de))
+                .output(OutboundLink::on(out_of_range, "a").with_serializer(ser));
+        });
+
+        assert!(rec.outbound_connectors().is_empty());
+        assert!(rec.inbound_connectors().is_empty());
+        let errors: Vec<(Option<String>, String)> = drain_errors(&mut rec)
+            .into_iter()
+            .map(|e| (e.url, e.message))
+            .collect();
+        let foreign_msg = "Connector handle belongs to a different AimDbBuilder";
+        let expected = [
+            (
+                "knx://1/2/3",
+                "Address scheme 'knx' does not match the connector's scheme 'mqtt'",
+            ),
+            (
+                "mqtt://x",
+                "Address scheme 'mqtt' does not match the connector's scheme 'knx'",
+            ),
+            ("a", foreign_msg),
+            ("a", foreign_msg),
+            ("a", foreign_msg),
+        ];
+        let expected: Vec<(Option<String>, String)> = expected
+            .iter()
+            .map(|(url, msg)| (Some(url.to_string()), msg.to_string()))
+            .collect();
+        assert_eq!(errors, expected);
+    }
+
+    /// The target shape from #390, through `build()`: links on a handle
+    /// build; the same links on another builder's handle fail it.
+    #[tokio::test]
+    async fn handle_links_build_and_foreign_handles_fail_it() {
+        let mut other = crate::AimDbBuilder::new();
+        let foreign = other.connect(NoopConnectorBuilder);
+
+        for (use_foreign, expect_ok) in [(false, true), (true, false)] {
+            let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+            let mqtt = builder.connect(NoopConnectorBuilder);
+            let on = if use_foreign { foreign } else { mqtt };
+            builder.configure::<TestRecord>("temp.indoor", move |reg| {
+                reg.buffer_raw(Box::new(MockBuffer))
+                    .input(InboundLink::on(on, "commands/temp/indoor").with_deserializer(de))
+                    .output(OutboundLink::on(on, "sensors/temp/indoor").with_serializer(ser));
+            });
+            let result = builder.build().await;
+            if expect_ok {
+                let (db, _runner) = result.expect("handle links build");
+                let inbound =
+                    crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+                assert_eq!(inbound.subscriptions()[0].as_ref(), "commands/temp/indoor");
+            } else {
+                let errors = config_errors(result);
+                assert_eq!(errors.len(), 2, "got: {errors:?}");
+                assert!(errors.iter().all(|e| e.record_key == "temp.indoor"
+                    && e.message == "Connector handle belongs to a different AimDbBuilder"));
+            }
+        }
+    }
+
+    /// `with_schema` reports the record's schema on registration, in both
+    /// directions and on both forms, even when the link is rejected; a second
+    /// schema conflicts as with `reg.schema(..)`.
+    #[test]
+    fn with_schema_reports_the_record_schema() {
+        let schema_of = |rec: &crate::typed_record::TypedRecord<TestRecord>| {
+            rec.schema().map(|s| (s.name.clone(), s.version))
+        };
+        let expected = Some(("contract".to_string(), 2));
+
+        let mut detached = registered(|reg| {
+            reg.output(
+                OutboundLink::new("mqtt://out")
+                    .with_serializer(ser)
+                    .with_schema("contract", 2),
+            )
+            .input(
+                InboundLink::new("mqtt://in")
+                    .with_deserializer(de)
+                    .with_schema("contract", 2),
+            );
+        });
+        assert_eq!(schema_of(&detached), expected);
+        assert_eq!(detached.outbound_connectors().len(), 1);
+        assert!(drain_errors(&mut detached).is_empty());
+
+        let mut attached = registered(|reg| {
+            reg.link_from("mqtt://in")
+                .with_deserializer(de)
+                .with_schema("contract", 2)
+                .finish();
+        });
+        assert_eq!(schema_of(&attached), expected);
+        assert!(drain_errors(&mut attached).is_empty());
+
+        // Rejected (no serializer), yet the schema is reported.
+        let mut rejected = registered(|reg| {
+            reg.output(OutboundLink::new("mqtt://out").with_schema("contract", 2));
+        });
+        assert_eq!(schema_of(&rejected), expected);
+        assert!(rejected.outbound_connectors().is_empty());
+        assert_eq!(drain_errors(&mut rejected).len(), 1);
+
+        let mut conflicting = registered(|reg| {
+            reg.schema("contract", 1).output(
+                OutboundLink::new("mqtt://out")
+                    .with_serializer(ser)
+                    .with_schema("contract", 2),
+            );
+        });
+        let errors = drain_errors(&mut conflicting);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("already carries contract v1"));
+    }
+
+    /// A connector registered with `connect` serves links exactly like one
+    /// registered with `with_connector`.
+    #[tokio::test]
+    async fn connected_connector_serves_links() {
+        let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+        let _mqtt = builder.connect(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(InboundLink::new("mqtt://a").with_deserializer(de));
+        });
+        let (db, _runner) = builder.build().await.expect("builds");
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(inbound.route_count(), 1);
+    }
+
+    /// Two inbound links on one record are fan-in, through `.input()` as
+    /// through `.link_from()`.
+    #[tokio::test]
+    async fn two_inbound_inputs_fan_in() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(InboundLink::new("mqtt://a").with_deserializer(de))
+                .input(InboundLink::new("mqtt://b").with_deserializer(de));
+        });
+        let (db, _runner) = builder.build().await.expect("fan-in builds");
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+        assert_eq!(inbound.route_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn input_source_and_link_conflict() {
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(MockRuntime))
+            .with_connector(NoopConnectorBuilder);
+        builder.configure::<TestRecord>("rec.in", |reg| {
+            reg.buffer_raw(Box::new(MockBuffer))
+                .input(Counter)
+                .input(InboundLink::new("mqtt://a").with_deserializer(de));
+        });
+        let errors = config_errors(builder.build().await);
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(errors[0].record_key, "rec.in");
+        assert!(
+            errors[0]
+                .message
+                .contains("conflicting writers: record has source + inbound link"),
+            "got: {}",
+            errors[0].message
+        );
     }
 
     #[test]

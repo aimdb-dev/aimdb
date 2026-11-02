@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`publish(handle, address)` / `subscribe(handle, address)` (#391)** for
+  `Linkable` contracts: a link in the contract's own codec that reports its
+  schema, for `reg.output(..)` / `reg.input(..)`. Connector options apply as
+  on any link. `linked_to` / `linked_from` now share their implementation,
+  unchanged in behaviour. A type that is not `Linkable` gets a readable
+  compile error.
+- `LinkCodecBuilderExt::with_link_codec` also applies to detached links
+  (`OutboundLink` / `InboundLink`, #389).
+
 - **Records report their contract's schema to core (#332).** `linked_to`,
   `linked_from`, `linked_*_with` and `observe` set the record's schema to
   `T::NAME`/`T::VERSION` (`RecordRegistrar::schema`), so `graph.nodes` and

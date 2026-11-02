@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `MqttLinkExt` / `MqttOutboundLinkExt` also apply to detached links
+  (`OutboundLink` / `InboundLink`, #389).
+
 - **A second MQTT connector now fails the build instead of silently
   duplicating every route (#329).** `MqttConnector` declares
   `ConnectorBuilder::owns_scheme`, so registering two is a configuration

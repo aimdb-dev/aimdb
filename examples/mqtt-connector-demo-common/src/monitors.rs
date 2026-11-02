@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use crate::types::{Temperature, TemperatureCommand};
+use crate::types::{ButtonPress, Temperature, TemperatureCommand};
 use aimdb_core::{Consumer, RuntimeContext, Stamp};
 
 /// A write stamp as `@ <seconds>.<millis>s` since the instance started.
@@ -67,6 +67,26 @@ pub async fn command_consumer(ctx: RuntimeContext, consumer: Consumer<Temperatur
             cmd.value.action,
             cmd.value.sensor_id,
             at(cmd.stamp())
+        ));
+    }
+}
+
+// ============================================================================
+// BUTTON LOGGER
+// ============================================================================
+
+/// Button logger that logs each press
+pub async fn button_logger(ctx: RuntimeContext, consumer: Consumer<ButtonPress>) {
+    let log = ctx.log();
+
+    let mut reader = consumer.subscribe();
+
+    while let Ok(press) = reader.recv().await {
+        log.info(&alloc::format!(
+            "🔘 Button {} pressed (#{}) {}",
+            press.value.button,
+            press.value.press,
+            at(press.stamp())
         ));
     }
 }

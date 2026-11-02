@@ -88,9 +88,9 @@ impl std::error::Error for SerializeError {}
 
 /// Writes an outbound link's destination for each value (outbound only).
 ///
-/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundConnectorBuilder::with_topic_fn)
+/// Closures implement it, and [`with_topic_fn`](crate::typed_api::OutboundLinkBuilder::with_topic_fn)
 /// takes one directly. A writer type goes to
-/// [`with_topic_writer`](crate::typed_api::OutboundConnectorBuilder::with_topic_writer).
+/// [`with_topic_writer`](crate::typed_api::OutboundLinkBuilder::with_topic_writer).
 ///
 /// # Example
 ///
@@ -206,6 +206,60 @@ impl<'a> TopicBuf<'a> {
 impl core::fmt::Write for TopicBuf<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.push_str(s).map_err(|_| core::fmt::Error)
+    }
+}
+
+/// A connector registered with [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+///
+/// Links started from a handle ([`OutboundLink::on`](crate::OutboundLink::on),
+/// [`InboundLink::on`](crate::InboundLink::on)) take the connector's scheme,
+/// so they cannot name a connector that was never registered.
+///
+/// The handle is `Copy` and names its connector by position, not by scheme,
+/// so it holds no string. It is only valid in the builder that returned it;
+/// a link on another builder's handle fails `build()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectorHandle {
+    /// The [`AimDbBuilder`](crate::AimDbBuilder) that returned the handle.
+    pub(crate) builder: u32,
+    /// Position in that builder's connector list.
+    pub(crate) index: u16,
+}
+
+/// A fresh id per [`AimDbBuilder`](crate::AimDbBuilder), so a
+/// [`ConnectorHandle`] from one builder is told apart from another's. Starts
+/// at 1; tests use 0 as a fixed id.
+pub(crate) fn next_builder_id() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The full `scheme://address` URL of a link started from `handle`, or why
+/// it cannot have one.
+///
+/// An address without a scheme takes the connector's. An address with one
+/// (as a `#[link_address]` key gives) must name the connector's scheme.
+pub(crate) fn resolve_link_url(
+    builder_id: u32,
+    connectors: &[Box<dyn ConnectorBuilder>],
+    handle: ConnectorHandle,
+    address: &str,
+) -> Result<String, String> {
+    // An out-of-range index can only come from another builder's handle.
+    let Some(connector) = connectors
+        .get(usize::from(handle.index))
+        .filter(|_| handle.builder == builder_id)
+    else {
+        return Err("Connector handle belongs to a different AimDbBuilder".into());
+    };
+    let scheme = connector.scheme();
+    match address.split_once("://") {
+        None => Ok(alloc::format!("{scheme}://{address}")),
+        Some((given, _)) if given == scheme => Ok(address.into()),
+        Some((given, _)) => Err(alloc::format!(
+            "Address scheme '{given}' does not match the connector's scheme '{scheme}'"
+        )),
     }
 }
 
@@ -451,7 +505,7 @@ impl ConnectorLink {
 
 /// Fused inbound ingest callback: deserialize + produce in one typed closure
 ///
-/// Built where the record type `T` is known (`InboundConnectorBuilder::finish`),
+/// Built where the record type `T` is known (`RecordRegistrar::push_inbound`),
 /// so no `Box<dyn Any>` crosses the connector boundary per message. The closure
 /// captures the typed producer and deserializer; callers only see bytes.
 ///

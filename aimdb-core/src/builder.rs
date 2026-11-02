@@ -302,6 +302,10 @@ pub struct AimDbBuilder {
     /// Connector builders that will be invoked during build()
     connector_builders: Vec<Box<dyn crate::connector::ConnectorBuilder>>,
 
+    /// Identifies this builder in the
+    /// [`ConnectorHandle`](crate::connector::ConnectorHandle)s it returns.
+    builder_id: u32,
+
     /// Per-record future collectors with their keys.
     spawn_fns: Vec<(StringKey, SpawnFnType)>,
 
@@ -336,6 +340,7 @@ impl AimDbBuilder {
             record_index: HashMap::new(),
             runtime: None,
             connector_builders: Vec::new(),
+            builder_id: crate::connector::next_builder_id(),
             spawn_fns: Vec::new(),
             start_fns: Vec::new(),
             extensions: Extensions::new(),
@@ -447,6 +452,9 @@ impl AimDbBuilder {
     ///      **no links** — registering it is how a server stands up remote access
     ///      (this replaces the old `with_remote_access(config)`).
     ///
+    /// To keep a handle to the connector, register it with
+    /// [`connect`](Self::connect) instead.
+    ///
     /// # Examples
     ///
     /// Illustrative (not compiled: the connector types live in downstream
@@ -478,6 +486,36 @@ impl AimDbBuilder {
     ) -> Self {
         self.connector_builders.push(Box::new(builder));
         self
+    }
+
+    /// Registers a connector, exactly like [`with_connector`](Self::with_connector),
+    /// and returns a [`ConnectorHandle`](crate::connector::ConnectorHandle) for it.
+    ///
+    /// Takes `&mut self`, so it follows the by-value setup chain, like
+    /// [`configure`](Self::configure):
+    ///
+    /// ```rust,ignore
+    /// let mut b = AimDbBuilder::new().runtime(rt);
+    /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
+    /// b.configure::<Temperature>("temp.indoor", |r| {
+    ///     // A contract (`Linkable`) brings its own wire format:
+    ///     r.output(aimdb_data_contracts::publish(mqtt, "sensors/temp/indoor"));
+    ///     // Any other type, with a serializer of its own:
+    ///     r.output(OutboundLink::on(mqtt, "sensors/temp/raw").with_serializer(ser));
+    /// });
+    /// ```
+    pub fn connect(
+        &mut self,
+        builder: impl crate::connector::ConnectorBuilder + 'static,
+    ) -> crate::connector::ConnectorHandle {
+        let index = self.connector_builders.len();
+        self.connector_builders.push(Box::new(builder));
+        // Nobody registers more than u16::MAX connectors; saturating leaves an
+        // index that matches no connector rather than wrapping onto one.
+        crate::connector::ConnectorHandle {
+            builder: self.builder_id,
+            index: u16::try_from(index).unwrap_or(u16::MAX),
+        }
     }
 
     // NOTE: a remote-access **server** is registered like any other connector —
@@ -563,6 +601,7 @@ impl AimDbBuilder {
         let mut reg = RecordRegistrar {
             rec,
             connector_builders: &self.connector_builders,
+            builder_id: self.builder_id,
             record_key: record_key.as_str().to_string(),
             extensions: &self.extensions,
             last_stage: None,
@@ -666,19 +705,21 @@ impl AimDbBuilder {
                 errors.push(e);
             }
 
-            // Writer exclusivity: .source(), .transform(), and .link_from()
-            // all write into the record's buffer and would race as
+            // Writer exclusivity: sources, transforms and inbound links all
+            // write into the record's buffer and would race as
             // last-writer-wins — at most one origin kind per record. Validated
-            // once here (the setters only catch same-stage duplicates).
+            // once here (the setters only catch same-stage duplicates). The
+            // message names kinds, not methods: `.input(..)` reaches the same
+            // origins as `.source()` and `.link_from()`.
             let mut writers: Vec<&str> = Vec::new();
             if record.has_producer() {
-                writers.push(".source()");
+                writers.push("source");
             }
             if record.has_transform() {
-                writers.push(".transform()");
+                writers.push("transform");
             }
             if !record.inbound_connectors().is_empty() {
-                writers.push(".link_from()");
+                writers.push("inbound link");
             }
             if writers.len() > 1 {
                 let url = record
@@ -1453,5 +1494,50 @@ mod instance_clock_tests {
         assert_eq!(db.runtime_ctx().clock().now(), Stamp::from_nanos(4242));
         #[cfg(feature = "observability")]
         assert_eq!((db.profiling_clock())(), 4242);
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use crate::connector::ConnectorBuilder;
+    use crate::{AimDb, AimDbBuilder, DbResult};
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+    use core::future::Future;
+    use core::pin::Pin;
+
+    struct Scheme(&'static str);
+
+    impl ConnectorBuilder for Scheme {
+        fn build<'a>(
+            &'a self,
+            _db: &'a AimDb,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = DbResult<Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn scheme(&self) -> &str {
+            self.0
+        }
+    }
+
+    #[test]
+    fn connect_hands_out_one_handle_per_connector() {
+        let mut a = AimDbBuilder::new();
+        let mqtt = a.connect(Scheme("mqtt"));
+        let knx = a.connect(Scheme("knx"));
+        let other = AimDbBuilder::new().connect(Scheme("mqtt"));
+
+        assert_eq!((mqtt.index, knx.index), (0, 1));
+        assert_eq!(mqtt.builder, knx.builder);
+        assert_ne!(mqtt.builder, other.builder);
+        let schemes: Vec<&str> = a.connector_builders.iter().map(|c| c.scheme()).collect();
+        assert_eq!(schemes, ["mqtt", "knx"]);
     }
 }
