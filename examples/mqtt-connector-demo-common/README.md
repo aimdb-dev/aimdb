@@ -14,7 +14,7 @@ The same monitor functions, data types, and business logic work across all platf
 ┌─────────────────────────────────────────────────────────────────┐
 │                   mqtt-connector-demo-common                    │
 │  ┌─────────────────┐ ┌──────────────────┐                      │
-│  │   Data Types    │ │ Monitor Functions│                      │
+│  │   Contracts     │ │ Monitor Functions│                      │
 │  │ Temperature     │ │ temperature_logger│                     │
 │  │ TemperatureCmd  │ │ command_consumer │                      │
 │  └─────────────────┘ └──────────────────┘                      │
@@ -31,39 +31,47 @@ The same monitor functions, data types, and business logic work across all platf
      └─────────────┘  └─────────────┘  └─────────────┘
 ```
 
+## Contents
+
+- **Contracts** (`types`): `Temperature`, `TemperatureCommand`. Their wire format is JSON through `#[derive(Linkable)]` on every target, `no_std + alloc` included.
+- **Keys** (`keys`): `SensorKey`, `CommandKey`, each with its MQTT topic in `#[link_address]`.
+- **Simulated thermometers** (`sim`): `SimThermometers` hands out one owned channel per sensor; `Thermometer::on(channel)` is an input for every record type built `From<Reading>`.
+- **Monitors** (`monitors`): `temperature_logger`, `command_consumer`.
+
 ## Features
 
-- `std` - Enable std support (serde_json for serialization)
-- `alloc` - Enable allocator support (required for most features)
+- `std` - Enable std support
 - `defmt` - Enable defmt integration for embedded logging
 
 ## Usage
 
+The wiring is the same on both runtimes; only the buffer differs.
+
 ### Tokio (Edge/Cloud)
 
 ```rust
-use mqtt_connector_demo_common::{Temperature, TemperatureCommand, temperature_logger, command_consumer};
+use aimdb_data_contracts::publish;
+use mqtt_connector_demo_common::{SensorKey, SimThermometers, Temperature, Thermometer, temperature_logger};
 
-builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
+let mqtt = builder.connect(MqttConnector::new(broker_url));
+let SimThermometers { indoor, .. } = SimThermometers::new();
+
+builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+       .input(Thermometer::on(indoor))
        .tap(temperature_logger)  // Shared monitor
-       .link_to("mqtt://sensors/temp/indoor")
-       .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
-       .finish();
+       .output(publish(mqtt, SensorKey::TempIndoor.link_address().unwrap()));
 });
 ```
 
 ### Embassy (MCU)
 
 ```rust
-use mqtt_connector_demo_common::{Temperature, TemperatureCommand, temperature_logger, command_consumer};
-
-builder.configure::<Temperature>("sensor.temp.indoor", |reg| {
+builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
     reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
-       .tap(temperature_logger)  // Same monitor works!
-       .link_to("mqtt://sensors/temp/indoor")
-       .with_serializer(|temp: &Temperature| Ok(temp.to_json_vec()))
-       .finish();
+       .input(Thermometer::on(indoor))  // Same input works!
+       .tap(temperature_logger)         // Same monitor works!
+       .output(publish(mqtt, SensorKey::TempIndoor.link_address().unwrap()));
 });
 ```
 

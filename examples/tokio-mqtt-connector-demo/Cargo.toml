@@ -22,12 +22,9 @@ aimdb-tokio-adapter = { path = "../../aimdb-tokio-adapter", features = [
 # Shared demo logic
 mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
     "std",
-    "derive",
-    "data-contracts",
 ] }
 
-# Format-neutral LinkableRegistrarExt; the common crate enables linkable-json
-# for its derived value types.
+# publish / subscribe; the common crate enables linkable-json for its contracts.
 aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = [
     "linkable",
 ] }

@@ -4,8 +4,15 @@
 //! - Multiple temperature sensors publishing to different topics
 //! - Multiple command consumers receiving from different topics
 //!
-//! This demo uses `mqtt-connector-demo-common` for shared types and monitors,
-//! demonstrating AimDB's "write once, run anywhere" capability.
+//! This demo uses `mqtt-connector-demo-common` for the shared contracts, keys,
+//! simulated thermometers and monitors, demonstrating AimDB's "write once, run
+//! anywhere" capability: this file holds only the setup and the record wiring.
+//!
+//! ## Wiring
+//!
+//! The connector is registered with `connect`, which returns a handle. Records
+//! take a thermometer as `.input(..)` and link to MQTT with `publish` /
+//! `subscribe` on that handle, in the contract's own wire format.
 //!
 //! ## Compile-Time Safe Keys
 //!
@@ -51,93 +58,20 @@
 //! because a self-signed broker cert won't otherwise validate.
 
 use aimdb_core::buffer::BufferCfg;
-use aimdb_core::{AimDbBuilder, DbResult, Producer, RecordKey, RuntimeContext};
-use aimdb_data_contracts::LinkableRegistrarExt;
-use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
+use aimdb_core::{AimDbBuilder, DbResult, RecordKey};
+use aimdb_data_contracts::{publish, subscribe};
+use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt, MqttOutboundLinkExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 
-// Import shared types, monitors, and compile-time safe keys from the common crate
+// Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    command_consumer, temperature_logger, CommandKey, SensorKey, Temperature, TemperatureCommand,
+    command_consumer, temperature_logger, CommandKey, SensorKey, SimThermometers, Temperature,
+    TemperatureCommand, Thermometer,
 };
 
-// ============================================================================
-// TEMPERATURE PRODUCERS (platform-specific)
-// ============================================================================
-
-/// Indoor temperature sensor producer
-async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    let time = ctx.time();
-
-    log.info("🏠 Starting INDOOR temperature producer...\n");
-
-    for i in 0..5 {
-        let temp = Temperature::new("indoor-001", 22.0 + (i as f32 * 0.5)); // Indoor temps: 22-24°C
-
-        log.info(&format!(
-            "🏠 Indoor sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        time.sleep_secs(2).await;
-    }
-
-    log.info("✅ Indoor producer finished");
-}
-
-/// Outdoor temperature sensor producer
-async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    let time = ctx.time();
-
-    log.info("🌳 Starting OUTDOOR temperature producer...\n");
-
-    for i in 0..5 {
-        let temp = Temperature::new("outdoor-001", 5.0 + (i as f32 * 1.0)); // Outdoor temps: 5-9°C (cold!)
-
-        log.info(&format!(
-            "🌳 Outdoor sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        time.sleep_secs(2).await;
-    }
-
-    log.info("✅ Outdoor producer finished");
-}
-
-/// Server room temperature sensor producer
-async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    let time = ctx.time();
-
-    log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
-
-    for i in 0..5 {
-        let temp = Temperature::new("server-room-001", 18.0 + (i as f32 * 0.2)); // Server room: 18-19°C (cooled)
-
-        log.info(&format!(
-            "🖥️  Server room sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        time.sleep_secs(2).await;
-    }
-
-    log.info("✅ Server room producer finished");
-}
-
-// ============================================================================
-// MAIN
-// ============================================================================
+/// Readings per thermometer before it stops.
+const READINGS: usize = 5;
 
 #[tokio::main]
 async fn main() -> DbResult<()> {
@@ -154,56 +88,61 @@ async fn main() -> DbResult<()> {
     println!("Broker: {broker_url}");
     println!();
 
-    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
-        aimdb_mqtt_connector::MqttConnector::new(broker_url)
-            .with_client_id("tokio-demo-multi-sensor"),
-    );
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+    let mqtt =
+        builder.connect(MqttConnector::new(broker_url).with_client_id("tokio-demo-multi-sensor"));
+    let SimThermometers {
+        indoor,
+        outdoor,
+        server_room,
+    } = SimThermometers::new();
 
-    // Temperature sensors (outbound to MQTT) - using link_address() from key metadata.
-    // TempIndoor needs per-link QoS/retain, so it stays on the raw builder (the
-    // escape hatch for per-link options); TempOutdoor/TempServerRoom need no
-    // extra options, so `.linked_to()` (from `#[derive(Linkable)]`) suffices.
+    // Temperature sensors (outbound to MQTT), topics from the keys' `#[link_address]`.
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .source(indoor_temp_producer)
+            .input(Thermometer::on(indoor).readings(READINGS))
             .tap(temperature_logger)
-            .link_to(SensorKey::TempIndoor.link_address().unwrap())
-            .with_qos(1)
-            .with_retain(false)
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .output(
+                publish(mqtt, SensorKey::TempIndoor.link_address().unwrap())
+                    .with_qos(1)
+                    .with_retain(false),
+            );
     });
 
     builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .source(outdoor_temp_producer)
-            .tap(temperature_logger);
-        reg.linked_to(SensorKey::TempOutdoor.link_address().unwrap());
+            .input(Thermometer::on(outdoor).readings(READINGS))
+            .tap(temperature_logger)
+            .output(publish(
+                mqtt,
+                SensorKey::TempOutdoor.link_address().unwrap(),
+            ));
     });
 
     builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .source(server_room_temp_producer)
-            .tap(temperature_logger);
-        reg.linked_to(SensorKey::TempServerRoom.link_address().unwrap());
+            .input(Thermometer::on(server_room).readings(READINGS))
+            .tap(temperature_logger)
+            .output(publish(
+                mqtt,
+                SensorKey::TempServerRoom.link_address().unwrap(),
+            ));
     });
 
-    // Command consumers (inbound from MQTT) - using link_address() from key metadata.
-    // TempIndoor needs subscribe QoS, so it stays on the raw builder; TempOutdoor
-    // uses `.linked_from()`.
+    // Command consumers (inbound from MQTT).
     builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
-            .tap(command_consumer)
-            .link_from(CommandKey::TempIndoor.link_address().unwrap())
-            .with_qos(1) // subscribe QoS via MqttLinkExt
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
-            .finish();
+            .input(subscribe(mqtt, CommandKey::TempIndoor.link_address().unwrap()).with_qos(1))
+            .tap(command_consumer);
     });
 
     builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
+            .input(subscribe(
+                mqtt,
+                CommandKey::TempOutdoor.link_address().unwrap(),
+            ))
             .tap(command_consumer);
-        reg.linked_from(CommandKey::TempOutdoor.link_address().unwrap());
     });
 
     println!("Subscribe: mosquitto_sub -h localhost -t 'sensors/#' -v");

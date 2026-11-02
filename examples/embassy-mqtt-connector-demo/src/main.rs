@@ -69,7 +69,8 @@
 extern crate alloc;
 
 use aimdb_core::remote::SecurityPolicy;
-use aimdb_core::{AimDbBuilder, Producer, RecordKey, RuntimeContext};
+use aimdb_core::{AimDbBuilder, RecordKey};
+use aimdb_data_contracts::{publish, subscribe};
 use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
 use aimdb_serial_connector::SerialServer;
@@ -91,9 +92,10 @@ use aimdb_mqtt_connector::MqttConnector;
 #[cfg(feature = "tls")]
 use aimdb_mqtt_connector::TlsOptions;
 
-// Import shared types, monitors, and compile-time safe keys from the common crate
+// Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    CommandKey, SensorKey, Temperature, TemperatureCommand, command_consumer, temperature_logger,
+    CommandKey, SensorKey, SimThermometers, Temperature, TemperatureCommand, Thermometer,
+    command_consumer, temperature_logger,
 };
 
 // Simple embedded allocator (required by some dependencies)
@@ -114,71 +116,6 @@ type Device =
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
     runner.run().await
-}
-
-// ============================================================================
-// TEMPERATURE PRODUCERS (platform-specific due to embassy-time)
-//
-// Each cycles its readings endlessly rather than stopping after a fixed
-// count: reconnect, re-subscribe and ping cadence only become observable
-// while something is still publishing.
-// ============================================================================
-
-/// Indoor temperature sensor producer
-async fn indoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    log.info("🏠 Starting INDOOR temperature producer...\n");
-
-    for i in (0..5).cycle() {
-        let temp = Temperature::new("indoor-001", 22.0 + (i as f32 * 0.5)); // Indoor temps: 22-24°C
-
-        log.info(&alloc::format!(
-            "🏠 Indoor sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
-
-/// Outdoor temperature sensor producer
-async fn outdoor_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    log.info("🌳 Starting OUTDOOR temperature producer...\n");
-
-    for i in (0..5).cycle() {
-        let temp = Temperature::new("outdoor-001", 5.0 + (i as f32 * 1.0)); // Outdoor temps: 5-9°C (cold!)
-
-        log.info(&alloc::format!(
-            "🌳 Outdoor sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
-
-/// Server room temperature sensor producer
-async fn server_room_temp_producer(ctx: RuntimeContext, temperature: Producer<Temperature>) {
-    let log = ctx.log();
-    log.info("🖥️  Starting SERVER ROOM temperature producer...\n");
-
-    for i in (0..5).cycle() {
-        let temp = Temperature::new("server-room-001", 18.0 + (i as f32 * 0.2)); // Server room: 18-19°C (cooled)
-
-        log.info(&alloc::format!(
-            "🖥️  Server room sensor producing: {:.1}°C",
-            temp.celsius
-        ));
-
-        temperature.produce(temp);
-
-        Timer::after(Duration::from_secs(2)).await;
-    }
 }
 
 // ============================================================================
@@ -428,13 +365,21 @@ async fn main(spawner: Spawner) {
             .with_keep_alive(MQTT_KEEP_ALIVE)
     };
 
-    let mut builder = AimDbBuilder::new()
-        .runtime(runtime.clone())
-        .with_connector(mqtt)
-        .with_connector(
-            SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
-                .security_policy(SecurityPolicy::read_only()),
-        );
+    // The serial server takes no links, so it needs no handle.
+    let mut builder = AimDbBuilder::new().runtime(runtime.clone()).with_connector(
+        SerialServer::new(EmbassyUart::new(serial_rx, serial_tx))
+            .security_policy(SecurityPolicy::read_only()),
+    );
+    let mqtt = builder.connect(mqtt);
+
+    // The simulated thermometers cycle their readings endlessly: reconnect,
+    // re-subscribe and ping cadence only become observable while something
+    // is still publishing.
+    let SimThermometers {
+        indoor,
+        outdoor,
+        server_room,
+    } = SimThermometers::new();
 
     // ========================================================================
     // TEMPERATURE SENSORS (outbound: AimDB → MQTT)
@@ -447,31 +392,25 @@ async fn main(spawner: Spawner) {
     builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
-            .source(indoor_temp_producer)
+            .input(Thermometer::on(indoor))
             .tap(temperature_logger)
-            .link_to(SensorKey::TempIndoor.link_address().unwrap())
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .output(publish(mqtt, SensorKey::TempIndoor.link_address().unwrap()));
     });
 
     builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
-            .source(outdoor_temp_producer)
+            .input(Thermometer::on(outdoor))
             .tap(temperature_logger)
-            .link_to(SensorKey::TempOutdoor.link_address().unwrap())
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .output(publish(mqtt, SensorKey::TempOutdoor.link_address().unwrap()));
     });
 
     builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
-            .source(server_room_temp_producer)
+            .input(Thermometer::on(server_room))
             .tap(temperature_logger)
-            .link_to(SensorKey::TempServerRoom.link_address().unwrap())
-            .with_serializer(|_ctx, temp: &Temperature| Ok(temp.to_json_vec()))
-            .finish();
+            .output(publish(mqtt, SensorKey::TempServerRoom.link_address().unwrap()));
     });
 
     // ========================================================================
@@ -483,18 +422,14 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .tap(command_consumer)
-            .link_from(CommandKey::TempIndoor.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
-            .finish();
+            .input(subscribe(mqtt, CommandKey::TempIndoor.link_address().unwrap()));
     });
 
     builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .tap(command_consumer)
-            .link_from(CommandKey::TempOutdoor.link_address().unwrap())
-            .with_deserializer(|_ctx, data: &[u8]| TemperatureCommand::from_json(data))
-            .finish();
+            .input(subscribe(mqtt, CommandKey::TempOutdoor.link_address().unwrap()));
     });
 
     info!("✅ Database configured with multi-sensor MQTT:");

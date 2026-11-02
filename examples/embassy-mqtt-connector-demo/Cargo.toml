@@ -40,10 +40,10 @@ aimdb-serial-connector = { path = "../../aimdb-serial-connector", default-featur
 
 # Shared demo logic. `serde` makes the shared types serde-codec'able in no_std so
 # they can be exposed over the serial remote-access server.
-mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common", features = [
-    "alloc",
-    "derive",
-    "serde",
+mqtt-connector-demo-common = { path = "../mqtt-connector-demo-common" }
+# publish / subscribe; the common crate enables linkable-json for its contracts.
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false, features = [
+    "linkable",
 ] }
 
 # Embassy ecosystem - STM32H563ZI with Ethernet
