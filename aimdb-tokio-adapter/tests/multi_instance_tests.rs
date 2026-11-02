@@ -250,8 +250,7 @@ async fn test_conflicting_writers_reported_from_build() {
         "got: {}",
         errors[0].message
     );
-    assert!(errors[0].message.contains(".source()"));
-    assert!(errors[0].message.contains(".transform()"));
+    assert!(errors[0].message.contains("source + transform"));
 }
 
 /// Test: RecordId remains stable and can be used for O(1) access

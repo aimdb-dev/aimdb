@@ -666,19 +666,21 @@ impl AimDbBuilder {
                 errors.push(e);
             }
 
-            // Writer exclusivity: .source(), .transform(), and .link_from()
-            // all write into the record's buffer and would race as
+            // Writer exclusivity: sources, transforms and inbound links all
+            // write into the record's buffer and would race as
             // last-writer-wins — at most one origin kind per record. Validated
-            // once here (the setters only catch same-stage duplicates).
+            // once here (the setters only catch same-stage duplicates). The
+            // message names kinds, not methods: `.input(..)` reaches the same
+            // origins as `.source()` and `.link_from()`.
             let mut writers: Vec<&str> = Vec::new();
             if record.has_producer() {
-                writers.push(".source()");
+                writers.push("source");
             }
             if record.has_transform() {
-                writers.push(".transform()");
+                writers.push("transform");
             }
             if !record.inbound_connectors().is_empty() {
-                writers.push(".link_from()");
+                writers.push("inbound link");
             }
             if writers.len() > 1 {
                 let url = record
