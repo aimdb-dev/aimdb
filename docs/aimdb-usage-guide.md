@@ -47,15 +47,15 @@ edition = "2021"
 
 [dependencies]
 # AimDB core and Tokio runtime adapter
-aimdb-core = "1.2"
-aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime"] }
+aimdb-core = "2.0"
+aimdb-tokio-adapter = { version = "0.7", features = ["tokio-runtime"] }
 
 # Optional: KNX connector
 # aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
 # aimdb-tokio-adapter's "net" feature is also required — see the KNX section.
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.6", features = ["tokio-runtime"] }
+# aimdb-mqtt-connector = { version = "0.7", features = ["tokio-runtime"] }
 
 # Optional: Sync API wrapper (for blocking code)
 # aimdb-sync = "0.6"
@@ -76,57 +76,48 @@ tokio = { version = "1.0", features = ["full"] }
 ### 3. Basic Example (main.rs)
 
 ```rust
-use aimdb_core::prelude::*;
-use aimdb_tokio_adapter::TokioAdapter;
+use aimdb_core::buffer::BufferCfg;
+use aimdb_core::{AimDbBuilder, DbResult};
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct SensorData {
     temperature: f32,
-    timestamp: u64,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> DbResult<()> {
     // Create Tokio runtime adapter
     let runtime = Arc::new(TokioAdapter::new()?);
-    
-    // Build database
-    let db = AimDbBuilder::new()
-        .runtime(runtime)
-        .configure::<SensorData>("sensor.data", |reg| {
-            reg.buffer(BufferCfg::SingleLatest)
-            
+
+    let mut builder = AimDbBuilder::new().runtime(runtime);
+    builder.configure::<SensorData>("sensor.data", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
             // Simulate a temperature sensor reading every second
             .source(|ctx, producer| async move {
-                let time = ctx.time();
-                loop {
-                    let data = SensorData {
-                        temperature: 20.0 + (rand::random::<f32>() * 5.0), // 20-25°C
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    };
-                    
-                    let _ = producer.produce(data).await;
-                    time.sleep_secs(1).await;
+                for i in 0u32.. {
+                    let temperature = 20.0 + (i % 50) as f32 * 0.1; // 20-25°C
+                    producer.produce(SensorData { temperature });
+                    ctx.time().sleep_secs(1).await;
                 }
             })
-            
             // React to sensor data changes
             .tap(|_, consumer| async move {
-                let mut reader = consumer.subscribe().unwrap();
+                let mut reader = consumer.subscribe();
                 while let Ok(data) = reader.recv().await {
-                    println!("🌡️  Temperature: {:.1}°C at {}", 
-                             data.value.temperature, data.value.timestamp);
+                    // Every value carries the time it was written.
+                    println!(
+                        "🌡️  Temperature: {:.1}°C at {:?}",
+                        data.value.temperature,
+                        data.stamp()
+                    );
                 }
             });
-        })
-        .build().await?;
-    
+    });
+
     println!("🚀 AimDB running with Tokio...");
-    db.run().await
+    builder.run().await
 }
 ```
 
@@ -149,14 +140,14 @@ Once you have an Embassy project set up, add AimDB:
 ```toml
 [dependencies]
 # AimDB core and Embassy runtime adapter
-aimdb-core = { version = "1.2", default-features = false }
-aimdb-embassy-adapter = { version = "0.6", features = ["embassy-runtime"] }
+aimdb-core = { version = "2.0", default-features = false }
+aimdb-embassy-adapter = { version = "0.7", features = ["embassy-runtime"] }
 
 # Optional: KNX connector
 # aimdb-knx-connector = { version = "0.5", features = ["connector"], default-features = false }
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.6", features = ["embassy-runtime"], default-features = false }
+# aimdb-mqtt-connector = { version = "0.7", features = ["embassy-runtime"], default-features = false }
 
 # Embassy runtime (example for RP2040)
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
@@ -290,7 +281,7 @@ The KNX connector provides KNX/IP tunneling support for building automation syst
 # Host. `critical-section-std-impl` selects the impl the connector's channels
 # need to link — only a final binary may pick one.
 aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
-aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime", "net"] }
+aimdb-tokio-adapter = { version = "0.7", features = ["tokio-runtime", "net"] }
 
 # Embedded. `connector` is the same code on `no_std + alloc`; the HAL already
 # provides a `critical-section` impl.
@@ -303,10 +294,11 @@ knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master
 
 **Example (Tokio):**
 ```rust
-use aimdb_core::prelude::*;
-use aimdb_tokio_adapter::TokioAdapter;
-use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
+use aimdb_core::buffer::BufferCfg;
+use aimdb_core::{AimDbBuilder, DbResult};
 use aimdb_knx_connector::KnxConnector;
+use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
+use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -316,37 +308,34 @@ struct LightState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> DbResult<()> {
     let runtime = Arc::new(TokioAdapter::new()?);
-    
-    let db = AimDbBuilder::new()
-        .runtime(runtime)
-        // The adapter owns the UDP socket and the clock; the connector owns
-        // the tunnelling protocol.
-        .with_connector(KnxConnector::new(
-            TokioNet::udp(Ipv4Addr::UNSPECIFIED),
-            TokioDelay,
-            "knx://192.168.1.19:3671",
-        ))
-        .configure::<LightState>("light.state", |reg| {
-            reg.buffer(BufferCfg::SingleLatest)
-               .link_from("knx://1/0/7")
-               .with_deserializer(|data: &[u8]| {
-                   let is_on = data.get(0).map(|&b| b != 0).unwrap_or(false);
-                   Ok(Box::new(LightState { is_on }))
-               })
-               .finish();
-            
-            reg.tap(|_, consumer| async move {
-                let mut reader = consumer.subscribe().unwrap();
+
+    // The adapter owns the UDP socket and the clock; the connector owns
+    // the tunnelling protocol.
+    let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(KnxConnector::new(
+        TokioNet::udp(Ipv4Addr::UNSPECIFIED),
+        TokioDelay,
+        "knx://192.168.1.19:3671",
+    ));
+
+    builder.configure::<LightState>("light.state", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .link_from("knx://1/0/7")
+            .with_deserializer(|_ctx, data: &[u8]| {
+                let is_on = data.first().is_some_and(|&b| b != 0);
+                Ok(LightState { is_on })
+            })
+            .finish()
+            .tap(|_, consumer| async move {
+                let mut reader = consumer.subscribe();
                 while let Ok(state) = reader.recv().await {
                     println!("💡 Light: {}", if state.value.is_on { "ON" } else { "OFF" });
                 }
             });
-        })
-        .build().await?;
-    
-    db.run().await
+    });
+
+    builder.run().await
 }
 ```
 
@@ -366,10 +355,10 @@ The MQTT connector enables pub/sub messaging with MQTT brokers.
 **Add to Cargo.toml:**
 ```toml
 # For Tokio
-aimdb-mqtt-connector = { version = "0.6", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.7", features = ["tokio-runtime"] }
 
 # For Embassy
-aimdb-mqtt-connector = { version = "0.6", features = ["embassy-runtime"], default-features = false }
+aimdb-mqtt-connector = { version = "0.7", features = ["embassy-runtime"], default-features = false }
 
 # REQUIRED PATCH for Embassy (version compatibility)
 [patch.crates-io]
@@ -748,16 +737,16 @@ For maximum stability, you can pin to specific versions on crates.io:
 
 ```toml
 [dependencies]
-aimdb-core = "=1.2.0"
-aimdb-tokio-adapter = "=0.6.0"
-aimdb-mqtt-connector = "=0.6.0"
+aimdb-core = "=2.0.0"
+aimdb-tokio-adapter = "=0.7.0"
+aimdb-mqtt-connector = "=0.7.0"
 aimdb-knx-connector = "=0.5.0"
 ```
 
 Or use standard semver:
 ```toml
 [dependencies]
-aimdb-core = "1.2"  # Will use latest 1.2.x
+aimdb-core = "2.0"  # Will use latest 2.0.x
 aimdb-knx-connector = "0.5"  # Will use latest 0.5.x
 ```
 
