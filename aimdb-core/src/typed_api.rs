@@ -430,7 +430,7 @@ impl<T: Clone + Send + 'static> crate::outbound::PollRoute for TypedRoute<T> {
 
 /// Type alias for typed context-aware serializer callbacks
 ///
-/// Stays typed until `finish()` fuses it with the consumer — no per-message
+/// Stays typed until registration fuses it with the consumer — no per-message
 /// erasure.
 type TypedContextSerializerFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
@@ -439,7 +439,7 @@ type TypedContextSerializerFn<T> = Arc<
         + 'static,
 >;
 
-/// Typed into-slice serializer stored by [`OutboundConnectorBuilder`].
+/// Typed into-slice serializer stored by [`OutboundLinkBuilder`].
 type TypedContextSerializerIntoFn<T> = Arc<
     dyn Fn(crate::RuntimeContext, &T, &mut [u8]) -> Result<usize, crate::connector::SerializeError>
         + Send
@@ -711,8 +711,68 @@ where
     ///
     /// Subscribes to buffer updates and publishes them to an external system.
     pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T> {
-        OutboundConnectorBuilder {
-            registrar: self,
+        OutboundLink::new(url).attach(self)
+    }
+
+    /// Link FROM external system (inbound: External → AimDB)
+    ///
+    /// Subscribes to an external data source and produces values into this record's buffer.
+    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
+        InboundLink::new(url).attach(self)
+    }
+}
+
+// ============================================================================
+// Link builders - Fluent connector link configuration
+// ============================================================================
+
+/// Marks a link builder that is not attached to a record yet.
+///
+/// See [`OutboundLink`] and [`InboundLink`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Detached;
+
+/// Outbound link builder attached to a record: what
+/// [`RecordRegistrar::link_to`] returns.
+///
+/// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
+/// registrar's own borrow of the record being configured.
+pub type OutboundConnectorBuilder<'r, 'a, T> =
+    OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+
+/// Outbound link not attached to a record yet, built with
+/// [`OutboundLink::new`].
+pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
+
+/// Builder for configuring outbound connector links (AimDB → External)
+///
+/// `R` is what the builder is attached to. [`RecordRegistrar::link_to`]
+/// returns the attached form, [`OutboundConnectorBuilder`], which
+/// [`finish()`](OutboundLinkBuilder::finish) registers on its record.
+/// [`OutboundLink::new`] builds the detached form, [`OutboundLink`], before
+/// any record exists; it is checked when it is registered on one, not when
+/// it is built.
+///
+/// The option methods below, and the connector crates' extension traits,
+/// work on both forms.
+#[must_use = "a link does nothing until it is registered; call `.finish()`"]
+pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    at: R,
+    url: String,
+    config: Vec<(String, String)>,
+    context_serializer: Option<TypedContextSerializerFn<T>>,
+    context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
+    topic_writer: Option<TopicWriterCfg<T>>,
+}
+
+impl<T> OutboundLinkBuilder<T, Detached>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    /// Starts an outbound link to `url` that is not attached to a record yet.
+    pub fn new(url: &str) -> Self {
+        Self {
+            at: Detached,
             url: url.to_string(),
             config: Vec::new(),
             context_serializer: None,
@@ -721,43 +781,34 @@ where
         }
     }
 
-    /// Link FROM external system (inbound: External → AimDB)
-    ///
-    /// Subscribes to an external data source and produces values into this record's buffer.
-    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
-        InboundConnectorBuilder {
-            registrar: self,
-            url: url.to_string(),
-            config: Vec::new(),
-            context_deserializer: None,
-            match_deserializer: None,
-            key: None,
-            topic_resolver: None,
+    fn attach<R>(self, at: R) -> OutboundLinkBuilder<T, R> {
+        OutboundLinkBuilder {
+            at,
+            url: self.url,
+            config: self.config,
+            context_serializer: self.context_serializer,
+            context_serializer_into: self.context_serializer_into,
+            topic_writer: self.topic_writer,
         }
     }
 }
 
-// ============================================================================
-// OutboundConnectorBuilder - Fluent outbound connector configuration
-// ============================================================================
-
-/// Builder for configuring outbound connector links (AimDB → External)
-///
-/// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
-/// registrar's own borrow of the record being configured.
-pub struct OutboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
-    registrar: &'r mut RecordRegistrar<'a, T>,
-    url: String,
-    config: Vec<(String, String)>,
-    context_serializer: Option<TypedContextSerializerFn<T>>,
-    context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
-    topic_writer: Option<TopicWriterCfg<T>>,
-}
-
-impl<'r, 'a, T> OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    fn detach(self) -> (R, OutboundLink<T>) {
+        let link = OutboundLinkBuilder {
+            at: Detached,
+            url: self.url,
+            config: self.config,
+            context_serializer: self.context_serializer,
+            context_serializer_into: self.context_serializer_into,
+            topic_writer: self.topic_writer,
+        };
+        (self.at, link)
+    }
+
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
         self.config.push((key.to_string(), value.to_string()));
@@ -877,7 +928,12 @@ where
     {
         self.with_topic_writer(capacity, f)
     }
+}
 
+impl<'r, 'a, T> OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     /// Finalizes the connector registration
     ///
     /// Configuration mistakes — an invalid URL, a missing serializer, or an
@@ -890,157 +946,14 @@ where
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_to()` is fine).
     pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
-        use crate::connector::{ConnectorLink, LinkAddress};
-        use crate::error::ConfigError;
-
-        let record_key = self.registrar.record_key.clone();
-
-        let Ok(url) = LinkAddress::parse(&self.url) else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Invalid connector URL",
-            ));
-            return self.registrar;
-        };
-
-        let url_string = url.to_string();
-        let scheme = url.scheme().to_string();
-
-        if url.resource_id().contains(['{', '}']) {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Outbound topics cannot contain '{' or '}'",
-            ));
-            return self.registrar;
-        }
-
-        // Adapt the stored serializer to the fused calling convention. Stays
-        // typed: fused with the consumer below, no `Box<dyn Any>` per message
-        //.
-        let serialize: FusedSerializeFn<T> = if let Some(ser) = self.context_serializer {
-            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
-        } else {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(self.url),
-                "Outbound connector requires a serializer. Call .with_serializer()",
-            ));
-            return self.registrar;
-        };
-
-        let serialize_into: Option<(usize, FusedSerializeIntoFn<T>)> =
-            self.context_serializer_into.map(|(capacity, ser)| {
-                let adapted: FusedSerializeIntoFn<T> = Arc::new(
-                    move |ctx: &crate::RuntimeContext, value: &T, out: &mut [u8]| {
-                        ser(ctx.clone(), value, out)
-                    },
-                );
-                (capacity, adapted)
-            });
-
-        // Validation: Check that connector builder is registered
-        let has_connector = self
-            .registrar
-            .connector_builders
-            .iter()
-            .any(|b| b.scheme() == scheme);
-
-        if !has_connector {
-            self.registrar.rec.push_config_error(ConfigError::new(
-                record_key,
-                Some(url_string),
-                alloc::format!(
-                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
-                ),
-            ));
-            return self.registrar;
-        }
-
-        // Register the link as a profiling stage (so `.with_name()` can name it
-        // and the consumer it creates can be timed).
-        #[cfg(feature = "observability")]
-        let link_metrics = {
-            let (idx, metrics) = self.registrar.rec.profiling_mut().push_link();
-            self.registrar.last_stage = Some((StageKind::Link, idx));
-            metrics
-        };
-        #[cfg(not(feature = "observability"))]
-        {
-            self.registrar.last_stage = Some((StageKind::Link, 0));
-        }
-
-        // Resolves the record and builds a `Consumer<T>` bound to its buffer
-        // handle, once per route (not per message) — same pattern as the
-        // build-time path in `TypedRecord::collect_consumer_futures`.
-        //
-        // The factories run during build() after every record is registered
-        // and validated (including the linked-records-need-a-buffer check),
-        // so failures here are aimdb bugs, not user mistakes.
-        #[allow(
-            clippy::panic,
-            reason = "the factory returns no Result and these lookups were validated at build() time"
-        )]
-        let make_consumer: ConsumerFactoryFn<T> = {
-            let record_key = self.registrar.record_key.clone();
-            Arc::new(move |db: &AimDb| {
-                let typed_rec = db
-                    .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
-                             this is a bug in aimdb-core"
-                        )
-                    });
-                let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
-                    panic!(
-                        "outbound link: record '{record_key}' has no buffer despite \
-                         build()-time validation — this is a bug in aimdb-core"
-                    )
-                });
-
-                #[allow(unused_mut)]
-                let mut consumer = Consumer::<T>::new(buffer);
-                #[cfg(feature = "observability")]
-                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
-                consumer
-            })
-        };
-
-        // Subscribed when `OutboundRoutes` is built.
-        let route_factory: crate::outbound::RouteFactoryFn = {
-            let topic_writer = self.topic_writer;
-            Arc::new(move |db: &AimDb| {
-                let (topic_capacity, writer) = match &topic_writer {
-                    Some((capacity, writer)) => (*capacity, Some(writer.clone())),
-                    None => (0, None),
-                };
-                crate::outbound::RouteParts {
-                    route: Box::new(TypedRoute {
-                        reader: make_consumer(db).subscribe(),
-                        writer,
-                        serialize: serialize.clone(),
-                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
-                    }),
-                    topic_capacity,
-                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
-                }
-            })
-        };
-
-        let mut link = ConnectorLink::new(url, route_factory);
-        link.config = self.config;
-
-        // Routes are built later, when a connector builds its `OutboundRoutes`.
-        self.registrar.rec.add_outbound_connector(link);
-        self.registrar
+        let (registrar, link) = self.detach();
+        registrar.push_outbound(link);
+        registrar
     }
 }
 
 // ============================================================================
-// InboundConnectorBuilder - Fluent inbound connector configuration
+// InboundLinkBuilder - Fluent inbound connector configuration
 // ============================================================================
 
 /// The producer an inbound ingest factory writes to. Factories run during
@@ -1091,8 +1004,8 @@ where
 
 /// Type alias for typed context-aware deserializer callbacks
 ///
-/// Stays typed until `finish()` fuses it with the producer — no per-message
-/// erasure.
+/// Stays typed until registration fuses it with the producer — no
+/// per-message erasure.
 type TypedContextDeserializerFn<T> =
     Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
 
@@ -1104,12 +1017,31 @@ type TypedMatchDeserializerFn<T> = Arc<
         + 'static,
 >;
 
-/// Builder for configuring inbound connector links (External → AimDB)
+/// Inbound link builder attached to a record: what
+/// [`RecordRegistrar::link_from`] returns.
 ///
 /// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Clone> {
-    registrar: &'r mut RecordRegistrar<'a, T>,
+pub type InboundConnectorBuilder<'r, 'a, T> = InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+
+/// Inbound link not attached to a record yet, built with
+/// [`InboundLink::new`].
+pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
+
+/// Builder for configuring inbound connector links (External → AimDB)
+///
+/// `R` is what the builder is attached to. [`RecordRegistrar::link_from`]
+/// returns the attached form, [`InboundConnectorBuilder`], which
+/// [`finish()`](InboundLinkBuilder::finish) registers on its record.
+/// [`InboundLink::new`] builds the detached form, [`InboundLink`], before
+/// any record exists; it is checked when it is registered on one, not when
+/// it is built.
+///
+/// The option methods below, and the connector crates' extension traits,
+/// work on both forms.
+#[must_use = "a link does nothing until it is registered; call `.finish()`"]
+pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    at: R,
     url: String,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
@@ -1118,10 +1050,53 @@ pub struct InboundConnectorBuilder<'r, 'a, T: Send + Sync + 'static + Debug + Cl
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
 
-impl<'r, 'a, T> InboundConnectorBuilder<'r, 'a, T>
+impl<T> InboundLinkBuilder<T, Detached>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Starts an inbound link from `url` that is not attached to a record yet.
+    pub fn new(url: &str) -> Self {
+        Self {
+            at: Detached,
+            url: url.to_string(),
+            config: Vec::new(),
+            context_deserializer: None,
+            match_deserializer: None,
+            key: None,
+            topic_resolver: None,
+        }
+    }
+
+    fn attach<R>(self, at: R) -> InboundLinkBuilder<T, R> {
+        InboundLinkBuilder {
+            at,
+            url: self.url,
+            config: self.config,
+            context_deserializer: self.context_deserializer,
+            match_deserializer: self.match_deserializer,
+            key: self.key,
+            topic_resolver: self.topic_resolver,
+        }
+    }
+}
+
+impl<T, R> InboundLinkBuilder<T, R>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn detach(self) -> (R, InboundLink<T>) {
+        let link = InboundLinkBuilder {
+            at: Detached,
+            url: self.url,
+            config: self.config,
+            context_deserializer: self.context_deserializer,
+            match_deserializer: self.match_deserializer,
+            key: self.key,
+            topic_resolver: self.topic_resolver,
+        };
+        (self.at, link)
+    }
+
     /// Adds a configuration option to the connector
     pub fn with_config(mut self, key: &str, value: &str) -> Self {
         self.config.push((key.to_string(), value.to_string()));
@@ -1208,7 +1183,12 @@ where
         self.topic_resolver = Some(Arc::new(resolver));
         self
     }
+}
 
+impl<'r, 'a, T> InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     /// Finalizes the inbound connector registration
     ///
     /// Configuration mistakes — an invalid URL, a missing deserializer, an
@@ -1221,32 +1201,197 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
-    pub fn finish(mut self) -> &'r mut RecordRegistrar<'a, T> {
-        match self.link() {
-            Ok(link) => self.registrar.rec.add_inbound_connector(link),
-            Err(message) => {
-                let key = self.registrar.record_key.clone();
-                let error = crate::error::ConfigError::new(key, Some(self.url), message);
-                self.registrar.rec.push_config_error(error);
-            }
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
+        let (registrar, link) = self.detach();
+        registrar.push_inbound(link);
+        registrar
+    }
+}
+
+// ============================================================================
+// Link registration - the one validation path for attached and detached links
+// ============================================================================
+
+impl<'a, T> RecordRegistrar<'a, T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    /// Validates and registers an outbound link, or records why not.
+    fn push_outbound(&mut self, link: OutboundLink<T>) {
+        use crate::connector::{ConnectorLink, LinkAddress};
+        use crate::error::ConfigError;
+
+        let record_key = self.record_key.clone();
+
+        let Ok(url) = LinkAddress::parse(&link.url) else {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Invalid connector URL",
+            ));
+            return;
+        };
+
+        let url_string = url.to_string();
+        let scheme = url.scheme().to_string();
+
+        if url.resource_id().contains(['{', '}']) {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Outbound topics cannot contain '{' or '}'",
+            ));
+            return;
         }
-        self.registrar
+
+        // Adapt the stored serializer to the fused calling convention. Stays
+        // typed: fused with the consumer below, no `Box<dyn Any>` per message
+        //.
+        let serialize: FusedSerializeFn<T> = if let Some(ser) = link.context_serializer {
+            Arc::new(move |ctx: &crate::RuntimeContext, value: &T| ser(ctx.clone(), value))
+        } else {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(link.url),
+                "Outbound connector requires a serializer. Call .with_serializer()",
+            ));
+            return;
+        };
+
+        let serialize_into: Option<(usize, FusedSerializeIntoFn<T>)> =
+            link.context_serializer_into.map(|(capacity, ser)| {
+                let adapted: FusedSerializeIntoFn<T> = Arc::new(
+                    move |ctx: &crate::RuntimeContext, value: &T, out: &mut [u8]| {
+                        ser(ctx.clone(), value, out)
+                    },
+                );
+                (capacity, adapted)
+            });
+
+        // Validation: Check that connector builder is registered
+        let has_connector = self.connector_builders.iter().any(|b| b.scheme() == scheme);
+
+        if !has_connector {
+            self.rec.push_config_error(ConfigError::new(
+                record_key,
+                Some(url_string),
+                alloc::format!(
+                    "No connector registered for scheme '{scheme}'. Register via .with_connector()"
+                ),
+            ));
+            return;
+        }
+
+        // Register the link as a profiling stage (so `.with_name()` can name it
+        // and the consumer it creates can be timed).
+        #[cfg(feature = "observability")]
+        let link_metrics = {
+            let (idx, metrics) = self.rec.profiling_mut().push_link();
+            self.last_stage = Some((StageKind::Link, idx));
+            metrics
+        };
+        #[cfg(not(feature = "observability"))]
+        {
+            self.last_stage = Some((StageKind::Link, 0));
+        }
+
+        // Resolves the record and builds a `Consumer<T>` bound to its buffer
+        // handle, once per route (not per message) — same pattern as the
+        // build-time path in `TypedRecord::collect_consumer_futures`.
+        //
+        // The factories run during build() after every record is registered
+        // and validated (including the linked-records-need-a-buffer check),
+        // so failures here are aimdb bugs, not user mistakes.
+        #[allow(
+            clippy::panic,
+            reason = "the factory returns no Result and these lookups were validated at build() time"
+        )]
+        let make_consumer: ConsumerFactoryFn<T> = {
+            let record_key = self.record_key.clone();
+            Arc::new(move |db: &AimDb| {
+                let typed_rec = db
+                    .inner()
+                    .get_typed_record_by_key::<T>(&record_key)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "outbound link: record '{record_key}' lookup failed ({e:?}) — \
+                             this is a bug in aimdb-core"
+                        )
+                    });
+                let buffer = typed_rec.buffer_handle().unwrap_or_else(|| {
+                    panic!(
+                        "outbound link: record '{record_key}' has no buffer despite \
+                         build()-time validation — this is a bug in aimdb-core"
+                    )
+                });
+
+                #[allow(unused_mut)]
+                let mut consumer = Consumer::<T>::new(buffer);
+                #[cfg(feature = "observability")]
+                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+                consumer
+            })
+        };
+
+        // Subscribed when `OutboundRoutes` is built.
+        let route_factory: crate::outbound::RouteFactoryFn = {
+            let topic_writer = link.topic_writer;
+            Arc::new(move |db: &AimDb| {
+                let (topic_capacity, writer) = match &topic_writer {
+                    Some((capacity, writer)) => (*capacity, Some(writer.clone())),
+                    None => (0, None),
+                };
+                crate::outbound::RouteParts {
+                    route: Box::new(TypedRoute {
+                        reader: make_consumer(db).subscribe(),
+                        writer,
+                        serialize: serialize.clone(),
+                        serialize_into: serialize_into.as_ref().map(|(_, f)| f.clone()),
+                    }),
+                    topic_capacity,
+                    payload_capacity: serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity),
+                }
+            })
+        };
+
+        // Named `out`, not `link`: `out.config = link.config` must read the
+        // user's link, not the new one.
+        let mut out = ConnectorLink::new(url, route_factory);
+        out.config = link.config;
+
+        // Routes are built later, when a connector builds its `OutboundRoutes`.
+        self.rec.add_outbound_connector(out);
     }
 
-    /// The link `finish()` registers, or why it is rejected.
+    /// Validates and registers an inbound link, or records why not.
+    fn push_inbound(&mut self, mut link: InboundLink<T>) {
+        match self.inbound_link(&mut link) {
+            Ok(inbound) => self.rec.add_inbound_connector(inbound),
+            Err(message) => {
+                let key = self.record_key.clone();
+                let error = crate::error::ConfigError::new(key, Some(link.url), message);
+                self.rec.push_config_error(error);
+            }
+        }
+    }
+
+    /// The link `push_inbound()` registers, or why it is rejected.
     ///
     /// The buffer requirement and mutual exclusion with local producers
     /// (.source()/.transform()) are validated by `build()`: `.buffer()` may
     /// legitimately be called after `.link_from()`.
-    fn link(&mut self) -> Result<crate::connector::InboundConnectorLink, String> {
+    fn inbound_link(
+        &self,
+        link: &mut InboundLink<T>,
+    ) -> Result<crate::connector::InboundConnectorLink, String> {
         use crate::connector::{InboundConnectorLink, LinkAddress};
 
-        let url = LinkAddress::parse(&self.url).map_err(|_| "Invalid connector URL")?;
-        let record_key = self.registrar.record_key.clone();
+        let url = LinkAddress::parse(&link.url).map_err(|_| "Invalid connector URL")?;
+        let record_key = self.record_key.clone();
 
         let deser: TypedMatchDeserializerFn<T> = match (
-            self.context_deserializer.take(),
-            self.match_deserializer.take(),
+            link.context_deserializer.take(),
+            link.match_deserializer.take(),
         ) {
             (Some(deser), None) => Arc::new(move |ctx, _m, bytes| deser(ctx.clone(), bytes)),
             (None, Some(deser)) => deser,
@@ -1266,7 +1411,7 @@ where
         // The `{…}` syntax; the connector checks the rest.
         let pattern = crate::TopicPattern::parse(url.resource_id()).map_err(|e| e.to_string())?;
 
-        let key = match self.key.take() {
+        let key = match link.key.take() {
             None => None,
             Some((capture, capacity)) => {
                 let Some(capacity) = core::num::NonZeroU16::new(capacity) else {
@@ -1279,7 +1424,7 @@ where
                         "key '{capture}' is not a capture of the topic"
                     ));
                 }
-                let links = self.registrar.rec.inbound_connectors();
+                let links = self.rec.inbound_connectors();
                 if let Some((_, other)) = links.iter().find_map(|l| l.key.as_ref()) {
                     if *other != capacity {
                         return Err(alloc::format!(
@@ -1293,22 +1438,18 @@ where
         };
 
         let scheme = url.scheme();
-        if !self
-            .registrar
-            .connector_builders
-            .iter()
-            .any(|b| b.scheme() == scheme)
-        {
+        if !self.connector_builders.iter().any(|b| b.scheme() == scheme) {
             return Err(alloc::format!(
                 "No connector registered for scheme '{scheme}'. Register via .with_connector()"
             ));
         }
 
-        let mut link = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
-        link.config = core::mem::take(&mut self.config);
-        link.key = key;
-        link.topic_resolver = self.topic_resolver.take();
-        Ok(link)
+        // Named `inbound`, not `link`, for the same reason as in `push_outbound`.
+        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
+        inbound.config = core::mem::take(&mut link.config);
+        inbound.key = key;
+        inbound.topic_resolver = link.topic_resolver.take();
+        Ok(inbound)
     }
 }
 
@@ -1350,7 +1491,7 @@ mod tests {
     }
 
     // ====================================================================
-    // Test infrastructure for InboundConnectorBuilder deserializer tests
+    // Test infrastructure for InboundLinkBuilder deserializer tests
     // ====================================================================
 
     /// Minimal mock runtime for context tests — the builder only needs the
@@ -1639,6 +1780,48 @@ mod tests {
         assert_eq!(
             rec.outbound_connectors()[0].url.resource_id(),
             "broker/topic"
+        );
+        assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    /// A detached link keeps its options when registered: `push_outbound` /
+    /// `push_inbound` must copy the config from the user's link, not from
+    /// the link they build.
+    #[test]
+    fn detached_links_keep_their_config() {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.push_outbound(
+            OutboundLink::new("mqtt://out")
+                .with_config("qos", "1")
+                .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec())),
+        );
+        reg.push_inbound(
+            InboundLink::new("mqtt://in")
+                .with_config("qos", "2")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+
+        let qos = |config: &[(String, String)]| {
+            config
+                .iter()
+                .find(|(k, _)| k == "qos")
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            qos(&rec.outbound_connectors()[0].config).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            qos(&rec.inbound_connectors()[0].config).as_deref(),
+            Some("2")
         );
         assert!(drain_errors(&mut rec).is_empty());
     }
