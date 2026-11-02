@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connector's scheme; a full URL must match it. A wrong scheme or another
   builder's handle is reported by `build()`.
 
+- **`with_schema(name, version)` on link builders (#391).** Reports the
+  record's schema when the link is registered, like `reg.schema(..)`.
+
 - **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
   `instance_name` and `instance_uid` (checked by `build()`), and
   `AimDb::identity()`. AimX gains `instance.info` and `instance.post_link`;
