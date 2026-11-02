@@ -470,6 +470,9 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     pub(crate) rec: &'a mut TypedRecord<T>,
     /// Connector builders indexed by scheme
     pub(crate) connector_builders: &'a [Box<dyn crate::connector::ConnectorBuilder>],
+    /// The builder's id, checked against
+    /// [`ConnectorHandle`](crate::ConnectorHandle)s on links.
+    pub(crate) builder_id: u32,
     /// The record key for this record
     pub(crate) record_key: String,
     /// Extension storage from the builder — allows external crates (e.g.
@@ -858,6 +861,7 @@ pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
+    connector: Option<crate::ConnectorHandle>,
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
@@ -868,11 +872,27 @@ impl<T> OutboundLinkBuilder<T, Detached>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Starts an outbound link to `address` on a connector registered with
+    /// [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+    ///
+    /// `address` is the part after `scheme://`; the connector supplies the
+    /// scheme. A full URL (as a `#[link_address]` key gives) is accepted if
+    /// its scheme is the connector's. A different scheme, or a handle from
+    /// another builder, is reported by `build()` once the link is passed to
+    /// [`RecordRegistrar::output`].
+    pub fn on(connector: crate::ConnectorHandle, address: &str) -> Self {
+        Self {
+            connector: Some(connector),
+            ..Self::new(address)
+        }
+    }
+
     /// Starts an outbound link to `url` that is not attached to a record yet.
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
             url: url.to_string(),
+            connector: None,
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
@@ -884,6 +904,7 @@ where
         OutboundLinkBuilder {
             at,
             url: self.url,
+            connector: self.connector,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
@@ -900,6 +921,7 @@ where
         let link = OutboundLinkBuilder {
             at: Detached,
             url: self.url,
+            connector: self.connector,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
@@ -1147,6 +1169,7 @@ pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
 pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
+    connector: Option<crate::ConnectorHandle>,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
@@ -1158,11 +1181,27 @@ impl<T> InboundLinkBuilder<T, Detached>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Starts an inbound link from `address` on a connector registered with
+    /// [`AimDbBuilder::connect`](crate::AimDbBuilder::connect).
+    ///
+    /// `address` is the part after `scheme://`; the connector supplies the
+    /// scheme. A full URL (as a `#[link_address]` key gives) is accepted if
+    /// its scheme is the connector's. A different scheme, or a handle from
+    /// another builder, is reported by `build()` once the link is passed to
+    /// [`RecordRegistrar::input`].
+    pub fn on(connector: crate::ConnectorHandle, address: &str) -> Self {
+        Self {
+            connector: Some(connector),
+            ..Self::new(address)
+        }
+    }
+
     /// Starts an inbound link from `url` that is not attached to a record yet.
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
             url: url.to_string(),
+            connector: None,
             config: Vec::new(),
             context_deserializer: None,
             match_deserializer: None,
@@ -1175,6 +1214,7 @@ where
         InboundLinkBuilder {
             at,
             url: self.url,
+            connector: self.connector,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1192,6 +1232,7 @@ where
         let link = InboundLinkBuilder {
             at: Detached,
             url: self.url,
+            connector: self.connector,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1321,11 +1362,30 @@ where
     T: Send + Sync + 'static + Debug + Clone,
 {
     /// Validates and registers an outbound link, or records why not.
-    fn push_outbound(&mut self, link: OutboundLink<T>) {
+    fn push_outbound(&mut self, mut link: OutboundLink<T>) {
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
 
         let record_key = self.record_key.clone();
+
+        if let Some(handle) = link.connector {
+            match crate::connector::resolve_link_url(
+                self.builder_id,
+                self.connector_builders,
+                handle,
+                &link.url,
+            ) {
+                Ok(url) => link.url = url,
+                Err(message) => {
+                    self.rec.push_config_error(ConfigError::new(
+                        record_key,
+                        Some(link.url),
+                        message,
+                    ));
+                    return;
+                }
+            }
+        }
 
         let Ok(url) = LinkAddress::parse(&link.url) else {
             self.rec.push_config_error(ConfigError::new(
@@ -1490,6 +1550,14 @@ where
     ) -> Result<crate::connector::InboundConnectorLink, String> {
         use crate::connector::{InboundConnectorLink, LinkAddress};
 
+        if let Some(handle) = link.connector {
+            link.url = crate::connector::resolve_link_url(
+                self.builder_id,
+                self.connector_builders,
+                handle,
+                &link.url,
+            )?;
+        }
         let url = LinkAddress::parse(&link.url).map_err(|_| "Invalid connector URL")?;
         let record_key = self.record_key.clone();
 
@@ -1651,6 +1719,7 @@ mod tests {
         RecordRegistrar {
             rec,
             connector_builders: builders,
+            builder_id: TEST_BUILDER,
             record_key: "test::Record".to_string(),
             extensions,
             last_stage: None,
@@ -2140,6 +2209,128 @@ mod tests {
         });
         assert!(rec.has_producer());
         assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    // ====================================================================
+    // Links through a connector handle: `OutboundLink::on` / `InboundLink::on`
+    // ====================================================================
+
+    /// The builder id `make_registrar` uses; real builders start at 1.
+    const TEST_BUILDER: u32 = 0;
+
+    /// Runs `wire` on a fresh buffered `TestRecord` with connectors
+    /// `[mqtt, knx]`, so a handle with index 1 really selects `knx`.
+    fn registered_mqtt_knx(
+        wire: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>),
+    ) -> crate::typed_record::TypedRecord<TestRecord> {
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> = vec![
+            Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            }),
+            Box::new(MockConnectorBuilder {
+                scheme: "knx".to_string(),
+            }),
+        ];
+        let extensions = crate::extensions::Extensions::new();
+        wire(&mut make_registrar(&mut rec, &builders, &extensions));
+        rec
+    }
+
+    fn handle(builder: u32, index: u16) -> crate::ConnectorHandle {
+        crate::ConnectorHandle { builder, index }
+    }
+
+    #[test]
+    fn handle_links_take_the_connector_scheme() {
+        let (mqtt, knx) = (handle(TEST_BUILDER, 0), handle(TEST_BUILDER, 1));
+        let mut rec = registered_mqtt_knx(|reg| {
+            reg.input(InboundLink::on(knx, "1/0/7").with_deserializer(de))
+                .output(OutboundLink::on(knx, "1/2/3").with_serializer(ser))
+                // A full URL, as a `#[link_address]` key gives, when it matches.
+                .output(OutboundLink::on(mqtt, "mqtt://sensors/temp").with_serializer(ser));
+        });
+
+        assert!(drain_errors(&mut rec).is_empty());
+        assert_eq!(rec.inbound_connectors()[0].url.to_string(), "knx://1/0/7");
+        let out: Vec<String> = rec
+            .outbound_connectors()
+            .iter()
+            .map(|l| l.url.to_string())
+            .collect();
+        assert_eq!(out, ["knx://1/2/3", "mqtt://sensors/temp"]);
+    }
+
+    #[test]
+    fn handle_links_reject_wrong_scheme_and_foreign_handles() {
+        let (mqtt, knx) = (handle(TEST_BUILDER, 0), handle(TEST_BUILDER, 1));
+        let foreign = handle(TEST_BUILDER + 1, 0);
+        let out_of_range = handle(TEST_BUILDER, 7);
+        let mut rec = registered_mqtt_knx(|reg| {
+            reg.output(OutboundLink::on(mqtt, "knx://1/2/3").with_serializer(ser))
+                .input(InboundLink::on(knx, "mqtt://x").with_deserializer(de))
+                .output(OutboundLink::on(foreign, "a").with_serializer(ser))
+                .input(InboundLink::on(foreign, "a").with_deserializer(de))
+                .output(OutboundLink::on(out_of_range, "a").with_serializer(ser));
+        });
+
+        assert!(rec.outbound_connectors().is_empty());
+        assert!(rec.inbound_connectors().is_empty());
+        let errors: Vec<(Option<String>, String)> = drain_errors(&mut rec)
+            .into_iter()
+            .map(|e| (e.url, e.message))
+            .collect();
+        let foreign_msg = "Connector handle belongs to a different AimDbBuilder";
+        let expected = [
+            (
+                "knx://1/2/3",
+                "Address scheme 'knx' does not match the connector's scheme 'mqtt'",
+            ),
+            (
+                "mqtt://x",
+                "Address scheme 'mqtt' does not match the connector's scheme 'knx'",
+            ),
+            ("a", foreign_msg),
+            ("a", foreign_msg),
+            ("a", foreign_msg),
+        ];
+        let expected: Vec<(Option<String>, String)> = expected
+            .iter()
+            .map(|(url, msg)| (Some(url.to_string()), msg.to_string()))
+            .collect();
+        assert_eq!(errors, expected);
+    }
+
+    /// The target shape from #390, through `build()`: links on a handle
+    /// build; the same links on another builder's handle fail it.
+    #[tokio::test]
+    async fn handle_links_build_and_foreign_handles_fail_it() {
+        let mut other = crate::AimDbBuilder::new();
+        let foreign = other.connect(NoopConnectorBuilder);
+
+        for (use_foreign, expect_ok) in [(false, true), (true, false)] {
+            let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
+            let mqtt = builder.connect(NoopConnectorBuilder);
+            let on = if use_foreign { foreign } else { mqtt };
+            builder.configure::<TestRecord>("temp.indoor", move |reg| {
+                reg.buffer_raw(Box::new(MockBuffer))
+                    .input(InboundLink::on(on, "commands/temp/indoor").with_deserializer(de))
+                    .output(OutboundLink::on(on, "sensors/temp/indoor").with_serializer(ser));
+            });
+            let result = builder.build().await;
+            if expect_ok {
+                let (db, _runner) = result.expect("handle links build");
+                let inbound =
+                    crate::InboundDispatch::new(&db, "mqtt", &Plus).expect("routes compile");
+                assert_eq!(inbound.subscriptions()[0].as_ref(), "commands/temp/indoor");
+            } else {
+                let errors = config_errors(result);
+                assert_eq!(errors.len(), 2, "got: {errors:?}");
+                assert!(errors.iter().all(|e| e.record_key == "temp.indoor"
+                    && e.message == "Connector handle belongs to a different AimDbBuilder"));
+            }
+        }
     }
 
     /// A connector registered with `connect` serves links exactly like one

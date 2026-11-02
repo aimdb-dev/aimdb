@@ -467,16 +467,23 @@ the gateway pattern.
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.
-`OutboundLink::new` / `InboundLink::new` build the same link as a value,
-before any record exists; `reg.output(..)` / `reg.input(..)` register it:
+`OutboundLink` / `InboundLink` build the same link as a value, before any
+record exists; `reg.output(..)` / `reg.input(..)` register it.
+
+Register the connector with `connect` to get a handle, and start links from
+it with `on`: the address needs no scheme, and a link cannot name a connector
+that was never registered.
 
 ```rust
 use aimdb_core::{InboundLink, OutboundLink};
 use aimdb_data_contracts::{link_codecs::Json, LinkCodecBuilderExt};
 use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
 
-let command = InboundLink::new("mqtt://cell4/setpoint/set").with_link_codec(Json).with_qos(1);
-let report = OutboundLink::new("mqtt://cell4/setpoint")
+let mut builder = AimDbBuilder::new().runtime(runtime);
+let mqtt = builder.connect(MqttConnector::new("mqtt://broker.local:1883"));
+
+let command = InboundLink::on(mqtt, "cell4/setpoint/set").with_link_codec(Json).with_qos(1);
+let report = OutboundLink::on(mqtt, "cell4/setpoint")
     .with_link_codec(Json)
     .with_qos(1)
     .with_retain(true);
@@ -486,9 +493,14 @@ builder.configure::<Setpoint>("cell4.setpoint", |reg| {
 });
 ```
 
+`on` also accepts a full URL whose scheme is the connector's, such as a
+`#[link_address]` key's address. Without a handle, `OutboundLink::new(url)` /
+`InboundLink::new(url)` take a full URL, as `link_to` / `link_from` do.
+
 Every option and connector extension works on both forms, and both are
 checked the same way when registered: mistakes (bad URL, missing codec,
-unregistered scheme) are reported together by `build()`. Several inbound
+unregistered scheme, a scheme that does not match the handle's connector)
+are reported together by `build()`. Several inbound
 links on one record are allowed; an inbound link together with a `.source()`
 or `.transform()` is a `build()` error. A link that is neither registered nor
 `.finish()`ed is a `must_use` warning.

@@ -497,6 +497,9 @@ impl AimDbBuilder {
     /// ```rust,ignore
     /// let mut b = AimDbBuilder::new().runtime(rt);
     /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
+    /// b.configure::<Temperature>("temp.indoor", |r| {
+    ///     r.output(OutboundLink::on(mqtt, "sensors/temp/indoor").with_serializer(ser));
+    /// });
     /// ```
     pub fn connect(
         &mut self,
@@ -595,6 +598,7 @@ impl AimDbBuilder {
         let mut reg = RecordRegistrar {
             rec,
             connector_builders: &self.connector_builders,
+            builder_id: self.builder_id,
             record_key: record_key.as_str().to_string(),
             extensions: &self.extensions,
             last_stage: None,
