@@ -36,7 +36,7 @@ pub mod sim;
 pub mod types;
 
 // Re-export main types
-pub use keys::{CommandKey, SensorKey};
-pub use monitors::{command_consumer, temperature_logger};
+pub use keys::{ButtonKey, CommandKey, SensorKey};
+pub use monitors::{button_logger, command_consumer, temperature_logger};
 pub use sim::{Reading, SimChannel, SimThermometers, Thermometer};
-pub use types::{Temperature, TemperatureCommand};
+pub use types::{ButtonEvent, ButtonPress, Temperature, TemperatureCommand};

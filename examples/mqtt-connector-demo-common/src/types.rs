@@ -80,3 +80,39 @@ impl TemperatureCommand {
         }
     }
 }
+
+// ============================================================================
+// BUTTON PRESS
+// ============================================================================
+
+/// What a push button yields: one press. A driver's event, not a contract;
+/// contracts are built from it with `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ButtonEvent {
+    /// Which button (e.g. "b1").
+    pub button: &'static str,
+    /// Presses since start, counting from 1.
+    pub press: u32,
+}
+
+/// A button press (outbound to MQTT)
+#[derive(Clone, Debug, Serialize, Deserialize, Linkable)]
+pub struct ButtonPress {
+    /// Button identifier (e.g. "b1")
+    pub button: String,
+    /// Presses since start, counting from 1
+    pub press: u32,
+}
+
+impl SchemaType for ButtonPress {
+    const NAME: &'static str = "mqtt_demo.button_press";
+}
+
+impl From<ButtonEvent> for ButtonPress {
+    fn from(event: ButtonEvent) -> Self {
+        Self {
+            button: event.button.into(),
+            press: event.press,
+        }
+    }
+}
