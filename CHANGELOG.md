@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `reg.output(..)` (#389).** `OutboundLink` / `InboundLink` take every link
   option and connector extension (`with_qos`, `with_link_codec`,
   `with_depth`, …) and are checked like `link_to` / `link_from`.
+  `builder.connect(..)` returns a handle to start links from without a
+  scheme: `OutboundLink::on(mqtt, "sensors/temp")` (#390).
   ([aimdb-core](aimdb-core/CHANGELOG.md),
   [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md),
   [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))

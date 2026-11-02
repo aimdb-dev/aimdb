@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Input<T>` / `Output<T>` traits; a link for the wrong record type or
   direction is a compile error with a readable message.
 
+- **`AimDbBuilder::connect` returns a `ConnectorHandle` (#390).**
+  `OutboundLink::on(handle, "sensors/temp")` / `InboundLink::on(..)` take the
+  connector's scheme; a full URL must match it. A wrong scheme or another
+  builder's handle is reported by `build()`.
+
 - **Build identity and AimX 3.1 (#331).** `AimDbBuilder::build_info`,
   `instance_name` and `instance_uid` (checked by `build()`), and
   `AimDb::identity()`. AimX gains `instance.info` and `instance.post_link`;
