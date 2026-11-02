@@ -1,6 +1,6 @@
 //! MQTT-specific knobs for the generic link builders
 //!
-//! Core's `OutboundConnectorBuilder`/`InboundConnectorBuilder` know schemes
+//! Core's [`OutboundLinkBuilder`]/[`InboundLinkBuilder`] know schemes
 //! and key/value options, never protocol semantics. The
 //! MQTT knobs live here as extension traits: importing them makes the MQTT
 //! intent explicit at the call site, and the impls push the exact same
@@ -20,11 +20,38 @@
 //! # }
 //! ```
 //!
+//! The knobs work on both forms of a link: attached (`link_to` / `link_from`)
+//! and detached (`OutboundLink::new` / `InboundLink::new`, passed to
+//! `reg.output(..)` / `reg.input(..)`):
+//!
+//! ```no_run
+//! use aimdb_core::{InboundLink, OutboundLink};
+//! use aimdb_mqtt_connector::{MqttLinkExt, MqttOutboundLinkExt};
+//! # #[derive(Clone, Debug)] struct Temperature { celsius: f32 }
+//! # fn wire(reg: &mut aimdb_core::RecordRegistrar<'_, Temperature>) {
+//!
+//! reg.input(
+//!     InboundLink::new("mqtt://sensors/temp/in")
+//!         .with_qos(1)
+//!         .with_deserializer(|_ctx, b: &[u8]| {
+//!             let bytes = b.try_into().map_err(|_| "need 4 bytes".to_string())?;
+//!             Ok(Temperature { celsius: f32::from_be_bytes(bytes) })
+//!         }),
+//! )
+//! .output(
+//!     OutboundLink::new("mqtt://sensors/temp")
+//!         .with_qos(1)
+//!         .with_retain(false)
+//!         .with_serializer(|_ctx, t: &Temperature| Ok(t.celsius.to_be_bytes().to_vec())),
+//! );
+//! # }
+//! ```
+//!
 //! The knobs have no scheme of their own: on a connector registered under
 //! another scheme ([`MqttConnector::scheme`](crate::MqttConnector::scheme)),
 //! the same calls follow `reg.link_to("mqtt-cloud://sensors/temp")`.
 
-use aimdb_core::{InboundConnectorBuilder, OutboundConnectorBuilder};
+use aimdb_core::{InboundLinkBuilder, OutboundLinkBuilder};
 use alloc::string::ToString;
 use core::fmt::Debug;
 
@@ -52,7 +79,7 @@ pub trait MqttOutboundLinkExt: MqttLinkExt {
     fn with_retain(self, retain: bool) -> Self;
 }
 
-impl<'r, 'a, T> MqttLinkExt for OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> MqttLinkExt for OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -61,7 +88,7 @@ where
     }
 }
 
-impl<'r, 'a, T> MqttOutboundLinkExt for OutboundConnectorBuilder<'r, 'a, T>
+impl<T, R> MqttOutboundLinkExt for OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -70,7 +97,7 @@ where
     }
 }
 
-impl<'r, 'a, T> MqttLinkExt for InboundConnectorBuilder<'r, 'a, T>
+impl<T, R> MqttLinkExt for InboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
