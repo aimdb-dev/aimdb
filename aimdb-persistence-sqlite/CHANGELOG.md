@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
+### Changed (breaking)
+
+- **Requires `aimdb-core` 3.0 and `aimdb-persistence` 0.3 (#326).**
+
+### Added
+
+- **`log` feature (#365)**, forwarding operational events through the `log`
+  facade. It can be enabled together with `tracing`.
+
+### Changed
+
+- **Operational failures are reported through core's `log_*!` macros (#365)**,
+  for example a stored row whose JSON no longer parses. `tracing` now enables
+  `aimdb-core/tracing` instead of depending on `tracing` directly, and the crate
+  depends on `aimdb-core` (`alloc`) for those macros. The log target is
+  `aimdb_persistence_sqlite::events`.
+
 ## [0.2.0] - 2026-09-18
 
 ### Changed (breaking) — Design 047
@@ -61,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.1.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-sqlite-v0.1.0...aimdb-persistence-sqlite-v0.1.1
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/aimdb-persistence-sqlite-v0.1.0

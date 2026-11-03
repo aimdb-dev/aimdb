@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-03
+
 ### Changed (breaking, wire)
 
 - **AimX 4.0 (#326).** `ts` (write stamp, integer nanoseconds since instance
@@ -162,16 +164,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`GraphNode` has two new public fields, `schema` and `outbound_links`
   (#332).** Code that builds a `GraphNode` with a struct literal must set
   them. The AimX JSON change is additive.
-- **A route's record index lives on the route, not in `ConnectorConfig`
-  (#264).** `RouteInfo` and `InboundRouteInfo` gain `record_index: usize`,
-  always set by core; `ConnectorConfig::record_index` is removed. Before, core
-  wrote the index into the config it parsed from the link's options, so
-  `record_index` was a reserved key that `from_query` lifted out of every
-  link, and connectors had to unwrap an `Option` that was never `None`.
-  Now a link's `record_index` option is an ordinary protocol option, and a
-  link cannot claim another record's index. `ConnectorConfig` is also
-  `#[non_exhaustive]`, so future fields don't break it again. Migration:
-  read `route.record_index` instead of `route.config.record_index`.
+- **Routes carry their record's index (#264).** `RouteInfo` and
+  `InboundRouteInfo` gain `record_index: usize`, always set by core: the
+  registration index of the record a route belongs to, the same `record_id`
+  `AimDb::list_records` reports. A topic alone cannot identify the record,
+  since several records may share one, so a connector enforcing per-record
+  authorization reads it here; the WebSocket connector uses it to gate
+  delivery against each client's granted records. A link option named
+  `record_index` is an ordinary protocol option. `ConnectorConfig` is now
+  `#[non_exhaustive]`: build it with `Default` or `from_query` rather than a
+  struct literal.
 
 - **Connector SPI: the push pumps are gone.** Removed
   `session::pump_sink`, `session::pump_source`, `Source`, the `Connector`
@@ -205,25 +207,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published to.
 - **`{` and `}` in topics are pattern syntax** on every connector, with no
   escape: a topic containing a literal brace can no longer be linked.
-
-- **`ConnectorConfig` gains `record_index: Option<usize>`**, the id of the
-  record an outbound publish comes from — its registration index, the same
-  `record_id` `AimDb::list_records` reports. A topic alone cannot identify the
-  record, since several records may publish on one topic (or on topics a
-  `TopicProvider` picks per value), so a connector enforcing per-record
-  authorization needs the index at publish time; the WebSocket connector uses it
-  to gate delivery against each client's granted records. The struct is not
-  `#[non_exhaustive]`, so code building a `ConnectorConfig` with a struct
-  literal must add the field (or use `..Default::default()`); it defaults to
-  `None`.
-
-- **`AimDb::collect_outbound_routes` stamps each route with its record index**,
-  appending `("record_index", "<id>")` to `OutboundRoute::config`, and
-  `ConnectorConfig::from_query` parses that pair into `record_index` rather than
-  passing it on in `protocol_options`. `record_index` is therefore a reserved
-  config key: a value set through `with_config("record_index", …)` is
-  overridden by the stamped one, which is appended last. `OutboundRoutes`
-  now stamps it, in `RouteInfo::config`.
 
 ### Changed
 
@@ -1005,7 +988,8 @@ warning fires if you exceed 1000 interned keys.
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0
