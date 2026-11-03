@@ -13,7 +13,7 @@ executor is never blocked.
 ```toml
 [dependencies]
 aimdb-persistence        = "0.1"
-aimdb-persistence-sqlite = "0.1"
+aimdb-persistence-sqlite = "0.3"
 ```
 
 SQLite is **bundled** (via `rusqlite`'s `bundled` feature) — no system SQLite
@@ -22,7 +22,7 @@ is needed.
 Optional features:
 
 ```toml
-aimdb-persistence-sqlite = { version = "0.1", features = ["tracing"] }
+aimdb-persistence-sqlite = { version = "0.3", features = ["tracing"] }
 ```
 
 ## Quick Start

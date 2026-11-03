@@ -20,8 +20,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-core = "1.0"
-aimdb-tokio-adapter = "0.5"  # or aimdb-embassy-adapter / aimdb-wasm-adapter
+aimdb-core = "3.0"
+aimdb-tokio-adapter = "0.8"  # or aimdb-embassy-adapter / aimdb-wasm-adapter
 ```
 
 ### Define Records

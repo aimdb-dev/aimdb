@@ -47,18 +47,18 @@ edition = "2021"
 
 [dependencies]
 # AimDB core and Tokio runtime adapter
-aimdb-core = "2.0"
-aimdb-tokio-adapter = { version = "0.7", features = ["tokio-runtime"] }
+aimdb-core = "3.0"
+aimdb-tokio-adapter = { version = "0.8", features = ["tokio-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
+# aimdb-knx-connector = { version = "0.6", features = ["std", "critical-section-std-impl"] }
 # aimdb-tokio-adapter's "net" feature is also required — see the KNX section.
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.7", features = ["tokio-runtime"] }
+# aimdb-mqtt-connector = { version = "0.8", features = ["tokio-runtime"] }
 
 # Optional: Sync API wrapper (for blocking code)
-# aimdb-sync = "0.6"
+# aimdb-sync = "0.7"
 
 # Tokio runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -140,14 +140,14 @@ Once you have an Embassy project set up, add AimDB:
 ```toml
 [dependencies]
 # AimDB core and Embassy runtime adapter
-aimdb-core = { version = "2.0", default-features = false }
-aimdb-embassy-adapter = { version = "0.7", features = ["embassy-runtime"] }
+aimdb-core = { version = "3.0", default-features = false }
+aimdb-embassy-adapter = { version = "0.8", features = ["embassy-runtime"] }
 
 # Optional: KNX connector
-# aimdb-knx-connector = { version = "0.5", features = ["connector"], default-features = false }
+# aimdb-knx-connector = { version = "0.6", features = ["connector"], default-features = false }
 
 # Optional: MQTT connector
-# aimdb-mqtt-connector = { version = "0.7", features = ["embassy-runtime"], default-features = false }
+# aimdb-mqtt-connector = { version = "0.8", features = ["embassy-runtime"], default-features = false }
 
 # Embassy runtime (example for RP2040)
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
@@ -280,12 +280,12 @@ The KNX connector provides KNX/IP tunneling support for building automation syst
 ```toml
 # Host. `critical-section-std-impl` selects the impl the connector's channels
 # need to link — only a final binary may pick one.
-aimdb-knx-connector = { version = "0.5", features = ["std", "critical-section-std-impl"] }
-aimdb-tokio-adapter = { version = "0.7", features = ["tokio-runtime", "net"] }
+aimdb-knx-connector = { version = "0.6", features = ["std", "critical-section-std-impl"] }
+aimdb-tokio-adapter = { version = "0.8", features = ["tokio-runtime", "net"] }
 
 # Embedded. `connector` is the same code on `no_std + alloc`; the HAL already
 # provides a `critical-section` impl.
-aimdb-knx-connector = { version = "0.5", features = ["connector"], default-features = false }
+aimdb-knx-connector = { version = "0.6", features = ["connector"], default-features = false }
 
 # REQUIRED PATCH (bug fixes not yet on crates.io)
 [patch.crates-io]
@@ -355,10 +355,10 @@ The MQTT connector enables pub/sub messaging with MQTT brokers.
 **Add to Cargo.toml:**
 ```toml
 # For Tokio
-aimdb-mqtt-connector = { version = "0.7", features = ["tokio-runtime"] }
+aimdb-mqtt-connector = { version = "0.8", features = ["tokio-runtime"] }
 
 # For Embassy
-aimdb-mqtt-connector = { version = "0.7", features = ["embassy-runtime"], default-features = false }
+aimdb-mqtt-connector = { version = "0.8", features = ["embassy-runtime"], default-features = false }
 
 # REQUIRED PATCH for Embassy (version compatibility)
 [patch.crates-io]
@@ -371,7 +371,7 @@ record type is a contract (`Linkable`), so `subscribe` / `publish` use its own
 wire format and nothing restates it:
 
 ```toml
-aimdb-data-contracts = { version = "0.2", features = ["linkable-json"] }
+aimdb-data-contracts = { version = "0.3", features = ["linkable-json"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -437,7 +437,7 @@ side.
 **Add to Cargo.toml:**
 ```toml
 aimdb-zenoh-connector = { version = "0.1", features = ["std"] }
-aimdb-data-contracts = { version = "0.2", features = ["ros2"] }   # #[derive(RosMessage)]
+aimdb-data-contracts = { version = "0.3", features = ["ros2"] }   # #[derive(RosMessage)]
 ```
 
 ```rust
@@ -737,17 +737,17 @@ For maximum stability, you can pin to specific versions on crates.io:
 
 ```toml
 [dependencies]
-aimdb-core = "=2.0.0"
-aimdb-tokio-adapter = "=0.7.0"
-aimdb-mqtt-connector = "=0.7.0"
-aimdb-knx-connector = "=0.5.0"
+aimdb-core = "=3.0.0"
+aimdb-tokio-adapter = "=0.8.0"
+aimdb-mqtt-connector = "=0.8.0"
+aimdb-knx-connector = "=0.6.0"
 ```
 
 Or use standard semver:
 ```toml
 [dependencies]
-aimdb-core = "2.0"  # Will use latest 2.0.x
-aimdb-knx-connector = "0.5"  # Will use latest 0.5.x
+aimdb-core = "3.0"  # Will use latest 3.0.x
+aimdb-knx-connector = "0.6"  # Will use latest 0.6.x
 ```
 
 ## Migration Path
@@ -757,14 +757,14 @@ As bug fixes are upstreamed and published, the patches can be removed:
 ```toml
 # Current (with patches)
 [dependencies]
-aimdb-knx-connector = "0.5"
+aimdb-knx-connector = "0.6"
 
 [patch.crates-io]
 knx-pico = { git = "https://github.com/aimdb-dev/knx-pico.git", branch = "master" }
 
 # After upstream fixes are published
 [dependencies]
-aimdb-knx-connector = "0.5"  # or newer version
+aimdb-knx-connector = "0.6"  # or newer version
 
 # [patch.crates-io]  <-- Just delete this section!
 ```

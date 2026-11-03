@@ -11,7 +11,7 @@ router such as `rmw_zenohd`.
 [dependencies]
 aimdb-zenoh-connector = { version = "0.1", features = ["std"] }
 # ROS 2 message types: #[derive(RosMessage)]
-aimdb-data-contracts = { version = "0.2", features = ["ros2"] }
+aimdb-data-contracts = { version = "0.3", features = ["ros2"] }
 ```
 
 | Feature | What it adds |

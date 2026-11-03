@@ -11,13 +11,13 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 # The rumqttc backend (std): QoS 0-2, platform trust roots
-aimdb-mqtt-connector = { version = "0.7", features = ["std"] }
+aimdb-mqtt-connector = { version = "0.8", features = ["std"] }
 
 # The mountain-mqtt backend: any target that can supply a transport
-aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embedded"] }
+aimdb-mqtt-connector = { version = "0.8", default-features = false, features = ["embedded"] }
 
 # ... or the Embassy convenience bundle, which adds the transport and clock
-aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embassy-runtime"] }
+aimdb-mqtt-connector = { version = "0.8", default-features = false, features = ["embassy-runtime"] }
 ```
 
 The split is **std vs `no_std`**, not Tokio vs Embassy: the embedded backend
@@ -85,8 +85,8 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 aimdb-core = { version = "1", default-features = false }
-aimdb-embassy-adapter = { version = "0.6", default-features = false }
-aimdb-mqtt-connector = { version = "0.7", default-features = false, features = ["embassy-runtime"] }
+aimdb-embassy-adapter = { version = "0.8", default-features = false }
+aimdb-mqtt-connector = { version = "0.8", default-features = false, features = ["embassy-runtime"] }
 ```
 
 Example:
