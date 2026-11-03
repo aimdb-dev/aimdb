@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`watch` module (#405).** `arm` subscribes and takes the record's write
+  stamp as a baseline; `await_updates` waits for updates newer than it, with
+  a count and deadline, and reports a `WatchOutcome` (`ok`, `timeout`,
+  `disconnected`).
+
 - **`instance_info()` and `post_link()` (#331)**, both `None` against a 3.0
   server; `InstanceInfo` gains `name`.
 

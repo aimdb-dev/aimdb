@@ -275,6 +275,10 @@ Query: "Drain the temperature buffer and analyze the trend"
 Result: Values in chronological order; the first call is a cold start (empty)
 ```
 
+To wait for the *next* update after a prompt ("press B1, then check it
+fired"), use the CLI's `aimdb watch --new --timeout`; see
+[Waiting for an event](../aimdb-cli/README.md#waiting-for-an-event-agents-scripts).
+
 ### 8. graph_nodes
 
 List all nodes in the dependency graph:
