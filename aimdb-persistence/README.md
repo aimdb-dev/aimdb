@@ -23,7 +23,7 @@ For a concrete backend, add [`aimdb-persistence-sqlite`](../aimdb-persistence-sq
 
 ```toml
 [dependencies]
-aimdb-persistence        = "0.1"
+aimdb-persistence        = "0.3"
 aimdb-persistence-sqlite = "0.3"          # or another backend
 ```
 

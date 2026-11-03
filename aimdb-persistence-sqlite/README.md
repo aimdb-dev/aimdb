@@ -12,7 +12,7 @@ executor is never blocked.
 
 ```toml
 [dependencies]
-aimdb-persistence        = "0.1"
+aimdb-persistence        = "0.3"
 aimdb-persistence-sqlite = "0.3"
 ```
 
