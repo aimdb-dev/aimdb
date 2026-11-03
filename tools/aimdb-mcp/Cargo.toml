@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-mcp"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
@@ -33,10 +33,10 @@ transport-serial = ["aimdb-client/transport-serial"]
 
 [dependencies]
 # AimDB dependencies
-aimdb-client = { version = "0.7.0", path = "../../aimdb-client", features = [
+aimdb-client = { version = "0.8.0", path = "../../aimdb-client", features = [
     "observability",
 ] }
-aimdb-codegen = { version = "0.3.0", path = "../../aimdb-codegen" }
+aimdb-codegen = { version = "0.4.0", path = "../../aimdb-codegen" }
 
 # Async runtime
 tokio = { version = "1.48", features = [
@@ -70,5 +70,5 @@ fs2 = "0.4"
 
 [dev-dependencies]
 # `__event_capture!` for the test-only `events::capture` module.
-aimdb-core = { version = "2.0.0", path = "../../aimdb-core", default-features = false }
+aimdb-core = { version = "3.0.0", path = "../../aimdb-core", default-features = false }
 tokio-test = "0.4"

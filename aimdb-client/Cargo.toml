@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-client"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -26,7 +26,7 @@ transport-tcp = ["dep:aimdb-tcp-connector", "aimdb-tokio-adapter/net"]
 # Core dependencies - protocol types from aimdb-core. `connector-session`
 # exposes the shared session engine (`run_client`/`ClientHandle`) plus the AimX
 # codec that the engine-based client (`crate::engine`) builds on.
-aimdb-core = { version = "2.0.0", path = "../aimdb-core", features = [
+aimdb-core = { version = "3.0.0", path = "../aimdb-core", features = [
     "std",
     "connector-session",
 ] }
@@ -36,11 +36,11 @@ aimdb-build-info = { version = "0.1.0", path = "../aimdb-build-info" }
 
 # Transports the resolver dials over, each behind its `transport-*` feature so a
 # binary links only what it needs.
-aimdb-uds-connector = { version = "0.1.0", path = "../aimdb-uds-connector", optional = true }
-aimdb-serial-connector = { version = "0.1.0", path = "../aimdb-serial-connector", default-features = false, features = [
+aimdb-uds-connector = { version = "0.2.0", path = "../aimdb-uds-connector", optional = true }
+aimdb-serial-connector = { version = "0.2.0", path = "../aimdb-serial-connector", default-features = false, features = [
     "std",
 ], optional = true }
-aimdb-tcp-connector = { version = "0.1.0", path = "../aimdb-tcp-connector", default-features = false, features = [
+aimdb-tcp-connector = { version = "0.2.0", path = "../aimdb-tcp-connector", default-features = false, features = [
     "tokio-runtime",
 ], optional = true }
 
@@ -53,7 +53,7 @@ tokio = { version = "1", features = ["net", "io-util", "macros", "fs", "time"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # Supplies the `TimeOps` clock the engine-based client hands to `run_client`
 # (reconnect backoff / keepalive). This client always drives the engine on tokio.
-aimdb-tokio-adapter = { version = "0.7.0", path = "../aimdb-tokio-adapter" }
+aimdb-tokio-adapter = { version = "0.8.0", path = "../aimdb-tokio-adapter" }
 
 # Error handling
 anyhow = "1"

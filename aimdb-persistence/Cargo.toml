@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-persistence"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ tracing = ["aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 
 [dependencies]
-aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false, features = [
+aimdb-core = { version = "3.0.0", path = "../aimdb-core", default-features = false, features = [
     "std",
 ] }
 serde = { workspace = true, features = ["derive"] }

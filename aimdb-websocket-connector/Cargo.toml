@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-websocket-connector"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -34,8 +34,8 @@ tracing = ["dep:tracing", "aimdb-core/tracing"]
 log = ["aimdb-core/log"]
 
 [dependencies]
-aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
-aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false }
+aimdb-core = { version = "3.0.0", path = "../aimdb-core", default-features = false }
+aimdb-data-contracts = { version = "0.3.0", path = "../aimdb-data-contracts", default-features = false }
 
 # Async runtime
 tokio = { version = "1", features = [
