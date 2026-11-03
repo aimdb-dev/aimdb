@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-aimdb-core = { version = "1", default-features = false }
+aimdb-core = { version = "3.0", default-features = false }
 aimdb-embassy-adapter = { version = "0.8", default-features = false }
 aimdb-mqtt-connector = { version = "0.8", default-features = false, features = ["embassy-runtime"] }
 ```
