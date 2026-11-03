@@ -1,14 +1,16 @@
 //! Watch Command - Live Record Monitoring
 
 use std::io::Write;
+use std::time::Duration;
 
 use crate::commands::connect_endpoint;
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult, EXIT_ENVIRONMENT, EXIT_REJECTED};
 use crate::output::live;
+use aimdb_client::watch::{self, WatchOutcome, WatchStatus};
 use aimdb_client::RecordUpdate;
 use clap::Args;
-use futures::StreamExt;
 use tokio::signal;
+use tokio::time::Instant;
 
 /// How `watch` prints updates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -41,70 +43,96 @@ pub struct WatchCommand {
     /// Output format
     #[arg(long, value_enum, default_value = "table")]
     pub format: WatchFormat,
+
+    /// Only count updates written after the watch is armed (the "Watching
+    /// record" line), never the value the record already holds
+    #[arg(long)]
+    pub new: bool,
+
+    /// Give up after SECS: exit 4 if `--count` updates have not arrived by then
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 }
 
 impl WatchCommand {
     pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
-        watch_record(
-            &self.record,
-            endpoint,
-            self.queue_size,
-            self.count,
-            Watcher::new(self.format, self.full, std::io::stdout(), std::io::stderr()),
-        )
-        .await
+        let mut watcher =
+            Watcher::new(self.format, self.full, std::io::stdout(), std::io::stderr());
+        let options = WatchOptions {
+            max_count: self.count,
+            new: self.new,
+            timeout: self.timeout.map(Duration::from_secs),
+        };
+        let result = watch_record(&self.record, endpoint, options, &mut watcher).await;
+        if let Err(e) = &result {
+            watcher.failed(e)?;
+        }
+        result
     }
+}
+
+struct WatchOptions {
+    max_count: usize,
+    new: bool,
+    timeout: Option<Duration>,
 }
 
 async fn watch_record<O: Write, E: Write>(
     record_name: &str,
     endpoint: Option<&str>,
-    queue_size: usize,
-    max_count: usize,
-    mut watcher: Watcher<O, E>,
+    options: WatchOptions,
+    watcher: &mut Watcher<O, E>,
 ) -> CliResult<()> {
-    let _ = queue_size; // queue sizing is now an engine concern; kept as a CLI flag
     let conn = connect_endpoint(endpoint).await?;
 
-    // Subscribe to the record (the engine routes updates back by request id; no
-    // server-allocated subscription id to track). The stream is loss-aware, so
-    // the watcher reports gaps instead of skipping over them silently.
-    let mut stream = conn.subscribe(record_name)?;
+    // The stream is loss-aware, so the watcher reports gaps instead of
+    // skipping over them silently. With `--new`, the record's current stamp
+    // becomes the baseline, so a value written before the watch never counts.
+    let (stream, baseline) = if options.new {
+        let armed = watch::arm(&conn, record_name).await?;
+        (armed.stream, armed.baseline)
+    } else {
+        (conn.subscribe(record_name)?, None)
+    };
 
+    // Printed once armed: a caller waits for this line before prompting.
     watcher.start(record_name)?;
 
     // Set up Ctrl+C handler
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if signal::ctrl_c().await.is_ok() {
             let _ = cancel_tx.send(());
         }
     });
 
-    let unlimited = max_count == 0;
-    loop {
-        tokio::select! {
-            next = stream.next() => {
-                match next {
-                    Some(Ok(update)) => {
-                        watcher.update(&update)?;
-                        if !unlimited && watcher.count >= max_count as u64 {
-                            break;
-                        }
-                    }
-                    // A refusal is terminal: report it and exit non-zero rather
-                    // than closing out as if the session had run.
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break, // stream ended (record closed, or disconnect)
-                }
-            }
-            _ = &mut cancel_rx => break, // Ctrl+C
-        }
-    }
+    let deadline = options.timeout.map(|t| Instant::now() + t);
+    let waited = tokio::select! {
+        outcome = watch::await_updates(stream, baseline, options.max_count, deadline, |u| watcher.update(u)) => Some(outcome?),
+        _ = cancel_rx => None, // Ctrl+C
+    };
 
     // Dropping the stream stops local delivery (no explicit unsubscribe needed).
     watcher.stop()?;
-    Ok(())
+    let Some(outcome) = waited else {
+        return watcher.stopped(options.max_count).map_err(Into::into);
+    };
+    watcher.outcome(&outcome)?;
+    match outcome.outcome {
+        WatchStatus::Ok => Ok(()),
+        WatchStatus::Timeout => Err(CliError::Timeout {
+            record: record_name.to_string(),
+            received: outcome.received,
+            wanted: outcome.wanted,
+        }),
+        WatchStatus::Disconnected => Err(CliError::connection_failed(
+            endpoint.unwrap_or("auto-discovered instance"),
+            format!(
+                "the subscription ended after {} of {} updates",
+                outcome.received, outcome.wanted
+            ),
+        )),
+    }
 }
 
 /// Renders a subscription. Values go to `out`; status lines (start, gaps,
@@ -120,6 +148,8 @@ struct Watcher<O: Write, E: Write> {
     count: u64,
     /// What the engine observed as lost between deliveries, for the summary.
     skipped_total: u64,
+    /// Whether the JSON outcome line went out, so a failure adds no second one.
+    outcome_written: bool,
 }
 
 impl<O: Write, E: Write> Watcher<O, E> {
@@ -131,6 +161,7 @@ impl<O: Write, E: Write> Watcher<O, E> {
             err,
             count: 0,
             skipped_total: 0,
+            outcome_written: false,
         }
     }
 
@@ -195,6 +226,45 @@ impl<O: Write, E: Write> Watcher<O, E> {
     fn stop(&mut self) -> std::io::Result<()> {
         self.status(&live::format_watch_stop(self.skipped_total))
     }
+
+    /// How the watch ended, as one JSON line on `err` in JSON mode, so a caller
+    /// reading the output from files needs no exit code. Table mode leaves it
+    /// to the exit code and the error message.
+    fn outcome(&mut self, outcome: &WatchOutcome) -> std::io::Result<()> {
+        self.outcome_line(serde_json::json!(outcome))
+    }
+
+    /// The outcome line for a watch stopped with Ctrl+C.
+    fn stopped(&mut self, wanted: usize) -> std::io::Result<()> {
+        self.outcome_line(serde_json::json!({
+            "outcome": "stopped",
+            "received": self.count,
+            "wanted": wanted,
+            "skipped": self.skipped_total,
+        }))
+    }
+
+    /// The outcome line for a watch that failed: `refused` when the instance
+    /// said no, `disconnected` when it could not be reached.
+    fn failed(&mut self, error: &CliError) -> std::io::Result<()> {
+        if self.outcome_written {
+            return Ok(());
+        }
+        let outcome = match error.exit_code() {
+            EXIT_REJECTED => "refused",
+            EXIT_ENVIRONMENT => "disconnected",
+            _ => "error",
+        };
+        self.outcome_line(serde_json::json!({ "outcome": outcome, "error": error.to_string() }))
+    }
+
+    fn outcome_line(&mut self, line: serde_json::Value) -> std::io::Result<()> {
+        if self.format == WatchFormat::Json {
+            writeln!(self.err, "{line}")?;
+            self.outcome_written = true;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +298,22 @@ mod tests {
             .unwrap();
         watcher.update(&update(3_000, None, 0, false)).unwrap();
         watcher.stop().unwrap();
+        watcher
+            .outcome(&WatchOutcome {
+                outcome: WatchStatus::Timeout,
+                received: 3,
+                wanted: 4,
+                skipped: 3,
+            })
+            .unwrap();
+        // The error that follows a timeout adds no second outcome line.
+        watcher
+            .failed(&CliError::Timeout {
+                record: "temp.vienna".into(),
+                received: 3,
+                wanted: 4,
+            })
+            .unwrap();
 
         let out = String::from_utf8(watcher.out).unwrap();
         let lines: Vec<Value> = out
@@ -245,6 +331,42 @@ mod tests {
         assert!(err.contains("Watching record"), "{err}");
         assert!(err.contains("snapshot complete"), "{err}");
         assert!(err.contains("Stopped watching"), "{err}");
+        let outcomes: Vec<Value> = err
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        assert_eq!(
+            outcomes,
+            [json!({"outcome": "timeout", "received": 3, "wanted": 4, "skipped": 3})],
+            "one outcome line, last on stderr: {err}"
+        );
+        assert!(err.trim_end().ends_with('}'), "{err}");
+    }
+
+    /// A failure before any outcome reports `refused` or `disconnected` by its
+    /// failure class.
+    #[test]
+    fn failures_get_an_outcome_line() {
+        let mut watcher = Watcher::new(WatchFormat::Json, false, Vec::new(), Vec::new());
+        watcher
+            .failed(&CliError::server_error("not_found", "no such record", None))
+            .unwrap();
+        let line: Value = serde_json::from_slice(&watcher.err).unwrap();
+        assert_eq!(line["outcome"], "refused");
+
+        let mut watcher = Watcher::new(WatchFormat::Json, false, Vec::new(), Vec::new());
+        watcher
+            .failed(&CliError::connection_failed("unix:///x", "refused"))
+            .unwrap();
+        let line: Value = serde_json::from_slice(&watcher.err).unwrap();
+        assert_eq!(line["outcome"], "disconnected");
+
+        // Table mode leaves it to the error message and exit code.
+        let mut watcher = Watcher::new(WatchFormat::Table, false, Vec::new(), Vec::new());
+        watcher
+            .failed(&CliError::connection_failed("unix:///x", "refused"))
+            .unwrap();
+        assert!(watcher.out.is_empty() && watcher.err.is_empty());
     }
 
     /// Table mode keeps everything on stdout and shows `ts` in seconds.
@@ -271,5 +393,10 @@ mod tests {
         assert_eq!(cli.watch.format, WatchFormat::Json);
         let cli = Cli::parse_from(["aimdb", "temp"]);
         assert_eq!(cli.watch.format, WatchFormat::Table);
+        assert!(!cli.watch.new);
+        assert_eq!(cli.watch.timeout, None);
+        let cli = Cli::parse_from(["aimdb", "temp", "--new", "--timeout", "60"]);
+        assert!(cli.watch.new);
+        assert_eq!(cli.watch.timeout, Some(60));
     }
 }

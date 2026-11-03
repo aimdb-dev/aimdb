@@ -350,3 +350,90 @@ async fn a_refused_subscription_is_a_terminal_error_not_a_silent_eof() {
 
     drop(conn);
 }
+
+/// `watch::arm` then one write: `await_updates` sees exactly that write, for
+/// each buffer type, on a fresh connection. A SingleLatest subscriber starts
+/// warm, so its seeded value must be held back by the baseline.
+#[tokio::test]
+async fn armed_watch_sees_only_the_write_after_it() {
+    use aimdb_client::watch::{arm, await_updates, WatchStatus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let mut policy = SecurityPolicy::read_write();
+    for key in ["latest", "ring", "mailbox"] {
+        policy.allow_write_key(key);
+    }
+    let config = AimxConfig::uds_default()
+        .socket_path(sock.to_str().unwrap())
+        .security_policy(policy);
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    for (key, cfg) in [
+        ("latest", BufferCfg::SingleLatest),
+        ("ring", BufferCfg::SpmcRing { capacity: 16 }),
+        ("mailbox", BufferCfg::Mailbox),
+    ] {
+        builder.configure::<Setting>(key, |reg| {
+            reg.buffer(cfg).with_remote_access();
+        });
+    }
+    let (db, runner) = builder.build().await.expect("build db");
+    let db = Arc::new(db);
+    tokio::spawn(runner.run());
+
+    for key in ["latest", "ring", "mailbox"] {
+        // Seeded before arming: it must never count as the response.
+        db.set_record_from_json(key, json!({ "level": 1 }))
+            .expect("seed");
+
+        let conn = AimxConnection::connect(sock.to_str().unwrap())
+            .await
+            .expect("connect");
+        let armed = arm(&conn, key).await.expect("arm");
+        if key == "latest" {
+            assert!(
+                armed.baseline.is_some(),
+                "a seeded SingleLatest has a stamp"
+            );
+        }
+
+        db.set_record_from_json(key, json!({ "level": 2 }))
+            .expect("write after arm");
+
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let outcome = await_updates(armed.stream, armed.baseline, 1, Some(deadline), |u| {
+            seen.push(u.value.clone());
+            Ok(())
+        })
+        .await
+        .expect("no refusal");
+        assert_eq!(outcome.outcome, WatchStatus::Ok, "{key}: {outcome:?}");
+        assert_eq!(seen, [Some(json!({ "level": 2 }))], "{key}");
+    }
+}
+
+/// Arming on an unknown record is refused up front, not reported as a wait.
+#[tokio::test]
+async fn arm_on_an_unknown_record_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let config = AimxConfig::uds_default().socket_path(sock.to_str().unwrap());
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    builder.configure::<Setting>("known", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (_db, runner) = builder.build().await.expect("build db");
+    tokio::spawn(runner.run());
+
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
+    assert!(aimdb_client::watch::arm(&conn, "missing").await.is_err());
+}

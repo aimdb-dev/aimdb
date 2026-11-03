@@ -120,6 +120,7 @@ nc -U /tmp/aimdb-demo.sock  # Should connect
 - `get_instance_info` - Get detailed server information
 - `list_records` - See all available records with metadata
 - `drain_record` - Batch-read accumulated record values
+- To wait for the next update after a prompt, use the CLI: `aimdb watch <record> --new --format json --count 1 --timeout <secs>` (see the aimdb-cli README, "Waiting for an event")
 
 ### Diagnostic Information
 When reporting issues, include:

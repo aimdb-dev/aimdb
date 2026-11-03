@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`watch --new` and `--timeout` (#405).** `--new` counts only updates
+  written after the watch is armed; `--timeout` gives up with the new exit
+  code 4. With `--format json`, the watch ends with an outcome line on stderr
+  (`ok`, `timeout`, `disconnected`, `refused`, `stopped`). A connection lost
+  before `--count` updates now exits 3 instead of 0.
+
 - **Write timestamps (#326).** `aimdb watch` shows `ts` (seconds since
   instance start) and gains `--format json`: one NDJSON object per update on
   stdout, status on stderr. `aimdb record get` prints `ts`; its JSON formats

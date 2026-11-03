@@ -195,8 +195,64 @@ Options:
 - `-q, --queue-size <SIZE>`: Subscription queue size (default: 100)
 - `-c, --count <N>`: Maximum number of events to receive (0 = unlimited)
 - `-f, --full`: Show full pretty-printed JSON for each event
+- `--format <table|json>`: `json` writes one NDJSON object per update on
+  stdout and every status line on stderr
+- `--new`: Count only updates written after the watch is armed. Without it, a
+  `SingleLatest` record's current value can arrive first and pass as a new one.
+- `--timeout <SECS>`: Give up after SECS. Exits 4 if `--count` updates have not
+  arrived by then; with `--count 0` it is a normal end.
 
 Press Ctrl+C to stop watching and unsubscribe cleanly.
+
+The "Watching record" status line means **armed**: subscribed and, with
+`--new`, the record's current write stamp taken as the baseline. An update
+written after that line is caught. Armed does not guarantee delivery: a
+failure the server reports later, such as a buffer out of subscriber slots,
+still ends the watch with exit 1.
+
+With `--format json`, the watch ends with one outcome line on stderr, so a
+caller can read the result from a file without the exit code:
+
+```json
+{"outcome":"timeout","received":0,"skipped":0,"wanted":1}
+```
+
+| `outcome` | Exit | Meaning |
+|---|---|---|
+| `ok` | 0 | `--count` updates arrived (or, with `--count 0`, the stream or timeout ended) |
+| `timeout` | 4 | `--timeout` passed first |
+| `disconnected` | 3 | Connection lost before `--count` updates, or unreachable at start. Stamps are per instance lifetime, so the watch does not resume. |
+| `refused` | 1 | Subscription refused or record not found; the line carries `error` |
+| `stopped` | 0 | Ctrl+C |
+
+#### Waiting for an event (agents, scripts)
+
+To confirm that something happens ("press B1, then check `button.b1`
+fired"), arm the watch first, then prompt, then read the result. Each step
+works as a separate shell command, so it fits an agent whose tool calls each
+run in a new shell:
+
+```bash
+# 1. Arm in the background and wait for the "armed" line.
+aimdb watch button.b1 --new --format json --count 1 --timeout 60 >out.ndjson 2>status.log &
+until grep -q 'Watching record' status.log; do sleep 0.1; done
+
+# 2. Prompt: "Please press B1."
+
+# 3. Later: wait for the outcome, then read the updates.
+until grep -q '"outcome"' status.log; do sleep 0.5; done
+grep '"outcome"' status.log
+cat out.ndjson
+```
+
+A record that updates on its own (a periodic sensor) shows up as lines in
+`out.ndjson` before the prompt. Check for those before prompting: if there
+are any, the check cannot tell the person's action from the record's own
+updates.
+
+**Serial links** carry a single AimX connection, and a new `hello` resets any
+other session on the line. Do not run `aimdb watch` over `serial://` while
+`aimdb-mcp` (or another CLI command) holds the same link.
 
 ### Graph Commands
 
@@ -377,7 +433,7 @@ unreachable instance without retrying a rejected request:
 | 1 | Rejected: the instance or a remote service refused the request | record not found, record not writable, server error |
 | 2 | Usage: bad arguments or malformed input | unknown subcommand or flag, unsupported `--connect` endpoint, invalid JSON for `record set` |
 | 3 | Environment: worth retrying | connection failed, no instance found, protocol mismatch, I/O error, a reply that does not parse |
-| 4+ | Command-specific | |
+| 4 | Timeout | `watch --timeout` passed before `--count` updates arrived |
 
 ```bash
 aimdb instance ping

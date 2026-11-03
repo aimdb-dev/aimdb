@@ -11,6 +11,8 @@
 //! - **Protocol Implementation**: the reshaped AimX handshake + RPC/streaming
 //! - **Instance Discovery**: Automatic detection of running AimDB instances
 //! - **Record Operations**: list, get, set, subscribe, drain, graph, query
+//! - **Watches**: arm on a record, then wait for updates newer than the arm
+//!   point ([`watch`])
 //!
 //! ## Usage
 //!
@@ -43,6 +45,7 @@ pub mod endpoint;
 pub mod engine;
 pub mod error;
 pub mod protocol;
+pub mod watch;
 mod wire;
 
 // Re-export main types for convenience. `AimxConnection` is the engine-based
@@ -55,3 +58,5 @@ pub use engine::{AimxConnection, DrainResponse, RecordUpdate};
 pub use aimdb_core::{Stamp, Stamped, WriteMetadata};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};
+// Arm a watch, then wait for updates written after it.
+pub use watch::{arm, await_updates, Armed, WatchOutcome, WatchStatus};

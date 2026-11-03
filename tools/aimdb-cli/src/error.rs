@@ -15,6 +15,8 @@ pub const EXIT_USAGE: i32 = 2;
 /// Exit code: network or TLS failure, unreachable instance, incompatible
 /// peer, I/O. Worth retrying.
 pub const EXIT_ENVIRONMENT: i32 = 3;
+/// Exit code: `watch --timeout` passed before `--count` updates arrived.
+pub const EXIT_TIMEOUT: i32 = 4;
 
 /// CLI-specific errors with helpful messages and hints
 #[derive(Debug, Error)]
@@ -63,6 +65,14 @@ pub enum CliError {
     /// The server's reply broke the AimX protocol (e.g. a value without `ts`)
     #[error("Protocol error: {reason}\n  Hint: the server must speak AimX 4.x")]
     Protocol { reason: String },
+
+    /// A watch's deadline passed before enough updates arrived
+    #[error("Timed out watching '{record}': {received} of {wanted} updates arrived")]
+    Timeout {
+        record: String,
+        received: u64,
+        wanted: usize,
+    },
 
     /// I/O error occurred
     #[error("I/O error: {0}")]
@@ -123,6 +133,7 @@ impl CliError {
             | Self::WriteProtected { .. }
             | Self::ServerError { .. }
             | Self::Other(_) => EXIT_REJECTED,
+            Self::Timeout { .. } => EXIT_TIMEOUT,
         }
     }
 }
@@ -221,5 +232,11 @@ mod tests {
         for e in &rejected {
             assert_eq!(e.exit_code(), EXIT_REJECTED, "{e:?}");
         }
+        let timeout = CliError::Timeout {
+            record: "r".into(),
+            received: 0,
+            wanted: 1,
+        };
+        assert_eq!(timeout.exit_code(), EXIT_TIMEOUT);
     }
 }
