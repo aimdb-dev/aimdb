@@ -11,9 +11,9 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 # `std` is the host leg.
-aimdb-knx-connector = { version = "0.5", features = ["std"] }
+aimdb-knx-connector = { version = "0.6", features = ["std"] }
 # The host also needs the adapter's UDP socket and clock.
-aimdb-tokio-adapter = { version = "0.6", features = ["tokio-runtime", "net"] }
+aimdb-tokio-adapter = { version = "0.8", features = ["tokio-runtime", "net"] }
 
 # REQUIRED: Patch knx-pico to use fork with bug fixes
 [patch.crates-io]

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
+### Changed (breaking)
+
+- **Requires `aimdb-core` 3.0 (#326).** The `.persist()` tap reads the
+  `Stamped<T>` values core 3.0 buffers carry and stores `.value`. The backend
+  still records its own persist time, not the write stamp (design 058 §5.1).
+
+### Added
+
+- **`log` feature (#365)**, forwarding operational events through the `log`
+  facade. It can be enabled together with `tracing`.
+
+### Changed
+
+- **Operational failures are reported through core's `log_*!` macros (#365):**
+  a missing backend, serialize and store failures, retention cleanup failures,
+  and rows skipped by `query_*` because they fail to deserialise. `tracing` now
+  enables `aimdb-core/tracing` instead of depending on `tracing` directly. Log
+  targets are unchanged (`aimdb_persistence::ext`, `::builder_ext`,
+  `::query_ext`). With neither `tracing` nor `log`, a retention cleanup failure
+  is printed to stderr.
+
 ## [0.2.0] - 2026-09-18
 
 ### Changed (breaking) — Design 047
@@ -87,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[0.3.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [0.2.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.1.1]: https://github.com/aimdb-dev/aimdb/compare/aimdb-persistence-v0.1.0...aimdb-persistence-v0.1.1
 [0.1.0]: https://github.com/aimdb-dev/aimdb/releases/tag/aimdb-persistence-v0.1.0

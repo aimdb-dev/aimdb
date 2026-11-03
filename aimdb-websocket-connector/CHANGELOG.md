@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-03
+
 ### Added
 
 - **`instance.info` and `instance.post_link` (#331)**, the same replies as the
@@ -39,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Read grants are record-key patterns, not topic patterns.**
   `Permissions::subscribe_patterns` is renamed to `read_patterns` and
   `Permissions::can_subscribe(topic)` is renamed `can_read(key)`. The rename
-  carries a sublte change: the read patterns are now matched against **record
+  carries a subtle change: the read patterns are now matched against **record
   keys** — the string passed to `configure::<T>(key, ...)` — rather than against
   the ws topic registered at `link_to("ws://...")`. `write_patterns` and `can_write` are
   unchanged and remain **topic**-based. An operator migrating a config
@@ -88,9 +90,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `Vec<(String, Vec<u8>)>`; the added `usize` is the record id the
   cached value belongs to. Two records publishing on one topic now yield two
   entries rather than one overwriting the other.
-
-- **`ConnectorConfig` carry an additional attr `record_index: Option<usize>`
-  to `WsBusSink`**, so record index could join topic at outbound routes.
 
 ### Changed (breaking, wire)
 

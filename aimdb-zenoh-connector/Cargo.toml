@@ -40,7 +40,7 @@ defmt = ["dep:defmt", "aimdb-core/defmt"]
 
 [dependencies]
 defmt = { workspace = true, optional = true }
-aimdb-core = { version = "2.0.0", path = "../aimdb-core", default-features = false }
+aimdb-core = { version = "3.0.0", path = "../aimdb-core", default-features = false }
 zenoh = { version = "1.10.1", default-features = false, features = [
     "transport_tcp",
     "transport_udp",
@@ -48,7 +48,7 @@ zenoh = { version = "1.10.1", default-features = false, features = [
 # The session task's retry wait; zenoh itself runs on tokio.
 tokio = { workspace = true, features = ["time"], optional = true }
 # `RosMessage` and the recorded wire format, for `ros2://` links.
-aimdb-data-contracts = { version = "0.2.0", path = "../aimdb-data-contracts", default-features = false, features = [
+aimdb-data-contracts = { version = "0.3.0", path = "../aimdb-data-contracts", default-features = false, features = [
     "ros2",
 ], optional = true }
 # XXH3-128 for rmw_zenoh GIDs; no_std.

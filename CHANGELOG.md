@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-03
+
 ### Added — links as values
 
 - **A link can be built before its record and attached with `reg.input(..)` /
@@ -48,6 +50,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([aimdb-core](aimdb-core/CHANGELOG.md),
   [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md),
   [aimdb-data-contracts](aimdb-data-contracts/CHANGELOG.md))
+
+### Added — wait for the next update
+
+- **`aimdb watch --new` and `--timeout` (#405).** `--new` counts only updates
+  written after the watch is armed, using the record's write stamp as the
+  baseline, and `--timeout` gives up with exit code 4. A connection lost
+  before `--count` updates now exits 3 instead of 0. The new `aimdb_client::watch`
+  module provides the same arm-then-wait flow to other clients.
+  ([aimdb-client](aimdb-client/CHANGELOG.md),
+  [aimdb-cli](tools/aimdb-cli/CHANGELOG.md))
+
+### Changed — operational events
+
+- **Library crates report operational failures through core's `log_*!`
+  macros (#365)**, with each crate's `tracing` feature routed through
+  `aimdb-core` and new `log` features on the persistence crates and the
+  Embassy adapter. Log targets are unchanged, so existing filters keep
+  matching. ([aimdb-persistence](aimdb-persistence/CHANGELOG.md),
+  [aimdb-persistence-sqlite](aimdb-persistence-sqlite/CHANGELOG.md),
+  [aimdb-embassy-adapter](aimdb-embassy-adapter/CHANGELOG.md),
+  [aimdb-mqtt-connector](aimdb-mqtt-connector/CHANGELOG.md))
 
 ### Changed (breaking) — write timestamps, AimX 4.0
 
@@ -1144,7 +1167,8 @@ This is an early release. Please report issues, suggest features, or contribute 
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/aimdb-dev/aimdb/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v1.0.0

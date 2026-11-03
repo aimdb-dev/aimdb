@@ -194,8 +194,8 @@ std = [{std_features}]
 alloc = []
 
 [dependencies]
-aimdb-core = {{ version = "0.5", default-features = false, features = ["derive", "alloc"] }}
-aimdb-data-contracts = {{ version = "0.5", default-features = false{dc_features_str} }}
+aimdb-core = {{ version = "3.0", default-features = false, features = ["derive", "alloc"] }}
+aimdb-data-contracts = {{ version = "0.3", default-features = false{dc_features_str} }}
 serde = {{ version = "1.0", default-features = false, features = ["derive", "alloc"] }}
 {optional_deps}"#
     )
@@ -493,16 +493,16 @@ pub fn generate_binary_cargo_toml(state: &ArchitectureState, binary_name: &str) 
     let mut optional_connector_deps = String::new();
     if has_mqtt {
         optional_connector_deps.push_str(
-            "aimdb-mqtt-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "aimdb-mqtt-connector = { version = \"0.8\", features = [\"tokio-runtime\"] }\n",
         );
     }
     if has_knx {
         optional_connector_deps
-            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
+            .push_str("aimdb-knx-connector = { version = \"0.6\", features = [\"std\"] }\n");
     }
     if has_ws {
         optional_connector_deps.push_str(
-            "aimdb-websocket-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "aimdb-websocket-connector = { version = \"0.4\", features = [\"tokio-runtime\"] }\n",
         );
     }
 
@@ -520,8 +520,8 @@ path = \"src/main.rs\"\n\
 \n\
 [dependencies]\n\
 {common_crate_dep} = {{ path = \"../{common_crate_name}\" }}\n\
-aimdb-core = {{ version = \"0.5\" }}\n\
-aimdb-tokio-adapter = {{ version = \"0.5\", features = {tokio_adapter_features} }}\n\
+aimdb-core = {{ version = \"3.0\" }}\n\
+aimdb-tokio-adapter = {{ version = \"0.8\", features = {tokio_adapter_features} }}\n\
 {optional_connector_deps}\
 tokio = {{ version = \"1\", features = [\"full\"] }}\n\
 tracing = \"0.1\"\n\
@@ -1327,16 +1327,16 @@ pub fn generate_hub_cargo_toml(state: &ArchitectureState) -> String {
     let mut connector_deps = String::new();
     if has_mqtt {
         connector_deps.push_str(
-            "aimdb-mqtt-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "aimdb-mqtt-connector = { version = \"0.8\", features = [\"tokio-runtime\"] }\n",
         );
     }
     if has_knx {
         connector_deps
-            .push_str("aimdb-knx-connector = { version = \"0.5\", features = [\"std\"] }\n");
+            .push_str("aimdb-knx-connector = { version = \"0.6\", features = [\"std\"] }\n");
     }
     if has_ws {
         connector_deps.push_str(
-            "aimdb-websocket-connector = { version = \"0.5\", features = [\"tokio-runtime\"] }\n",
+            "aimdb-websocket-connector = { version = \"0.4\", features = [\"tokio-runtime\"] }\n",
         );
     }
 
@@ -1356,9 +1356,9 @@ path = \"src/main.rs\"\n\
 \n\
 [dependencies]\n\
 {common_crate_name} = {{ path = \"../{common_crate_name}\" }}\n\
-aimdb-core = {{ version = \"0.5\" }}\n\
-aimdb-data-contracts = {{ version = \"0.5\", features = [\"linkable\"] }}\n\
-aimdb-tokio-adapter = {{ version = \"0.5\", features = {tokio_adapter_features} }}\n\
+aimdb-core = {{ version = \"3.0\" }}\n\
+aimdb-data-contracts = {{ version = \"0.3\", features = [\"linkable\"] }}\n\
+aimdb-tokio-adapter = {{ version = \"0.8\", features = {tokio_adapter_features} }}\n\
 {connector_deps}\
 tokio = {{ version = \"1\", features = [\"full\"] }}\n\
 tracing = \"0.1\"\n\

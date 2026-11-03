@@ -1,6 +1,6 @@
 [package]
 name = "aimdb-core"
-version = "2.0.0"
+version = "3.0.0"
 edition = "2021"
 rust-version.workspace = true
 license.workspace = true
@@ -78,7 +78,7 @@ start-order-seed = []
 aimdb-build-info = { version = "0.1.0", path = "../aimdb-build-info" }
 
 # Derive macros (optional)
-aimdb-derive = { version = "0.2.0", path = "../aimdb-derive", optional = true }
+aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 
 # Stream trait for bidirectional connectors (minimal, no_std compatible)
 futures-core = { version = "0.3", default-features = false }

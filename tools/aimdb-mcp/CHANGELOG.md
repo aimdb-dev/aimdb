@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-03
+
 ### Added
 
 - **`get_instance_info` returns `aimdb_version`, `instance` and `build`
@@ -157,7 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[0.10.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [0.9.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.8.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.7.0...aimdb-mcp-v0.8.0
 [0.7.0]: https://github.com/aimdb-dev/aimdb/compare/aimdb-mcp-v0.6.1...aimdb-mcp-v0.7.0

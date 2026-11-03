@@ -19,8 +19,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aimdb-core = { version = "0.1", default-features = false }
-aimdb-embassy-adapter = { version = "0.1", default-features = false, features = ["embassy-task-pool-16"] }
+aimdb-core = { version = "3.0", default-features = false }
+aimdb-embassy-adapter = { version = "0.8", default-features = false, features = ["embassy-task-pool-16"] }
 embassy-executor = { version = "0.6", features = ["arch-cortex-m", "executor-thread"] }
 embassy-time = "0.3"
 ```
@@ -180,16 +180,15 @@ embassy-runtime = []              # Enable Embassy support
 embassy-task-pool-8 = []          # 8-task pool (default)
 embassy-task-pool-16 = []         # 16-task pool
 embassy-task-pool-32 = []         # 32-task pool
-defmt = ["aimdb-core/defmt"]       # Operational logging (enabled by default)
+defmt = ["aimdb-core/defmt"]       # Operational log destination
 log = ["aimdb-core/log"]           # Optional operational log destination
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 ```
 
-The adapter defaults to `alloc,defmt`. With `default-features = false`, select
-`defmt`, `log`, or `tracing` explicitly for buffer operational diagnostics, such
-as subscriber slot exhaustion. These use `aimdb_embassy_adapter::events`.
-The default `defmt` feature also enables core's defmt reporting. The generic
-runtime logging bridge continues to use defmt independently.
+The adapter defaults to `alloc`. Select `defmt`, `log`, or `tracing` explicitly
+for buffer operational diagnostics, such as subscriber slot exhaustion (target
+`aimdb_embassy_adapter::buffer`). The `defmt` feature also enables core's defmt
+reporting. The generic runtime logging bridge uses defmt independently of it.
 
 ## Time Operations
 

@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-build-info",
  "aimdb-core",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-codegen"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-build-info",
  "aimdb-derive",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-cdr",
  "aimdb-core",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-derive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-embassy-adapter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-core",
  "critical-section",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-knx-connector"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-knx-pico",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mcp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aimdb-client",
  "aimdb-codegen",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mqtt-connector"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-persistence"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-persistence-sqlite"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-persistence",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-serial-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-build-info",
  "aimdb-core",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-sync"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tcp-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-embassy-adapter",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tokio-adapter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-uds-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-wasm-adapter"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-websocket-connector"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -2697,7 +2697,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-mailbox"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "hello-mailbox-async"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "hello-single-latest"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "hello-single-latest-async"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "hello-spmc-ring"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "hello-spmc-ring-async"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -4447,7 +4447,7 @@ dependencies = [
 
 [[package]]
 name = "readme-quickstart"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -5179,7 +5179,7 @@ dependencies = [
 
 [[package]]
 name = "serve-records-http-demo"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -5512,7 +5512,7 @@ dependencies = [
 
 [[package]]
 name = "sync-api-demo"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-sync",
@@ -5773,7 +5773,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-knx-connector-demo"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-knx-connector",
@@ -5800,7 +5800,7 @@ dependencies = [
 
 [[package]]
 name = "tokio-mqtt-connector-demo"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",

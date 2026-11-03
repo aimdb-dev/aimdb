@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
+### Added
+
+- **`defmt` and `log` features (#365)**, next to `tracing`, choosing where the
+  adapter's operational diagnostics go, e.g. subscriber slot exhaustion on an
+  SPMC ring (target `aimdb_embassy_adapter::buffer`). `defmt` also enables
+  core's `defmt` reporting. None of them is on by default.
+
 ### Changed (breaking)
 
 - **Write timestamps (#326).** `.buffer(cfg)` builds buffers of `Stamped<T>`.
@@ -222,7 +231,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/aimdb-dev/aimdb/compare/v3.0.0...HEAD
+[0.8.0]: https://github.com/aimdb-dev/aimdb/compare/v2.0.0...v3.0.0
 [0.7.0]: https://github.com/aimdb-dev/aimdb/compare/v1.1.0...v2.0.0
 [0.6.0]: https://github.com/aimdb-dev/aimdb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aimdb-dev/aimdb/compare/v0.4.0...v0.5.0

@@ -23,15 +23,15 @@ For a concrete backend, add [`aimdb-persistence-sqlite`](../aimdb-persistence-sq
 
 ```toml
 [dependencies]
-aimdb-persistence        = "0.1"
-aimdb-persistence-sqlite = "0.1"          # or another backend
+aimdb-persistence        = "0.3"
+aimdb-persistence-sqlite = "0.3"          # or another backend
 ```
 
 Optional features:
 
 ```toml
 # Enable structured logging via the `tracing` crate
-aimdb-persistence = { version = "0.1", features = ["tracing"] }
+aimdb-persistence = { version = "0.3", features = ["tracing"] }
 ```
 
 ## Quick Start
