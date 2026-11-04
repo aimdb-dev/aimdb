@@ -583,6 +583,84 @@ type.
 next to an inbound link, fails `build()` as it always has, and several
 inbound links on one record are allowed (fan-in).
 
+### A contracts crate as the source of truth
+
+Applications built by different people exchange contracts by their
+identity, `SchemaType::NAME@VERSION`, and `VERSION` is bumped by hand. A
+field renamed, retyped or reordered without a bump keeps the identity, and
+the reader then fails to decode, or decodes a field with another meaning.
+A contracts crate's own tests check one rule:
+
+> **The same `NAME@VERSION` always has the same wire shape.**
+
+`catalog!` lists the crate's contracts in one place:
+
+```rust
+aimdb_data_contracts::catalog! {
+    TemperatureV1,       // mqtt_demo.temperature@1, kept for the migration chain
+    Temperature,         // mqtt_demo.temperature@2
+    TemperatureCommand,
+    ButtonPress,
+}
+```
+
+```toml
+[dev-dependencies]
+aimdb-data-contracts = { version = "0.3", features = ["lock"] }
+```
+
+It generates `pub const CATALOG: &[ContractId]` (`no_std`) and a test that
+checks the catalog against `aimdb.lock` at the crate root. The `lock`
+feature belongs in `[dev-dependencies]` only, so firmware builds never see
+it. `aimdb.lock` is generated and committed:
+
+```toml
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "mqtt_demo.temperature"
+version = 1
+shape = "sha256:51d0a7c3…"
+```
+
+| Change | Result |
+|---|---|
+| New contract or new `VERSION` | fails until accepted with `AIMDB_UPDATE_LOCK=1 cargo test` |
+| Contract removed from the catalog | fails until accepted with `AIMDB_UPDATE_LOCK=1 cargo test` |
+| Shape changed under the same `NAME@VERSION` | **always fails**; updating the lock does not accept it |
+| Two catalog entries with the same `NAME@VERSION` | always fails |
+| A contract whose shape cannot be traced | always fails, naming the reason |
+
+A locked entry never changes, so the lock holds a hash of each shape. A
+failure shows the current one:
+
+```
+mqtt_demo.temperature@1: the shape changed without a VERSION bump
+  locked:  sha256:3af9725c…
+  current: sha256:7efdc299…  struct { sensor_id: str, temp_c: f32 }
+  fix: bump VERSION (and add a migration step), or revert the change
+```
+
+The shape is traced through serde: the check builds values of each
+contract, every variant of every enum inside it included, and records what
+they serialize to. So it is what reaches the wire, for every codec: wire
+names after `rename` / `rename_all`, field order and exact types (which
+postcard and CDR depend on), variant names and indices, nested types,
+`Option`, sequences, maps and tuples. `#[serde(default)]` and
+`skip_serializing_if` are not part of the shape: they make a change
+compatible, not different.
+
+Limits:
+
+- `#[serde(flatten)]`, untagged and internally tagged enums, and
+  hand-written `Deserialize` impls that need a self-describing format
+  cannot be traced, and fail the check.
+- Contracts whose wire format is a hand-written serializer (the KNX DPT
+  records) are out of scope: their format lives in code, not in the type.
+- The lock checks one crate's history. Two crates defining the same `NAME`
+  are not detected; prefix contract names per crate (`mqtt_demo.…`).
+
 ---
 
 ## Write Timestamps

@@ -28,3 +28,8 @@ serde = { workspace = true }
 
 # Optional defmt for embedded logging
 defmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `catalog!` (types.rs) checks `aimdb.lock` in this crate's tests; the
+# check is dev-only, so firmware builds never see it.
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = ["lock"] }

@@ -38,6 +38,11 @@ observable = ["alloc", "aimdb-core"]
 # Feature-gated for tier symmetry with the other wire contracts. A pure trait —
 # no dependencies of its own.
 settable = []
+# Dev-tier — enable in a contracts crate's `[dev-dependencies]` only. The
+# `aimdb.lock` check that `catalog!` generates for the crate's own tests:
+# traces each contract's wire shape through serde and compares its hash
+# with the committed lock. Never reaches a firmware build (resolver 2).
+lock = ["std", "dep:sha2", "dep:toml", "dep:typeid"]
 
 [dependencies]
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -62,6 +67,11 @@ aimdb-derive = { version = "0.3.0", path = "../aimdb-derive", optional = true }
 aimdb-core = { version = "3.0.0", path = "../aimdb-core", optional = true, default-features = false, features = [
     "alloc",
 ] }
+# `lock` only: the shape hash, reading `aimdb.lock`, and telling the traced
+# types apart (`typeid` works for non-'static types too).
+sha2 = { version = "0.10", optional = true }
+toml = { version = "1", optional = true, default-features = false, features = ["std", "serde", "parse"] }
+typeid = { version = "1", optional = true }
 # RNG is caller-supplied, so we need only the `Rng`/`RngExt` traits and the
 # always-available `SmallRng` — no `std_rng`.
 [dependencies.rand]

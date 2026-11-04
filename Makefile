@@ -171,7 +171,7 @@ test: test-operational-events test-build-info-link
 	cargo test --package aimdb-cdr
 	cargo test --package aimdb-cdr --no-default-features
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (std)$(NC)\n"
-	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2"
+	cargo test --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2,lock"
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + format-neutral linkable)$(NC)\n"
 	cargo test --package aimdb-data-contracts --no-default-features --features alloc,linkable
 	@printf "$(YELLOW)  → Testing aimdb-data-contracts (no_std + alloc + linkable-postcard)$(NC)\n"
@@ -234,6 +234,8 @@ test: test-operational-events test-build-info-link
 	cargo test --package aimdb-sync --no-default-features
 	@printf "$(YELLOW)  → Testing sync wrapper (log destination; guards the mirrored feature)$(NC)\n"
 	cargo test --package aimdb-sync --features log --test log_facade
+	@printf "$(YELLOW)  → Testing MQTT demo contracts (keys, aimdb.lock)$(NC)\n"
+	cargo test --package mqtt-connector-demo-common --features std
 	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
 	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
@@ -331,7 +333,7 @@ clippy: clippy-operational-events
 	cargo clippy --package aimdb-cdr --all-targets -- -D warnings
 	cargo clippy --package aimdb-cdr --no-default-features --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (std)$(NC)\n"
-	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2" --all-targets -- -D warnings
+	cargo clippy --package aimdb-data-contracts --features "std,simulatable,migratable,observable,linkable-json,linkable-postcard,linkable-cdr,ros2,lock" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc)$(NC)\n"
 	cargo clippy --package aimdb-data-contracts --no-default-features --features alloc -- -D warnings
 	@printf "$(YELLOW)  → Clippy on aimdb-data-contracts (no_std + alloc + format-neutral linkable)$(NC)\n"

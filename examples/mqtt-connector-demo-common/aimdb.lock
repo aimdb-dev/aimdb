@@ -1,0 +1,17 @@
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "mqtt_demo.button_press"
+version = 1
+shape = "sha256:87ef37a261f2c39c10645ecf702faee159a16b73f4e8127902d71edb349d6b37"
+
+[[contract]]
+name = "mqtt_demo.temperature"
+version = 1
+shape = "sha256:3af9725c915f624e36973bea15bfe2890daecec8fe5e2c6295a9eb79f314cd79"
+
+[[contract]]
+name = "mqtt_demo.temperature_command"
+version = 1
+shape = "sha256:54f7895be177cf7de6c69735cb5dbb15b14121d8c432773b63f01b3605248254"
