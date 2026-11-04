@@ -1,0 +1,7 @@
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "catalog_scope.fixture"
+version = 1
+shape = "sha256:1724a7a065257cfbe5f1419bf5fc6886ea53983caeff03da5755e80b215557ec"

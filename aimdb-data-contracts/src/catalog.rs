@@ -54,6 +54,19 @@ macro_rules! catalog {
         $(, helpers: [$($helper:ty),* $(,)?])?
         $(,)?
     ) => {
+        $crate::catalog! {
+            @lock_dir ::core::env!("CARGO_MANIFEST_DIR"),
+            contracts: [$($ty),+],
+            helpers: [$($($helper),*)?],
+        }
+    };
+    // Not an API: the directory of `aimdb.lock`, for this crate's own tests.
+    (
+        @lock_dir $dir:expr,
+        contracts: [$($ty:ty),+ $(,)?]
+        $(, helpers: [$($helper:ty),* $(,)?])?
+        $(,)?
+    ) => {
         /// This crate's contracts, as listed in `catalog!`.
         pub const CATALOG: &[$crate::ContractId] = &[
             $($crate::ContractId {
@@ -62,14 +75,11 @@ macro_rules! catalog {
             }),+
         ];
 
-        // `cfg(test)` of the calling crate: the module is gone before the
-        // inner macro expands, so only the crate's own tests see it.
+        // `cfg(test)` of the calling crate: the invocation is gone before it
+        // expands, so only the crate's own tests see it. The test is
+        // generated in the caller's module, where the listed paths resolve.
         #[cfg(test)]
-        mod __aimdb_catalog_lock {
-            #[allow(unused_imports)]
-            use super::*;
-            $crate::__catalog_lock_test!([$($ty),+] [$($($helper),*)?]);
-        }
+        $crate::__catalog_lock_test!($dir; [$($ty),+] [$($($helper),*)?]);
     };
     ($($ty:ty),+ $(,)?) => {
         $crate::catalog! { contracts: [$($ty),+] }
@@ -80,12 +90,12 @@ macro_rules! catalog {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __catalog_lock_test {
-    ([$($ty:ty),+] [$($helper:ty),*]) => {
+    ($dir:expr; [$($ty:ty),+] [$($helper:ty),*]) => {
         #[test]
         fn aimdb_lock() {
             let helpers: &[$crate::lock::Helper] = &[$($crate::lock::helper::<$helper>()),*];
             $crate::lock::check(
-                ::core::env!("CARGO_MANIFEST_DIR"),
+                $dir,
                 &[$($crate::lock::trace::<$ty>(helpers)),+],
             );
         }
