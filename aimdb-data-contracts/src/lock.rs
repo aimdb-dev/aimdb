@@ -16,6 +16,8 @@
 
 mod shape;
 
+pub use shape::{helper, Helper};
+
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
@@ -42,13 +44,14 @@ pub struct Traced {
     shape: Result<String, String>,
 }
 
-/// Trace the wire shape of contract `T`. Never panics: an untraceable
-/// contract is reported by [`check`] together with everything else.
-pub fn trace<T: SchemaType + Serialize + DeserializeOwned>() -> Traced {
+/// Trace the wire shape of contract `T`, after `helpers`. Never panics: a
+/// contract outside the supported profile is reported by [`check`]
+/// together with everything else.
+pub fn trace<T: SchemaType + Serialize + DeserializeOwned>(helpers: &[Helper]) -> Traced {
     Traced {
         name: T::NAME,
         version: T::VERSION,
-        shape: shape::shape_of::<T>(),
+        shape: shape::shape_of::<T>(helpers),
     }
 }
 
