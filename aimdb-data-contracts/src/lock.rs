@@ -259,7 +259,7 @@ fn render(entries: &[Entry]) -> String {
     out
 }
 
-/// A TOML basic string.
+/// A TOML basic string. Also quotes names in the shape text.
 fn quote(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {

@@ -41,11 +41,14 @@
 //!   char str bytes`
 //! - `option<T>`, `seq<T>`, `map<K, V>`, `tuple(A, B)`, `array<T; N>`
 //! - Containers inline, without their name (it never reaches the wire):
-//!   `struct { a: T, b: U }`, `unit_struct`, `newtype(T)`,
+//!   `struct { "a": T, "b": U }`, `unit_struct`, `newtype(T)`,
 //!   `tuple_struct(A, B)`
-//! - `enum { 0 A, 1 B(T), 2 C(T, U), 3 D { x: T } }`: index and wire name
-//!   of every variant, since postcard and CDR send the index and JSON the
-//!   name
+//! - `enum { 0 "A", 1 "B" newtype(T), 2 "C" tuple(T, U), 3 "D" struct { "x": T } }`:
+//!   index, wire name and payload kind of every variant, since postcard and
+//!   CDR send the index and JSON the name, and a newtype variant is sent
+//!   differently from a one-element tuple variant
+//! - Field and variant names are quoted and escaped like TOML strings, so
+//!   no name can read as other text
 //! - A container that contains itself: `rec(n)`, `n` levels up
 //!
 //! The serde data model is kept as is: `newtype(u32)` is not `u32`,
@@ -61,6 +64,8 @@ use serde_reflection::{
     ContainerFormat, Error, Format, Named, Registry, Samples, Tracer, TracerConfig, VariantFormat,
 };
 use sha2::{Digest, Sha256};
+
+use super::quote;
 
 /// A type `catalog!` traces before each contract: an enum nested in one.
 pub struct Helper {
@@ -279,16 +284,23 @@ fn write_container<'a>(
             out.push_str("enum {");
             for (i, (index, variant)) in variants.iter().enumerate() {
                 out.push_str(if i == 0 { " " } else { ", " });
-                let _ = write!(out, "{index} {}", variant.name);
+                let _ = write!(out, "{index} {}", quote(&variant.name));
+                // The payload kind is spelled out: serde sends a newtype
+                // variant and a one-element tuple variant differently.
                 match &variant.value {
                     VariantFormat::Variable(_) => {
                         return Err(format!("variant `{}` was left untraced", variant.name))
                     }
                     VariantFormat::Unit => {}
-                    VariantFormat::NewType(inner) => wrap("(", inner, ")", registry, stack, out)?,
-                    VariantFormat::Tuple(items) => write_tuple(items, registry, stack, out)?,
+                    VariantFormat::NewType(inner) => {
+                        wrap(" newtype(", inner, ")", registry, stack, out)?
+                    }
+                    VariantFormat::Tuple(items) => {
+                        out.push_str(" tuple");
+                        write_tuple(items, registry, stack, out)?;
+                    }
                     VariantFormat::Struct(fields) => {
-                        out.push(' ');
+                        out.push_str(" struct ");
                         write_fields(fields, registry, stack, out)?;
                     }
                 }
@@ -317,7 +329,7 @@ fn write_tuple<'a>(
     Ok(())
 }
 
-/// `{ a: T, b: U }`, or `{}`
+/// `{ "a": T, "b": U }`, or `{}`
 fn write_fields<'a>(
     fields: &'a [Named<Format>],
     registry: &'a Registry,
@@ -327,7 +339,7 @@ fn write_fields<'a>(
     out.push('{');
     for (i, field) in fields.iter().enumerate() {
         out.push_str(if i == 0 { " " } else { ", " });
-        let _ = write!(out, "{}: ", field.name);
+        let _ = write!(out, "{}: ", quote(&field.name));
         write_format(&field.value, registry, stack, out)?;
     }
     out.push_str(if fields.is_empty() { "}" } else { " }" });
@@ -355,7 +367,7 @@ mod tests {
     fn struct_fields_in_wire_order() {
         assert_eq!(
             shape::<Plain>().unwrap(),
-            "struct { schema_version: u32, celsius: f64, timestamp: u64 }"
+            r#"struct { "schema_version": u32, "celsius": f64, "timestamp": u64 }"#
         );
     }
 
@@ -371,7 +383,7 @@ mod tests {
     fn wire_names_after_symmetric_rename() {
         assert_eq!(
             shape::<Renamed>().unwrap(),
-            "struct { schemaVersion: u32, c: f64 }"
+            r#"struct { "schemaVersion": u32, "c": f64 }"#
         );
     }
 
@@ -424,7 +436,10 @@ mod tests {
 
     #[test]
     fn skipped_field_is_not_sent() {
-        assert_eq!(shape::<Skipped>().unwrap(), "struct { a: u8, c: u8 }");
+        assert_eq!(
+            shape::<Skipped>().unwrap(),
+            r#"struct { "a": u8, "c": u8 }"#
+        );
     }
 
     #[derive(Serialize, Deserialize)]
@@ -435,7 +450,7 @@ mod tests {
         Target { celsius: f32 },
     }
 
-    const MODE: &str = "enum { 0 Off, 1 Level(u8), 2 Pair(u8, u8), 3 Target { celsius: f32 } }";
+    const MODE: &str = r#"enum { 0 "Off", 1 "Level" newtype(u8), 2 "Pair" tuple(u8, u8), 3 "Target" struct { "celsius": f32 } }"#;
 
     #[derive(Serialize, Deserialize)]
     struct Unit;
@@ -467,20 +482,14 @@ mod tests {
         assert_eq!(
             shape_of::<Nested>(&[helper::<Mode>()]).unwrap(),
             format!(
-                "struct {{ \
-                 mode: {MODE}, \
-                 inner: struct {{ schema_version: u32, celsius: f64, timestamp: u64 }}, \
-                 unit: unit_struct, \
-                 id: newtype(u32), \
-                 at: tuple_struct(i16, i16), \
-                 label: option<str>, \
-                 samples: seq<f32>, \
-                 tags: map<str, bool>, \
-                 pair: tuple(u8, char), \
-                 raw: array<u8; 4>, \
-                 any: unit, \
-                 boxed: i64 \
-                 }}"
+                concat!(
+                    r#"struct {{ "mode": {MODE}, "#,
+                    r#""inner": struct {{ "schema_version": u32, "celsius": f64, "timestamp": u64 }}, "#,
+                    r#""unit": unit_struct, "id": newtype(u32), "at": tuple_struct(i16, i16), "#,
+                    r#""label": option<str>, "samples": seq<f32>, "tags": map<str, bool>, "#,
+                    r#""pair": tuple(u8, char), "raw": array<u8; 4>, "any": unit, "boxed": i64 }}"#,
+                ),
+                MODE = MODE
             )
         );
     }
@@ -516,14 +525,57 @@ mod tests {
         let err = shape::<Deep>().unwrap_err();
         assert!(err.contains("`helpers: [...]`"), "{err}");
 
-        let inner = "enum { 0 A, 1 B(u8), 2 C }";
+        let inner = r#"enum { 0 "A", 1 "B" newtype(u8), 2 "C" }"#;
         assert_eq!(
             shape_of::<Deep>(&[helper::<Inner>(), helper::<Outer>()]).unwrap(),
             format!(
-                "struct {{ outer: enum {{ 0 X, 1 Y({inner}) }}, again: seq<{inner}>, \
-                 maybe: option<{inner}>, keyed: map<u8, {inner}> }}"
+                r#"struct {{ "outer": enum {{ 0 "X", 1 "Y" newtype({inner}) }}, "again": seq<{inner}>, "maybe": option<{inner}>, "keyed": map<u8, {inner}> }}"#
             )
         );
+    }
+
+    mod before {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub enum Payload {
+            V(u8),
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Fields {
+            pub a: u8,
+            pub b: u8,
+        }
+    }
+
+    mod after {
+        #[allow(dead_code)]
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub enum Payload {
+            V(u8, #[serde(skip)] u8),
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Fields {
+            #[serde(rename = "a: u8, b")]
+            pub value: u8,
+        }
+    }
+
+    #[test]
+    fn newtype_and_one_element_tuple_variants_differ() {
+        let newtype = shape::<before::Payload>().unwrap();
+        let tuple = shape::<after::Payload>().unwrap();
+        assert_eq!(newtype, r#"enum { 0 "V" newtype(u8) }"#);
+        assert_eq!(tuple, r#"enum { 0 "V" tuple(u8) }"#);
+    }
+
+    #[test]
+    fn names_cannot_read_as_other_text() {
+        let two = shape::<before::Fields>().unwrap();
+        let one = shape::<after::Fields>().unwrap();
+        assert_eq!(two, r#"struct { "a": u8, "b": u8 }"#);
+        assert_eq!(one, r#"struct { "a: u8, b": u8 }"#);
+        assert_ne!(hash(&two), hash(&one));
     }
 
     #[allow(dead_code)]
@@ -551,7 +603,7 @@ mod tests {
     fn recursion_refers_up() {
         assert_eq!(
             shape::<Tree>().unwrap(),
-            "struct { value: u8, children: seq<rec(1)> }"
+            r#"struct { "value": u8, "children": seq<rec(1)> }"#
         );
     }
 
@@ -566,7 +618,7 @@ mod tests {
     fn recursive_enum_with_an_ending_first_variant() {
         assert_eq!(
             shape::<Expr>().unwrap(),
-            "enum { 0 Lit(u8), 1 Neg(rec(1)), 2 Add(rec(1), rec(1)) }"
+            r#"enum { 0 "Lit" newtype(u8), 1 "Neg" newtype(rec(1)), 2 "Add" tuple(rec(1), rec(1)) }"#
         );
     }
 

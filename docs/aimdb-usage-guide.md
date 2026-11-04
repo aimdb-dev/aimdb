@@ -649,8 +649,8 @@ failure shows the current one:
 
 ```
 mqtt_demo.temperature@1: the shape changed without a VERSION bump
-  locked:  sha256:3af9725c…
-  current: sha256:7efdc299…  struct { sensor_id: str, temp_c: f32 }
+  locked:  sha256:276b9776…
+  current: sha256:f7fa28f3…  struct { "sensor_id": str, "temp_c": f32 }
   fix: bump VERSION (and add a migration step), or revert the change
 ```
 
