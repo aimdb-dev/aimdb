@@ -647,7 +647,10 @@ contract, every variant of every enum inside it included, and records what
 they serialize to. So it is what reaches the wire, for every codec: wire
 names after `rename` / `rename_all`, field order and exact types (which
 postcard and CDR depend on), variant names and indices, nested types,
-`Option`, sequences, maps and tuples. `#[serde(default)]` and
+`Option`, sequences, maps and tuples. Both the binary shape (postcard,
+CDR) and the human-readable one (JSON) are traced, since serde lets a type
+send different shapes to each (`Ipv4Addr`: four bytes, or a string).
+`#[serde(default)]` and
 `skip_serializing_if` are not part of the shape: they make a change
 compatible, not different.
 

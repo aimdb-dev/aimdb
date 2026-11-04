@@ -10,6 +10,12 @@
 //! index serde's derive emits, which postcard and CDR depend on. So the
 //! shape is serde's actual behaviour, not a reading of its attributes.
 //!
+//! The values are recorded twice: for a binary format (postcard, CDR) and
+//! for a human-readable one (JSON). Serde lets a type send different
+//! shapes to each: `Ipv4Addr` is four bytes in one, a string in the other.
+//! Values are built in binary mode only, where such types deserialize from
+//! plain parts.
+//!
 //! Not traceable, and reported as such: `#[serde(flatten)]`, untagged and
 //! internally tagged enums (they need a self-describing format), and
 //! hand-written `Deserialize` impls that need one. A variant marked
@@ -31,6 +37,8 @@
 //!   of every variant, since postcard and CDR send the index and JSON the
 //!   name
 //! - A container that contains itself: `rec(n)`, `n` levels up
+//! - When the two modes differ: `binary: <shape>; readable: <shape>`;
+//!   otherwise the one shape
 //!
 //! The serde data model is kept as is: `newtype(u32)` is not `u32`,
 //! although JSON and postcard write both the same. That can report a change
@@ -38,12 +46,13 @@
 //! `skip_serializing_if` do not show: they make a change compatible, not
 //! different.
 //!
-//! Containers are told apart by their serde name. Two different types with
-//! the same name in one contract are merged; if their shapes disagree, the
-//! contract is reported as untraceable.
+//! Containers are told apart by their serde name, so that `T` and `Box<T>`
+//! are one container. A name that several Rust types use (`a::Status` and
+//! `b::Status`, `Reading<f32>` and `Reading<u8>`) is told apart by the Rust
+//! type of the value too, so each keeps its own shape.
 
 use std::any::TypeId;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{self, Display, Write};
 
 use serde::de::{
@@ -65,34 +74,62 @@ const MAX_FIELDS: usize = 4096;
 
 /// The canonical shape text of `T`, or why it cannot be traced.
 pub(crate) fn shape_of<T: Serialize + DeserializeOwned>() -> Result<String, String> {
+    let (values, shared) = generate::<T>().map_err(|e| e.0)?;
+    let binary = record_all(&values, false, &shared)?;
+    let readable = record_all(&values, true, &shared)?;
+    Ok(if binary == readable {
+        binary
+    } else {
+        format!("binary: {binary}; readable: {readable}")
+    })
+}
+
+/// Values of `T` that together build every variant of every enum inside
+/// it, and the serde names that more than one Rust type uses.
+fn generate<T: DeserializeOwned>() -> Result<(Vec<T>, HashSet<&'static str>), Error> {
     let mut explorer = Explorer::default();
-    let mut defs = Defs::new();
     let mut probe = Probe::Unknown;
-    let mut shape = Shape::Unknown;
+    let mut values = Vec::new();
     for _ in 0..MAX_PASSES {
         let mut out = Probe::Unknown;
-        let value = T::deserialize(Generator {
+        values.push(T::deserialize(Generator {
             ex: &mut explorer,
             known: probe.clone(),
             out: &mut out,
-        })
-        .map_err(|e| e.0)?;
+        })?);
         merge_probe(&mut probe, out);
-
-        let mut out = Shape::Unknown;
-        value
-            .serialize(Recorder {
-                defs: &mut defs,
-                out: &mut out,
-            })
-            .map_err(|e| e.0)?;
-        merge_shape(&mut shape, out).map_err(|e| e.0)?;
-
         if !explorer.incomplete(&probe) {
-            return render(&shape, &defs);
+            let shared = explorer
+                .names
+                .into_iter()
+                .filter(|(_, types)| types.len() > 1)
+                .map(|(name, _)| name)
+                .collect();
+            return Ok((values, shared));
         }
     }
-    Err("tracing did not finish".into())
+    Err(Error("tracing did not finish".into()))
+}
+
+/// The shape `values` send to a human-readable format (JSON) or a binary
+/// one (postcard, CDR).
+fn record_all<T: Serialize>(
+    values: &[T],
+    readable: bool,
+    shared: &HashSet<&'static str>,
+) -> Result<String, String> {
+    let mode = if readable { "human-readable: " } else { "" };
+    let mut cx = Recording {
+        defs: Defs::new(),
+        readable,
+        shared: shared.clone(),
+    };
+    let mut shape = Shape::Unknown;
+    for value in values {
+        let out = record(&mut cx, value).map_err(|e| format!("{mode}{e}"))?;
+        merge_shape(&mut shape, out).map_err(|e| format!("{mode}{e}"))?;
+    }
+    render(&shape, &cx.defs).map_err(|e| format!("{mode}{e}"))
 }
 
 /// `sha256:<hex>` of the shape text.
@@ -161,6 +198,8 @@ enum Node {
 #[derive(Debug, Default)]
 struct Explorer {
     nodes: HashMap<TypeId, Node>,
+    /// The Rust types built under each serde container name.
+    names: HashMap<&'static str, HashSet<TypeId>>,
     /// Containers being built, with the variant chosen for enums.
     stack: Vec<(TypeId, Option<usize>)>,
 }
@@ -315,9 +354,11 @@ impl Generator<'_> {
     /// Build a struct-like container of type `T` from its parts.
     fn container<T: ?Sized, R>(
         self,
+        name: &'static str,
         build: impl FnOnce(Parts<'_>) -> Result<R, Error>,
     ) -> Result<R, Error> {
         let id = typeid::of::<T>();
+        self.ex.names.entry(name).or_default().insert(id);
         let known = match self.ex.nodes.get(&id) {
             Some(Node::Slots(xs)) => xs.clone(),
             _ => Vec::new(),
@@ -476,27 +517,27 @@ impl<'de> de::Deserializer<'de> for Generator<'_> {
 
     fn deserialize_unit_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Error> {
-        self.container::<V::Value, _>(|_| visitor.visit_unit())
+        self.container::<V::Value, _>(name, |_| visitor.visit_unit())
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Error> {
-        self.container::<V::Value, _>(|mut parts| visitor.visit_newtype_struct(parts.next()))
+        self.container::<V::Value, _>(name, |mut parts| visitor.visit_newtype_struct(parts.next()))
     }
 
     fn deserialize_tuple_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         len: usize,
         visitor: V,
     ) -> Result<V::Value, Error> {
-        self.container::<V::Value, _>(|mut parts| {
+        self.container::<V::Value, _>(name, |mut parts| {
             parts.limit = len;
             visitor.visit_seq(parts)
         })
@@ -504,13 +545,13 @@ impl<'de> de::Deserializer<'de> for Generator<'_> {
 
     fn deserialize_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         _: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
         // As a sequence: `FIELDS` holds aliases too, so its names are not
         // the fields. The recorder sees the wire names.
-        self.container::<V::Value, _>(|parts| visitor.visit_seq(parts))
+        self.container::<V::Value, _>(name, |parts| visitor.visit_seq(parts))
     }
 
     fn deserialize_enum<V: Visitor<'de>>(
@@ -523,6 +564,7 @@ impl<'de> de::Deserializer<'de> for Generator<'_> {
             return Err(Error(format!("enum `{name}` has no variant to build")));
         }
         let id = typeid::of::<V::Value>();
+        self.ex.names.entry(name).or_default().insert(id);
         self.ex
             .nodes
             .entry(id)
@@ -688,8 +730,16 @@ enum Shape {
     Seq(Box<Shape>),
     Map(Box<Shape>, Box<Shape>),
     Tuple(Vec<Shape>),
-    /// A container, by its serde name.
-    Def(&'static str),
+    Def(Key),
+}
+
+/// A container: its serde name, and its Rust type when other types share
+/// that name, so they are recorded apart. A name used by one type is
+/// recorded under the name alone, so `T` and `Box<T>` stay one container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Key {
+    name: &'static str,
+    ty: Option<TypeId>,
 }
 
 type Fields = Vec<(&'static str, Shape)>;
@@ -712,12 +762,11 @@ enum Payload {
     Struct(Fields),
 }
 
-type Defs = HashMap<&'static str, Def>;
+type Defs = HashMap<Key, Def>;
 
 fn conflict(what: &str) -> Error {
     Error(format!(
-        "{what} is sent with different shapes: two types of that name, \
-         or a Serialize that varies with the value"
+        "{what} is sent with different shapes from value to value"
     ))
 }
 
@@ -770,12 +819,12 @@ fn merge_payload(into: &mut Payload, from: Payload) -> Result<(), Error> {
     }
 }
 
-fn merge_def(defs: &mut Defs, name: &'static str, def: Def) -> Result<(), Error> {
-    let Some(into) = defs.get_mut(name) else {
-        defs.insert(name, def);
+fn merge_def(defs: &mut Defs, key: Key, def: Def) -> Result<(), Error> {
+    let Some(into) = defs.get_mut(&key) else {
+        defs.insert(key, def);
         return Ok(());
     };
-    let what = || conflict(&format!("`{name}`"));
+    let what = || conflict(&format!("`{}`", key.name));
     match (into, def) {
         (Def::UnitStruct, Def::UnitStruct) => Ok(()),
         (Def::Newtype(a), Def::Newtype(b)) => merge_shape(a, b),
@@ -798,16 +847,28 @@ fn merge_def(defs: &mut Defs, name: &'static str, def: Def) -> Result<(), Error>
     .map_err(|_| what())
 }
 
+/// What the recorder writes down, for one mode.
+struct Recording {
+    defs: Defs,
+    readable: bool,
+    /// Serde names that more than one Rust type uses.
+    shared: HashSet<&'static str>,
+}
+
 /// Serializes one part of a contract value, writing down its shape.
 struct Recorder<'a> {
-    defs: &'a mut Defs,
+    cx: &'a mut Recording,
+    /// The Rust type of the value being serialized.
+    ty: TypeId,
     out: &'a mut Shape,
 }
 
 impl Recorder<'_> {
     fn def(self, name: &'static str, def: Def) -> Result<(), Error> {
-        merge_def(self.defs, name, def)?;
-        *self.out = Shape::Def(name);
+        let ty = self.cx.shared.contains(name).then_some(self.ty);
+        let key = Key { name, ty };
+        merge_def(&mut self.cx.defs, key, def)?;
+        *self.out = Shape::Def(key);
         Ok(())
     }
 
@@ -825,10 +886,11 @@ impl Recorder<'_> {
     }
 }
 
-fn record<T: ?Sized + Serialize>(defs: &mut Defs, value: &T) -> Result<Shape, Error> {
+fn record<T: ?Sized + Serialize>(cx: &mut Recording, value: &T) -> Result<Shape, Error> {
     let mut out = Shape::Unknown;
     value.serialize(Recorder {
-        defs,
+        cx,
+        ty: typeid::of::<T>(),
         out: &mut out,
     })?;
     Ok(out)
@@ -884,7 +946,7 @@ impl<'a> ser::Serializer for Recorder<'a> {
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<(), Error> {
-        *self.out = Shape::Option(Box::new(record(self.defs, value)?));
+        *self.out = Shape::Option(Box::new(record(self.cx, value)?));
         Ok(())
     }
 
@@ -906,7 +968,7 @@ impl<'a> ser::Serializer for Recorder<'a> {
         name: &'static str,
         value: &T,
     ) -> Result<(), Error> {
-        let inner = record(self.defs, value)?;
+        let inner = record(self.cx, value)?;
         self.def(name, Def::Newtype(inner))
     }
 
@@ -917,7 +979,7 @@ impl<'a> ser::Serializer for Recorder<'a> {
         variant: &'static str,
         value: &T,
     ) -> Result<(), Error> {
-        let inner = record(self.defs, value)?;
+        let inner = record(self.cx, value)?;
         self.variant(name, index, variant, Payload::Newtype(inner))
     }
 
@@ -968,7 +1030,7 @@ impl<'a> ser::Serializer for Recorder<'a> {
     }
 
     fn is_human_readable(&self) -> bool {
-        false
+        self.cx.readable
     }
 }
 
@@ -1005,7 +1067,7 @@ impl<'a> Compound<'a> {
     }
 
     fn part<T: ?Sized + Serialize>(&mut self, name: &'static str, value: &T) -> Result<(), Error> {
-        let shape = record(self.rec.defs, value)?;
+        let shape = record(self.rec.cx, value)?;
         self.parts.push((name, shape));
         Ok(())
     }
@@ -1048,7 +1110,7 @@ impl ser::SerializeSeq for Compound<'_> {
     type Error = Error;
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        let shape = record(self.rec.defs, value)?;
+        let shape = record(self.rec.cx, value)?;
         merge_shape(&mut self.values, shape)
     }
 
@@ -1101,12 +1163,12 @@ impl ser::SerializeMap for Compound<'_> {
     type Error = Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Error> {
-        let shape = record(self.rec.defs, key)?;
+        let shape = record(self.rec.cx, key)?;
         merge_shape(&mut self.keys, shape)
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        let shape = record(self.rec.defs, value)?;
+        let shape = record(self.rec.cx, value)?;
         merge_shape(&mut self.values, shape)
     }
 
@@ -1182,7 +1244,7 @@ fn render(shape: &Shape, defs: &Defs) -> Result<String, String> {
 
 struct Writer<'a> {
     defs: &'a Defs,
-    stack: Vec<&'static str>,
+    stack: Vec<Key>,
     out: String,
     unknown: bool,
 }
@@ -1213,7 +1275,7 @@ impl Writer<'_> {
                 self.out.push_str("tuple");
                 self.tuple(xs);
             }
-            Shape::Def(name) => self.def(name),
+            Shape::Def(key) => self.def(*key),
         }
     }
 
@@ -1223,17 +1285,17 @@ impl Writer<'_> {
         self.out.push_str(close);
     }
 
-    fn def(&mut self, name: &'static str) {
-        if let Some(pos) = self.stack.iter().rposition(|n| *n == name) {
+    fn def(&mut self, key: Key) {
+        if let Some(pos) = self.stack.iter().rposition(|k| *k == key) {
             let _ = write!(self.out, "rec({})", self.stack.len() - pos);
             return;
         }
-        let Some(def) = self.defs.get(name) else {
+        let Some(def) = self.defs.get(&key) else {
             self.unknown = true;
             self.out.push('?');
             return;
         };
-        self.stack.push(name);
+        self.stack.push(key);
         match def {
             Def::UnitStruct => self.out.push_str("unit_struct"),
             Def::Newtype(inner) => self.wrap("newtype(", inner, ")"),
@@ -1579,14 +1641,25 @@ mod tests {
 
     mod a {
         #[derive(serde::Serialize, serde::Deserialize)]
-        pub struct Status {
+        pub enum Status {
+            Ready,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Point {
             pub x: u8,
         }
     }
 
     mod b {
         #[derive(serde::Serialize, serde::Deserialize)]
-        pub struct Status {
+        pub enum Status {
+            Ready,
+            Failed,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        pub struct Point {
             pub y: u8,
         }
     }
@@ -1598,9 +1671,78 @@ mod tests {
     }
 
     #[test]
-    fn two_types_of_one_name_with_other_shapes_are_untraceable() {
-        let err = shape_of::<TwoStatus>().unwrap_err();
-        assert!(err.contains("`Status`"), "{err}");
+    fn enums_of_one_name_stay_apart() {
+        assert_eq!(
+            shape_of::<TwoStatus>().unwrap(),
+            "struct { a: enum { 0 Ready }, b: enum { 0 Ready, 1 Failed } }"
+        );
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct TwoPoints {
+        a: a::Point,
+        b: Option<b::Point>,
+    }
+
+    #[test]
+    fn structs_of_one_name_stay_apart() {
+        assert_eq!(
+            shape_of::<TwoPoints>().unwrap(),
+            "struct { a: struct { x: u8 }, b: option<struct { y: u8 }> }"
+        );
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Reading<T> {
+        value: T,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Readings {
+        celsius: Reading<f32>,
+        count: Reading<u8>,
+    }
+
+    #[test]
+    fn generic_instances_stay_apart() {
+        assert_eq!(
+            shape_of::<Readings>().unwrap(),
+            "struct { celsius: struct { value: f32 }, count: struct { value: u8 } }"
+        );
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Boxed {
+        plain: Mode,
+        boxed: Box<Mode>,
+    }
+
+    #[test]
+    fn a_boxed_type_is_the_same_container() {
+        let mode = "enum { 0 Off, 1 Level(u8), 2 Pair(u8, u8), 3 Target { celsius: f32 } }";
+        assert_eq!(
+            shape_of::<Boxed>().unwrap(),
+            format!("struct {{ plain: {mode}, boxed: {mode} }}")
+        );
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Octets {
+        ip: [u8; 4],
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Address {
+        ip: std::net::Ipv4Addr,
+    }
+
+    #[test]
+    fn human_readable_shape_is_part_of_the_text() {
+        assert_eq!(shape_of::<Octets>().unwrap(), "struct { ip: array<u8; 4> }");
+        assert_eq!(
+            shape_of::<Address>().unwrap(),
+            "binary: struct { ip: array<u8; 4> }; readable: struct { ip: str }"
+        );
     }
 
     #[test]
