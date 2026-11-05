@@ -32,6 +32,7 @@ ignore = [
     "RUSTSEC-2025-0134", # rustls-pemfile unmaintained (transitive via rumqttc and zenoh-link-commons)
     "RUSTSEC-2024-0449", # unsafe-libyaml unmaintained, via serde_yaml from zenoh-config (zenoh connector never parses YAML config) and aimdb-cli's optional yaml feature
     "RUSTSEC-2026-0041", # lz4_flex decompression, via zenoh-transport: compiled only with transport_compression, which the zenoh connector never enables (see .cargo/audit.toml)
+    "RUSTSEC-2026-0441", # pin-utils unmaintained, via hyper 1.8.1 (axum, reqwest); no safe upgrade, hyper itself depends on it
 ]
 
 [sources]
