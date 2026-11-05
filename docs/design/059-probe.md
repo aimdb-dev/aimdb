@@ -178,8 +178,8 @@ and message on stderr. Codes 1–4 keep their meaning.
   JSON.
 
 Both are read-only tools and available without `--allow-writes`. The tool
-description tells an agent to read `coverage` before drawing conclusions
-from an absence (§6.1).
+description tells an agent to check what a result says about its scope and
+window before drawing conclusions from an absence (§6.1).
 
 ## 5. What AimDB is responsible for
 
@@ -231,7 +231,7 @@ These are two different limits with two different owners.
 - **Memory inside the probe, owned by the probe.** Core cannot see or limit
   what a probe allocates while it observes. Every probe bounds its own
   state, for example `max_topics` or `max_addresses` with a sensible
-  default, and reports in its coverage when it hit a bound (§6.1). The
+  default, and says in its output when it hit a bound (§6.1). The
   ready-made probes take these bounds as parameters with caps set at
   registration, so a caller cannot ask for unbounded memory.
 
@@ -244,28 +244,23 @@ result.
 These are the first probes. They answer what configured links cannot: which
 signals exist that the instance does not consume yet.
 
-### 6.1 Coverage: what a result does and does not say
+### 6.1 Describing what was observed
 
-Discovery results always describe their scope, their window and whether
-they are complete. Core provides one shared type for this, which the
-ready-made probes embed and custom probes may use:
+Core has no coverage type. Each probe's output type says what it observed,
+in its own terms. The ready-made discovery probes include a `coverage`
+object in their output: scope, connection kind, the actual window, whether
+the result is complete, and which limits cut it short. That object is part
+of their `Output`, so it is documented by their schema. A custom probe
+decides for itself; if a shared shape proves useful across many probes, it
+can move into core later without breaking anything.
 
-```rust
-pub struct Coverage {
-    pub scope: String,           // what was observed: broker and filter, gateway and prefix
-    pub connection: String,      // "dedicated", "existing session", "tap"
-    pub window: Window,          // started_ns, duration_ms (actual, not requested)
-    pub complete: bool,          // false if any limit or refusal cut it short
-    pub limits: Vec<String>,     // e.g. "max_topics (200) reached", "subscription to # refused, used sensors/#"
-    pub note: &'static str,      // the probe's standing caveat
-}
-```
-
-**Absence during a window does not prove that a signal does not exist.** A
-topic that nobody published and no broker retained during the window, or a
-group address with no telegram during the window, is simply not observed.
-Each probe's `note` says this in its own terms. The MCP tool description
-repeats it.
+**The guideline for every discovery probe:** absence during a window does
+not prove that a signal does not exist. A topic that nobody published, and
+no broker retained, during the window, or a group address with no telegram
+during the window, is simply not observed. A probe should say what its
+window and scope were, and whether it hit a limit, so a reader does not
+read too much into a short list. The MCP tool description repeats this
+caveat.
 
 ### 6.2 `MqttDiscover`
 
@@ -363,7 +358,7 @@ requirement of the mechanism.
 ## 8. Implementation outline
 
 1. **Core** (`aimdb-core/src/probe/`): `Probe`, `ProbeCtx`, `ProbeError`,
-   `Coverage`, `ProbeSpec`, the registry, type erasure, the bounded
+   `ProbeSpec`, the registry, type erasure, the bounded
    serializer, the AimX `probe.list` / `probe.run` methods, and AimX 4.1.
 2. **Client, CLI, MCP:** `aimdb-client::probe::{list, run}`, `aimdb probe`,
    and the `probe_list` / `probe_run` tools.
