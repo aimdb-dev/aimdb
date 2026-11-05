@@ -73,7 +73,8 @@ pub trait Probe: Send + Sync + 'static {
 }
 ```
 
-`ProbeCtx` gives the probe:
+`ProbeCtx` is a cheap, cloneable handle (an `Arc` inside), so a probe can
+move a copy into the futures it creates. It gives the probe:
 
 - `deadline()` and `remaining()`, on the instance clock. A probe should end
   its observation window so that it can return before the deadline (§5.2).
@@ -135,7 +136,7 @@ let i2c = board.i2c_handle();   // whatever the application already has
 builder.probe(
     ProbeSpec::new(
         "board.i2c_scan",
-        probe_fn(move |p: ScanParams, ctx: &ProbeCtx| {
+        probe_fn(move |p: ScanParams, ctx: ProbeCtx| {
             let i2c = i2c.clone();
             async move {
                 if p.bus > 1 {
@@ -162,8 +163,24 @@ $ aimdb probe run board.i2c_scan --param bus=0
 { "bus": 0, "devices": [ { "address": 118, "likely": "BME280" } ] }
 ```
 
-`probe_fn` accepts any `Fn(P, &ProbeCtx) -> impl Future<Output =
-Result<O, ProbeError>>` with `P: DeserializeOwned` and `O: Serialize`.
+`probe_fn` takes the context **by value**:
+
+```rust
+pub fn probe_fn<F, Fut, P, O>(f: F) -> ProbeFn<F, P, O>
+where
+    F: Fn(P, ProbeCtx) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, ProbeError>> + Send + 'static,
+    P: DeserializeOwned + Send + 'static,
+    O: Serialize + Send + 'static;
+```
+
+A closure that took `&ProbeCtx` and returned a future borrowing it cannot
+be expressed with a plain `Fn(P, &ProbeCtx) -> Fut` bound, because `Fut`
+would have to depend on the reference's lifetime. Passing an owned handle
+avoids this, and the returned future is `'static`. `ProbeFn` implements
+`Probe` by cloning the context into the call. This signature, the example
+above and core's type erasure have been checked to compile, with
+placeholder serde traits.
 With the `schemars` feature, the spec takes both schemas from `P` and `O`.
 Implementing `Probe` directly is for reusable probes that carry
 configuration, like the ready-made ones:
@@ -321,12 +338,24 @@ A successful observation must not be lost at the end, so the ready-made
 probes **stop collecting before they exceed the budget**:
 
 - They keep entries in `BudgetedVec<T>`, a core helper. Each entry type
-  provides `max_serialized_len(&self)`: its JSON length with every counter
-  at the full width of its type (10 digits for the `u32` counts and
-  milliseconds the ready-made probes use) and strings at their actual
-  length.
-  An entry can therefore grow (more messages, a later `last_seen_ms`)
-  without ever outgrowing the space reserved for it.
+  provides `max_serialized_len(&self)`: the **largest size the entry can
+  reach at any point during the invocation**, not its current size. It is
+  computed when the entry is admitted:
+  - fields fixed at admission (the topic, the group address) count at
+    their actual JSON length, including escaping;
+  - counters and times count at the full width of their type (10 digits
+    for the `u32` counts and milliseconds the ready-made probes use);
+  - collections that can grow count at their capacity, filled with
+    maximum-length elements. A KNX entry's `sources` counts as four
+    individual addresses of the longest form (`"15.15.255"`) with their
+    separators, even if only one has been seen so far;
+  - optional fields count as present, with their largest value.
+
+  A field that can change after admission must have such a bound. An entry
+  type with an unbounded growing field cannot go into a `BudgetedVec`. The
+  entry can then grow in any way it is allowed to without outgrowing the
+  space reserved for it. In debug builds, `BudgetedVec` checks at
+  serialization that each entry fits its reservation.
 - The probe first reserves room for the parts of its output that are not
   entries, such as the `coverage` object. Its strings are cut to fixed
   maximum lengths, so its size has a known bound.
@@ -480,7 +509,8 @@ requirement of the mechanism.
 - Core: params errors, `Busy`, deadline and grace period, the budget
   computation per transport (serial 8 KB, TCP `max_frame`, UDS unbounded),
   `BudgetedVec` never letting a complete result exceed the budget even as
-  counters grow to full width, `ResponseTooLarge` without full buffering,
+  counters grow to full width and KNX `sources` fill to four,
+  `ResponseTooLarge` without full buffering,
   and schema listing.
 - MQTT: dedicated discovery against a local broker in CI. With many long
   topics and an 8 KB budget, it returns a valid result marked incomplete;
