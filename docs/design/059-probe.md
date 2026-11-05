@@ -2,116 +2,182 @@
 
 **Status:** 📝 Proposed
 
-**Scope:** Call a read-only probe function on a running instance from the
-CLI or MCP, and print the lines it returns.
+**Scope:** From the CLI or MCP, run a discovery probe on a running instance.
+For MQTT the probe lists the topics the broker offers. For KNX it lists the
+group addresses that occur on the bus. The probe uses the instance's
+network and credentials. It opens its own short-lived connection and is
+independent of the instance's connectors and records.
 
 ---
 
 ## 1. What it is
 
-A connector or input registers a function. A client calls it over AimX. The
-function returns lines. That's it.
+A probe is a function registered on the instance. A client calls it over
+AimX. It opens its **own** connection, listens for a while, closes the
+connection and returns what it saw.
 
 ```
-$ aimdb --connect serial:///dev/ttyACM0 probe
-mqtt   ok    connected to 192.168.1.10:1883 as "embassy-demo-001"  up_s=2460
-mqtt   warn  sensors/temp/indoor: 1 send rejected  sent=1230 rejected=1
-knx    fail  not connected, retrying in 3 s
-b1     ok    7 rising edges since start, last 41 s ago  edges=7
-probe  fail  1 fail, 1 warn, 2 ok
+$ aimdb --connect serial:///dev/ttyACM0 probe mqtt --filter 'sensors/#' --duration 10s
+mqtt  sensors/temp/indoor     msgs=10  retained=yes  bytes=42
+mqtt  sensors/temp/outdoor    msgs=10  retained=yes  bytes=42
+mqtt  sensors/humidity/attic  msgs=3   retained=no   bytes=17
+mqtt  3 topics in 10 s
+
+$ aimdb --connect tcp://hub:7777 probe knx --duration 30s
+knx   1/2/3   msgs=12  write=12          from=1.1.4        bytes=2
+knx   1/2/4   msgs=2   write=1 resp=1    from=1.1.4,1.1.7  bytes=1
+knx   3/0/1   msgs=1   read=1            from=1.1.12       bytes=0
+knx   3 group addresses in 30 s
 ```
+
+Why it runs on the instance rather than on the laptop: the instance can
+already reach the broker or the KNX gateway, and it has the credentials.
+The laptop often has neither.
+
+Why it uses its own connection:
+
+- The running session never changes, so a probe cannot disturb the
+  application.
+- What the probe receives never reaches a record.
+- The probe can listen on `#`, or on the whole bus, without stepping on the
+  application's subscriptions.
+- A probe also works when no connector for that broker exists. It only
+  needs an address.
 
 ## 2. Core API
 
 ```rust
-pub enum Verdict { Ok, Info, Warn, Fail }
+pub struct ProbeRequest {
+    pub filter: Option<String>,   // MQTT topic filter, KNX group-address prefix
+    pub duration: Duration,       // listen window; default 10 s, max 120 s
+    pub limit: usize,             // max entries returned; default 200
+}
 
-#[derive(Serialize, Deserialize)]
-pub struct ProbeLine {
-    pub verdict: Verdict,
-    pub subject: String,                 // filled in by core
-    pub text: String,
-    pub facts: Vec<(String, serde_json::Value)>,
+pub struct ProbeEntry {
+    pub name: String,                            // topic or group address
+    pub facts: Vec<(String, serde_json::Value)>, // msgs, retained, bytes, …
+}
+
+pub struct ProbeResult {
+    pub entries: Vec<ProbeEntry>,
+    pub truncated: bool,          // more were seen than `limit`
+    pub error: Option<String>,    // e.g. "connect refused: not authorized"
 }
 
 pub trait Probe: Send + Sync {
-    fn probe(&self) -> BoxFuture<'_, Vec<ProbeLine>>;
+    fn run(&self, req: ProbeRequest) -> BoxFuture<'_, ProbeResult>;
 }
 ```
 
-Small helpers make the lines easy to write:
-`ProbeLine::ok("connected").fact("up_s", 2460)`.
+### Registering a probe
 
-**Registering a probe:**
+The probe is a builder-level item, independent of connectors:
 
-- A connector calls `db.register_probe(scheme, probe)` inside
-  `ConnectorBuilder::build()`. The subject is the scheme.
-- An input calls `reg.probe(probe)` inside `Input::wire`. The subject is the
-  record key.
+```rust
+builder.probe("mqtt", MqttProbe::new("mqtts://broker:8883").with_credentials(u, p));
+builder.probe("knx",  KnxProbe::new("192.168.1.4:3671"));
+```
 
-Core keeps the registered probes in a list on the database.
+A connector can also register a probe that reuses its own configuration
+(URL, credentials, TLS settings, dialer):
 
-**What a probe reads:** a probe never talks to hardware or to the broker
-itself. A connector's session loop already knows its state. It writes that
-state into a small shared struct (`Arc<Mutex<Status>>`: connected or not,
-since when, last error), and the probe reads the struct. An input keeps a
-few counters next to its source task in the same way.
+```rust
+builder.connect(MqttConnector::new(url).with_probe());
+```
 
-## 3. Running a probe
+The application decides which probes exist. If none is registered, a
+caller gets `NOT_FOUND`.
 
-`aimdb_core::probe::run(db, filter, timeout)`:
+## 3. MQTT probe
 
-1. Pick the probes that match the filter (scheme or record key, or all).
-2. Call them all, each with the timeout (default 10 s, max 60 s). A probe
-   that runs past it gets the line `fail  no answer within 10 s`.
-3. Collect the lines in registration order and add a summary line
-   (`probe  fail  1 fail, 1 warn, 2 ok`). The summary's verdict is the worst
-   one in the list.
+1. Connect with a new client ID (`<client_id>-probe-<n>`). Use a clean
+   session and no will message, with the same broker, credentials and TLS
+   settings as configured.
+2. Subscribe to the `filter` (default `#`, or the probe's configured
+   default) at QoS 0.
+3. Listen for `duration`. Retained messages arrive at once; live ones arrive
+   as they are published. For each topic, keep the message count, whether
+   it was retained, the payload size of the last message and when it was
+   last seen.
+4. Disconnect and return the topics, sorted.
 
-Connectors in the repo that don't register a probe yet get the line
-`info  <scheme>: no probe`.
+The probe never publishes. Payloads are counted and measured, never
+returned (§6).
 
-## 4. Remote call
+If the broker refuses the subscription (ACL), the probe returns `error:
+"subscribe to # refused"`. The caller can retry with a narrower filter.
 
-- **AimX method `probe`**, a normal one-shot call:
-  `{"connector": "mqtt", "record": "b1", "timeout_ms": 10000}`, where every
-  field is optional. The reply is an array of `ProbeLine`. It is allowed
-  under the `ReadOnly` security policy. Adding the method raises the
-  protocol version to 4.1. An older server answers `NOT_FOUND`.
-- **CLI:** `aimdb probe [--connector <scheme>] [--record <key>]
-  [--timeout <secs>] [--format text|json]`. The text format prints one line
-  per probe line, as in §1. The JSON format prints one object per line. The
-  exit code is `0` with no `fail` line and `5` with one.
-- **MCP:** a `probe` tool with the same parameters. It returns the text
-  form. It is read-only, so it needs no `--allow-writes`.
+Backends: on Tokio the probe runs a separate `rumqttc` client. On Embassy
+it uses the connector's dialer and `mountain-mqtt` client state, with a
+second socket (§5).
 
-## 5. Rules
+## 4. KNX probe
 
-- **Read-only:** a probe reports state. It never writes, publishes or
-  reconnects.
-- **No payload values:** lines carry state, counts, times, addresses and
-  topic names only.
-- **Bounded:** core enforces the timeout. It also caps the lines per probe
-  (32) and the text per line (160 bytes).
+1. Open its own tunnel to the gateway.
+2. Listen for `duration`. For each group address, record the telegram count
+   per service (write, response, read), the source individual addresses
+   (up to 4) and the data length.
+3. Disconnect and return the group addresses, sorted.
 
-## 6. First implementations
+The probe never sends a telegram. The only frames it sends are the tunnel's
+own `CONNECT`, `CONNECTIONSTATE` and `DISCONNECT` requests.
 
-| Who | Reports |
-|---|---|
-| MQTT (Tokio, Embassy) | Connected or not, broker and client ID, uptime, last error; per outbound route: sent and rejected, from `OutboundRoutes::stats()` |
-| KNX | Gateway, tunnel state, last error, per-route counts |
-| AimX servers | Listening address, connections in use |
-| `PushButton`, `Thermometer` demos | Events since start, the last one |
+**Tunnel slots:** KNX IP interfaces offer few tunnels, often 1 to 4. When
+none is free, the gateway refuses the connection and the probe returns
+`error: "gateway has no free tunnel (E_NO_MORE_CONNECTIONS)"`. Option, not
+in v1: with a KNX IP router, the probe can listen to routing multicast
+(`224.0.23.12`) instead, which needs no tunnel slot at all.
 
-## 7. Later, if needed
+## 5. Running it
 
-These are deliberately left out. Each one can be added without changing the
-API above.
+- **AimX method `probe`**, a one-shot call:
+  `{"name": "mqtt", "filter": "sensors/#", "duration_ms": 10000, "limit": 200}`.
+  The call returns a `ProbeResult` once the window ends. AimX 4.1 adds the
+  method. An older server answers `NOT_FOUND`.
+  - The probe future runs inside the call. No extra task is spawned, and
+    `duration` bounds it, plus about 5 s for connecting and disconnecting.
+  - One probe at a time per instance. A second call gets `BUSY`.
+  - `probe.list` returns the registered probe names, so the CLI and MCP can
+    show what is available.
+- **CLI:** `aimdb probe <name> [--filter <f>] [--duration <secs>]
+  [--limit <n>] [--format text|json]`, plus `aimdb probe --list`. The exit
+  code is `0` on success and `5` when the result has an `error`.
+- **MCP:** a `probe` tool with the same parameters, and `probe_list`.
 
-- **Active checks:** an MQTT ping or a KNX connection-state request at probe
-  time, instead of the last known state.
-- **Recent events:** the last few warnings and errors per connector, with
-  their age.
-- **Streaming lines** for long probes.
-- **Discovery:** topics and group addresses seen under prefixes that the
-  application allows.
+**Embedded:** a probe needs a second socket and, for `mqtts`, a second TLS
+session (tens of KB of RAM while it runs). The Embassy stack must have a
+spare socket. The probe's memory is allocated only while it runs. A board
+too small for it simply registers no probe.
+
+## 6. Rules
+
+- **Opt-in:** a probe exists only if the application registered it.
+- **Listen-only:** no publish and no group write, read or response. Only
+  the protocol's own connect, keep-alive and disconnect frames are sent.
+- **Isolated:** its own connection. Nothing it receives reaches a record
+  or a running connector.
+- **No payload values:** names, counts, sizes, times and source addresses
+  only.
+- **Bounded:** duration, entry limit and one probe at a time.
+- **Permission:** a probe is a read-only call, but it can map a broker or a
+  bus with the device's credentials. For that reason it is allowed under
+  the `ReadOnly` policy only when the application registered it, and the
+  application can restrict it with a fixed filter:
+  `MqttProbe::new(url).only("sensors/#")`. A request filter must then lie
+  under that filter.
+
+## 7. First implementations
+
+| Probe | Crate | Backends |
+|---|---|---|
+| `MqttProbe` | `aimdb-mqtt-connector` | Tokio (`rumqttc`), Embassy (`mountain-mqtt`) |
+| `KnxProbe` | `aimdb-knx-connector` | Tokio and Embassy, through the shared tunnel engine |
+
+## 8. Later
+
+- **KNX routing multicast** as an alternative to a tunnel.
+- **Payload shapes,** for example "JSON object with keys a, b, c", to help
+  write a data contract for a discovered topic.
+- **Generating link declarations** (`link_from("mqtt://…")`) from a probe
+  result.
+- **Streaming entries** as they are first seen, for long windows.
