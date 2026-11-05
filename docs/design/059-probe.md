@@ -384,7 +384,8 @@ alike. The driver:
 
 The driver awaits nothing but the invocations it owns and their timers. A
 stalled, slow or closed connection therefore delays only the delivery of
-its own reply. The reply is then held in the oneshot until the connection
+its own reply. (A probe that blocks inside a poll can still delay the
+driver; §5.2 states the contract.) The reply is then held in the oneshot until the connection
 loop sends it or drops it, and it is at most the response budget (§5.3).
 
 When the connection closes or a new handshake starts a new session, the
@@ -438,7 +439,7 @@ window before drawing conclusions from an absence (§6.1).
 | Registration | Unique names, description, schemas, limits (§3). |
 | Invocation | `probe.list` / `probe.describe` / `probe.run`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
 | Concurrency | Per probe: at most `concurrency` invocations at a time, otherwise `Busy`. Per instance: at most `max_concurrent_probes` (default 2), otherwise `Busy`. Per connection: at most one in flight (§4.1), otherwise `Busy`. No queueing; the caller retries. |
-| Deadlines | Enforced by the probe driver, independent of any connection (§4.1, §5.2). |
+| Deadlines | Enforced by the probe driver, independent of any connection, for probes that yield and do not block (§4.1, §5.2). |
 | Error transport | `ProbeError` → AimX error reply `probe_<kind>` with `msg` (§4.1) → CLI exit code `4` or `5` and stderr, or an MCP tool error. |
 | Result serialization | `serde_json`, then a final size check against the budget (§5.3). |
 
@@ -458,9 +459,32 @@ deserialization is the check.
   grace period in v1.
 - A closed connection, or a new handshake on it, drops the invocation in
   the same way (§4.1).
-- The probe driver enforces both (§4.1). Every invocation therefore ends,
-  and releases its permits, by its deadline on the instance clock, whatever
-  the connection that started it is doing.
+- The probe driver enforces both (§4.1), independent of the connection
+  that started the invocation. A stalled or slow connection does not delay
+  the drop.
+
+**The guarantee depends on executor progress.** Core can drop a probe
+future only between its polls, and only when the executor polls the
+driver. Deadline enforcement therefore holds only if every probe meets
+this contract:
+
+- **Yield, do not block.** A probe waits on I/O and timers through
+  `.await` (on the instance's runtime, via `ctx.time()` and the
+  connector's async I/O). It must not block inside a poll: no blocking
+  socket or bus calls, no `std::thread::sleep`, no busy-waiting.
+- **Keep synchronous work short.** Work between two `.await` points, such
+  as building or trimming the final report, must stay small and bounded by
+  the probe's own caps. Lengthy computation is split with yields or does
+  not belong in a probe.
+
+Within that contract, an invocation is dropped and its permits are
+released at its deadline, plus the time until the executor next polls the
+driver. A probe that breaks it delays its own drop by as long as it blocks.
+Because one driver future polls all invocations, it also delays the
+deadlines of other probes on the instance. On a single-threaded executor
+such as Embassy's, it stalls every other task, connectors included. Core
+cannot detect or preempt this, so the contract is part of the `Probe` and
+`probe_fn` documentation. The ready-made probes meet it.
 
 A probe that observes for a while plans its window so that it returns in
 time. The discovery probes observe for `min(duration_s, remaining - reserve)`,
