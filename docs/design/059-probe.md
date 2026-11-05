@@ -271,11 +271,10 @@ caveat.
 | `filter` | `#`, or the registered default | Topic filter to observe. Must lie under the registered `allowed_filter` if one is set. |
 | `duration_s` | 10 | Observation window. |
 | `max_topics` | 200 (cap set at registration) | Memory bound. |
-| `samples` | off | `{ max_bytes, per_topic }`: keep the first N bytes of up to K payloads per topic. Allowed only if registered with `.allow_samples(true)`. |
 | `unlinked_only` | false | List only topics that no configured inbound link matches. |
 
 **Output:** `{ coverage, topics: [ { topic, messages, retained, qos_seen,
-bytes: {min, max, last}, first_seen_ms, last_seen_ms, linked, samples? } ] }`.
+bytes: {min, max, last}, first_seen_ms, last_seen_ms, linked } ] }`.
 `linked` says whether a configured inbound link matches the topic. That is
 the bridge from discovery to configuration.
 
@@ -306,12 +305,11 @@ registration and in the call.
 ### 6.3 `KnxDiscover`
 
 **Params:** `ga_prefix` (for example `1/2/`, default all), `duration_s`
-(default 30), `max_addresses` (default 500), `samples` (raw APDU bytes in
-hex, only if allowed at registration), `unlinked_only`.
+(default 30), `max_addresses` (default 500), `unlinked_only`.
 
 **Output:** `{ coverage, group_addresses: [ { ga, telegrams: {write,
 response, read}, sources: [individual addresses, up to 4], data_len: {min,
-max}, first_seen_ms, last_seen_ms, linked, samples? } ] }`.
+max}, first_seen_ms, last_seen_ms, linked } ] }`.
 
 **How it observes:**
 
@@ -350,8 +348,7 @@ requirement of the mechanism.
   keep-alive, and subscribe/unsubscribe only when live subscription is
   explicitly allowed).
 - **The developer controls exposure.** Registration sets the allowed filter
-  or prefix, whether samples (payload bytes) may be returned, and whether
-  live subscriptions may change. A probe whose results are sensitive should
+  or prefix and whether live subscriptions may change. A probe whose results are sensitive should
   not be registered on an instance that untrusted agents can reach.
 - **Bounded:** deadline, grace period, concurrency, response size (§5).
 
@@ -388,9 +385,11 @@ requirement of the mechanism.
 2. **Long probes on a shared serial link:** v1 holds the connection for the
    probe's duration. Streaming progress or an async job (`probe.start` /
    `probe.result`) could come later if this hurts.
-3. **Sample policy defaults:** samples are off unless allowed at
-   registration. Should `aimdb-mcp` additionally require a flag to request
-   them?
+3. **Payload samples:** the ready-made probes return no payload bytes,
+   only names, counts, sizes and times. Optional samples, to help write a
+   data contract for a discovered signal, can be added later as an opt-in
+   at registration and in the call. Until then, a developer who needs them
+   writes their own probe.
 4. **Generating configuration from results:** turning a discovered,
    `linked: false` topic into a `link_from` declaration and a data contract
    draft is a natural next step for the CLI and the architecture agent.
