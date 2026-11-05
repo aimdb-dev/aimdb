@@ -91,7 +91,7 @@ move a copy into the futures it creates. It gives the probe:
 ```rust
 pub struct ProbeError {
     pub kind: ProbeErrorKind,
-    pub message: String,   // one line, for a person or an agent
+    pub message: String,   // for a person or an agent; bounded by core (§4.1)
 }
 
 pub enum ProbeErrorKind {
@@ -196,17 +196,27 @@ builder.probe(
 );
 ```
 
-- **Name:** unique per instance (a duplicate fails `build()`). Dotted names
-  are a convention (`mqtt.discover`, `knx.discover`, `board.info`).
+- **Name:** unique per instance (a duplicate fails `build()`). At most
+  `PROBE_NAME_MAX` (64) bytes of `[a-z0-9._-]`, so it never needs JSON
+  escaping. Dotted names are a convention (`mqtt.discover`, `knx.discover`,
+  `board.info`).
 - **Description:** one or two sentences, shown by `probe list` and in the
-  MCP tool listing.
+  MCP tool listing. At most `PROBE_DESCRIPTION_MAX` (256) bytes of UTF-8
+  with no control characters, so its JSON form is at most twice that (only
+  `"` and `\` are escaped).
 - **Schemas:** JSON Schema for `Params` and `Output`, stored as JSON text.
   On `std`, a `schemars` feature fills them from the types
   (`T: JsonSchema`). On embedded targets, the schemas are `&'static str`
   constants that the probe crate generates at build time or writes by hand.
-  An instance never generates a schema at runtime. A probe without schemas
-  is allowed; clients then see `"schema": null` and rely on the
-  description.
+  An instance never generates a schema at runtime. Each schema is at most
+  `PROBE_SCHEMA_MAX` (64 KB). Schemas are not sent with the list but
+  fetched in chunks (§4.1), so their size is independent of the frame
+  limit. A probe without schemas is allowed; clients then see
+  `schema_len: null` and rely on the description.
+
+A spec that breaks one of these limits fails `build()` with an error that
+names the probe and the limit. The limits are what keep every discovery
+reply within the smallest AimX frame (§4.1).
 - **Limits:** `max_duration` (the cap on what a caller may ask for),
   `concurrency` (default 1), and optionally `max_response_bytes`, which
   overrides the instance default (§5.3).
@@ -231,18 +241,51 @@ connector that serves AimX) does not matter.
 
 ### 4.1 AimX 4.1
 
-Two one-shot methods:
+Three one-shot methods:
 
-- **`probe.list`** returns `[{ name, description, params_schema,
-  output_schema, max_duration_ms, concurrency }]`.
+- **`probe.list`** takes `{ after, limit }`, both optional, and returns one
+  page: `{ probes: [{ name, description, max_duration_ms, concurrency,
+  params_schema_len, output_schema_len }], next }`. Entries are sorted by
+  name. `next` is the last name on the page when more follow, otherwise
+  `null`, and the caller passes it back as `after`. Schemas are not
+  included, only their length in bytes (`null` when absent).
+- **`probe.schema`** takes `{ name, which: "params" | "output", offset,
+  len }` and returns `{ total, data }`: one chunk of the schema text as
+  hex, at most `PROBE_SCHEMA_CHUNK_MAX` (2 KB) source bytes per reply. It
+  works like `instance.post_link`: a missing `offset` is 0, a missing or
+  too-large `len` is the maximum, and an `offset` at or past `total` gives
+  empty `data`. Hex keeps a chunk boundary from splitting a UTF-8 character
+  or an escape.
 - **`probe.run`** takes `{ name, params, timeout_ms }`.
   - On success it returns `{ name, started_ns, elapsed_ms, output }`.
   - On failure it returns an error reply with code `probe_<kind>` (for
-    example `probe_refused`) and a one-line `msg` (see *Error replies*
+    example `probe_refused`) and a bounded `msg` (see *Error replies*
     below).
   - `not_found` means there is no probe by that name.
 
-Both methods are allowed under the `ReadOnly` security policy (§7).
+All three are allowed under the `ReadOnly` security policy (§7).
+
+**Discovery replies have a fixed bound.** `instance.info` already
+guarantees its reply fits the smallest AimX frame (`INSTANCE_INFO_REPLY_MAX`,
+6 KB, within serial's 8 KB). The probe discovery methods follow that rule, so
+a large registry or a large schema can never make listing unusable:
+
+- A `probe.list` entry is at most `PROBE_LIST_ENTRY_MAX` bytes: its keys,
+  a 64-byte name, a 512-byte escaped description and numbers at full width:
+  730 bytes. Core puts entries on a page while they fit the
+  connection's response budget (§5.3), computed for the page reply, and
+  sets `next` for the rest. `limit` can only shorten a page. On serial that
+  is at least ten entries per page; over TCP and UDS, normally all of them. A
+  page holds at least one entry, which always fits.
+- A `probe.schema` reply carries at most 4 KB of hex plus fixed fields.
+- An error reply carries at most a 32-byte code and a 256-byte message
+  (below).
+
+Each bound fits serial's 8 KB frame with COBS overhead. Measured through
+the AimX reply envelope with the longest request id and COBS: ten
+worst-case entries per page, a schema chunk at 4 188 bytes and an error
+reply at 604 bytes. A test checks them
+the way `instance_info_bounds` checks `instance.info` (§8).
 
 **Version detection.** A 4.0 server also answers `not_found`, for the
 method itself, so the error alone cannot tell "no such probe" from "server
@@ -257,7 +300,12 @@ data-free variants (`NotFound`, `Denied`, `Internal`, `VersionMismatch`).
 AimX 4.1 adds:
 
 - an optional `msg` field on the error frame, next to `err`, holding the
-  probe's one-line message;
+  probe's message, bounded by core: before encoding, core replaces control
+  characters (line breaks included) with spaces and truncates the message
+  at a UTF-8 character boundary to `PROBE_MSG_MAX` (256) bytes, ending a
+  cut message with `…`. Its JSON form is then at most 512 bytes. This
+  covers messages from probes as well as core's own, such as serde's
+  `InvalidParams` text;
 - an `RpcError::Probe { kind, message }` variant, encoded as
   `err: "probe_<kind>"` plus `msg`, and decoded back by the 4.1 client.
 
@@ -297,16 +345,55 @@ fn call_deferred(
 }
 ```
 
-The AimX session returns `Some` for `probe.run`. The future owns what it
-needs (the probe's `Arc`'d spec, a clone of the database handle and the
-`ProbeCtx`) and borrows nothing from the session. The connection loop
-drives it in a `FuturesUnordered`, as it does the subscription pumps, and
-encodes and sends the result when it completes. Meanwhile the loop keeps reading
+The AimX session returns `Some` for `probe.run`. The returned future does
+**not** run the probe. It only waits for the result of an invocation that
+the probe driver runs (below), so it holds no permit and no probe
+resources. The connection loop keeps it in a `FuturesUnordered` and encodes
+and sends the result when it resolves. Meanwhile the loop keeps reading
 frames, answering other calls and forwarding events. Other methods stay
 inline. A connection has at most one probe in flight; a second `probe.run`
-on the same connection gets `probe_busy`. A new handshake on the connection,
-or its close, drops the in-flight probe like the subscription pumps, which
-cancels it (§5.2).
+on the same connection gets `probe_busy`.
+
+**The probe driver runs outside the connection loop.** The connection loop
+cannot enforce a deadline on its own. It awaits each outbound `send`, and
+the transports' `send` awaits `write_all` and `flush`. When a client stops
+reading, for example during a busy subscription, a send blocks, and nothing
+else the loop owns is polled. A probe future driven there would miss its
+deadline and keep its permits and its connection or observer for as long as
+the writer is stalled. Polling it from one more arm of the same loop does
+not help.
+
+So probes run in one **probe driver** future per instance. `build()` adds
+it to the runner's futures when the registry is not empty, as it does for
+connectors, so it needs no task spawning and works on Tokio and Embassy
+alike. The driver:
+
+- receives invocations over a bounded channel. Its capacity is
+  `max_concurrent_probes`, and an invocation is submitted only after its
+  permits are taken, so submission never waits;
+- owns each invocation's probe future, its `ProbeCtx`, its deadline timer
+  and its concurrency permits, all in its own `FuturesUnordered`;
+- enforces §5.2 on the instance clock: at the deadline it fires
+  `cancelled()`, after the grace period it drops the probe future, and the
+  permits go with it;
+- hands the outcome (the serialized reply or a `ProbeError`) to a oneshot
+  channel. Sending on a oneshot never waits, so the driver never depends
+  on any connection's writer.
+
+The driver awaits nothing but the invocations it owns and their timers. A
+stalled, slow or closed connection therefore delays only the delivery of
+its own reply. The reply is then held in the oneshot until the connection
+loop sends it or drops it, and it is at most the response budget (§5.3).
+
+When the connection closes or a new handshake starts a new session, the
+waiting future is dropped with the session's other futures. The driver sees
+that the oneshot's receiver has gone and cancels the invocation: it fires
+`cancelled()`, then drops the probe after the grace period, as at a
+deadline.
+
+The subscription pumps share the loop's blocking on `send`, but they hold
+no permits, and the bounded event funnel already drops events for a slow
+client. Changing that is not part of this design.
 
 With this, a long probe no longer holds a serial link either. The CLI still
 prints a "waiting up to N s" line, because its own call waits for the
@@ -321,15 +408,20 @@ aimdb probe run <name> [--params <json> | --param k=v ...]
                        [--timeout <secs>] [--format json|pretty]
 ```
 
-`--param k=v` builds the params object, with values typed by the probe's
-params schema when one is present. The output is the `output` JSON (pretty
+`probe list` follows `next` until the list ends. `probe describe` and
+`--param` fetch a schema in `probe.schema` chunks and stop at
+`PROBE_SCHEMA_MAX`. `--param k=v` builds the params object, with values
+typed by the probe's params schema when one is present. The output is the `output` JSON (pretty
 printed on a TTY). Exit codes: `0` success; `4` (the existing timeout
 code) for `probe_timeout`; `5` for any other probe error. The kind and
 message go to stderr. Codes 1–4 keep their meaning.
 
 ### 4.3 MCP
 
-- `probe_list` returns the list, schemas included.
+- `probe_list` returns the whole list, with every page fetched, and
+  without schemas.
+- `probe_describe` takes `{ name }` and returns the description and both
+  schemas, each assembled from `probe.schema` chunks.
 - `probe_run` takes `{ name, params, timeout_s }` and returns the output
   JSON.
 
@@ -342,9 +434,9 @@ window before drawing conclusions from an absence (§6.1).
 | Responsibility | How |
 |---|---|
 | Registration | Unique names, description, schemas, limits (§3). |
-| Invocation | `probe.list` / `probe.run`, CLI, MCP (§4). |
+| Invocation | `probe.list` / `probe.schema` / `probe.run`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
 | Concurrency | Per probe: at most `concurrency` invocations at a time, otherwise `Busy`. Per instance: at most `max_concurrent_probes` (default 2), otherwise `Busy`. Per connection: at most one in flight (§4.1), otherwise `Busy`. No queueing; the caller retries. |
-| Deadlines | §5.2. |
+| Deadlines | Enforced by the probe driver, independent of any connection (§4.1, §5.2). |
 | Error transport | `ProbeError` → AimX error reply `probe_<kind>` with `msg` (§4.1) → CLI exit code `4` or `5` and stderr, or an MCP tool error. |
 | Result serialization | `serde_json` into a bounded writer (§5.3). |
 
@@ -362,6 +454,9 @@ Core does not validate against the schema; deserialization is the check.
   period (default 2 s) to return, either an `Ok` with partial results
   marked incomplete or an error.
 - After the grace period, core drops the future and replies `Timeout`.
+- The probe driver enforces all three (§4.1). Every invocation therefore
+  ends, and releases its permits, within deadline plus grace on the
+  instance clock, whatever the connection that started it is doing.
 
 **Cleanup belongs to the probe implementation.** Core only promises the
 signal and then the drop. A probe holds its resources in values whose
@@ -644,17 +739,21 @@ requirement of the mechanism.
    with `response_budget()`, `ProbeError`, `ProbeSpec`, the registry
    (interior-mutable, sealed at the end of `build()`), type erasure,
    `BudgetedVec`, the bounded serializer (streaming on `std`, `to_vec` and
-   a length check on `no_std`), the instance's `max_response_bytes`, and
-   `probe.list` / `probe.run`.
+   a length check on `no_std`), the instance's `max_response_bytes`, the
+   registration limits (`PROBE_NAME_MAX`, `PROBE_DESCRIPTION_MAX`,
+   `PROBE_SCHEMA_MAX`), message bounding (`PROBE_MSG_MAX`), the probe
+   driver, and `probe.list` (paged) / `probe.schema` (chunked) /
+   `probe.run`.
 2. **AimX 4.1 wire and session** (`aimdb-core/src/session/`): the optional
    `msg` field on error frames, `RpcError::Probe { kind, message }` and
-   its `probe_<kind>` codes, `Session::call_deferred` with deferred replies
-   driven by the connection loop and at most one probe in flight per
-   connection (§4.1), and each
+   its `probe_<kind>` codes, `Session::call_deferred` with replies that
+   the connection loop waits for while the probe driver runs the
+   invocation, at most one probe in flight per connection (§4.1), and each
    transport's reply limit and framing overhead (§5.3).
-3. **Client, CLI, MCP:** `aimdb-client::probe::{list, run}` with the
-   version check from the handshake, `aimdb probe`, and the `probe_list` /
-   `probe_run` tools.
+3. **Client, CLI, MCP:** `aimdb-client::probe::{list, schema, run}` with
+   the version check from the handshake, page and chunk assembly,
+   `aimdb probe`, and the `probe_list` / `probe_describe` / `probe_run`
+   tools.
 4. **`MqttDiscover::dedicated`** on Tokio and Embassy, with its own
    buffers, TLS resources and connection settings on Embassy (§6.2).
 5. **`KnxConnector::discover_probe()`** on the existing tunnel, with an
@@ -671,11 +770,35 @@ requirement of the mechanism.
   `max_frame`, UDS unbounded), `BudgetedVec` never letting a complete
   result exceed the budget even as counters grow to full width and KNX
   `sources` fill to four, `ResponseTooLarge` (without full buffering on
-  `std`), registration after `build()` refused, and schema listing.
+  `std`), registration after `build()` refused, and registration limits
+  (an over-long name or description, a control character in the
+  description, or an oversized schema fails `build()` with the probe
+  named).
+- Discovery bounds, in the style of `instance_info_bounds`: with the
+  largest registration the limits allow (many probes with 64-byte names,
+  256-byte descriptions full of `"` and `\`, and 64 KB schemas), every
+  `probe.list` page, every `probe.schema` chunk and an error reply with a
+  long, multi-line, multi-byte message fit the serial frame after COBS
+  encoding. Paging through `next` returns every probe once, and the
+  reassembled schema chunks equal the registered text.
 - Session: while a probe runs on a connection, the same connection answers
   `record.get` and keeps delivering subscription events without gaps; a
   second `probe.run` on it gets `probe_busy`; a new handshake or a closed
   connection cancels the probe.
+- Stalled writer: a test connection whose `send` stops completing, after
+  `probe.run` has been received, while a subscription keeps producing
+  events. Two cases run on a manually advanced clock:
+  - a probe that ignores `cancelled()` and never returns. Its future is
+    dropped (a drop guard records when), and its per-probe and instance
+    permits are free again, no later than deadline plus grace. A
+    `probe.run` of the same probe on a second connection then succeeds
+    instead of getting `probe_busy`;
+  - a probe that finishes before its deadline. Its permits are released
+    when it finishes, not when its reply is sent.
+
+  Unblocking the writer afterwards delivers the waiting reply (or nothing,
+  if the connection was closed in the meantime) without disturbing the
+  driver.
 - Wire compatibility: a 4.1 error frame with `msg` decodes as
   `RpcError::Internal` on a 4.0 client; the 4.1 client reports "probes need
   AimX 4.1" against a 4.0 server without sending `probe.run`.
