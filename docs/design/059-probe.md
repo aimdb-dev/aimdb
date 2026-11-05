@@ -1,168 +1,401 @@
-# 059 — Probe
+# 059 — Probes
 
 **Status:** 📝 Proposed
 
-**Scope:** From the CLI or MCP, run a named probe on a running instance and
-get back what it observed. Examples are MQTT topics on a broker, KNX group
-addresses on a bus, or presses of a button. Core provides only the
-mechanism: registering, calling, bounding and printing a probe. What a
-probe does, and how deeply it hooks into the instance, is up to whoever
-registers it. Ready-made probes cover the common cases.
+**Scope:** Named, developer-defined async inspection functions that are
+registered on an AimDB instance and invoked on demand through the CLI or MCP.
+This covers the `Probe` trait, registration with a description and schemas,
+invocation over AimX, concurrency, deadlines, error transport, result
+serialization and limits. It also covers the first ready-made probes: MQTT
+and KNX discovery.
 
 ---
 
-## 1. What it is
+## 1. What a probe is
 
-A probe is an async function, registered on the instance under a name. A
-client calls it by name with a filter and a duration. The probe observes
-for that long and returns a list of entries.
+> A probe is a named, developer-defined async inspection function,
+> registered on an AimDB instance and invoked on demand through the CLI or
+> MCP.
+
+Its main purpose is to **discover and understand the signals available in
+the instance's environment**, including signals that have no configured
+record or link yet: which topics a broker carries, which group addresses
+occur on a KNX bus, what a device reports about itself.
+
+- **Bounded:** a probe has one invocation with a deadline and gives a
+  temporary answer. A source runs continuously; a probe does not.
+- **Direct:** the result goes back to the caller. Nothing is written into a
+  record.
+- **Developer-defined:** a probe is application code registered when the
+  instance is built. Callers choose a registered probe and pass it
+  parameters. They cannot submit code.
+- **Typed:** each probe has its own parameter and result types, published as
+  JSON schemas. There is no shared `name + facts` shape.
 
 ```
-$ aimdb probe --list
-mqtt   topics on the broker (own connection)
-knx    group addresses on the bus (running tunnel)
-b1     presses of the user button
+$ aimdb probe list
+mqtt.discover   Topics seen on the broker during a window         (max 120 s)
+knx.discover    Group addresses seen on the bus during a window   (max 300 s)
 
-$ aimdb probe mqtt --filter 'sensors/#' --duration 10s
-mqtt  sensors/temp/indoor     msgs=10  retained=yes  bytes=42
-mqtt  sensors/temp/outdoor    msgs=10  retained=yes  bytes=42
-mqtt  2 entries in 10 s
-
-$ aimdb probe b1 --duration 30s        # press the button now
-b1    rising   count=3  last_ms=2100
-b1    1 entry in 30 s
-
-$ aimdb probe knx --filter 1/2/ --duration 30s
-knx   1/2/3   msgs=12  write=12        from=1.1.4
-knx   1/2/4   msgs=2   write=1 resp=1  from=1.1.4,1.1.7
-knx   2 entries in 30 s
+$ aimdb probe run mqtt.discover --param filter='plant/#' --param duration_s=15
+{
+  "coverage": {
+    "scope": "mqtt://broker:1883, filter plant/#",
+    "connection": "dedicated",
+    "window": { "started_ns": 81234000000, "duration_ms": 15000 },
+    "complete": true,
+    "limits": [],
+    "note": "Only topics published, or retained, during the window are listed."
+  },
+  "topics": [
+    { "topic": "plant/boiler/temp", "messages": 15, "retained": true,
+      "bytes": { "min": 4, "max": 5, "last": 5 }, "linked": false },
+    { "topic": "plant/boiler/state", "messages": 1, "retained": true,
+      "bytes": { "min": 2, "max": 2, "last": 2 }, "linked": true }
+  ]
+}
 ```
 
-## 2. Core: the mechanism only
+## 2. The trait
 
 ```rust
-pub struct ProbeRequest {
-    pub filter: Option<String>,  // meaning is the probe's own
-    pub duration: Duration,      // clamped by core: default 10 s, max 120 s
-    pub limit: usize,            // default 200
-}
+pub trait Probe: Send + Sync + 'static {
+    /// What the caller supplies. Deserialized by core from the request.
+    type Params: DeserializeOwned + Send;
+    /// What the probe returns. Serialized by core into the reply.
+    type Output: Serialize + Send;
 
-pub struct ProbeEntry {
-    pub name: String,                            // topic, group address, edge, …
-    pub facts: Vec<(String, serde_json::Value)>, // counts, sizes, times
-}
-
-pub struct ProbeResult {
-    pub entries: Vec<ProbeEntry>,
-    pub truncated: bool,
-    pub error: Option<String>,
-}
-
-pub trait Probe: Send + Sync {
-    fn describe(&self) -> &str;                  // one line for `probe --list`
-    fn run(&self, req: ProbeRequest) -> BoxFuture<'_, ProbeResult>;
+    fn run<'a>(
+        &'a self,
+        params: Self::Params,
+        ctx: &'a ProbeCtx,
+    ) -> impl Future<Output = Result<Self::Output, ProbeError>> + Send + 'a;
 }
 ```
 
-There are three ways to register a probe. All of them end in the same
-registry.
+`ProbeCtx` gives the probe:
+
+- `deadline()` and `remaining()`, on the instance clock. A probe should end
+  its observation window so that it can return before the deadline (§5.2).
+- `cancelled()`, a future that resolves when core is about to cancel the
+  invocation, so a probe can clean up cooperatively.
+- `db()`, read-only access to the instance (for example, to mark which
+  observed topics already have a configured link).
+- `clock()` and `time()`, the instance's clock and sleep, so probes are
+  runtime-neutral.
 
 ```rust
-// 1. On the builder: anything, including a closure.
-builder.probe("mqtt", MqttProbe::new("mqtts://broker:8883").with_credentials(u, p));
+pub struct ProbeError {
+    pub kind: ProbeErrorKind,
+    pub message: String,   // one line, for a person or an agent
+}
 
-// 2. Inside an Input::wire, next to the source it observes.
-reg.probe("b1", probe);
-
-// 3. From a connector's build(), offered as an option by the connector.
-builder.connect(KnxConnector::new(gw).with_probe("knx"));
+pub enum ProbeErrorKind {
+    InvalidParams,      // core: params do not deserialize; or the probe rejects them
+    Unavailable,        // e.g. no broker connection, gateway unreachable
+    Refused,            // e.g. broker refused the subscription, no free tunnel slot
+    Timeout,            // core: the deadline passed
+    Busy,               // core: concurrency limit reached
+    ResponseTooLarge,   // core: serialized result exceeds the bound (§5.3)
+    Internal,
+}
 ```
 
-Core is responsible for these, and nothing else:
+## 3. Registration
 
-- **Registry:** names must be unique, and a duplicate fails the build.
-- **Calling:** the AimX method `probe` takes `{name, filter, duration_ms,
-  limit}` and returns a `ProbeResult`. `probe.list` returns the names and
-  their descriptions. These are new in AimX 4.1; an older server answers
-  `NOT_FOUND`.
-- **Bounds:** core cuts a probe off at `duration` + 5 s, enforces `limit`,
-  and runs one probe at a time per instance. A second call gets `BUSY`.
-- **Permission:** `probe` is allowed under the `ReadOnly` policy. A probe
-  exists only because the application registered it, and that registration
-  is the permission.
-- **CLI:** `aimdb probe <name> [--filter] [--duration] [--limit]
-  [--format text|json]` and `aimdb probe --list`. The exit code is `5` when
-  the result has an `error`.
-- **MCP:** the read-only tools `probe` and `probe_list`.
+```rust
+builder.probe(
+    ProbeSpec::new("mqtt.discover", MqttDiscover::dedicated(mqtt_config))
+        .description("Topics seen on the broker during a window")
+        .max_duration(Duration::from_secs(120))
+        .concurrency(1),
+);
+```
 
-Core does not know about topics, buses or pins.
+- **Name:** unique per instance (a duplicate fails `build()`). Dotted names
+  are a convention (`mqtt.discover`, `knx.discover`, `board.info`).
+- **Description:** one or two sentences, shown by `probe list` and in the
+  MCP tool listing.
+- **Schemas:** JSON Schema for `Params` and `Output`, stored as JSON text.
+  On `std`, a `schemars` feature fills them from the types
+  (`T: JsonSchema`). On embedded targets, the schemas are `&'static str`
+  constants that the probe crate generates at build time or writes by hand.
+  An instance never generates a schema at runtime. A probe without schemas
+  is allowed; clients then see `"schema": null` and rely on the
+  description.
+- **Limits:** `max_duration` (the cap on what a caller may ask for),
+  `concurrency` (default 1), and optionally `max_response_bytes`, which
+  overrides the instance default (§5.3).
 
-## 3. Integration depth is the application's choice
+Registration can happen on the builder, or from a connector's `build()`
+through `db.register_probe(spec)` when the probe needs handles that only the
+built connector has, such as its live session (§6.3). Core erases the types
+behind the spec: it keeps a closure that deserializes the params, runs the
+probe and serializes the output.
 
-A probe can sit at any of three depths. Core treats all of them the same;
-they differ in cost and in what they can see.
+## 4. Invocation
 
-| Depth | How it observes | Can see | Costs | Touches the running app |
-|---|---|---|---|---|
-| **Standalone** | Opens its own connection for the window | Everything its credentials allow (`#`, the whole bus) | A socket, and a TLS session for `mqtts`; a free KNX tunnel slot | No |
-| **Tap** | Watches traffic an existing session or input already receives | What already arrives: subscribed topics, every telegram the tunnel forwards, the pin | One atomic check per message when idle | Read-only |
-| **Session** | Asks the running session to add something for the window (for example a temporary MQTT subscription) | Beyond the current subscriptions, without a new connection | A subscribe and unsubscribe on the live session | Yes, briefly |
+### 4.1 AimX 4.1
 
-The guideline for the ready-made probes:
+Two one-shot methods:
 
-- Default to **standalone** where a second connection is cheap (MQTT on
-  Tokio).
-- Default to **tap** where a second connection is scarce or impossible: a
-  KNX tunnel slot, a pin, or a small MCU.
-- Offer **session** only where it is the only way to see more without a
-  second connection, and only as an explicit option.
+- **`probe.list`** returns `[{ name, description, params_schema,
+  output_schema, max_duration_ms, concurrency }]`.
+- **`probe.run`** takes `{ name, params, timeout_ms }`.
+  - On success it returns `{ name, started_ns, elapsed_ms, output }`.
+  - On failure it returns an AimX error with code `PROBE_<KIND>` (for
+    example `PROBE_REFUSED`), and `details: { kind, message }`.
+  - `NOT_FOUND` means there is no probe by that name. A 4.0 server answers
+    `NOT_FOUND` for the method itself, and the client reports
+    "probes need AimX 4.1".
 
-## 4. Building blocks for implementers
+Both methods are allowed under the `ReadOnly` security policy (§7).
 
-These are small helpers, so a probe is a few lines:
+The call is awaited inside the AimX session. On a connection where calls
+are handled one at a time (for example a serial link with one client), a
+long probe holds that connection for its duration. The CLI prints a "waiting
+up to N s" line. Over TCP and UDS, the CLI and MCP use a separate
+connection.
 
-- **`Collector`:** counts entries by name, keeps a few facts per name,
-  respects `limit` and sorts the output. Every ready-made probe uses it.
-- **`ProbeTap`:** an optional observer slot for a source to call with
-  `tap.observe(name, |facts| …)`. It does nothing unless a probe is
-  running. A connector or input that wants to be tappable holds one and
-  calls it where it already handles a message or event. The probe installs
-  a `Collector` into it for the window.
-- **`probe_fn(desc, |req| async { … })`:** turns a closure into a `Probe`
-  for application code.
+### 4.2 CLI
 
-## 5. Ready-made probes
+```
+aimdb probe list [--format text|json]
+aimdb probe describe <name>                      # description and both schemas
+aimdb probe run <name> [--params <json> | --param k=v ...]
+                       [--timeout <secs>] [--format json|pretty]
+```
 
-| Probe | Depth | Notes |
+`--param k=v` builds the params object, with values typed by the probe's
+params schema when one is present. The output is the `output` JSON (pretty
+printed on a TTY). Exit codes: `0` success; `5` probe error, with the kind
+and message on stderr. Codes 1–4 keep their meaning.
+
+### 4.3 MCP
+
+- `probe_list` returns the list, schemas included.
+- `probe_run` takes `{ name, params, timeout_s }` and returns the output
+  JSON.
+
+Both are read-only tools and available without `--allow-writes`. The tool
+description tells an agent to read `coverage` before drawing conclusions
+from an absence (§6.1).
+
+## 5. What AimDB is responsible for
+
+| Responsibility | How |
+|---|---|
+| Registration | Unique names, description, schemas, limits (§3). |
+| Invocation | `probe.list` / `probe.run`, CLI, MCP (§4). |
+| Concurrency | Per probe: at most `concurrency` invocations at a time, otherwise `Busy`. Per instance: at most `max_concurrent_probes` (default 2), otherwise `Busy`. No queueing; the caller retries. |
+| Deadlines | §5.2. |
+| Error transport | `ProbeError` → AimX error code and details → CLI exit code `5` and stderr, or an MCP tool error. |
+| Result serialization | `serde_json` into a bounded writer (§5.3). |
+
+### 5.1 Parameters
+
+Core deserializes `params` into `Probe::Params` before calling the probe. A
+failure is `InvalidParams` with serde's message, and the probe never runs.
+Core does not validate against the schema; deserialization is the check.
+
+### 5.2 Deadlines and cancellation
+
+- The effective deadline is `min(timeout_ms, max_duration)`. When the
+  caller gives no timeout, it is `max_duration`.
+- `ctx.cancelled()` fires at the deadline. The probe then has a grace
+  period (default 2 s) to return, either an `Ok` with partial results
+  marked incomplete or an error.
+- After the grace period, core drops the future and replies `Timeout`.
+
+**Cleanup belongs to the probe implementation.** Core only promises the
+signal and then the drop. A probe holds its resources in values whose
+`Drop` releases them without awaiting:
+
+- A dedicated connection closes when its socket is dropped.
+- A change to a live session is held as a lease. Dropping the lease
+  synchronously queues the undo, such as an `UNSUBSCRIBE`, on the session's
+  command queue (§6.3), so the undo happens even when the future is
+  dropped.
+
+### 5.3 Limits: response size versus memory inside the probe
+
+These are two different limits with two different owners.
+
+- **Response size, enforced by core.** The serialized `output` must fit
+  `max_response_bytes` (instance default: 256 KB on `std`, 8 KB on
+  embedded targets; it can be set per probe and per instance). Core
+  serializes into a writer that stops at the limit, so an oversized result
+  never sits in memory in full twice. If it does not fit, the reply is
+  `ResponseTooLarge` with the limit, never a silently truncated JSON value.
+  On serial links the AimX frame size also applies and may be smaller.
+- **Memory inside the probe, owned by the probe.** Core cannot see or limit
+  what a probe allocates while it observes. Every probe bounds its own
+  state, for example `max_topics` or `max_addresses` with a sensible
+  default, and reports in its coverage when it hit a bound (§6.1). The
+  ready-made probes take these bounds as parameters with caps set at
+  registration, so a caller cannot ask for unbounded memory.
+
+A probe that respects its own entry limits should not hit
+`ResponseTooLarge`. That error is a safety net, not the way to page a
+result.
+
+## 6. Ready-made discovery probes
+
+These are the first probes. They answer what configured links cannot: which
+signals exist that the instance does not consume yet.
+
+### 6.1 Coverage: what a result does and does not say
+
+Discovery results always describe their scope, their window and whether
+they are complete. Core provides one shared type for this, which the
+ready-made probes embed and custom probes may use:
+
+```rust
+pub struct Coverage {
+    pub scope: String,           // what was observed: broker and filter, gateway and prefix
+    pub connection: String,      // "dedicated", "existing session", "tap"
+    pub window: Window,          // started_ns, duration_ms (actual, not requested)
+    pub complete: bool,          // false if any limit or refusal cut it short
+    pub limits: Vec<String>,     // e.g. "max_topics (200) reached", "subscription to # refused, used sensors/#"
+    pub note: &'static str,      // the probe's standing caveat
+}
+```
+
+**Absence during a window does not prove that a signal does not exist.** A
+topic that nobody published and no broker retained during the window, or a
+group address with no telegram during the window, is simply not observed.
+Each probe's `note` says this in its own terms. The MCP tool description
+repeats it.
+
+### 6.2 `MqttDiscover`
+
+**Params:**
+
+| Field | Default | Meaning |
 |---|---|---|
-| `MqttProbe::new(url)` | Standalone | Own client ID, clean session, subscribes to `filter` (default `#`) at QoS 0, never publishes. Tokio and Embassy. |
-| `MqttConnector::with_probe(name)` | Tap | Topics the running session receives, including matches of wildcard links. |
-| `MqttConnector::with_probe(name).discover()` | Session | Adds a temporary subscription for the window. It skips filters that overlap an application subscription, because some brokers would deliver those messages twice and a record could get a duplicate. |
-| `KnxConnector::with_probe(name)` | Tap | Every group telegram the running tunnel forwards, including addresses with no route. Needs no tunnel slot. |
-| `KnxProbe::new(gateway)` | Standalone | Own tunnel. Fails cleanly if the gateway has no free slot. |
-| Inputs (`PushButton`, `Thermometer` in the demos) | Tap | The input holds a `ProbeTap` and calls it on each event. Shown as the pattern for application inputs. |
+| `filter` | `#`, or the registered default | Topic filter to observe. Must lie under the registered `allowed_filter` if one is set. |
+| `duration_s` | 10 | Observation window. |
+| `max_topics` | 200 (cap set at registration) | Memory bound. |
+| `samples` | off | `{ max_bytes, per_topic }`: keep the first N bytes of up to K payloads per topic. Allowed only if registered with `.allow_samples(true)`. |
+| `unlinked_only` | false | List only topics that no configured inbound link matches. |
 
-An application can use several at once, for example `mqtt` (standalone,
-whole broker) next to `mqtt-live` (tap, the running session).
+**Output:** `{ coverage, topics: [ { topic, messages, retained, qos_seen,
+bytes: {min, max, last}, first_seen_ms, last_seen_ms, linked, samples? } ] }`.
+`linked` says whether a configured inbound link matches the topic. That is
+the bridge from discovery to configuration.
 
-## 6. Rules for all probes
+**How it observes** is chosen at registration and always shown in
+`coverage.connection`:
 
-These are conventions that every ready-made probe follows. Core enforces
-only the bounds.
+- `MqttDiscover::dedicated(config)` opens its own client connection (own
+  client ID, clean session, no will message), subscribes to `filter` at
+  QoS 0 for the window, then disconnects. It is independent of the running
+  session and can see everything its credentials allow. It needs a second
+  socket, and for `mqtts` a second TLS session. This is the default on
+  `std`.
+- `MqttConnector::discover_probe()` is registered by the connector and uses
+  the **existing session**:
+  - *Passive* (the default): it reports topics the session already
+    receives, including matches of wildcard links. It needs no extra socket,
+    but it sees only what is already subscribed, and coverage says so.
+  - *Live subscription*: only with `.allow_live_subscribe(true)` at
+    registration and `live_subscribe: true` in the params. It adds a
+    temporary subscription under a lease (§5.2). It refuses a filter that
+    overlaps an application subscription, because some brokers would then
+    deliver a message twice and a record could get a duplicate. Messages on
+    the temporary subscription never reach a record.
 
-- **Listen-only:** a probe sends no publish, no group write, read or
-  response, and does not switch outputs. It sends only protocol frames
-  (connect, keep-alive, subscribe and unsubscribe at session depth).
-- **No payload values** by default: names, counts, sizes, times and source
-  addresses only. An application probe may choose otherwise; it is the
-  application's code.
-- **Isolation:** what a standalone or session probe receives never reaches
-  a record.
+Changes to live subscriptions are therefore always explicit, at
+registration and in the call.
 
-## 7. Later
+### 6.3 `KnxDiscover`
 
-- A KNX probe on routing multicast, as a standalone probe that needs no
-  tunnel slot.
-- Payload shapes, to help write a data contract for a discovered topic.
-- Streaming entries as they appear, for long windows.
-- Generating link declarations from a probe result.
+**Params:** `ga_prefix` (for example `1/2/`, default all), `duration_s`
+(default 30), `max_addresses` (default 500), `samples` (raw APDU bytes in
+hex, only if allowed at registration), `unlinked_only`.
+
+**Output:** `{ coverage, group_addresses: [ { ga, telegrams: {write,
+response, read}, sources: [individual addresses, up to 4], data_len: {min,
+max}, first_seen_ms, last_seen_ms, linked, samples? } ] }`.
+
+**How it observes:**
+
+- `KnxConnector::discover_probe()` observes the **existing tunnel**. The
+  tunnel already receives every group telegram the gateway forwards,
+  including those that no route matches, which today are dropped. This
+  needs no extra tunnel slot and sends nothing on the bus. It is the
+  default.
+- `KnxDiscover::dedicated(gateway)` opens its own tunnel for the window,
+  for instances without a KNX connector. It is refused if the gateway has
+  no free tunnel slot.
+
+Its note: only telegrams that occur during the window and pass the
+gateway's and line couplers' filter tables are observed. Addresses that are
+only read rarely, or only used on another line, may be missing.
+
+### 6.4 Developer probes
+
+Anything else is application code using the same mechanism, for example:
+
+- `board.info`: device capabilities (firmware, MAC address, sensors found
+  at boot).
+- `button.edges`: presses seen by the button input during a window. The
+  input exposes a passive tap that the probe subscribes to for the window,
+  so the probe never competes with the input for the pin.
+
+Passive taps are an optional technique for probes like these, not a
+requirement of the mechanism.
+
+## 7. Safety
+
+- **Only registered code runs.** The registry is fixed at `build()`.
+- **Read-only from AimDB's point of view.** A probe has no record writers in
+  `ProbeCtx`. What it does in the environment is the developer's code; the
+  ready-made probes only listen and send protocol frames (connect,
+  keep-alive, and subscribe/unsubscribe only when live subscription is
+  explicitly allowed).
+- **The developer controls exposure.** Registration sets the allowed filter
+  or prefix, whether samples (payload bytes) may be returned, and whether
+  live subscriptions may change. A probe whose results are sensitive should
+  not be registered on an instance that untrusted agents can reach.
+- **Bounded:** deadline, grace period, concurrency, response size (§5).
+
+## 8. Implementation outline
+
+1. **Core** (`aimdb-core/src/probe/`): `Probe`, `ProbeCtx`, `ProbeError`,
+   `Coverage`, `ProbeSpec`, the registry, type erasure, the bounded
+   serializer, the AimX `probe.list` / `probe.run` methods, and AimX 4.1.
+2. **Client, CLI, MCP:** `aimdb-client::probe::{list, run}`, `aimdb probe`,
+   and the `probe_list` / `probe_run` tools.
+3. **`MqttDiscover`:** dedicated mode on Tokio, then on Embassy; then
+   passive existing-session mode; then live subscription with the lease.
+4. **`KnxDiscover`:** existing-tunnel mode (passing unmatched telegrams to
+   the probe while it runs), then dedicated mode.
+5. **Demos:** `board.info` and `button.edges` in the Embassy demos, showing
+   developer probes.
+
+**Testing:**
+
+- Core: params errors, `Busy`, deadline and grace period, a dropped future
+  runs the lease's undo, `ResponseTooLarge` without full buffering, and
+  schema listing.
+- MQTT: dedicated and existing-session modes against a local broker in CI;
+  an overlapping filter is refused; nothing reaches a record.
+- KNX: the existing-tunnel tap against the in-process gateway used by the
+  current client tests; nothing is sent.
+- End to end: the CLI `probe run` exit codes and JSON output.
+
+## 9. Open questions
+
+1. **`schemars` on `no_std`:** check whether build-time schema generation
+   for embedded probe crates can use `schemars`, or needs a small build
+   script.
+2. **Long probes on a shared serial link:** v1 holds the connection for the
+   probe's duration. Streaming progress or an async job (`probe.start` /
+   `probe.result`) could come later if this hurts.
+3. **Sample policy defaults:** samples are off unless allowed at
+   registration. Should `aimdb-mcp` additionally require a flag to request
+   them?
+4. **Generating configuration from results:** turning a discovered,
+   `linked: false` topic into a `link_from` declaration and a data contract
+   draft is a natural next step for the CLI and the architecture agent.
