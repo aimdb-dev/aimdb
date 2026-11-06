@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-06
+
+### Deprecated
+
+- **The crate is discontinued (#411).** This is the last release. Write the
+  wiring in Rust as the AimDB usage guide shows, check it with the compiler,
+  and inspect it with `aimdb-mcp` / `aimdb watch`. The crate now ships a
+  README saying so.
+
 ## [0.4.0] - 2026-11-03
 
 ### Changed

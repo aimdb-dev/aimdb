@@ -1,13 +1,14 @@
 [package]
 name = "aimdb-codegen"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Code generation library for AimDB architecture agent — reads state.toml and emits Mermaid diagrams and Rust source"
+description = "Discontinued: code generation from .aimdb/state.toml for AimDB. Write the wiring in Rust instead (see README)"
+readme = "README.md"
 keywords = ["codegen", "architecture", "mermaid", "schema", "aimdb"]
 categories = ["development-tools"]
 
