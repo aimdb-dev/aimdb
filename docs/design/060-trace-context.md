@@ -357,7 +357,8 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
 - **Embassy backend (`mountain-mqtt`):** already speaks MQTT 5 and accepts up
   to 32 properties per inbound publish, but neither reads nor writes user
   properties. `deliver` reads `aimdb-trace`; `publish_staged` adds it.
-- **Cost:** the property adds X  53). The embedded write ring and the broker's maximum packet size are
+- **Cost:** the property adds about 68 bytes per publish (1 + 2 + 11 + 2 +
+  52). The embedded write ring and the broker's maximum packet size are
   checked with the property included.
 - **Other subscribers:** an MQTT 5 broker forwards user properties to MQTT 5
   subscribers unchanged and drops them for 3.1.1 subscribers; the payload
