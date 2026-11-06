@@ -73,6 +73,14 @@ pub mod __private {
 mod streamable;
 pub use streamable::Streamable;
 
+mod catalog;
+pub use catalog::ContractId;
+
+/// Called by the test `catalog!` generates; not an API of its own.
+#[cfg(feature = "lock")]
+#[doc(hidden)]
+pub mod lock;
+
 #[cfg(feature = "aimdb-core")]
 mod contract_schema;
 
@@ -163,6 +171,10 @@ pub use aimdb_derive::migration_chain;
 /// For breaking changes, implement `MigrationStep` and use `migration_chain!` (requires `migratable` feature)
 /// to provide runtime transformation of older data formats. `migratable` only requires `alloc` — schema
 /// migration works identically on `no_std` targets (e.g. Embassy on an MCU) and on `std`.
+///
+/// Whether `VERSION` was bumped is checked by [`catalog!`]: it locks the wire shape of every
+/// `NAME@VERSION` in a committed `aimdb.lock`, and a shape changed under the same identity fails
+/// the contracts crate's tests.
 pub trait SchemaType: Sized {
     /// Unique identifier for this schema (e.g., "temperature", "humidity")
     const NAME: &'static str;

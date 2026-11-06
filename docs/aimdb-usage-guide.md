@@ -583,6 +583,119 @@ type.
 next to an inbound link, fails `build()` as it always has, and several
 inbound links on one record are allowed (fan-in).
 
+### A contracts crate as the source of truth
+
+Applications built by different people exchange contracts by their
+identity, `SchemaType::NAME@VERSION`, and `VERSION` is bumped by hand. A
+field renamed, retyped or reordered without a bump keeps the identity, and
+the reader then fails to decode, or decodes a field with another meaning.
+A contracts crate's own tests check one rule:
+
+> **The same `NAME@VERSION` always has the same wire shape.**
+
+The check detects structural changes in contracts of a supported profile
+(below), and fails for contracts it can tell are outside it.
+
+`catalog!` lists the crate's contracts in one place, and the enums nested in
+them as `helpers`:
+
+```rust
+aimdb_data_contracts::catalog! {
+    contracts: [
+        TemperatureV1,       // mqtt_demo.temperature@1, kept for the migration chain
+        Temperature,         // mqtt_demo.temperature@2
+        TemperatureCommand,
+        ButtonPress,
+    ],
+    helpers: [SensorMode],   // an enum used inside a contract
+}
+```
+
+Helpers have no `NAME@VERSION` of their own; their shape is part of every
+contract that uses them. Without helpers, `catalog! { Temperature,
+ButtonPress }` is enough.
+
+```toml
+[dev-dependencies]
+aimdb-data-contracts = { version = "0.3", features = ["lock"] }
+```
+
+It generates `pub const CATALOG: &[ContractId]` (contracts only, `no_std`)
+and a test that
+checks the catalog against `aimdb.lock` at the crate root. The `lock`
+feature belongs in `[dev-dependencies]` only, so firmware builds never see
+it. `aimdb.lock` is generated and committed:
+
+```toml
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "mqtt_demo.temperature"
+version = 1
+shape = "sha256:51d0a7c3…"
+```
+
+| Change | Result |
+|---|---|
+| New contract or new `VERSION` | fails until accepted with `AIMDB_UPDATE_LOCK=1 cargo test` |
+| Contract removed from the catalog | fails until accepted with `AIMDB_UPDATE_LOCK=1 cargo test` |
+| Shape changed under the same `NAME@VERSION` | **always fails**; updating the lock does not accept it |
+| Two catalog entries with the same `NAME@VERSION` | always fails |
+| A contract outside the supported profile | always fails, naming the reason |
+
+A locked entry never changes, so the lock holds a hash of each shape. A
+failure shows the current one:
+
+```
+mqtt_demo.temperature@1: the shape changed without a VERSION bump
+  locked:  sha256:276b9776…
+  current: sha256:f7fa28f3…  struct { "sensor_id": str, "temp_c": f32 }
+  fix: bump VERSION (and add a migration step), or revert the change
+```
+
+The shape is traced with `serde-reflection`: each contract is
+deserialized, after its helpers, until every variant was seen, and the
+values it yields are serialized back into the same trace, for a binary
+format (postcard, CDR) and for a human-readable one (JSON). The shape
+covers wire names after `rename` / `rename_all`, field order and exact
+types (which postcard and CDR depend on), variant names and indices,
+nested types, `Option`, sequences, maps, tuples and arrays.
+`#[serde(default)]` is not part of the shape: it makes a change
+compatible, not different.
+
+Supported contracts:
+
+- derived structs and externally tagged enums, made of fixed-width
+  primitives, strings, bytes, arrays, tuples, `Option`, sequences, maps
+  and other such types
+- symmetric `rename` / `rename_all`
+- every enum nested in a contract listed in `helpers`, including enums
+  behind `Option`, `Vec`, a map or another enum; a missing one fails
+- recursive enums with a first variant that ends the recursion
+
+Rejected by the check: aliases and asymmetric renames, `#[serde(skip)]`
+variants, types sent differently to JSON than to binary formats (such as
+`Ipv4Addr`), `#[serde(flatten)]`, untagged and internally tagged enums,
+hand-written `Deserialize` impls that reject the traced values, and two
+instances of one generic type with different shapes.
+
+Limits the check cannot detect, so keep to them:
+
+- **Every container needs its own serde name.** The tracer knows types only
+  by name: two types named `Status` (or a helper standing in for another
+  type of its name) are merged into one shape, and a change to one of them
+  can go unnoticed. Rename one with `#[serde(rename = "…")]`.
+- `skip_serializing_if` (omitting a field for some values) is not visible
+  in the shape. JSON readers cope with a missing field; postcard and CDR
+  do not.
+- Hand-written `Serialize` / `Deserialize` impls are checked only for what
+  the traced values show; test their wire format separately.
+- Contracts whose wire format is a hand-written serializer (the KNX DPT
+  records) are out of scope: their format lives in code, not in the type.
+- The lock checks one crate's history. Two crates defining the same `NAME`
+  are not detected; prefix contract names per crate (`mqtt_demo.…`).
+
 ---
 
 ## Write Timestamps

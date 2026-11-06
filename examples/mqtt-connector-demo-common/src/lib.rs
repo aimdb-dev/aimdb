@@ -39,4 +39,4 @@ pub mod types;
 pub use keys::{ButtonKey, CommandKey, SensorKey};
 pub use monitors::{button_logger, command_consumer, temperature_logger};
 pub use sim::{Reading, SimChannel, SimThermometers, Thermometer};
-pub use types::{ButtonEvent, ButtonPress, Temperature, TemperatureCommand};
+pub use types::{ButtonEvent, ButtonPress, CATALOG, Temperature, TemperatureCommand};

@@ -33,7 +33,7 @@ The same monitor functions, data types, and business logic work across all platf
 
 ## Contents
 
-- **Contracts** (`types`): `Temperature`, `TemperatureCommand`. Their wire format is JSON through `#[derive(Linkable)]` on every target, `no_std + alloc` included.
+- **Contracts** (`types`): `Temperature`, `TemperatureCommand`, `ButtonPress`. Their wire format is JSON through `#[derive(Linkable)]` on every target, `no_std + alloc` included. `catalog!` lists them, and `cargo test` checks their wire shapes against the committed `aimdb.lock` (`AIMDB_UPDATE_LOCK=1 cargo test` to accept a new contract or version).
 - **Keys** (`keys`): `SensorKey`, `CommandKey`, each with its MQTT topic in `#[link_address]`.
 - **Simulated thermometers** (`sim`): `SimThermometers` hands out one owned channel per sensor; `Thermometer::on(channel)` is an input for every record type built `From<Reading>`.
 - **Monitors** (`monitors`): `temperature_logger`, `command_consumer`.

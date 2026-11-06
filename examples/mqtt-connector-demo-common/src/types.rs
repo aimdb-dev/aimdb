@@ -12,6 +12,14 @@ use alloc::string::String;
 use aimdb_data_contracts::{Linkable, SchemaType};
 use serde::{Deserialize, Serialize};
 
+// The demo's contracts, locked in `aimdb.lock`: the same `NAME@VERSION`
+// always has the same wire shape. Enums nested in a contract would go in
+// `helpers`; these contracts have none.
+aimdb_data_contracts::catalog! {
+    contracts: [Temperature, TemperatureCommand, ButtonPress],
+    helpers: [],
+}
+
 // ============================================================================
 // TEMPERATURE READING
 // ============================================================================

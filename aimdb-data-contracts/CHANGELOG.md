@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`catalog!` and `aimdb.lock` (#410).** `catalog! { contracts: [..],
+  helpers: [..] }` lists a contracts crate's contracts (`CATALOG`, `no_std`)
+  and the enums nested in them, and generates a test that locks the wire
+  shape of every `NAME@VERSION` in a committed `aimdb.lock`. A shape changed
+  without a `VERSION` bump always fails; new and removed entries are
+  accepted with `AIMDB_UPDATE_LOCK=1 cargo test`. Shapes are traced with
+  `serde-reflection` for a supported profile of contracts; contracts outside
+  it fail the check. Behind the `lock` feature, meant for
+  `[dev-dependencies]` only.
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
