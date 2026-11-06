@@ -2,39 +2,40 @@
 
 **Status:** 📝 Proposed
 
-**Scope:** A trace ID and a depth on every record value written by an
-instance, carried in `WriteMetadata` (058) and propagated along derivations
-and across connectors that can carry them. Propagation goes through the
-existing transform, join and producer APIs. Together with the dependency
-graph, trace ID and depth let Rerun taps correlate writes and name parent
-candidates (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`,
-session engine, runtime adapters); additive on the wire (the graph shapes do
-not change). Ships as a 3.x minor release despite the breaks (§8.1).
+**Scope:** A trace context on every record value written by an instance: a
+trace ID, the write's own span ID, its parent's span ID, and a depth. It is
+carried in `WriteMetadata` (058) and propagated along derivations and across
+connectors that can carry it. Propagation goes through the existing
+transform, join and producer APIs, plus one new transform body for
+single-input async derivations. Rerun taps and agents get exact causal
+chains (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`, session
+engine, runtime adapters); additive on the wire (the graph shapes do not
+change). Ships as a 3.x minor release despite the breaks (§8.1).
 
-A throwaway prototype of phases 1 and 2 passed every test in §10 that it
-covered; its measurements are quoted in §4.3 and §5.
+A throwaway prototype of phases 1 and 2 (trace ID and depth, without span
+IDs) passed every test in §10 that it covered; its measurements are quoted in
+§4.3 and §5.
 
 ---
 
 ## 1. The rule
 
 > Every record write carries a trace context. A write either **starts** a
-> trace or **continues** the trace of the value that caused it. A trace
-> context is created only when a value is written locally; a value read from
-> a peer carries exactly what the peer sent.
+> trace or **continues** the trace of the value that caused it, and names
+> that value as its parent. A trace context is created only when a value is
+> written locally; a value read from a peer carries exactly what the peer
+> sent.
 
 | Field | Origin write | Derived write |
 |---|---|---|
 | `trace_id` (16 bytes) | new | the cause's |
+| `span` (4 bytes) | new | new |
+| `parent` (4 bytes) | none | the cause's `span` |
 | `depth` (`u8`) | 0 | the cause's + 1, saturating at 255 |
 
 The stamp (058) says **when** a value was written here. The trace context
-says **why**. The stamp stays local; the trace context is inherited.
-
-What trace ID and depth guarantee is **correlation**: writes with the same
-trace ID belong to one causal chain, and depth orders them along it. They do
-not identify a write's parent. The dependency graph narrows the parent to a
-set of candidates, usually one (§6).
+says **why**: which chain it belongs to and exactly which write caused it.
+The stamp stays local; the trace context is inherited.
 
 ## 2. API
 
@@ -54,7 +55,35 @@ reg.source(|ctx, producer| async move {
 reg.transform::<Temperature, _>(TempKey::Raw, |t| t.map(|raw| Some(calibrate(raw))));
 ```
 
-### 2.2 Joins
+### 2.2 Single-input async transforms
+
+A single-input transform gains an async body, next to `map` and
+`with_state`. It receives the input as typed `Stamped<I>` values and writes
+through a `DerivedWriter<O>`:
+
+```rust
+builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
+    reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+        .transform::<Temperature, _>(TempKey::Calibrated, |t| {
+            t.task(|ctx, mut rx, writer| async move {
+                while let Ok(temp) = rx.recv().await {        // Stamped<Temperature>
+                    if temp.value.celsius > 80.0 {
+                        writer.produce_from(Alarm::Overheat, temp.metadata());
+                    }
+                }
+            })
+        });
+});
+```
+
+- It replaces a `tap` that writes another record through `db.producer()`:
+  the write becomes an edge of the dependency graph.
+- It can await, use timers and write zero, one or many values per input.
+- In the graph it is the existing `RecordOrigin::Transform { input }`, so
+  the graph shapes on the wire do not change.
+- The receiver is typed: no boxing, no downcast.
+
+### 2.3 Joins
 
 `on_triggers` handlers receive a `DerivedWriter<O>` instead of a
 `Producer<O>`. `JoinTrigger` already carries the input's `WriteMetadata`:
@@ -78,31 +107,18 @@ impl<O> DerivedWriter<O> {
 }
 ```
 
-`DerivedWriter` has no plain `produce`, so a join cannot forget its cause.
+`DerivedWriter` has no plain `produce`, so a join or an async transform
+cannot forget its cause.
 
-### 2.3 Producers
+### 2.4 Producers
 
 `Producer<T>` keeps `produce`, which starts a trace, and gains
-`produce_from(value, &WriteMetadata)`. A tap that writes another record
-through `db.producer()` can continue the trace of the value it read:
+`produce_from(value, &WriteMetadata)` for code outside the graph, for
+example a task that bridges an external system. Such writes have an exact
+parent, but the graph has no edge for them (the record stays `Passive`).
+Derivations from another record should use a transform (§2.2).
 
-```rust
-async fn overheat_watch(ctx: RuntimeContext, temps: Consumer<Temperature>, alarm: Producer<Alarm>) {
-    let mut reader = temps.subscribe();
-    while let Ok(t) = reader.recv().await {
-        if t.value.celsius > 80.0 {
-            alarm.produce_from(Alarm::Overheat, t.metadata());
-        }
-    }
-}
-```
-
-Its writes are correlated with their cause, but the graph has no edge for
-them (the record stays `Passive`), so Rerun cannot name their parent (§6). A
-typed single-input async transform that would make this a graph edge is
-deferred (open question 4).
-
-### 2.4 Reading
+### 2.5 Reading
 
 ```rust
 impl WriteMetadata {
@@ -112,23 +128,32 @@ impl WriteMetadata {
 let t = reader.recv().await?;
 let tc = t.metadata().trace().expect("local writes always carry a trace");
 tc.trace_id();   // TraceId, Display = 32 hex chars
+tc.span();       // SpanId, Display = 8 hex chars
+tc.parent();     // Option<SpanId>: None for an origin
 tc.depth();      // u8
 ```
 
 - **In process:** every value read from a local record has `Some`.
 - **`aimdb-client`:** `Some` when the peer sent a `trace`, `None` when it did
-  not (an older peer, or a link without trace support). The client never
-  invents an ID, so two reads of the same stored value report the same thing.
+  not (an older peer, or a link with tracing off). The client never invents
+  an ID, so two reads of the same stored value report the same thing.
 
 `produce_from` takes `&WriteMetadata`. If its trace is `None` (metadata
 decoded from a peer and passed back in), the write starts a trace.
+
+### 2.6 Opting out
+
+Tracing is on by default, behind the `trace-context` feature. Turning it
+off removes the trace from `WriteMetadata` (back to 8 bytes, §4.3),
+`trace()` returns `None`, AimX omits the field and inbound traces are
+ignored. This is the opt-out for MCUs that cannot spare the RAM.
 
 ## 3. Dependency graph
 
 No change. `RecordOrigin`, `EdgeType` and the AimX `graph.*` replies keep
 their 4.x shapes (`{"transform":{"input":…}}`,
-`{"transform_join":{"inputs":[…]}}`). Rust builder changes, if any later,
-are kept separate from the wire shapes.
+`{"transform_join":{"inputs":[…]}}`). A single-input async transform is a
+`Transform { input }` like `map`.
 
 ## 4. Inside the database
 
@@ -138,38 +163,60 @@ are kept separate from the wire shapes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TraceId([u8; 16]);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpanId(NonZeroU32);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TraceContext { trace_id: TraceId, depth: u8 }
+pub struct TraceContext {
+    trace_id: TraceId,
+    span: SpanId,
+    parent: Option<SpanId>,
+    depth: u8,
+}
 
 pub struct WriteMetadata { stamp: Stamp, trace: Option<TraceContext> }
 ```
 
+`SpanId` is non-zero, so `Option<SpanId>` and `Option<TraceContext>` cost no
+extra bytes.
+
 `RecordWriter::push(value, cause: Option<TraceContext>)` stays the one place
-that creates `WriteMetadata` for a buffer, and always stores `Some`: `None`
-as the cause starts a trace, `Some(c)` continues `c`. Only
+that creates `WriteMetadata` for a buffer, and always stores `Some`: every
+write gets a new span; `None` as the cause starts a trace, `Some(c)`
+continues `c` with `parent = c.span`. Only
 `WriteMetadata::from_wire(stamp, Option<TraceContext>)` (replacing
 `from_wire_stamp`) can hold `None`, and it never reaches a buffer.
 
 | Writer | Cause |
 |---|---|
 | `Producer::produce`, `DerivedWriter::produce_origin` | `None` |
-| `map`, `with_state` | the input's trace |
-| `Producer::produce_from`, `DerivedWriter::produce_from` | the given metadata's trace |
+| `map`, `with_state` | the input |
+| `Producer::produce_from`, `DerivedWriter::produce_from` | the given metadata |
 | inbound connector with a trace on the wire | the wire trace |
 | AimX `write` from a peer's outbound mirror, with a trace | the wire trace (§5.1) |
 | inbound connector or AimX `write` without one, AimX `record.set`, persistence restore | `None` |
 
 An inbound value without a trace therefore gets a new ID when, and only
-when, it is inserted into a local record.
+when, it is inserted into a local record. Every AimX `record.set` starts a
+trace: a remote client cannot continue one.
 
 ### 4.2 IDs
 
 The trace ID is W3C-sized (16 bytes), so a later OTEL exporter can use it
-unchanged. Only origin writes need a new one:
+unchanged. Span IDs are 32 bits: they only need to be unique within one
+trace, and two of them fit in the 8 bytes the exact parent may cost.
 
 ```text
-trace_id = salt (8 bytes) ‖ counter (8 bytes)
+counter  = instance counter, + 1 per write
+span     = mix32(salt32 ⊕ counter)          // bijective; 0 is skipped
+trace_id = salt (8 bytes) ‖ counter (8 bytes)   (origin writes only)
 ```
+
+- Within one instance, span IDs are unique for 2³² writes. Two writes from
+  different instances in the same trace collide with probability about
+  k² / 2³³ for k such writes.
+- An OTEL exporter widens span IDs to W3C's 8 bytes by prefixing the
+  writing instance's salt.
 
 The salt is taken once at `build()`, from the runtime adapter, not from a
 `std` switch in core: several crates build core without `std` even on a
@@ -195,53 +242,67 @@ tests. If neither supplies a seed, `build()` fails with a configuration
 error.
 
 The counter is a 64-bit atomic where the target has one and a critical
-section elsewhere (Cortex-M has no native 64-bit atomics). Only origin writes
-touch it; there is no RNG call per write.
+section elsewhere (Cortex-M has no native 64-bit atomics). Every write
+touches it; there is no RNG call per write.
 
-### 4.3 Memory
+### 4.3 Memory and time
 
-`WriteMetadata` grows from 8 to 32 bytes, so every buffer slot grows by 24
-bytes. A 16-slot `f32` ring on Embassy goes from 256 to 640 bytes. The 058
-`size_of` assertions are updated; the allocation gates must show no added
-allocation.
+`WriteMetadata` grows from 8 to 40 bytes (8 stamp + 28 trace, padded to 8).
+Every buffer slot pays it:
 
-Measured in the prototype: no allocation added on the produce, consume,
-connector or AimX paths; `record.get` allocates 93 more bytes per call for
-its longer reply. On the host, an origin write takes about 14 ns longer
-(the ID counter) and a continued write about 3 ns.
+| `T` | `Stamped<T>` (058) | `Stamped<T>` (060) | Added per slot |
+|---|---|---|---|
+| `u8`, `f32`, `f64` | 16 | 48 | 32 |
+| 12 B, align 4 | 24 | 56 | 32 |
+| 24 B, align 8 | 32 | 64 | 32 |
+
+A 16-slot `f32` ring on Embassy goes from 256 to 768 bytes. With
+`trace-context` off (§2.6), nothing changes. The 058 `size_of` assertions
+are updated; the allocation gates must show no added allocation.
+
+Measured in the prototype (trace ID and depth only, 32-byte metadata): no
+allocation added on the produce, consume, connector or AimX paths;
+`record.get` allocates 93 more bytes per call for its longer reply. On the
+host, a write that drew from the counter took about 14 ns longer and one
+that did not about 3 ns. The prototype guarded the counter with a lock; with
+a native atomic, and every write now drawing a span, the cost is re-measured
+in phase 1.
 
 ## 5. Wire
 
-One carrier value everywhere: `<trace_id as 32 hex>/<depth>`, e.g.
-`4bf92f3577b34da6a3ce929d0e0e4736/3`.
+One carrier value everywhere:
+`<trace_id: 32 hex>/<depth>/<span: 8 hex>/<parent: 8 hex>`, with parent
+`00000000` for an origin. For example
+`4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d0/5a07b3f1`.
 
 | Connector | Carries it as |
 |---|---|
-| AimX (TCP, UDS, Serial, WebSocket) | optional `trace` field next to `ts` on every value |
-| MQTT v5 (Embassy backend) | user property `aimdb-trace` |
+| AimX over TCP, UDS, WebSocket | optional `trace` field next to `ts` on every value |
+| AimX over Serial | off by default; the connector's configuration turns it on |
+| MQTT v5 (both backends, §5.3) | user property `aimdb-trace` |
 | Zenoh | attachment key `aimdb-trace` |
-| MQTT 3.1.1 (Tokio backend), KNX | not carried |
+| KNX | not carried |
 
 ```json
 {"t":"event","sub":"7","seq":42,"ts":81234567000,
- "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3","data":{"celsius":21.5}}
+ "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d0/5a07b3f1","data":{"celsius":21.5}}
 ```
 
-- The field is optional: an older peer or a link without trace support
-  sends none. AimX decoders ignore unknown fields, so this is the next minor
+- The field is optional: an older peer or a link with tracing off sends
+  none. AimX decoders ignore unknown fields, so this is the next minor
   version after 059's 4.1. Nothing else on the wire changes.
 - Absence means different things on the two paths, with the same frame:
   - **observing** (client `get`, `watch`, `drain`): the value has no trace,
     `trace()` is `None`;
   - **ingesting** (inbound connector writing locally): the local write starts
     a trace.
-- A malformed field (bad hex, depth above 255, all-zero ID) is treated as
-  absent: the value is kept and its trace is `None`. The trace is advisory
-  and must never cost a value.
-- A receiver that ingests a traced value continues it: same ID, depth + 1.
-- 45 bytes per value on AimX at depth 0–9, 46 at 10–99, 47 above (measured:
-  an `event` with a small value grows from 73 to 118 bytes). No connector
-  wraps the payload.
+- A malformed field (bad hex, depth above 255, zero trace ID or span) is
+  treated as absent: the value is kept and its trace is `None`. The trace is
+  advisory and must never cost a value.
+- A receiver that ingests a traced value continues it: same ID, depth + 1,
+  a new span, and the sender's span as parent.
+- About 63 bytes per value on AimX (the prototype measured 45 for the ID and
+  depth alone; the two span IDs add 18). No connector wraps the payload.
 
 ### 5.1 AimX outbound mirror writes
 
@@ -252,12 +313,15 @@ peer, uses the fire-and-forget `write` frame, which today carries only
 receiving dispatch passes only the value to `set_record_from_json`.
 
 - The `write` frame gains the same optional `trace` field:
-  `{"t":"write","topic":…,"trace":"<32 hex>/<depth>","payload":…}`. It gains
-  no `ts`: the receiver stamps the write locally (058).
+  `{"t":"write","topic":…,"trace":"…","payload":…}`. It gains no `ts`: the
+  receiver stamps the write locally (058).
 - The mirror pump sends `msg.metadata.trace()`.
 - `Inbound::Write` and `Session::write` carry an `Option<TraceContext>`
-  through to the record write, which continues it (depth + 1) or, without
-  one, starts a trace.
+  through to the record write, which continues it or, without one, starts a
+  trace.
+
+A user-issued `record.set` is not a mirror write and always starts a trace
+(§4.1).
 
 ### 5.2 Session engine
 
@@ -281,56 +345,49 @@ closure receives it through a new `TopicMatch::trace()` accessor, so
 `IngestFn` keeps its signature. `InboundDispatch::dispatch` remains for
 transports without a carrier.
 
-This is independent of open question 3, which is about `record.set` issued
-by a user or tool, not about mirror writes.
+### 5.3 MQTT v5 (draft)
 
-## 6. Rerun taps
+Both MQTT backends speak MQTT 5 and carry the trace as one user property.
+
+- **Tokio backend:** moves from `rumqttc`'s 3.1.1 client to `rumqttc::v5`.
+  Outbound: the publish loop already receives each value's `WriteMetadata`
+  (`OutboundMessage::metadata`) and publishes with
+  `user_properties: [("aimdb-trace", "<carrier>")]`. Inbound: the event loop
+  reads the property from each `Publish` and calls `dispatch_traced`.
+- **Embassy backend (`mountain-mqtt`):** already speaks MQTT 5 and accepts up
+  to 32 properties per inbound publish, but neither reads nor writes user
+  properties. `deliver` reads `aimdb-trace`; `publish_staged` adds it.
+- **Cost:** the property adds X  53). The embedded write ring and the broker's maximum packet size are
+  checked with the property included.
+- **Other subscribers:** an MQTT 5 broker forwards user properties to MQTT 5
+  subscribers unchanged and drops them for 3.1.1 subscribers; the payload
+  never changes. A retained message keeps its property, so a late subscriber
+  continues the retained write's trace.
+- **Brokers that only speak 3.1.1:** open question 1.
+
+## 6. Rerun taps and agents
 
 A Rerun tap is a read-only `tap` on a Tokio instance. For each value it logs
-the value, the trace ID, the depth, and the stamp on that instance's own
-timeline. Each instance also logs its dependency graph once. MCUs run no Rerun
-taps; their values show up at the hub with their trace intact.
+the value, the trace ID, its span, its parent and the depth, and the stamp on
+that instance's own timeline. Each instance also logs its dependency graph
+once. MCUs run no Rerun taps; their values show up at the hub with their
+trace intact.
 
-**What Rerun promises:** correlation (all writes of a trace) and order
-(depth). Parents are reported as **candidates**, never guessed.
+**Parents are exact.** A write's parent is the write in the same trace whose
+span equals its `parent`. That holds in the diamond case (`Raw → A`,
+`Raw → B`, `A + B → C`): each write of `C` names the write of `A` or `B`
+that triggered it.
 
-**Parent candidates** of a write *W* with trace *T*, depth *d*, on record
-*R*: the writes in *T* at depth *d − 1* on *R*'s graph inputs.
+When the parent was not captured (a record without a Rerun tap, a tap that
+skipped values, or an instance without one), Rerun still knows that the
+parent exists and its span, and the graph names the records it can be on.
+It shows the hop as known but not captured.
 
-| *R*'s origin | Graph inputs |
-|---|---|
-| `Transform { input }` | `input` |
-| `TransformJoin { inputs }` | `inputs` |
-| `Link` | the record behind the same address on another instance |
-| `Source`, `Passive` | none |
+Depth orders a trace across instances without comparing clocks, and is
+shown as a timeline. Depth saturating at 255 no longer affects parentage.
 
-| Candidates | Rerun shows |
-|---|---|
-| exactly one observed | that write as the **only observed candidate**; it is the parent only if the recording holds every write of *T* at *d − 1* |
-| several | all of them, marked ambiguous |
-| none | no parent: an origin, a `Passive` record written with `produce_from`, or a hop without a tap |
-| *W* at depth 255 | parentage **indeterminate**: depth saturates, so the parent may also be at 255 |
-
-Rerun only sees the writes its taps captured, so "one observed candidate"
-is never presented as proof. In the diamond below, if `A` triggered a write
-of `C` but the tap missed that write of `A`, the only observed candidate is
-`B`, which is not the parent.
-
-Stamps are never used to choose between candidates. Ambiguity arises even
-when every write is captured:
-
-- **Diamond:** `Raw` fans out to `A` and `B`, and both feed the join `C`. `A`
-  and `B` both carry `Raw`'s trace at depth 1, so each write of `C` at depth
-  2 has two candidates. Which trigger caused which `C` depends on the join's
-  queue, not on stamps.
-- **Repeated writes:** an input written twice in one trace at the same
-  depth.
-
-Chains, fan-out to single-input transforms, and joins whose inputs come from
-different traces (the common case: independent sensors) have exactly one
-candidate when every write is captured. Exact parentage in every case would need the child to carry the
-identity of the write that triggered it (a parent span ID, 8 more bytes per
-slot); that is deferred until a consumer needs it (open question 5).
+Agents read the same through MCP: `get_record` returns span and parent, so an
+agent can walk a chain without guessing.
 
 The Rerun integration itself (crate, mapping contracts to Rerun types,
 layout) is a separate design.
@@ -338,7 +395,8 @@ layout) is a separate design.
 ## 7. Tools
 
 - `aimdb get <record> --trace` and `aimdb watch <record> --trace` show the
-  trace ID and depth, or `no trace` for a value the peer sent without one.
+  trace ID, span, parent and depth, or `no trace` for a value the peer sent
+  without one.
 - MCP `get_record` includes the trace, or `null`.
 
 ## 8. What breaks
@@ -346,11 +404,12 @@ layout) is a separate design.
 | Area | Change |
 |---|---|
 | Join handlers | `on_triggers` receives `DerivedWriter<O>` instead of `Producer<O>` |
-| `WriteMetadata` | 32 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
+| `WriteMetadata` | 40 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
 | `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
-| `Producer<T>`, `InboundDispatch`, `TopicMatch` | additive: `produce_from`, `dispatch_traced`, `trace()` |
+| MQTT, Tokio backend | MQTT 5 instead of 3.1.1 (§5.3) |
+| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch` | additive: `task`, `produce_from`, `dispatch_traced`, `trace()` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
@@ -371,86 +430,101 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 
 ## 9. Phases
 
-1. **Core:** envelope, IDs, automatic propagation in `map` / `with_state`,
-   `DerivedWriter` in joins, `Producer::produce_from`, tests on Tokio,
-   Embassy and WASM. Enough for Rerun taps on one instance.
-2. **AimX:** `trace` field on values and on mirror `write` frames (§5.1),
-   client, CLI, MCP. Enough for chains across AimX-linked instances in both
-   directions.
-3. **MQTT v5 and Zenoh** carriers.
+1. **Core:** envelope with span and parent, IDs and seeds, automatic
+   propagation in `map` / `with_state`, the single-input `task` body,
+   `DerivedWriter` in joins, `Producer::produce_from`, the `trace-context`
+   feature, tests on Tokio, Embassy and WASM. Enough for Rerun taps on one
+   instance.
+2. **AimX:** `trace` field on values and on mirror `write` frames, session
+   engine, client, CLI, MCP; Serial off by default. Enough for chains across
+   AimX-linked instances in both directions.
+3. **MQTT v5** on both backends, and **Zenoh**.
 
 ## 10. Tests
 
-- Source → `map` → `with_state` → join keeps one trace ID; depth grows by
-  one per write.
-- `produce_origin` and `Producer::produce` start new traces;
+- Source → `map` → `with_state` → `task` → join keeps one trace ID; depth
+  grows by one per write; each write's `parent` is its cause's `span`.
+- Every write gets a new span; spans in one instance never repeat or are zero.
+- `produce_origin` and `Producer::produce` start new traces with no parent;
   `Producer::produce_from` continues one.
+- `task`: typed receiver; zero, one and several writes per input; the graph
+  shows `Transform { input }`.
 - Every locally written value has `trace()` = `Some`.
-- Fixed seed gives identical IDs across runs; no all-zero ID.
+- Fixed seed gives identical IDs across runs.
 - Seeds: each adapter supplies one; `.id_seed()` overrides it; `build()`
   fails without either; the `test_support` runtimes build without
   `.id_seed()` (core's no_std test suites, `aimdb-data-contracts`).
+- `trace-context` off: `size_of::<WriteMetadata>() == 8`, `trace()` is
+  `None`, AimX frames carry no `trace`.
 - A malformed `trace` field on a value or `write` frame keeps the value and
   decodes as `None`.
 - **Legacy frame, both paths:** the same AimX value frame without `trace`
   - decoded twice by `aimdb-client` gives `None` both times;
   - ingested by an inbound connector gives a local write with a new trace at
     depth 0.
-- AimX round-trip of a traced value; ingesting it continues the trace at
-  depth + 1.
+- AimX round-trip of a traced value; ingesting it continues the trace with
+  the sender's span as parent.
 - **Mirror push:** instance A mirrors a record to instance B over AimX; B
-  stores A's trace ID at A's depth + 1. A `write` frame without `trace`
-  starts a trace on B. The same over the WebSocket connector.
+  stores A's trace ID, A's depth + 1 and A's span as parent. A `write` frame
+  without `trace` starts a trace on B. The same over the WebSocket connector.
+- Serial: no `trace` by default; present when turned on.
+- `record.set` always starts a trace.
+- **MQTT v5:** a publish carries `aimdb-trace`; a receiving instance continues
+  the trace; a publish without the property starts one; on Embassy, a publish
+  whose property pushes it past the broker's maximum packet size is rejected
+  and counted like any oversize publish.
 - `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
-  fixture with a transform and a join.
+  fixture with a transform, a `task` and a join.
 - A value that is migrated on the inbound path keeps its trace.
-- **Candidates:** a chain and a fan-out give one candidate per write; the
-  diamond `Raw → A, Raw → B, A + B → C` gives two candidates for each write
-  of `C` and is reported as ambiguous; the same diamond with the write of
-  `A` dropped from the recording reports `B` as the only observed candidate,
-  not as the parent; a write at depth 255 is reported as indeterminate; a
-  `Passive` record written with `produce_from` gives none.
-- `size_of::<WriteMetadata>() == 32`; allocation gates unchanged.
+- **Exact parents:** in the diamond `Raw → A, Raw → B, A + B → C`, each write
+  of `C` names the span of the write of `A` or `B` that triggered it; with
+  that write missing from a recording, the parent is reported as known but
+  not captured.
+- `size_of::<WriteMetadata>() == 40`; allocation gates unchanged.
 
 ## 11. Alternatives considered
 
-1. **Merge `transform` and `transform_join` into one builder** (with
-   `tap_write` or a single-input async body). Changes the graph shapes on the
-   wire and every transform call, and makes a single-input caller downcast
-   its own declared type through the boxed join path. Not needed for
-   propagation: deferred.
-2. **Pick a parent by stamp order.** Wrong in the diamond case even with
-   every write captured. Rejected: report candidates.
-3. **Mint a trace ID in the client for untraced values.** Two reads of the
+1. **Merge `transform` and `transform_join` into one builder.** Changes the
+   graph shapes on the wire and every transform call, and makes a
+   single-input caller downcast its own declared type through the boxed join
+   path. Rejected: a typed `task` body on the existing single-input builder
+   (§2.2).
+2. **Parent candidates from the graph instead of stored parents.** Costs
+   nothing per slot, but is ambiguous in diamonds, which some pipelines
+   have, and agents cannot act on "one of these two". Rejected: store the
+   parent span.
+3. **64-bit span IDs.** W3C-sized, but 16 bytes per slot instead of 8.
+   Uniqueness within one trace only needs 32 bits. Rejected; an OTEL
+   exporter widens them (§4.2).
+4. **Pick a parent by stamp order.** Wrong in the diamond case even with
+   every write captured. Rejected.
+5. **Mint a trace ID in the client for untraced values.** Two reads of the
    same stored value would report different IDs. Rejected: `None` on read,
    new ID only on local insertion.
-4. **Implicit "current trace"** (task-local). Not available on Embassy,
+6. **Implicit "current trace"** (task-local). Not available on Embassy,
    unclear across `.await`. The cause is an argument instead.
-5. **Full W3C span model** (span IDs, sampling, a span sink). No consumer
-   needs it yet. The trace ID already has the W3C size.
-6. **Plain `produce()` in joins.** A forgotten cause would silently start a
-   new trace. `DerivedWriter` makes it a compile error.
-7. **Carry the trace inside the payload** where a protocol has no headers.
+7. **Sampling and a span sink.** No consumer needs them yet.
+8. **Plain `produce()` in joins and tasks.** A forgotten cause would silently
+   start a new trace. `DerivedWriter` makes it a compile error.
+9. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
-8. **Defaulted `*_traced` session methods** to keep the session engine
-   additive. A session that does not override them drops traces silently,
-   and the surface doubles. Rejected: new fields and parameters (§5.2).
-9. **Seed from a `std` feature switch in core.** In the prototype it failed
-   37 existing tests: crates such as `aimdb-data-contracts` and the WASM
-   adapter build core without `std` on hosted targets. Rejected: the
-   adapter supplies the seed (§4.2).
+10. **Defaulted `*_traced` session methods** to keep the session engine
+    additive. A session that does not override them drops traces silently,
+    and the surface doubles. Rejected: new fields and parameters (§5.2).
+11. **Seed from a `std` feature switch in core.** In the prototype it failed
+    37 existing tests: crates such as `aimdb-data-contracts` and the WASM
+    adapter build core without `std` on hosted targets. Rejected: the
+    adapter supplies the seed (§4.2).
 
 ## 12. Open questions
 
-1. **Tokio MQTT backend.** Move to `rumqttc::v5` so it can carry traces?
-2. **Serial links.** Is 45 bytes per value (about 3.9 ms at 115,200 baud)
-   acceptable, or should Serial leave the trace off by default?
-3. **`record.set` with a trace.** Should a remote client be able to continue
-   a trace, or does every remote set start one?
-4. **Typed single-input async transform.** Would make taps that write other
-   records graph edges, with a typed receiver instead of the boxed join path.
-   Worth its own API, and when?
-5. **Exact parentage.** Does any consumer need the parent in the diamond
-   case badly enough to pay 8 bytes per slot for a parent span ID?
-6. **Opt-out for small MCUs.** Is 24 bytes per slot acceptable everywhere, or
-   is a feature flag needed? (A 16-slot `f32` ring: 256 → 640 bytes.)
+1. **MQTT brokers that only speak 3.1.1.** After the move to MQTT 5, should
+   the Tokio backend keep a 3.1.1 mode without traces, selected per broker,
+   or require MQTT 5?
+2. **Name of the single-input async body.** `task` (used above) or another
+   name?
+
+Decided since the previous revision: Tokio MQTT moves to MQTT 5; Serial
+leaves the trace off by default; every `record.set` starts a trace; the
+single-input async transform ships now; parents are exact (32-bit span IDs);
+`trace-context` off is the opt-out for small MCUs.
