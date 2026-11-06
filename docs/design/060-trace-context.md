@@ -152,7 +152,8 @@ as the cause starts a trace, `Some(c)` continues `c`. Only
 | `map`, `with_state` | the input's trace |
 | `Producer::produce_from`, `DerivedWriter::produce_from` | the given metadata's trace |
 | inbound connector with a trace on the wire | the wire trace |
-| inbound connector without one, AimX `record.set`, persistence restore | `None` |
+| AimX `write` from a peer's outbound mirror, with a trace | the wire trace (§5.1) |
+| inbound connector or AimX `write` without one, AimX `record.set`, persistence restore | `None` |
 
 An inbound value without a trace therefore gets a new ID when, and only
 when, it is inserted into a local record.
@@ -207,6 +208,25 @@ One carrier value everywhere: `<trace_id as 32 hex>/<depth>`, e.g.
 - A receiver that ingests a traced value continues it: same ID, depth + 1.
 - About 45 bytes per value on AimX. No connector wraps the payload.
 
+### 5.1 AimX outbound mirror writes
+
+The `trace` field on values covers the subscription direction (`event`,
+`snap`, replies). The opposite direction, a local record mirrored to a
+peer, uses the fire-and-forget `write` frame, which today carries only
+`topic` and `payload`: the client's mirror pump drops `msg.metadata`, and the
+receiving dispatch passes only the value to `set_record_from_json`.
+
+- The `write` frame gains the same optional `trace` field:
+  `{"t":"write","topic":…,"trace":"<32 hex>/<depth>","payload":…}`. It gains
+  no `ts`: the receiver stamps the write locally (058).
+- The mirror pump sends `msg.metadata.trace()`.
+- `Inbound::Write` and `Dispatch::write` carry an `Option<TraceContext>`
+  through to the record write, which continues it (depth + 1) or, without
+  one, starts a trace.
+
+This is independent of open question 3, which is about `record.set` issued
+by a user or tool, not about mirror writes.
+
 ## 6. Rerun taps
 
 A Rerun tap is a read-only `tap` on a Tokio instance. For each value it logs
@@ -229,9 +249,15 @@ taps; their values show up at the hub with their trace intact.
 
 | Candidates | Rerun shows |
 |---|---|
-| exactly one | the parent |
+| exactly one observed | that write as the **only observed candidate**; it is the parent only if the recording holds every write of *T* at *d − 1* |
 | several | all of them, marked ambiguous |
 | none | no parent: an origin, a `Passive` record written with `produce_from`, or a hop without a tap |
+| *W* at depth 255 | parentage **indeterminate**: depth saturates, so the parent may also be at 255 |
+
+Rerun only sees the writes its taps captured, so "one observed candidate"
+is never presented as proof. In the diamond below, if `A` triggered a write
+of `C` but the tap missed that write of `A`, the only observed candidate is
+`B`, which is not the parent.
 
 Stamps are never used to choose between candidates. Ambiguity arises even
 when every write is captured:
@@ -245,7 +271,7 @@ when every write is captured:
 
 Chains, fan-out to single-input transforms, and joins whose inputs come from
 different traces (the common case: independent sensors) have exactly one
-candidate. Exact parentage in every case would need the child to carry the
+candidate when every write is captured. Exact parentage in every case would need the child to carry the
 identity of the write that triggered it (a parent span ID, 8 more bytes per
 slot); that is deferred until a consumer needs it (open question 5).
 
@@ -265,6 +291,7 @@ layout) is a separate design.
 | Join handlers | `on_triggers` receives `DerivedWriter<O>` instead of `Producer<O>` |
 | `WriteMetadata` | 32 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Connectors | inbound dispatch takes `Option<TraceContext>` |
+| Session engine | `Inbound::Write` and `Dispatch::write` carry an `Option<TraceContext>` |
 | Embassy | `build()` requires `.id_seed(…)` |
 | `Producer<T>` | additive: `produce_from` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
@@ -274,8 +301,9 @@ layout) is a separate design.
 1. **Core:** envelope, IDs, automatic propagation in `map` / `with_state`,
    `DerivedWriter` in joins, `Producer::produce_from`, tests on Tokio,
    Embassy and WASM. Enough for Rerun taps on one instance.
-2. **AimX:** `trace` field, client, CLI, MCP. Enough for chains across
-   AimX-linked instances.
+2. **AimX:** `trace` field on values and on mirror `write` frames (§5.1),
+   client, CLI, MCP. Enough for chains across AimX-linked instances in both
+   directions.
 3. **MQTT v5 and Zenoh** carriers.
 
 ## 10. Tests
@@ -292,13 +320,18 @@ layout) is a separate design.
     depth 0.
 - AimX round-trip of a traced value; ingesting it continues the trace at
   depth + 1.
+- **Mirror push:** instance A mirrors a record to instance B over AimX; B
+  stores A's trace ID at A's depth + 1. A `write` frame without `trace`
+  starts a trace on B.
 - `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
   fixture with a transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
 - **Candidates:** a chain and a fan-out give one candidate per write; the
   diamond `Raw → A, Raw → B, A + B → C` gives two candidates for each write
-  of `C` and is reported as ambiguous; a `Passive` record written with
-  `produce_from` gives none.
+  of `C` and is reported as ambiguous; the same diamond with the write of
+  `A` dropped from the recording reports `B` as the only observed candidate,
+  not as the parent; a write at depth 255 is reported as indeterminate; a
+  `Passive` record written with `produce_from` gives none.
 - `size_of::<WriteMetadata>() == 32`; allocation gates unchanged.
 
 ## 11. Alternatives considered
