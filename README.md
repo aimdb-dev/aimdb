@@ -109,7 +109,7 @@ migration_chain! {
 }
 ```
 
-The chain is validated at compile time and runs on a microcontroller too. Full example: [`weather-mesh-common`](examples/weather-mesh-demo/weather-mesh-common/src/contracts/temperature.rs).
+The chain is validated at compile time, and CI builds it for a Cortex-M target: [`embedded-check-fixture`](tools/embedded-check-fixture/src/contracts.rs).
 
 ### 3. Manage every node from one place
 
@@ -180,15 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### A real fleet in 30 minutes
+### A real fleet
 
-Three weather stations, an MQTT broker and a central hub:
-
-```bash
-git clone https://github.com/aimdb-dev/aimdb
-cd aimdb/examples/weather-mesh-demo
-docker compose up
-```
+[`aimdb-weather-mesh`](https://github.com/aimdb-dev/aimdb-weather-mesh) is the fleet behind [aimdb.dev](https://aimdb.dev): stations on cloud APIs, a KNX bus, Python and C++ publish over MQTT, and a hub derives dew point per station and serves it over AimX. Its station templates are the starting point for your own.
 
 [Walkthrough in the docs](https://aimdb.dev/docs/getting-started)
 

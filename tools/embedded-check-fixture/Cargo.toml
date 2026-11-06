@@ -1,0 +1,27 @@
+[package]
+name = "embedded-check-fixture"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Build-only fixture: an Embassy application's contracts and wiring, checked by `make test-embedded` and `make check-no-sim`"
+publish = false
+
+[features]
+default = []
+# A user-written migration chain, compiled `no_std` on Cortex-M.
+migratable = ["aimdb-data-contracts/migratable"]
+# The dev-tier simulation build. `rand` is the tracer `make check-no-sim` uses:
+# the default graph must not contain it, and this one must.
+sim = ["aimdb-data-contracts/simulatable", "dep:rand"]
+
+[dependencies]
+aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
+    "alloc",
+] }
+aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features = false, features = [
+    "alloc",
+    "embassy-runtime",
+] }
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false }
+serde = { workspace = true }
+rand = { version = "0.10.1", default-features = false, optional = true }

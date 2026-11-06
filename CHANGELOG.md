@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — `examples/weather-mesh-demo`
+
+- **The in-repo weather mesh demo is gone.** The fleet behind aimdb.dev lives in
+  [`aimdb-weather-mesh`](https://github.com/aimdb-dev/aimdb-weather-mesh), which
+  has its own contracts, hub and station templates. The CI coverage the demo
+  gave moves to `tools/embedded-check-fixture`: a migration chain and a
+  `transform_join` compiled for Cortex-M on the Embassy adapter, and the
+  production and sim graphs that `make check-no-sim` compares.
+
 ### Removed (breaking) — the `state.toml` toolchain
 
 - **`aimdb-codegen`, `aimdb generate` and the MCP architecture agent are gone

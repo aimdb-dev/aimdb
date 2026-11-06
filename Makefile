@@ -294,7 +294,7 @@ test: test-operational-events test-build-info-link
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -303,7 +303,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -368,6 +368,9 @@ clippy: clippy-operational-events
 	cargo clippy --package aimdb-embassy-adapter --target thumbv7em-none-eabihf --no-default-features --features "alloc,net,embassy-runtime" -- -D warnings
 	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net" --all-targets -- -D warnings
 	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib -- -D warnings
+	@printf "$(YELLOW)  → Clippy on embedded-check-fixture (production and sim builds)$(NC)\n"
+	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features migratable -- -D warnings
+	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features migratable,sim -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
@@ -559,8 +562,10 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,ros2
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc + linkable-cdr) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable-cdr
-	@printf "$(YELLOW)  → Checking weather-mesh-common (no_std migratable, real TemperatureV1ToV2 chain, no direct serde_json dep) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package weather-mesh-common --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features migratable
+	@printf "$(YELLOW)  → Checking embedded-check-fixture (migration chain, sources and a transform_join on Embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --features migratable
+	@printf "$(YELLOW)  → Checking embedded-check-fixture (sim build: .simulate() on Embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --features migratable,sim
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote) on thumbv7em-none-eabihf target$(NC)\n"
@@ -687,16 +692,6 @@ examples:
 	cargo run --quiet --package aimdb-build-info --example inspect -- target/thumbv8m.main-none-eabihf/debug/embassy-serial-connector-demo --section-addr 0x08000400 --text-addr 0x08002000
 	@printf "$(YELLOW)  → Building embassy-bench-stm32h5 (B3 on-target profiling, embassy runtime)$(NC)\n"
 	cargo build --package embassy-bench-stm32h5 --target thumbv8m.main-none-eabihf
-	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-mesh-common$(NC)\n"
-	cargo build --package weather-mesh-common
-	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-hub (cloud aggregator)$(NC)\n"
-	cargo build --package weather-hub
-	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-alpha (edge, real API)$(NC)\n"
-	cargo build --package weather-station-alpha
-	@printf "$(YELLOW)  → Building weather-mesh-demo: weather-station-beta (edge, synthetic)$(NC)\n"
-	cargo build --package weather-station-beta
-	@printf "$(YELLOW)  → Building weather-station-gamma (embedded, embassy runtime)$(NC)\n"
-	cargo build --package weather-station-gamma --target thumbv8m.main-none-eabihf
 	@printf "$(YELLOW)  → Building remote-access-demo (AimX server + client)$(NC)\n"
 	cargo build --package remote-access-demo
 	@printf "$(YELLOW)  → Building hello-mailbox (sync)$(NC)\n"
@@ -889,11 +884,11 @@ readme-check:
 # "rand is absent" is accepted only when `cargo tree -i rand` fails with its
 # specific "did not match any packages" error — any other failure (missing
 # submodule, typo'd package name, registry trouble) aborts the check instead of
-# passing it vacuously. A positive control per example asserts the sim build
+# passing it vacuously. A positive control per crate asserts the sim build
 # DOES find `rand`, proving the tracer still traces. Also asserts `simulatable`
 # is not a default feature of the contracts crate (which would pull `rand` into
 # its own default graph).
-SIM_EXAMPLES := weather-station-beta weather-station-gamma
+SIM_CRATES := embedded-check-fixture
 check-no-sim:
 	@printf "$(GREEN)Proving production graphs are simulation-free...$(NC)\n"
 	@tree_rand() { cargo tree -p "$$1" $$2 -e normal -i rand 2>&1; }; \
@@ -907,7 +902,7 @@ check-no-sim:
 			exit 1; \
 		fi; \
 	}; \
-	for bin in $(SIM_EXAMPLES); do \
+	for bin in $(SIM_CRATES); do \
 		assert_rand_free "$$bin" "" "'$$bin' (default/production, no sim) pulls in 'rand' — simulation code leaked into production"; \
 		printf "$(BLUE)✓ $$bin production graph is rand-free$(NC)\n"; \
 		if ! tree_rand "$$bin" "--features sim" >/dev/null; then \
