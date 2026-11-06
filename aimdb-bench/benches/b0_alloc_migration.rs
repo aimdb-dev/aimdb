@@ -29,7 +29,7 @@ static GLOBAL: aimdb_bench::alloc::CountingAllocator<std::alloc::System> =
     aimdb_bench::alloc::CountingAllocator(std::alloc::System);
 
 // A `label: String` field keeps this fixture representative of real
-// contracts (e.g. weather-mesh-common's `TemperatureV1.unit`) — an
+// contracts (e.g. embedded-check-fixture's `TemperatureV1.unit`) — an
 // all-primitive struct would parse allocation-free regardless of the
 // version-scan strategy and wouldn't show anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
