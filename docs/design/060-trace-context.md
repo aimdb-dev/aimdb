@@ -67,7 +67,7 @@ builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .transform::<Temperature, _>(TempKey::Calibrated, |t| {
             t.on_values(|ctx, mut rx, producer| async move {
-                while let Ok(temp) = rx.recv().await {        // Stamped<Temperature>
+                while let Some(temp) = rx.recv().await {      // Stamped<Temperature>
                     if temp.value.celsius > 80.0 {
                         producer.produce_from(Alarm::Overheat, temp.metadata());
                     }
@@ -83,6 +83,10 @@ builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
 - In the graph it is the existing `RecordOrigin::Transform { input }`, so
   the graph shapes on the wire do not change.
 - The receiver is typed: no boxing, no downcast.
+- `rx.recv()` returns `Some(Stamped<I>)` for each value and `None` only when
+  the input closes. A lagging receiver skips the values it missed, reports
+  them (`TransformEvent::Lagged`, as `map` and `with_state` do) and
+  continues, so a burst cannot stop the transform.
 
 ### 2.3 Joins
 
@@ -223,21 +227,49 @@ two instances can emit the same span, and a mirrored write can end up with
 
 **Guarantee.** Within one trace, two writes have different span IDs if
 
-1. the instances that wrote them have different instance tags, and
+1. the instances that wrote them have different instance tags,
 2. no instance writes more than 2³² times while the trace is alive (the
-   counter's low 32 bits wrap after that).
+   counter's low 32 bits wrap after that), and
+3. an instance that restarts does not reuse a tag with a reset counter while
+   traces from before the restart can still reach it (a retained MQTT
+   message, an AimX late-join snapshot, a peer's buffered mirror write).
+
+Tag zero is reserved, so a span is never all zero, including at the counter
+wrap.
 
 **Instance tags.** By default the tag is the high 32 bits of the instance's
-seed (below), so tags are distinct with probability at least 1 − n² / 2³³
-for n instances (100 instances: about 1 in 860,000 to collide).
-Deployments that need the guarantee without probability assign tags:
-`AimDbBuilder::instance_tag(u32)`, for example from a provisioning table.
+seed (below); if those are zero, a non-zero value derived from the low 32
+bits replaces them. The seed is per boot, so the default tag changes with
+every restart, which satisfies condition 3, and tags are distinct with
+probability at least 1 − n² / 2³³ for n instances (100 instances: about 1 in
+860,000 to collide).
 
-**Detecting a collision.** A write whose new span would equal its parent, or
-an inbound span that carries the instance's own tag with a counter the
-instance has not reached yet, can only come from two instances sharing a
-tag. The instance reports it (`TraceEvent::TagCollision`, counted with
-`observability`) and still writes the value.
+Deployments that need the guarantee without probability assign tags with
+`AimDbBuilder::instance_tag(u32)`, for example from a provisioning table.
+`instance_tag(0)` is a configuration error. A provisioned tag must meet
+condition 3 in one of two ways:
+
+- **a distinct tag per boot**, for example a device number combined with a
+  persisted boot epoch; or
+- **persisted counter progress**: the application saves a high-water mark
+  of the counter and restarts from above it with
+  `AimDbBuilder::counter_start(u64)`.
+
+**Detecting a collision.** Two cases can only come from a broken condition
+1 or 3, and the instance reports both (`TraceEvent::TagCollision`, counted
+with `observability`) while still writing the value:
+
+- **An inbound span carries the instance's own tag with a counter it has not
+  reached yet** (another instance with the same tag, or the instance's own
+  span from before a restart). The instance moves its counter past that
+  value before it writes, so the new span differs from the parent and later
+  spans do not repeat it.
+- **A new span would equal its cause's span.** The writer takes the next
+  counter value instead. A write never stores `span == parent`.
+
+These are safety nets, not the guarantee: a pre-restart span that never
+arrives cannot move the counter, so condition 3 still needs one of the
+provisioning rules above.
 
 The salt is taken once at `build()`, from the runtime adapter, not from a
 `std` switch in core: several crates build core without `std` even on a
@@ -454,7 +486,7 @@ layout) is a separate design.
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
 | `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
-| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag` |
+| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag`, `counter_start` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
@@ -489,7 +521,18 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 
 - Source → `map` → `with_state` → `on_values` → join keeps one trace ID; depth
   grows by one per write; each write's `parent` is its cause's `span`.
-- Every write gets a new span; spans in one instance never repeat or are zero.
+- Every write gets a new span; within the §4.2 bound (2³² writes) spans in
+  one instance do not repeat, and they are never zero.
+- **Counter wrap:** with `counter_start(2³² − 1)`, the next two writes get
+  `tag‖ffffffff` and `tag‖00000000`; neither is the reserved zero span.
+  `instance_tag(0)` fails `build()`, and a seed whose high 32 bits are zero
+  yields a non-zero default tag.
+- **Retained message after reboot:** a device with provisioned tag 7
+  publishes a retained MQTT value with span `7‖1`, restarts with tag 7 and a
+  reset counter, and ingests the retained value as its first write. It
+  reports `TagCollision`, moves its counter past 1, and stores a span that
+  differs from the parent. With `counter_start` set from a persisted
+  high-water mark, no collision is reported.
 - **Cross-instance identity, deterministic:** two instances whose seeds
   collided under a 32-bit mix (`0x10 ⊕ 1`, `0x13 ⊕ 2`) get different spans;
   A writes, B mirrors it, and B's span differs from its parent. Two
@@ -499,6 +542,9 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   `Producer::produce_from` continues one.
 - `on_values`: typed receiver; zero, one and several writes per input; the graph
   shows `Transform { input }`.
+- **`on_values` after lag:** a burst larger than the input ring makes the
+  receiver lag; it reports `Lagged`, continues, and a later overheat still
+  emits an alarm. `recv()` returns `None` only when the input closes.
 - Every locally written value has `trace()` = `Some`.
 - Fixed seed gives identical IDs across runs.
 - Seeds: each adapter supplies one; `.id_seed()` overrides it; `build()`
