@@ -19,9 +19,8 @@
 //! - **Transport**: stdio with NDJSON
 //! - **Protocol**: JSON-RPC 2.0
 //! - **Version**: 2025-06-18
-//! - **Capabilities**: Tools (7), Resources (5), Prompts (2)
+//! - **Capabilities**: Tools (14), Resources (instances, records), Prompts (1)
 
-pub mod architecture;
 pub mod connection;
 pub mod error;
 pub mod prompts;
