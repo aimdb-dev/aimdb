@@ -49,7 +49,7 @@ reg.source(|ctx, producer| async move {
 
 `transform` and `transform_join` become one builder, registered on the
 output record. Inputs are named in the builder; the body is either a
-synchronous function or an async task.
+synchronous function (`map`, `with_state`) or an async `join`.
 
 ```rust
 // Synchronous, one input: as today. The framework continues the trace.
@@ -62,22 +62,34 @@ reg.transform(|t| t
     .with_state(Smoother::default())
     .on_value(|raw, s| s.push(raw)));
 
-// Async task, one input: replaces a tap that writes another record.
+// Synchronous, several inputs: state per transform, one call per trigger.
+// The framework continues the trigger's trace.
+reg.transform(|t| t
+    .input::<Temperature>(TempKey::Gamma)
+    .input::<Humidity>(HumidityKey::Gamma)
+    .with_state(DewState::default())
+    .on_trigger(|trigger, s| {
+        s.update(trigger);          // keeps the latest temperature and humidity
+        s.dew_point()               // Option<DewPoint>
+    }));
+
+// Async join, one input: replaces a tap that writes another record.
 reg.transform(|t| t
     .input::<Temperature>(TempKey::Calibrated)
-    .task(|ctx, mut rx, writer| async move {
-        while let Ok(t) = rx.recv().await {            // Stamped<Temperature>
-            if t.value.celsius > 80.0 {
-                writer.produce_from(Alarm::Overheat, t.trace());
+    .join(|ctx, mut rx, writer| async move {
+        while let Ok(trigger) = rx.recv().await {      // JoinTrigger
+            let t = trigger.as_input::<Temperature>().unwrap();
+            if t.celsius > 80.0 {
+                writer.produce_from(Alarm::Overheat, trigger.trace());
             }
         }
     }));
 
-// Async task, several inputs: replaces transform_join.
+// Async join, several inputs: replaces transform_join / on_triggers.
 reg.transform(|t| t
     .input::<Temperature>(TempKey::Gamma)
     .input::<Humidity>(HumidityKey::Gamma)
-    .task(|ctx, mut rx, writer| async move {
+    .join(|ctx, mut rx, writer| async move {
         while let Ok(trigger) = rx.recv().await {      // JoinTrigger
             // … update state …
             writer.produce_from(dew_point(&t, &h), trigger.trace());
@@ -85,11 +97,18 @@ reg.transform(|t| t
     }));
 ```
 
-- `map` and `with_state` are available with exactly one input. `task` is
-  available with one or more: one input gives a typed receiver of
-  `Stamped<I>`, several give `JoinTrigger`s, as joins do today.
-- `task` gets the `RuntimeContext`, so it can sleep, use timers and call out.
-  It may write zero, one or many values per input.
+| Body | Inputs | Receives | Output | Trace |
+|---|---|---|---|---|
+| `map` | one | `&I` | `Option<O>` | automatic |
+| `with_state(s).on_value` | one | `&I`, `&mut S` | `Option<O>` | automatic |
+| `with_state(s).on_trigger` | several | `&JoinTrigger`, `&mut S` | `Option<O>` | automatic |
+| `join` | one or more | `JoinTrigger`s, `DerivedWriter<O>` | any number of writes | `produce_from` |
+
+- Prefer the synchronous bodies: they cannot get the cause wrong.
+- `join` always receives `JoinTrigger`s, whatever the number of inputs, so
+  one input is read with `as_input::<I>()` like several.
+- `join` gets the `RuntimeContext`, so it can sleep, use timers and call out.
+  It may write zero, one or many values per trigger.
 - `build()` checks inputs as it does today: they exist, have the declared
   types, and form no cycle.
 - One transform per record, and a transformed record has no source or
@@ -97,7 +116,7 @@ reg.transform(|t| t
 
 ### 2.3 `DerivedWriter`
 
-A `task` receives a `DerivedWriter<O>`. It has no plain `produce`, so a
+A `join` receives a `DerivedWriter<O>`. It has no plain `produce`, so a
 derived write cannot forget its cause:
 
 ```rust
@@ -157,7 +176,7 @@ that creates `WriteMetadata`. `None` starts a trace; `Some(c)` continues `c`.
 | Writer | Cause |
 |---|---|
 | `Producer::produce`, `DerivedWriter::produce_origin` | `None` |
-| `map`, `with_state` | the input's trace |
+| `map`, `with_state` | the input's or trigger's trace |
 | `DerivedWriter::produce_from` | the given trace |
 | inbound connector with a trace on the wire | the wire trace |
 | inbound connector without one, AimX `record.set`, persistence restore | `None` |
@@ -249,9 +268,9 @@ layout) is a separate design.
 | Area | Change |
 |---|---|
 | `transform` | inputs move into the builder: `transform(\|t\| t.input::<I>(key).map(…))` |
-| `transform_join` | removed; `transform` with several inputs and `.task` |
-| `on_triggers` | becomes `.task(\|ctx, rx, writer\| …)`; receives `DerivedWriter<O>` instead of `Producer<O>` |
-| Taps that write records | become transforms with `.task`; the old way still compiles but is untraced and not in the graph |
+| `transform_join` | removed; `transform` with several inputs and `.with_state(…).on_trigger` or `.join` |
+| `on_triggers` | becomes `.join(\|ctx, rx, writer\| …)`; receives `DerivedWriter<O>` instead of `Producer<O>` |
+| Taps that write records | become transforms with `.join`; the old way still compiles but is untraced and not in the graph |
 | Graph types | `RecordOrigin::Transform { inputs }` and `EdgeType::Transform` replace the single and join variants |
 | `WriteMetadata` | 32 bytes; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Connectors | inbound dispatch takes `Option<TraceContext>` |
@@ -260,8 +279,8 @@ layout) is a separate design.
 
 ## 9. Phases
 
-1. **Core:** envelope, IDs, the merged `transform` builder with `.task` and
-   `DerivedWriter`, merged graph types, tests on Tokio, Embassy and WASM.
+1. **Core:** envelope, IDs, the merged `transform` builder with
+   multi-input `with_state`, `.join` and `DerivedWriter`, merged graph types, tests on Tokio, Embassy and WASM.
    Enough for Rerun taps on one instance.
 2. **AimX:** `trace` field, client, CLI, MCP. Enough for chains across
    AimX-linked instances.
@@ -269,12 +288,12 @@ layout) is a separate design.
 
 ## 10. Tests
 
-- Source → `map` → multi-input `task` → single-input `task` keeps one trace
-  ID; depth grows by one per write.
+- Source → `map` → multi-input `with_state` → multi-input `join` →
+  single-input `join` keeps one trace ID; depth grows by one per write.
 - `produce_origin` and `Producer::produce` start new traces.
-- `transform` builder: `map` and `with_state` only with one input; `task`
-  with one input receives `Stamped<I>`, with several `JoinTrigger`s;
-  `build()` rejects missing inputs, wrong types and cycles.
+- `transform` builder: `map` and `on_value` only with one input,
+  `on_trigger` only with several; `join` with any number receives
+  `JoinTrigger`s; `build()` rejects missing inputs, wrong types and cycles.
 - Existing transform and join tests ported to the merged builder.
 - Fixed seed gives identical IDs across runs; no all-zero ID.
 - AimX round-trip; a value without `trace` starts a trace at the receiver.
@@ -288,19 +307,22 @@ layout) is a separate design.
 
 1. **`tap_write`**: a tap that declares the record it writes. It needs its
    own origin kind, a fan-in rule and its own cycle policy, all of which
-   transforms already have. Rejected: transforms gain `.task` instead.
+   transforms already have. Rejected: transforms gain `.join` instead.
 2. **Keep `transform_join` separate.** Two builders for one concept, and two
    graph variants. Rejected: a join is a transform with several inputs.
-3. **Implicit "current trace"** (task-local). Not available on Embassy,
+3. **`task` for one input, `join` for several**, with a typed `Stamped<I>`
+   receiver for one input. Two names for one body. Rejected: `join` for any
+   number of inputs, always with `JoinTrigger`s.
+4. **Implicit "current trace"** (task-local). Not available on Embassy,
    unclear across `.await`. The cause is an argument instead.
-4. **Store the parent on each value.** Costs memory per slot; the graph
+5. **Store the parent on each value.** Costs memory per slot; the graph
    identifies the parent.
-5. **Full W3C span model** (span IDs, sampling, a span sink). No consumer
+6. **Full W3C span model** (span IDs, sampling, a span sink). No consumer
    needs it yet. An OTEL exporter can add a span ID to `WriteMetadata` later;
    the trace ID already has the W3C size.
-6. **Plain `produce()` in tasks.** A forgotten cause would silently start a
+7. **Plain `produce()` in joins.** A forgotten cause would silently start a
    new trace. `DerivedWriter` makes it a compile error.
-7. **Carry the trace inside the payload** where a protocol has no headers.
+8. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
 
 ## 12. Open questions
