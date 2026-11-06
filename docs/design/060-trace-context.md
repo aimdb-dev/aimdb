@@ -10,8 +10,8 @@ transform, join and producer APIs, plus one new transform body for
 single-input async derivations. Rerun taps get exact causal chains, and
 agents can follow them through the writes they captured or can still read
 (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`, session
-engine, runtime adapters); additive on the wire (the graph shapes do not
-change). Ships as a 3.x minor release despite the breaks (§8.1).
+engine, `AimDbBuilder`); additive on the wire (the graph shapes do not
+change). Ships as `aimdb-core` 4.0 (§8.1).
 
 Two throwaway prototypes tested this design. The second implements all of
 it except Zenoh, the CLI/MCP display and Rerun; §13 lists what it showed, and
@@ -151,9 +151,9 @@ decoded from a peer and passed back in), the write starts a trace.
 Tracing is on by default, behind the `trace-context` feature. Turning it
 off removes the trace from `WriteMetadata` (back to 8 bytes, §4.3),
 `trace()` returns `None`, AimX omits the field and inbound traces are
-ignored. No ID seed is needed or read, so an Embassy build without an
-entropy source or `.id_seed()` works. This is the opt-out for MCUs that
-cannot spare the RAM.
+ignored. No instance tag is required: `instance_tag(…)` is still accepted
+and ignored, so the same application code builds with tracing on and off.
+This is the opt-out for MCUs that cannot spare the RAM.
 
 **What "on by default" reaches.** Cargo features unify across the
 application's dependency graph, so tracing is on when any crate in it enables
@@ -166,7 +166,7 @@ all four Embassy examples and in `aimdb-bench`, silently. So:
 
 - **Applications that disable default features list `trace-context`.** The
   Embassy examples do (phase 1), and the Embassy getting-started docs show
-  it with `with_id_seed(…)`.
+  it with `.instance_tag(…)`.
 - **Library crates (connectors, `aimdb-data-contracts`) never enable or
   disable it.** They follow the application.
 - **Benchmarks and tests that measure tracing enable it explicitly.**
@@ -174,7 +174,7 @@ all four Embassy examples and in `aimdb-bench`, silently. So:
 ## 3. Dependency graph
 
 No change. `RecordOrigin`, `EdgeType` and the AimX `graph.*` replies keep
-their 4.x shapes (`{"transform":{"input":…}}`,
+their AimX 4.x shapes (`{"transform":{"input":…}}`,
 `{"transform_join":{"inputs":[…]}}`). A single-input async transform is a
 `Transform { input }` like `map`.
 
@@ -232,120 +232,82 @@ instance that takes part in a trace, and a parent field holds the parent's
 full span ID, including the instance it was written on:
 
 ```text
-counter  = instance write counter, starting at 1, + 1 per write
+counter  = instance write counter, starting at 1 at build(), + 1 per write
 span     = instance_tag (32 bits) ‖ counter (low 32 bits)
-trace_id = seed (8 bytes) ‖ counter (8 bytes)   (origin writes only)
+trace_id = instance_tag (4 bytes) ‖ 0 (4 bytes) ‖ counter (8 bytes)   (origin writes only)
 ```
 
-There is no mixing step: two instances with different tags can never produce
-the same span, whatever their counters. (A mixed 32-bit span cannot give
-that guarantee: `0x10 ⊕ 1` and `0x13 ⊕ 2` are the same input to the mix, so
-two instances can emit the same span, and a mirrored write can end up with
-`span == parent`.)
+There is no mixing step and no randomness: two instances with different
+tags can never produce the same span or trace ID, whatever their counters.
+(A mixed 32-bit span cannot give that guarantee: `0x10 ⊕ 1` and `0x13 ⊕ 2`
+are the same input to the mix, so two instances can emit the same span, and
+a mirrored write can end up with `span == parent`.) The four zero bytes of
+the trace ID are reserved; a later exporter may fill them, for example with
+a boot value (below).
+
+**Instance tags are the application's choice.** The application assigns
+each instance its tag with `AimDbBuilder::instance_tag(NonZeroU32)`, for
+example from a provisioning table, a device number or a configuration file.
+With `trace-context` enabled, `build()` fails with a configuration error if
+no tag is set. The framework does not derive tags from randomness, the chip
+ID or the runtime: a tag the user chose is distinct by construction, can be
+read in a trace, and stays the same across restarts. Tags are `NonZero`, so
+a span is never all zero, including at the counter wrap. The `test_support`
+builders set a fixed tag, so tests that do not care about it need no change.
 
 **Guarantee.** Within one trace, two writes have different span IDs if
 
 1. the instances that wrote them have different instance tags, or
-2. for a write pair with the same tag, the full 64-bit counter values
-   differ by at least 1 and by less than 2³².
+2. they were written by the same instance in the same run, fewer than 2³²
+   writes apart.
 
-Condition 2 holds for every pair of writes that can coexist in one trace,
-across restarts. A trace from before a restart can still reach an instance
-through a retained MQTT message, an AimX late-join snapshot or a peer's
-buffered mirror write, and then mix with writes made after it. So, for a
-given tag:
+Keeping tags distinct across instances is the application's
+responsibility; §4.2.1 lists what the framework detects when it is not.
 
-- the counter never goes backwards (a restart with a reset counter repeats
-  old values), and
-- the counter never advances by 2³² or more between writes that can coexist
-  in one trace, counting every skipped range: a `counter_start` after a
-  restart, and the collision fast-forward below. (A jump of 2³² wraps the
-  low 32 bits and reproduces old spans, and no collision check notices,
-  because the parent may come from another tag.)
+**Restarts are not protected.** The counter starts at 1 on every `build()`,
+so a restarted instance repeats its span and trace IDs from before the
+restart. A trace from before a restart can still reach the instance (a
+retained MQTT message, an AimX late-join snapshot, a peer's buffered mirror
+write) and mix with new writes; such a trace may then contain two writes
+with the same span. AimDB instances are long-running and restarts are rare,
+so this is accepted. One case is still prevented, because it would make a
+write its own parent:
 
-A deployment that cannot keep that bound uses a fresh tag.
-
-Tag zero is reserved, so a span is never all zero, including at the counter
-wrap.
-
-**Instance tags.** By default the tag is the high 32 bits of the instance's
-seed (below); if those are zero, a non-zero value derived from the low 32
-bits replaces them. The seed is drawn per boot, so a restart repeats the
-previous tag only with probability 2⁻³²: unlikely, not impossible. Tags of
-n instances are distinct with probability at least 1 − n² / 2³³ (100
-instances: about 1 in 860,000 to collide). Deployments that cannot accept
-either probability assign tags.
-
-Deployments that need the guarantee without probability assign tags with
-`AimDbBuilder::instance_tag(u32)`, for example from a provisioning table.
-`instance_tag(0)` is a configuration error. A provisioned tag that is reused
-across restarts keeps condition 2 in one of two ways:
-
-- **a distinct tag per boot**, for example a device number combined with a
-  persisted boot epoch; or
-- **persisted counter progress**: the application saves a high-water mark
-  of the counter and restarts just above it with
-  `AimDbBuilder::counter_start(u64)`. The restart may skip values the
-  instance used without saving them, but the total advance between writes
-  that can share a trace must stay below 2³²; if the application cannot
-  bound the unsaved writes, it uses a fresh tag instead.
-
-**Detecting a collision.** Two cases can only come from a broken condition
-1 or 2, and the instance reports both (`TraceEvent::TagCollision`, counted
-with `observability`) while still writing the value:
-
-- **An inbound span carries the instance's own tag with a counter it has not
-  reached yet** (another instance with the same tag, or the instance's own
-  span from before a restart). The instance moves its counter past that
-  value within the current 32-bit window before it writes, so the new span
-  differs from the parent and later spans do not repeat it. The move counts
-  toward the 2³² bound.
 - **A new span would equal its cause's span.** The writer takes the next
-  counter value instead. A write never stores `span == parent`.
+  counter value instead. A write never stores `span == parent`. Without
+  this, a restarted instance that ingests its own retained value `tag‖1` as
+  its first write would store `tag‖1` with parent `tag‖1`, a cycle that
+  breaks every consumer walking parents.
 
-These are safety nets, not the guarantee: a pre-restart span that never
-arrives cannot move the counter, and a repeat whose parent carries another
-tag is not visible to either check. Condition 2 still needs one of the
-provisioning rules above.
+### 4.2.1 Detecting duplicate tags
 
-The salt is taken once at `build()`, from the runtime adapter, not from a
-`std` switch in core: several crates build core without `std` even on a
-hosted target, so a feature flag picks the wrong source.
+Two instances with the same tag break condition 1 silently in general. The
+framework reports what it can see, without changing any write:
 
-```rust
-pub trait RuntimeOps {
-    // …
-    /// A 64-bit seed for trace IDs, or `None` if the platform has no entropy.
-    fn id_seed(&self) -> Option<u64>;
-}
-```
+- **An inbound span carries the instance's own tag**
+  (`TraceEvent::OwnTagInbound`, counted with `observability`). It means
+  either another instance uses the same tag, or the instance's own write
+  from before a restart has come back (a retained message after a reboot).
+  It is a diagnostic, not an error: the second cause is normal operation.
+- **An AimX peer announces the same tag** (`TraceEvent::DuplicateTag`).
+  `hello` and `welcome` gain an optional `instance_tag` field, sent by
+  instances with `trace-context` enabled (a CLI or MCP client sends none).
+  Whichever side sees its own tag reports it and keeps the connection: the
+  trace is advisory and never costs a link. The WebSocket server does not
+  read `hello`, so over WebSocket only the client side checks.
 
-| Adapter | Seed |
-|---|---|
-| Tokio | OS randomness (`getrandom`) |
-| WASM | `crypto.getRandomValues` |
-| Embassy | from the adapter's configuration: a hardware RNG value, or the chip ID mixed with a persisted boot counter |
-| `test_support` runtimes | a fixed seed |
+MQTT and Zenoh peers announce nothing, so a duplicate tag behind a broker
+shows up only as `OwnTagInbound`.
 
-`AimDbBuilder::id_seed(u64)` overrides the adapter, for reproducible IDs in
-tests. With `trace-context` enabled, `build()` fails with a configuration
-error if neither supplies a seed. With it off, no seed is needed and none is
-read: a seedless Embassy build works.
+### 4.2.2 Counter
 
 The counter is a 64-bit atomic where the target has one, and a
 `critical-section` lock elsewhere (Cortex-M has no native 64-bit atomics).
 It must be a critical section, not a spin lock: a record written from an
 interrupt handler while the main context holds a spin lock would deadlock a
 single-core MCU. (The prototype used a spin lock; it is not acceptable for
-the implementation.) Every write touches the counter; there is no RNG call
-per write. The seed fills the trace ID's first 8 bytes and, unless
-`instance_tag` overrides it, the instance tag.
-
-`RuntimeOps::id_seed` is a required method. In the prototype that meant six
-implementations (Tokio, Embassy, WASM, two `test_support` runtimes, one
-test stub). `EmbassyAdapter` gains a field for its seed, so it is no longer
-a unit struct: `EmbassyAdapter::new().with_id_seed(seed)`. The WASM adapter
-needs `web-sys`'s `Crypto` feature for `crypto.getRandomValues`.
+the implementation.) Every write touches the counter; there is no RNG call,
+per write or at `build()`, so no runtime adapter needs an entropy source.
 
 ### 4.3 Memory and time
 
@@ -389,19 +351,19 @@ bytes are accepted, so it does not reopen the decision.
 One carrier value everywhere:
 `<trace_id: 32 hex>/<depth>/<span: 16 hex>/<parent: 16 hex>`, with parent
 `0000000000000000` for an origin. For example
-`4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d000000a1f/5a07b3f100000004`.
+`5a07b3f1000000000000000000000002/3/9c41e2d000000a1f/5a07b3f100000004`.
 
 | Connector | Carries it as |
 |---|---|
 | AimX over TCP, UDS, WebSocket | optional `trace` field next to `ts` on every value |
-| AimX over Serial | off by default: Serial uses `AimxCodecUntraced`, which sends no `trace` and ignores one it receives; choosing `AimxCodec` turns it on |
+| AimX over Serial | off by default; a client turns it on for its session in `hello` (§5.0), the server's configuration can change the default |
 | MQTT v5 (both backends, §5.3) | user property `aimdb-trace` |
 | Zenoh | attachment key `aimdb-trace` |
 | KNX | not carried |
 
 ```json
 {"t":"event","sub":"7","seq":42,"ts":81234567000,
- "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d000000a1f/5a07b3f100000004","data":{"celsius":21.5}}
+ "trace":"5a07b3f1000000000000000000000002/3/9c41e2d000000a1f/5a07b3f100000004","data":{"celsius":21.5}}
 ```
 
 - The field is optional: an older peer or a link with tracing off sends
@@ -412,8 +374,8 @@ One carrier value everywhere:
     `trace()` is `None`;
   - **ingesting** (inbound connector writing locally): the local write starts
     a trace.
-- A malformed field (bad hex, depth above 255, zero trace ID or span) is
-  treated as absent: the value is kept and its trace is `None`. The trace is
+- A malformed field (bad hex, depth above 255, zero trace ID, a span or
+  non-zero parent with tag zero, `span == parent`) is treated as absent: the value is kept and its trace is `None`. The trace is
   advisory and must never cost a value.
 - A receiver that ingests a traced value continues it: same ID, depth + 1,
   a new span, and the sender's span as parent.
@@ -434,6 +396,39 @@ One carrier value everywhere:
   with it, it is sent without one, and the omission is counted per route.
   The receiver starts a trace, as for any untraced value. Only a value that
   does not fit even without the trace is rejected.
+
+### 5.0 Per-session trace request
+
+Whether an AimX session carries traces is a session setting with a
+per-transport default, not a property of the codec: on by default over
+TCP, UDS and WebSocket, off over Serial, where every byte counts. The
+server's connector configuration can change the default
+(`.trace_default(bool)`).
+
+A client overrides the default for its own session with an optional `trace`
+field in `hello`:
+
+```json
+{"version":"4.2","client":"aimdb-profiler","trace":true}
+```
+
+- `true` turns tracing on for this session, `false` turns it off, and
+  absence keeps the default. `welcome` echoes the effective setting, so a
+  client knows whether a missing `trace` means "untraced value" or "tracing
+  off".
+- The setting covers both directions of the session: with it off, the
+  server sends no `trace` and ignores one it receives (on `write` frames
+  too), exactly as for a peer with tracing off.
+- On Serial the setting lasts until the next `hello`, which starts a new
+  session (the serial connector's existing rule). A client attaching to an
+  MCU over a UART, for example a profiler, gets traced values without a
+  firmware rebuild.
+- The WebSocket server does not read `hello`; it always uses its default.
+- A server built with `trace-context` off cannot trace: it answers
+  `"trace":false` in `welcome` whatever the client asked.
+
+There is one `AimxCodec`; the session tells it per frame whether to write
+the `trace` field. `AimxCodecUntraced` is not needed.
 
 ### 5.1 AimX outbound mirror writes
 
@@ -474,12 +469,13 @@ WebSocket connector's session pass it to the record write. For the
 WebSocket connector that reaches further than its `Session`: its fan-out bus
 (`ClientManager::broadcast`) and its late-join snapshot cache carry the trace
 too, and its public `Snapshot` type gains a field. Inbound connectors
-call `InboundDispatch::dispatch_traced(topic, payload, trace)`; the ingest
+call `InboundDispatch::dispatch(topic, payload, trace)`; the ingest
 closure receives it through a new `TopicMatch::trace()` accessor, so
-`IngestFn` keeps its signature. `InboundDispatch::dispatch` remains for
-transports without a carrier.
+`IngestFn` keeps its signature. There is no untraced `dispatch` next to it:
+a connector that kept calling one would drop traces without notice.
+Transports without a carrier (KNX) pass `None`.
 
-### 5.3 MQTT v5 (draft)
+### 5.3 MQTT v5
 
 Both MQTT backends speak MQTT 5 and carry the trace as one user property.
 
@@ -487,7 +483,7 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
   Outbound: the publish loop already receives each value's `WriteMetadata`
   (`OutboundMessage::metadata`) and publishes with
   `user_properties: [("aimdb-trace", "<carrier>")]`. Inbound: the event loop
-  reads the property from each `Publish` and calls `dispatch_traced`.
+  reads the property from each `Publish` and passes it to `dispatch`.
 - **Embassy backend (`mountain-mqtt`):** already speaks MQTT 5 and accepts up
   to 32 properties per inbound publish, but neither reads nor writes user
   properties. `deliver` reads `aimdb-trace`; `publish_staged` adds it.
@@ -566,41 +562,46 @@ layout) is a separate design.
 | Join handlers | `on_triggers` receives `DerivedProducer<O>` instead of `Producer<O>` |
 | `WriteMetadata` | 48 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
-| Runtime adapters | `RuntimeOps::id_seed()` (required); `EmbassyAdapter` is no longer a unit struct and takes its seed with `with_id_seed` |
 | WebSocket connector | its public `Snapshot` type gains the trace; its fan-out carries it (§5.2) |
-| Serial connector | its constructors return connectors over `AimxCodecUntraced` |
-| `build()` | with `trace-context` enabled, fails when neither the adapter nor `.id_seed()` supplies a seed |
+| Serial connector | tracing off by default; `.trace_default(bool)` on the server (§5.0) |
+| `AimDbBuilder` | `instance_tag(NonZeroU32)`; with `trace-context` enabled, `build()` fails without it (§4.2) |
+| `InboundDispatch` | `dispatch` takes `Option<TraceContext>`; no untraced variant (§5.2) |
+| AimX handshake | `hello` and `welcome` gain an optional `instance_tag` (§4.2.1) and `trace` (§5.0) |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
-| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag`, `counter_start` |
+| `TransformBuilder`, `Producer<T>`, `TopicMatch` | additive: `on_values`, `produce_from`, `trace()` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
 In the prototype, the user code that had to change was the join handlers
 (three weather-mesh stations, the Tokio and WASM join tests:
 `produce` → `produce_from(…, trigger.metadata())`) and the codegen join stub
-(`Producer<O>` → `DerivedProducer<O>`).
+(`Producer<O>` → `DerivedProducer<O>`). The required instance tag adds one
+line to every application builder; the prototype derived tags from a seed
+and did not measure that.
 
 ### 8.1 Release
 
-AimDB has no active user base to protect, so 060 ships as a minor release
-although it breaks APIs:
+060 breaks Rust APIs, so it ships as a major release:
 
-- `aimdb-core` and the adapter and connector crates: 3.x minor.
-- `aimdb-client`: 0.9.0.
-- AimX protocol: the next minor after 059's 4.1. The wire change is additive.
+- `aimdb-core`: 4.0.0. The adapter and connector crates take their next
+  major version with it.
+- `aimdb-client`: 0.9.0 (a breaking bump for a 0.x crate).
+- AimX protocol: 4.2, the next minor after 059's 4.1. The wire change is
+  additive; the protocol version is independent of the crate version.
 
 The CHANGELOG lists every row of the table above under "Breaking changes".
 
 ## 9. Phases
 
-1. **Core:** envelope with span and parent, IDs and seeds, automatic
+1. **Core:** envelope with span and parent, IDs and the required instance tag, automatic
    propagation in `map` / `with_state`, the single-input `on_values` body,
    `DerivedProducer` in joins, `Producer::produce_from`, the `trace-context`
    feature and its listing in the Embassy examples (§2.6), tests on Tokio,
    Embassy and WASM. Enough for Rerun taps on one instance.
 2. **AimX:** `trace` field on values and on mirror `write` frames, session
    engine (WebSocket fan-out included), client, CLI, MCP; Serial off by
-   default; the `record.get` reply without an added allocation. Enough for
+   default with the per-session request in `hello` (§5.0); the `record.get` reply without an added allocation; tags in the
+   handshake. Enough for
    chains across AimX-linked instances in both directions.
 3. **MQTT v5** on both backends, with the Tokio oversize check, and
    **Zenoh**.
@@ -609,23 +610,28 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 
 - Source → `map` → `with_state` → `on_values` → join keeps one trace ID; depth
   grows by one per write; each write's `parent` is its cause's `span`.
-- Every write gets a new span; within the §4.2 bound (2³² writes) spans in
-  one instance do not repeat, and they are never zero.
-- **Counter wrap:** with `counter_start(2³² − 1)`, the next two writes get
-  `tag‖ffffffff` and `tag‖00000000`; neither is the reserved zero span.
-  `instance_tag(0)` fails `build()`, and a seed whose high 32 bits are zero
-  yields a non-zero default tag.
-- **Retained message after reboot:** a device with provisioned tag 7
-  publishes a retained MQTT value with span `7‖1`, restarts with tag 7 and a
-  reset counter, and ingests the retained value as its first write. It
-  reports `TagCollision`, moves its counter past 1, and stores a span that
-  differs from the parent. With `counter_start` set from a persisted
-  high-water mark, no collision is reported.
-- **Cross-instance identity, deterministic:** two instances whose seeds
-  collided under a 32-bit mix (`0x10 ⊕ 1`, `0x13 ⊕ 2`) get different spans;
-  A writes, B mirrors it, and B's span differs from its parent. Two
-  instances configured with the same `instance_tag` and aligned counters
-  report `TagCollision` instead of storing `span == parent` silently.
+- Every write gets a new span; within one run and the §4.2 bound (2³²
+  writes) spans in one instance do not repeat, and they are never zero.
+- **Counter wrap:** with the counter set to 2³² − 1 through a test-only
+  hook, the next two writes get `tag‖ffffffff` and `tag‖00000000`; neither
+  is the zero span.
+- **Tag required:** with `trace-context` enabled, `build()` without
+  `instance_tag` fails; with it off, it succeeds, and `instance_tag(…)` is
+  accepted and ignored. The `test_support` builders build without one.
+- **Origin trace ID:** an origin write with tag 7 and counter 5 has trace ID
+  `00000007 00000000 0000000000000005`.
+- **Retained message after reboot:** a device with tag 7 publishes a
+  retained MQTT value with span `7‖1`, restarts, and ingests the retained
+  value as its first write. It reports `OwnTagInbound` and stores span `7‖2`
+  with parent `7‖1`: never `span == parent`.
+- **Cross-instance identity, deterministic:** instances with tags `0x10` and
+  `0x13` get different spans at any counters; A writes, B mirrors it, and
+  B's span differs from its parent. Two instances configured with the same
+  tag and aligned counters store no `span == parent` and report
+  `OwnTagInbound`.
+- **Duplicate tag over AimX:** two instances with the same tag connect; both
+  sides (client side only over WebSocket) report `DuplicateTag`, and values
+  still flow. A CLI client without a tag triggers nothing.
 - `produce_origin` and `Producer::produce` start new traces with no parent;
   `Producer::produce_from` continues one.
 - `on_values`: typed receiver; zero, one and several writes per input; the graph
@@ -634,22 +640,12 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   receiver lag; it reports `Lagged`, continues, and a later overheat still
   emits an alarm. `recv()` returns `None` only when the input closes.
 - Every locally written value has `trace()` = `Some`.
-- Fixed seed gives identical IDs across runs.
-- Seeds: each adapter supplies one; `.id_seed()` overrides it; with
-  `trace-context` enabled, `build()` fails without either; the `test_support` runtimes build without
-  `.id_seed()` (core's no_std test suites, `aimdb-data-contracts`).
+- The same tag and the same writes give identical IDs across runs.
 - `trace-context` off: `size_of::<WriteMetadata>() == 8`, `trace()` is
-  `None`, AimX frames carry no `trace`, and an Embassy build with no seed
-  (no adapter seed, no `.id_seed()`) succeeds on `thumbv7em-none-eabihf`.
-- **Counter advance bound:** an instance with tag 7 writes `7‖1` … `7‖5` in
-  trace T, saves high-water mark 5, restarts with `counter_start(5 + 100)`,
-  and continues T from another device's buffered write: the new span is
-  `7‖106`, distinct from every pre-restart span. The same scenario with
-  `counter_start(2³² + 1)` is the documented misconfiguration: it reproduces
-  `7‖1`, and the test records that no check catches it, which is why §4.2
-  makes the bound a provisioning rule.
-- A malformed `trace` field on a value or `write` frame keeps the value and
-  decodes as `None`.
+  `None`, AimX frames carry no `trace`, and an Embassy build without
+  `instance_tag` succeeds on `thumbv7em-none-eabihf`.
+- A malformed `trace` field on a value or `write` frame (including a tag-zero
+  span and `span == parent`) keeps the value and decodes as `None`.
 - **Legacy frame, both paths:** the same AimX value frame without `trace`
   - decoded twice by `aimdb-client` gives `None` both times;
   - ingested by an inbound connector gives a local write with a new trace at
@@ -659,14 +655,19 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 - **Mirror push:** instance A mirrors a record to instance B over AimX; B
   stores A's trace ID, A's depth + 1 and A's span as parent. A `write` frame
   without `trace` starts a trace on B. The same over the WebSocket connector.
-- Serial: no `trace` by default; present when turned on.
+- **Per-session trace request:** over Serial, a session without `trace` in
+  `hello` gets no `trace` fields and the server ignores inbound ones; a
+  client sending `"trace":true` gets traced events and `welcome` reports
+  `"trace":true`; the next client's `hello` without the field is untraced
+  again. Over UDS, `"trace":false` turns tracing off for that session only.
+  A server built with `trace-context` off answers `"trace":false`.
 - `record.set` always starts a trace.
 - **MQTT v5:** a publish carries `aimdb-trace`; a receiving instance continues
   the trace; a publish without the property starts one. A publish that fits
   the broker's maximum packet size without the property but not with it is
   delivered untraced and counted as `trace_omitted`; one that does not fit
   without the property is rejected as oversize.
-- `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
+- `graph.nodes` and `graph.edges` replies are byte-identical to AimX 4.1 for a
   fixture with a transform, an `on_values` transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
 - **Exact parents:** in the diamond `Raw → A, Raw → B, A + B → C`, each write
@@ -698,14 +699,13 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
    nothing per slot, but is ambiguous in diamonds, which some pipelines
    have, and agents cannot act on "one of these two". Rejected: store the
    parent span.
-3. **32-bit span IDs mixed from salt and counter.** Saves 8 bytes per slot
+3. **32-bit span IDs mixed from seed and counter.** Saves 8 bytes per slot
    (40 instead of 48), but two instances can feed the mix the same input, so
    a span is not unique across instances and a parent cannot name its
    instance.
    Rejected: instance tag ‖ counter (§4.2).
 4. **Random 64-bit span IDs.** Needs an RNG call per write and is still only
-   probabilistically unique. Rejected: tags are drawn once, and can be
-   assigned for a hard guarantee.
+   probabilistically unique. Rejected: tags assigned by the application.
 5. **Pick a parent by stamp order.** Wrong in the diamond case even with
    every write captured. Rejected.
 6. **Mint a trace ID in the client for untraced values.** Two reads of the
@@ -721,13 +721,24 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 11. **Defaulted `*_traced` session methods** to keep the session engine
     additive. A session that does not override them drops traces silently,
     and the surface doubles. Rejected: new fields and parameters (§5.2).
-12. **Seed from a `std` feature switch in core.** In the prototype it failed
-    37 existing tests: crates such as `aimdb-data-contracts` and the WASM
-    adapter build core without `std` on hosted targets. Rejected: the
-    adapter supplies the seed (§4.2).
+12. **Instance tags derived from a per-boot seed** that each runtime adapter
+    supplies (`RuntimeOps::id_seed`), with an optional override. Needs an
+    entropy source on every platform (an Embassy adapter field, the WASM
+    `Crypto` feature), and tags are only probabilistically distinct: 100
+    instances collide with probability about 1 in 860,000, and a restart can
+    repeat the previous tag. Rejected: the application assigns tags (§4.2).
+    (The prototype also showed that a `std` feature switch in core is the
+    wrong place for a seed: 37 tests failed, because several crates build
+    core without `std` on hosted targets.)
 13. **A spin lock for the counter on targets without 64-bit atomics.**
     Simple, but deadlocks a single-core MCU when an interrupt handler writes
     a record while the main context holds it. Rejected: `critical-section`.
+14. **Uniqueness across restarts** with a persisted counter high-water mark
+    (`counter_start`) or a distinct tag per boot. Needs persistent storage
+    or provisioning on every device, and only covers the restarts the
+    application handles correctly. Rejected: AimDB instances are
+    long-running and restarts are rare; repeats across a restart are
+    accepted, and only `span == parent` is prevented (§4.2).
 
 ## 12. Decisions
 
@@ -736,10 +747,13 @@ All earlier open questions are settled:
 | Question | Decision |
 |---|---|
 | Tokio MQTT backend | moves to MQTT 5 and requires it; no 3.1.1 mode |
-| Serial links | trace off by default; the connector's configuration turns it on |
+| Serial links | trace off by default; a client turns it on per session in `hello`, the server's configuration changes the default (§5.0) |
 | `record.set` | every remote set starts a trace |
 | Single-input async transform | ships now, as `on_values` (§2.2) |
 | Parent identity | exact, across instances: 64-bit span ID = instance tag ‖ counter (§4.2) |
+| Instance tag | assigned by the application, required with `trace-context`; no seed, no entropy source |
+| Restarts | IDs may repeat across a restart; only `span == parent` is prevented |
+| Release | `aimdb-core` 4.0.0; AimX 4.2 |
 | Envelope size | 48 bytes accepted everywhere; `trace-context` off is the opt-out for small MCUs |
 
 No open questions remain.
@@ -747,7 +761,10 @@ No open questions remain.
 ## 13. Prototype results
 
 The second throwaway prototype implemented §2 to §5 except Zenoh and the
-CLI/MCP display. It was not merged.
+CLI/MCP display. It was not merged. It derived tags from a per-boot seed and
+had `counter_start` for restarts; both have since been replaced (§4.2,
+alternatives 12 and 14), and the rows below for them are kept as history.
+The handshake tag exchange (§4.2.1) was not prototyped.
 
 | Claim | Result |
 |---|---|
@@ -756,12 +773,11 @@ CLI/MCP display. It was not merged.
 | Cross-instance parents over AimX (UDS), both directions | holds |
 | Cross-instance parents over MQTT 5, both backends, real broker | holds |
 | Review example `0x10 ⊕ 1` / `0x13 ⊕ 2` | distinct spans |
-| Same tag, aligned counters | `TagCollision`, no self-parent |
-| Retained value after reboot | `TagCollision`, counter moved past it; none with `counter_start` |
-| Counter jump of 2³² | reproduces the old span undetected, as §4.2 states |
-| Counter wrap, tag zero | no zero span; `instance_tag(0)` fails `build()` |
+| Same tag, aligned counters | collision reported, no self-parent |
+| Retained value after reboot | collision reported, no self-parent |
+| Counter wrap, tag zero | no zero span |
 | `on_values` after lag | skips, reports, a later value still produces |
-| Seed rules; tracing off without a seed | hold; no_std suites pass with tracing on and off |
+| Tracing off without an ID source | builds; no_std suites pass with tracing on and off |
 | 48 / 8 bytes | asserted on host, Cortex-M, wasm32 |
 | Wire cost | AimX +79 bytes, MQTT +84 bytes |
 | Allocations | none added, except `record.get` (+1, fixed by §5) |
@@ -770,6 +786,6 @@ CLI/MCP display. It was not merged.
 
 Findings that changed this document: tracing's reach through
 `default-features = false` (§2.6); a critical section, not a spin lock, for
-the counter (§4.2); the `record.get` allocation (§5); the WebSocket fan-out
+the counter (§4.2.2); the `record.get` allocation (§5); the WebSocket fan-out
 and snapshot cache (§5.2); the Tokio MQTT oversize check (§5.3); the
 adapter and connector API changes (§8).
