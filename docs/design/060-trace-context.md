@@ -151,7 +151,9 @@ decoded from a peer and passed back in), the write starts a trace.
 Tracing is on by default, behind the `trace-context` feature. Turning it
 off removes the trace from `WriteMetadata` (back to 8 bytes, §4.3),
 `trace()` returns `None`, AimX omits the field and inbound traces are
-ignored. This is the opt-out for MCUs that cannot spare the RAM.
+ignored. No ID seed is needed or read, so an Embassy build without an
+entropy source or `.id_seed()` works. This is the opt-out for MCUs that
+cannot spare the RAM.
 
 ## 3. Dependency graph
 
@@ -227,48 +229,67 @@ two instances can emit the same span, and a mirrored write can end up with
 
 **Guarantee.** Within one trace, two writes have different span IDs if
 
-1. the instances that wrote them have different instance tags,
-2. no instance writes more than 2³² times while the trace is alive (the
-   counter's low 32 bits wrap after that), and
-3. an instance that restarts does not reuse a tag with a reset counter while
-   traces from before the restart can still reach it (a retained MQTT
-   message, an AimX late-join snapshot, a peer's buffered mirror write).
+1. the instances that wrote them have different instance tags, or
+2. for a write pair with the same tag, the full 64-bit counter values
+   differ by at least 1 and by less than 2³².
+
+Condition 2 holds for every pair of writes that can coexist in one trace,
+across restarts. A trace from before a restart can still reach an instance
+through a retained MQTT message, an AimX late-join snapshot or a peer's
+buffered mirror write, and then mix with writes made after it. So, for a
+given tag:
+
+- the counter never goes backwards (a restart with a reset counter repeats
+  old values), and
+- the counter never advances by 2³² or more between writes that can coexist
+  in one trace, counting every skipped range: a `counter_start` after a
+  restart, and the collision fast-forward below. (A jump of 2³² wraps the
+  low 32 bits and reproduces old spans, and no collision check notices,
+  because the parent may come from another tag.)
+
+A deployment that cannot keep that bound uses a fresh tag.
 
 Tag zero is reserved, so a span is never all zero, including at the counter
 wrap.
 
 **Instance tags.** By default the tag is the high 32 bits of the instance's
 seed (below); if those are zero, a non-zero value derived from the low 32
-bits replaces them. The seed is per boot, so the default tag changes with
-every restart, which satisfies condition 3, and tags are distinct with
-probability at least 1 − n² / 2³³ for n instances (100 instances: about 1 in
-860,000 to collide).
+bits replaces them. The seed is drawn per boot, so a restart repeats the
+previous tag only with probability 2⁻³²: unlikely, not impossible. Tags of
+n instances are distinct with probability at least 1 − n² / 2³³ (100
+instances: about 1 in 860,000 to collide). Deployments that cannot accept
+either probability assign tags.
 
 Deployments that need the guarantee without probability assign tags with
 `AimDbBuilder::instance_tag(u32)`, for example from a provisioning table.
-`instance_tag(0)` is a configuration error. A provisioned tag must meet
-condition 3 in one of two ways:
+`instance_tag(0)` is a configuration error. A provisioned tag that is reused
+across restarts keeps condition 2 in one of two ways:
 
 - **a distinct tag per boot**, for example a device number combined with a
   persisted boot epoch; or
 - **persisted counter progress**: the application saves a high-water mark
-  of the counter and restarts from above it with
-  `AimDbBuilder::counter_start(u64)`.
+  of the counter and restarts just above it with
+  `AimDbBuilder::counter_start(u64)`. The restart may skip values the
+  instance used without saving them, but the total advance between writes
+  that can share a trace must stay below 2³²; if the application cannot
+  bound the unsaved writes, it uses a fresh tag instead.
 
 **Detecting a collision.** Two cases can only come from a broken condition
-1 or 3, and the instance reports both (`TraceEvent::TagCollision`, counted
+1 or 2, and the instance reports both (`TraceEvent::TagCollision`, counted
 with `observability`) while still writing the value:
 
 - **An inbound span carries the instance's own tag with a counter it has not
   reached yet** (another instance with the same tag, or the instance's own
   span from before a restart). The instance moves its counter past that
-  value before it writes, so the new span differs from the parent and later
-  spans do not repeat it.
+  value within the current 32-bit window before it writes, so the new span
+  differs from the parent and later spans do not repeat it. The move counts
+  toward the 2³² bound.
 - **A new span would equal its cause's span.** The writer takes the next
   counter value instead. A write never stores `span == parent`.
 
 These are safety nets, not the guarantee: a pre-restart span that never
-arrives cannot move the counter, so condition 3 still needs one of the
+arrives cannot move the counter, and a repeat whose parent carries another
+tag is not visible to either check. Condition 2 still needs one of the
 provisioning rules above.
 
 The salt is taken once at `build()`, from the runtime adapter, not from a
@@ -291,8 +312,9 @@ pub trait RuntimeOps {
 | `test_support` runtimes | a fixed seed |
 
 `AimDbBuilder::id_seed(u64)` overrides the adapter, for reproducible IDs in
-tests. If neither supplies a seed, `build()` fails with a configuration
-error.
+tests. With `trace-context` enabled, `build()` fails with a configuration
+error if neither supplies a seed. With it off, no seed is needed and none is
+read: a seedless Embassy build works.
 
 The counter is a 64-bit atomic where the target has one and a critical
 section elsewhere (Cortex-M has no native 64-bit atomics). Every write
@@ -484,7 +506,7 @@ layout) is a separate design.
 | `WriteMetadata` | 48 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
-| `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
+| `build()` | with `trace-context` enabled, fails when neither the adapter nor `.id_seed()` supplies a seed |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
 | `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag`, `counter_start` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
@@ -547,11 +569,19 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   emits an alarm. `recv()` returns `None` only when the input closes.
 - Every locally written value has `trace()` = `Some`.
 - Fixed seed gives identical IDs across runs.
-- Seeds: each adapter supplies one; `.id_seed()` overrides it; `build()`
-  fails without either; the `test_support` runtimes build without
+- Seeds: each adapter supplies one; `.id_seed()` overrides it; with
+  `trace-context` enabled, `build()` fails without either; the `test_support` runtimes build without
   `.id_seed()` (core's no_std test suites, `aimdb-data-contracts`).
 - `trace-context` off: `size_of::<WriteMetadata>() == 8`, `trace()` is
-  `None`, AimX frames carry no `trace`.
+  `None`, AimX frames carry no `trace`, and an Embassy build with no seed
+  (no adapter seed, no `.id_seed()`) succeeds on `thumbv7em-none-eabihf`.
+- **Counter advance bound:** an instance with tag 7 writes `7‖1` … `7‖5` in
+  trace T, saves high-water mark 5, restarts with `counter_start(5 + 100)`,
+  and continues T from another device's buffered write: the new span is
+  `7‖106`, distinct from every pre-restart span. The same scenario with
+  `counter_start(2³² + 1)` is the documented misconfiguration: it reproduces
+  `7‖1`, and the test records that no check catches it, which is why §4.2
+  makes the bound a provisioning rule.
 - A malformed `trace` field on a value or `write` frame keeps the value and
   decodes as `None`.
 - **Legacy frame, both paths:** the same AimX value frame without `trace`
