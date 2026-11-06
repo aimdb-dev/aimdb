@@ -2,22 +2,22 @@
 
 **Status:** 📝 Proposed
 
-**Scope:** A trace ID and a depth on every record value, carried in
-`WriteMetadata` (058) and propagated along every derivation and across
-connectors that can carry them; one `transform` builder that covers today's
-transforms, joins and taps that write other records, so every derivation is
-an edge of the dependency graph. Together with the graph, this is enough to
-reconstruct causal chains, which is what Rerun taps need (§6). Breaking for
-Rust APIs; additive on the wire.
+**Scope:** A trace ID and a depth on every record value written by an
+instance, carried in `WriteMetadata` (058) and propagated along derivations
+and across connectors that can carry them. Propagation goes through the
+existing transform, join and producer APIs. Together with the dependency
+graph, trace ID and depth let Rerun taps correlate writes and name parent
+candidates (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`,
+connector dispatch); additive on the wire (the graph shapes do not change).
 
 ---
 
 ## 1. The rule
 
 > Every record write carries a trace context. A write either **starts** a
-> trace or **continues** the trace of the value that caused it. Every
-> derivation is a transform, so every derivation is an edge of the
-> dependency graph.
+> trace or **continues** the trace of the value that caused it. A trace
+> context is created only when a value is written locally; a value read from
+> a peer carries exactly what the peer sent.
 
 | Field | Origin write | Derived write |
 |---|---|---|
@@ -27,14 +27,16 @@ Rust APIs; additive on the wire.
 The stamp (058) says **when** a value was written here. The trace context
 says **why**. The stamp stays local; the trace context is inherited.
 
-A write's parent is not stored. It is the write in the same trace, at
-`depth − 1`, on one of the record's inputs in the dependency graph (§6).
+What trace ID and depth guarantee is **correlation**: writes with the same
+trace ID belong to one causal chain, and depth orders them along it. They do
+not identify a write's parent. The dependency graph narrows the parent to a
+set of candidates, usually one (§6).
 
 ## 2. API
 
 ### 2.1 Unchanged
 
-Sources, links and `tap` look as they do today. `tap` stays read-only.
+Sources, links, `tap`, `transform` and `transform_join` keep their builders.
 
 ```rust
 reg.source(|ctx, producer| async move {
@@ -43,118 +45,86 @@ reg.source(|ctx, producer| async move {
         ctx.time().sleep_secs(1).await;
     }
 });
+
+// map and with_state: the framework continues the input's trace.
+reg.transform::<Temperature, _>(TempKey::Raw, |t| t.map(|raw| Some(calibrate(raw))));
 ```
 
-### 2.2 One `transform`
+### 2.2 Joins
 
-`transform` and `transform_join` become one builder, registered on the
-output record. Inputs are named in the builder; the body is either a
-synchronous function (`map`, `with_state`) or an async `join`.
+`on_triggers` handlers receive a `DerivedWriter<O>` instead of a
+`Producer<O>`. `JoinTrigger` already carries the input's `WriteMetadata`:
 
 ```rust
-// Synchronous, one input: as today. The framework continues the trace.
-reg.transform(|t| t
-    .input::<Temperature>(TempKey::Raw)
-    .map(|raw| Some(calibrate(raw))));
-
-reg.transform(|t| t
-    .input::<Temperature>(TempKey::Raw)
-    .with_state(Smoother::default())
-    .on_value(|raw, s| s.push(raw)));
-
-// Synchronous, several inputs: state per transform, one call per trigger.
-// The framework continues the trigger's trace.
-reg.transform(|t| t
+reg.transform_join(|b| b
     .input::<Temperature>(TempKey::Gamma)
     .input::<Humidity>(HumidityKey::Gamma)
-    .with_state(DewState::default())
-    .on_trigger(|trigger, s| {
-        s.update(trigger);          // keeps the latest temperature and humidity
-        s.dew_point()               // Option<DewPoint>
-    }));
-
-// Async join, one input: replaces a tap that writes another record.
-reg.transform(|t| t
-    .input::<Temperature>(TempKey::Calibrated)
-    .join(|ctx, mut rx, writer| async move {
-        while let Ok(trigger) = rx.recv().await {      // JoinTrigger
-            let t = trigger.as_input::<Temperature>().unwrap();
-            if t.celsius > 80.0 {
-                writer.produce_from(Alarm::Overheat, trigger.trace());
-            }
-        }
-    }));
-
-// Async join, several inputs: replaces transform_join / on_triggers.
-reg.transform(|t| t
-    .input::<Temperature>(TempKey::Gamma)
-    .input::<Humidity>(HumidityKey::Gamma)
-    .join(|ctx, mut rx, writer| async move {
-        while let Ok(trigger) = rx.recv().await {      // JoinTrigger
+    .on_triggers(|mut rx, writer| async move {
+        while let Ok(trigger) = rx.recv().await {
             // … update state …
-            writer.produce_from(dew_point(&t, &h), trigger.trace());
+            writer.produce_from(dew_point(&t, &h), trigger.metadata());
         }
     }));
 ```
-
-| Body | Inputs | Receives | Output | Trace |
-|---|---|---|---|---|
-| `map` | one | `&I` | `Option<O>` | automatic |
-| `with_state(s).on_value` | one | `&I`, `&mut S` | `Option<O>` | automatic |
-| `with_state(s).on_trigger` | several | `&JoinTrigger`, `&mut S` | `Option<O>` | automatic |
-| `join` | one or more | `JoinTrigger`s, `DerivedWriter<O>` | any number of writes | `produce_from` |
-
-- Prefer the synchronous bodies: they cannot get the cause wrong.
-- `join` always receives `JoinTrigger`s, whatever the number of inputs, so
-  one input is read with `as_input::<I>()` like several.
-- `join` gets the `RuntimeContext`, so it can sleep, use timers and call out.
-  It may write zero, one or many values per trigger.
-- `build()` checks inputs as it does today: they exist, have the declared
-  types, and form no cycle.
-- One transform per record, and a transformed record has no source or
-  inbound link: the existing rule.
-
-### 2.3 `DerivedWriter`
-
-A `join` receives a `DerivedWriter<O>`. It has no plain `produce`, so a
-derived write cannot forget its cause:
 
 ```rust
 impl<O> DerivedWriter<O> {
-    pub fn produce_from(&self, value: O, cause: TraceContext);
+    pub fn produce_from(&self, value: O, cause: &WriteMetadata);
     pub fn produce_origin(&self, value: O);   // timer, timeout: an explicit choice
 }
 ```
 
-`Producer<T>` (sources, `db.producer()`) keeps only `produce`, which starts a
-trace. A `tap` that captures a `db.producer()` still compiles, but its writes
-start new traces and the graph has no edge for them; such code should become
-a transform.
+`DerivedWriter` has no plain `produce`, so a join cannot forget its cause.
+
+### 2.3 Producers
+
+`Producer<T>` keeps `produce`, which starts a trace, and gains
+`produce_from(value, &WriteMetadata)`. A tap that writes another record
+through `db.producer()` can continue the trace of the value it read:
+
+```rust
+async fn overheat_watch(ctx: RuntimeContext, temps: Consumer<Temperature>, alarm: Producer<Alarm>) {
+    let mut reader = temps.subscribe();
+    while let Ok(t) = reader.recv().await {
+        if t.value.celsius > 80.0 {
+            alarm.produce_from(Alarm::Overheat, t.metadata());
+        }
+    }
+}
+```
+
+Its writes are correlated with their cause, but the graph has no edge for
+them (the record stays `Passive`), so Rerun cannot name their parent (§6). A
+typed single-input async transform that would make this a graph edge is
+deferred (open question 4).
 
 ### 2.4 Reading
 
 ```rust
+impl WriteMetadata {
+    pub fn trace(&self) -> Option<TraceContext>;
+}
+
 let t = reader.recv().await?;
-t.trace().trace_id();   // TraceId, Display = 32 hex chars
-t.trace().depth();      // u8
+let tc = t.metadata().trace().expect("local writes always carry a trace");
+tc.trace_id();   // TraceId, Display = 32 hex chars
+tc.depth();      // u8
 ```
 
-`.trace()` exists on `Stamped<T>`, `WriteMetadata` and `JoinTrigger`.
-`aimdb-client` values carry it too.
+- **In process:** every value read from a local record has `Some`.
+- **`aimdb-client`:** `Some` when the peer sent a `trace`, `None` when it did
+  not (an older peer, or a link without trace support). The client never
+  invents an ID, so two reads of the same stored value report the same thing.
+
+`produce_from` takes `&WriteMetadata`. If its trace is `None` (metadata
+decoded from a peer and passed back in), the write starts a trace.
 
 ## 3. Dependency graph
 
-Single-input and multi-input transforms merge into one origin and one edge
-type:
-
-```rust
-RecordOrigin::Transform { inputs: Vec<String> }   // replaces Transform and TransformJoin
-EdgeType::Transform                               // replaces Transform and TransformJoin
-```
-
-Every derivation inside an instance now appears here, including what used to
-be a tap writing another record. `aimdb graph`, MCP and codegen read the
-merged variants.
+No change. `RecordOrigin`, `EdgeType` and the AimX `graph.*` replies keep
+their 4.x shapes (`{"transform":{"input":…}}`,
+`{"transform_join":{"inputs":[…]}}`). Rust builder changes, if any later,
+are kept separate from the wire shapes.
 
 ## 4. Inside the database
 
@@ -167,19 +137,25 @@ pub struct TraceId([u8; 16]);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TraceContext { trace_id: TraceId, depth: u8 }
 
-pub struct WriteMetadata { stamp: Stamp, trace: TraceContext }
+pub struct WriteMetadata { stamp: Stamp, trace: Option<TraceContext> }
 ```
 
 `RecordWriter::push(value, cause: Option<TraceContext>)` stays the one place
-that creates `WriteMetadata`. `None` starts a trace; `Some(c)` continues `c`.
+that creates `WriteMetadata` for a buffer, and always stores `Some`: `None`
+as the cause starts a trace, `Some(c)` continues `c`. Only
+`WriteMetadata::from_wire(stamp, Option<TraceContext>)` (replacing
+`from_wire_stamp`) can hold `None`, and it never reaches a buffer.
 
 | Writer | Cause |
 |---|---|
 | `Producer::produce`, `DerivedWriter::produce_origin` | `None` |
-| `map`, `with_state` | the input's or trigger's trace |
-| `DerivedWriter::produce_from` | the given trace |
+| `map`, `with_state` | the input's trace |
+| `Producer::produce_from`, `DerivedWriter::produce_from` | the given metadata's trace |
 | inbound connector with a trace on the wire | the wire trace |
 | inbound connector without one, AimX `record.set`, persistence restore | `None` |
+
+An inbound value without a trace therefore gets a new ID when, and only
+when, it is inserted into a local record.
 
 ### 4.2 IDs
 
@@ -213,19 +189,23 @@ One carrier value everywhere: `<trace_id as 32 hex>/<depth>`, e.g.
 | AimX (TCP, UDS, Serial, WebSocket) | optional `trace` field next to `ts` on every value |
 | MQTT v5 (Embassy backend) | user property `aimdb-trace` |
 | Zenoh | attachment key `aimdb-trace` |
-| MQTT 3.1.1 (Tokio backend), KNX | not carried: the receiving write starts a trace |
+| MQTT 3.1.1 (Tokio backend), KNX | not carried |
 
 ```json
 {"t":"event","sub":"7","seq":42,"ts":81234567000,
  "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3","data":{"celsius":21.5}}
 ```
 
-- The AimX field is optional because absence has a meaning: no context, the
-  receiver starts a trace. AimX decoders ignore unknown fields, so this is
-  the next minor version after 059's 4.1.
-- About 45 bytes per value on AimX.
-- A receiver continues the wire trace: same ID, depth + 1.
-- No connector wraps the payload.
+- The field is optional: an older peer or a link without trace support
+  sends none. AimX decoders ignore unknown fields, so this is the next minor
+  version after 059's 4.1. Nothing else on the wire changes.
+- Absence means different things on the two paths, with the same frame:
+  - **observing** (client `get`, `watch`, `drain`): the value has no trace,
+    `trace()` is `None`;
+  - **ingesting** (inbound connector writing locally): the local write starts
+    a trace.
+- A receiver that ingests a traced value continues it: same ID, depth + 1.
+- About 45 bytes per value on AimX. No connector wraps the payload.
 
 ## 6. Rerun taps
 
@@ -234,24 +214,40 @@ the value, the trace ID, the depth, and the stamp on that instance's own
 timeline. Each instance also logs its dependency graph once. MCUs run no Rerun
 taps; their values show up at the hub with their trace intact.
 
-**Parent of a write** *W* with trace *T*, depth *d*, on record *R*: the write
-in *T* at depth *d − 1* on one of *R*'s inputs:
+**What Rerun promises:** correlation (all writes of a trace) and order
+(depth). Parents are reported as **candidates**, never guessed.
 
-| *R*'s origin | Inputs |
+**Parent candidates** of a write *W* with trace *T*, depth *d*, on record
+*R*: the writes in *T* at depth *d − 1* on *R*'s graph inputs.
+
+| *R*'s origin | Graph inputs |
 |---|---|
-| `Transform { inputs }` | `inputs` (with several, only the trigger is in *T*) |
+| `Transform { input }` | `input` |
+| `TransformJoin { inputs }` | `inputs` |
 | `Link` | the record behind the same address on another instance |
-| `Source`, `Passive` | none: an origin |
+| `Source`, `Passive` | none |
 
-If several writes match, take the latest one at or before *W*'s stamp on the
-same instance.
+| Candidates | Rerun shows |
+|---|---|
+| exactly one | the parent |
+| several | all of them, marked ambiguous |
+| none | no parent: an origin, a `Passive` record written with `produce_from`, or a hop without a tap |
 
-- **Exact:** chains, fan-out, multi-input transforms, links between
-  instances.
-- **Approximate:** the same input written twice in one trace at one depth
-  (diamonds); stamp order is wrong only while a transform lags.
-- **Gaps:** a record without a Rerun tap, or a tap that skips values. The
-  graph still names the missing hop.
+Stamps are never used to choose between candidates. Ambiguity arises even
+when every write is captured:
+
+- **Diamond:** `Raw` fans out to `A` and `B`, and both feed the join `C`. `A`
+  and `B` both carry `Raw`'s trace at depth 1, so each write of `C` at depth
+  2 has two candidates. Which trigger caused which `C` depends on the join's
+  queue, not on stamps.
+- **Repeated writes:** an input written twice in one trace at the same
+  depth.
+
+Chains, fan-out to single-input transforms, and joins whose inputs come from
+different traces (the common case: independent sensors) have exactly one
+candidate. Exact parentage in every case would need the child to carry the
+identity of the write that triggered it (a parent span ID, 8 more bytes per
+slot); that is deferred until a consumer needs it (open question 5).
 
 The Rerun integration itself (crate, mapping contracts to Rerun types,
 layout) is a separate design.
@@ -259,70 +255,71 @@ layout) is a separate design.
 ## 7. Tools
 
 - `aimdb get <record> --trace` and `aimdb watch <record> --trace` show the
-  trace ID and depth.
-- MCP `get_record` includes them.
-- `aimdb graph` shows links that don't carry traces.
+  trace ID and depth, or `no trace` for a value the peer sent without one.
+- MCP `get_record` includes the trace, or `null`.
 
 ## 8. What breaks
 
 | Area | Change |
 |---|---|
-| `transform` | inputs move into the builder: `transform(\|t\| t.input::<I>(key).map(…))` |
-| `transform_join` | removed; `transform` with several inputs and `.with_state(…).on_trigger` or `.join` |
-| `on_triggers` | becomes `.join(\|ctx, rx, writer\| …)`; receives `DerivedWriter<O>` instead of `Producer<O>` |
-| Taps that write records | become transforms with `.join`; the old way still compiles but is untraced and not in the graph |
-| Graph types | `RecordOrigin::Transform { inputs }` and `EdgeType::Transform` replace the single and join variants |
-| `WriteMetadata` | 32 bytes; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
+| Join handlers | `on_triggers` receives `DerivedWriter<O>` instead of `Producer<O>` |
+| `WriteMetadata` | 32 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Connectors | inbound dispatch takes `Option<TraceContext>` |
 | Embassy | `build()` requires `.id_seed(…)` |
-| AimX | optional `trace` field, minor version |
+| `Producer<T>` | additive: `produce_from` |
+| AimX | optional `trace` field, minor version; graph shapes unchanged |
 
 ## 9. Phases
 
-1. **Core:** envelope, IDs, the merged `transform` builder with
-   multi-input `with_state`, `.join` and `DerivedWriter`, merged graph types, tests on Tokio, Embassy and WASM.
-   Enough for Rerun taps on one instance.
+1. **Core:** envelope, IDs, automatic propagation in `map` / `with_state`,
+   `DerivedWriter` in joins, `Producer::produce_from`, tests on Tokio,
+   Embassy and WASM. Enough for Rerun taps on one instance.
 2. **AimX:** `trace` field, client, CLI, MCP. Enough for chains across
    AimX-linked instances.
 3. **MQTT v5 and Zenoh** carriers.
 
 ## 10. Tests
 
-- Source → `map` → multi-input `with_state` → multi-input `join` →
-  single-input `join` keeps one trace ID; depth grows by one per write.
-- `produce_origin` and `Producer::produce` start new traces.
-- `transform` builder: `map` and `on_value` only with one input,
-  `on_trigger` only with several; `join` with any number receives
-  `JoinTrigger`s; `build()` rejects missing inputs, wrong types and cycles.
-- Existing transform and join tests ported to the merged builder.
+- Source → `map` → `with_state` → join keeps one trace ID; depth grows by
+  one per write.
+- `produce_origin` and `Producer::produce` start new traces;
+  `Producer::produce_from` continues one.
+- Every locally written value has `trace()` = `Some`.
 - Fixed seed gives identical IDs across runs; no all-zero ID.
-- AimX round-trip; a value without `trace` starts a trace at the receiver.
+- **Legacy frame, both paths:** the same AimX value frame without `trace`
+  - decoded twice by `aimdb-client` gives `None` both times;
+  - ingested by an inbound connector gives a local write with a new trace at
+    depth 0.
+- AimX round-trip of a traced value; ingesting it continues the trace at
+  depth + 1.
+- `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
+  fixture with a transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
-- Reconstruction: for a fixture with a chain, a fan-out, a multi-input
-  transform and a link between two instances, the §6 rule finds the expected
-  parents.
+- **Candidates:** a chain and a fan-out give one candidate per write; the
+  diamond `Raw → A, Raw → B, A + B → C` gives two candidates for each write
+  of `C` and is reported as ambiguous; a `Passive` record written with
+  `produce_from` gives none.
 - `size_of::<WriteMetadata>() == 32`; allocation gates unchanged.
 
 ## 11. Alternatives considered
 
-1. **`tap_write`**: a tap that declares the record it writes. It needs its
-   own origin kind, a fan-in rule and its own cycle policy, all of which
-   transforms already have. Rejected: transforms gain `.join` instead.
-2. **Keep `transform_join` separate.** Two builders for one concept, and two
-   graph variants. Rejected: a join is a transform with several inputs.
-3. **`task` for one input, `join` for several**, with a typed `Stamped<I>`
-   receiver for one input. Two names for one body. Rejected: `join` for any
-   number of inputs, always with `JoinTrigger`s.
+1. **Merge `transform` and `transform_join` into one builder** (with
+   `tap_write` or a single-input async body). Changes the graph shapes on the
+   wire and every transform call, and makes a single-input caller downcast
+   its own declared type through the boxed join path. Not needed for
+   propagation: deferred.
+2. **Pick a parent by stamp order.** Wrong in the diamond case even with
+   every write captured. Rejected: report candidates.
+3. **Mint a trace ID in the client for untraced values.** Two reads of the
+   same stored value would report different IDs. Rejected: `None` on read,
+   new ID only on local insertion.
 4. **Implicit "current trace"** (task-local). Not available on Embassy,
    unclear across `.await`. The cause is an argument instead.
-5. **Store the parent on each value.** Costs memory per slot; the graph
-   identifies the parent.
-6. **Full W3C span model** (span IDs, sampling, a span sink). No consumer
-   needs it yet. An OTEL exporter can add a span ID to `WriteMetadata` later;
-   the trace ID already has the W3C size.
-7. **Plain `produce()` in joins.** A forgotten cause would silently start a
+5. **Full W3C span model** (span IDs, sampling, a span sink). No consumer
+   needs it yet. The trace ID already has the W3C size.
+6. **Plain `produce()` in joins.** A forgotten cause would silently start a
    new trace. `DerivedWriter` makes it a compile error.
-8. **Carry the trace inside the payload** where a protocol has no headers.
+7. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
 
 ## 12. Open questions
@@ -332,5 +329,10 @@ layout) is a separate design.
    leave the trace off by default?
 3. **`record.set` with a trace.** Should a remote client be able to continue
    a trace, or does every remote set start one?
-4. **Opt-out for small MCUs.** Is 24 bytes per slot acceptable everywhere, or
+4. **Typed single-input async transform.** Would make taps that write other
+   records graph edges, with a typed receiver instead of the boxed join path.
+   Worth its own API, and when?
+5. **Exact parentage.** Does any consumer need the parent in the diamond
+   case badly enough to pay 8 bytes per slot for a parent span ID?
+6. **Opt-out for small MCUs.** Is 24 bytes per slot acceptable everywhere, or
    is a feature flag needed?
