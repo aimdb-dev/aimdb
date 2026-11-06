@@ -12,8 +12,7 @@ Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspectio
 - **LLM-Powered**: Natural language queries to AimDB instances
 - **Auto-Discovery**: Automatically finds running AimDB servers
 - **Schema Inference**: Infers JSON schemas from record values
-- **Architecture Agent**: Propose, validate, and apply schema/topology changes from natural language
-- **Rich Toolset**: 30 tools covering introspection, record ops, the dependency graph, metrics/profiling, and architecture editing
+- **Rich Toolset**: 14 tools covering introspection, record ops, the dependency graph, and metrics/profiling
 - **VS Code Integration**: Works seamlessly with GitHub Copilot
 
 ## Architecture
@@ -142,7 +141,7 @@ arbitrary paths on the host.
 
 | Mode | Offered tools |
 |---|---|
-| default | All read-only tools and the architecture agent; none that change a running instance |
+| default | All read-only tools; none that change a running instance |
 | `--allow-writes` | Also `set_record`, `reset_stage_profiling` and `reset_buffer_metrics` |
 | `--public` | Only `discover_instances`, `list_records` and `get_record` (for untrusted, internet-facing endpoints; wins over `--allow-writes`) |
 
@@ -195,11 +194,9 @@ This creates an instance at `/tmp/aimdb-demo.sock` with sample records.
 
 ## Available Tools
 
-30 tools in total: 14 introspection & operations tools (below) and 16
-architecture-agent tools (see [Architecture Agent Tools](#architecture-agent-tools)).
-The three tools that change a running instance (`set_record`,
-`reset_stage_profiling`, `reset_buffer_metrics`) are offered only with
-`--allow-writes`, so 27 tools are advertised by default. In `--public` mode only
+14 tools in total. The three tools that change a running instance
+(`set_record`, `reset_stage_profiling`, `reset_buffer_metrics`) are offered only
+with `--allow-writes`, so 11 tools are advertised by default. In `--public` mode only
 `discover_instances`, `list_records`, and `get_record` are advertised (see
 [Tool Modes](#tool-modes)).
 
@@ -363,36 +360,6 @@ Query: "Reset the buffer metrics counters."
 Result: { "reset": true }
 ```
 
-## Architecture Agent Tools
-
-Beyond live introspection, the server exposes an **architecture agent** for
-designing and editing an AimDB topology from natural language. It reads/writes
-`.aimdb/state.toml` and, on confirmation, generates Mermaid and Rust artefacts.
-These tools are not available in `--public` mode.
-
-The editing tools follow a **propose → resolve** flow: a `propose_*` /
-`remove_*` / `rename_record` call creates a *pending proposal* (shown to the user),
-which `resolve_proposal` then confirms, rejects, or revises.
-
-| Tool | Purpose |
-|---|---|
-| `get_architecture` | Return current state from `.aimdb/state.toml` (record count, validation summary, decision-log length). Run first when starting a session. |
-| `validate_against_instance` | Compare `state.toml` to a live instance; report missing records, buffer/capacity mismatches, and connector diffs. |
-| `propose_add_record` | Propose a new record (explicit, typed fields). |
-| `propose_modify_buffer` | Propose changing a record's buffer type / capacity. |
-| `propose_add_connector` | Propose adding a connector (MQTT, KNX, …) to a record. |
-| `propose_modify_fields` | Propose replacing a record's value-struct fields (all fields). |
-| `propose_modify_key_variants` | Propose updating a record's key variants. |
-| `propose_add_task` | Propose a new task definition. |
-| `propose_add_binary` | Propose a new binary definition. |
-| `remove_task` | Propose removing a task. |
-| `remove_binary` | Propose removing a binary (task definitions are preserved). |
-| `remove_record` | Propose removing a record. |
-| `rename_record` | Propose renaming a record (renames the generated key enum + value struct). |
-| `resolve_proposal` | Confirm / reject / revise a pending proposal; on confirm writes `state.toml` and regenerates artefacts. |
-| `save_memory` | Persist ideation context and rationale to `.aimdb/memory.md`. |
-| `reset_session` | Discard pending proposals and start over. |
-
 ## Schema Inference
 
 The MCP server can infer JSON schemas from record values:
@@ -425,29 +392,17 @@ The MCP server can infer JSON schemas from record values:
 
 ## Resources
 
-The server exposes two families of resources. Instance resources are discovered
-by scanning for Unix sockets, so their URIs are keyed by socket path:
+Instance resources are discovered by scanning for Unix sockets, so their URIs
+are keyed by socket path:
 
 - `aimdb://instances` — list of all discovered instances
 - `aimdb://instance/{socket_path}` — details about a specific instance
 - `aimdb://{socket_path}/records` — all records in an instance
 
-Architecture resources expose the `.aimdb/` design state used by the architecture
-agent:
-
-- `aimdb://architecture` — architecture overview
-- `aimdb://architecture/state` — full `state.toml` as JSON
-- `aimdb://architecture/conflicts` — conflicts vs. a live instance
-- `aimdb://architecture/conventions` — naming/design conventions
-- `aimdb://architecture/memory` — persisted ideation context (`memory.md`)
-
 ## Prompts
 
-The server provides 4 helper prompts (not available in `--public` mode):
+The server provides one helper prompt (not available in `--public` mode):
 
-- `architecture_agent` — drive the propose → resolve design workflow
-- `onboarding` — introduction and common usage patterns
-- `breaking_change_review` — review the impact of a proposed schema change
 - `troubleshooting` — guided diagnostics for connection/record issues
 
 ## Protocol Details
@@ -457,9 +412,9 @@ The server provides 4 helper prompts (not available in `--public` mode):
 - **Format**: NDJSON (newline-delimited JSON)
 
 ### Capabilities
-- **Tools**: ✓ (30 tools; 27 advertised by default, all 30 with `--allow-writes`, 3 in `--public` mode)
-- **Resources**: ✓ (instances + architecture families)
-- **Prompts**: ✓ (4 prompts)
+- **Tools**: ✓ (14 tools; 11 advertised by default, all 14 with `--allow-writes`, 3 in `--public` mode)
+- **Resources**: ✓ (instances and their records)
+- **Prompts**: ✓ (1 prompt)
 - **Sampling**: ✗ (not supported)
 - **Logging**: ✓ (stderr)
 
@@ -610,11 +565,9 @@ pub fn my_new_tool() -> Tool {
   instance (`set_record`, `reset_stage_profiling`, `reset_buffer_metrics`) are
   offered only with `--allow-writes`
 - Write operations (set) also require writable records on the instance
-- Architecture-editing tools are disabled in `--public` mode
 - No shell access or arbitrary code execution
 
 ### Data Privacy
-- Architecture state (`.aimdb/`) is stored locally
 - No network communication
 - All data stays on local machine
 

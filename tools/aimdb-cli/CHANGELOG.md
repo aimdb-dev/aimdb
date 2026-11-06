@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **`aimdb generate` (#411)** and the `aimdb-codegen` dependency. Write the
+  wiring in Rust as the AimDB usage guide shows and inspect the running
+  instance with `aimdb watch` / `aimdb record`.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added

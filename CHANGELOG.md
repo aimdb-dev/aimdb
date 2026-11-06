@@ -8,7 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note**: This is the global changelog for the AimDB project. For detailed changes to individual crates, see their respective CHANGELOG.md files:
 >
 > - [aimdb-core/CHANGELOG.md](aimdb-core/CHANGELOG.md)
-> - [aimdb-codegen/CHANGELOG.md](aimdb-codegen/CHANGELOG.md)
 > - [aimdb-data-contracts/CHANGELOG.md](aimdb-data-contracts/CHANGELOG.md)
 > - [aimdb-derive/CHANGELOG.md](aimdb-derive/CHANGELOG.md)
 > - [aimdb-cdr/CHANGELOG.md](aimdb-cdr/CHANGELOG.md)
@@ -31,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > - [tools/aimdb-mcp/CHANGELOG.md](tools/aimdb-mcp/CHANGELOG.md)
 
 ## [Unreleased]
+
+### Removed (breaking) — the `state.toml` toolchain
+
+- **`aimdb-codegen`, `aimdb generate` and the MCP architecture agent are gone
+  (#411).** The `.aimdb/state.toml` model printed Rust through templates the
+  compiler never checked, and it could not express `reg.input` / `reg.output`
+  or `connect` handles. Write the wiring in Rust as the
+  [usage guide](docs/aimdb-usage-guide.md) shows, check it with the compiler,
+  and inspect it with `aimdb-mcp` / `aimdb watch`. `aimdb-codegen` 0.4.1 is its
+  last release, and `make codegen-drift` is removed with it. Applications
+  built on `aimdb-core` are not affected.
+  ([aimdb-cli](tools/aimdb-cli/CHANGELOG.md),
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md))
 
 ## [3.0.0] - 2026-11-03
 

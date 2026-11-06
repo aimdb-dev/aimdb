@@ -1,6 +1,6 @@
 # Design: Extending aimdb-codegen to Generate Common Crates
 
-**Status:** Draft
+**Status:** Superseded — removed in [#411](https://github.com/aimdb-dev/aimdb/issues/411): `aimdb-codegen`, `aimdb generate` and the MCP architecture agent are deleted, and agents write the wiring in Rust.
 **Date:** 2025-02-25
 **Scope:** `aimdb-codegen` — extend Rust code generation to produce a complete,
 compilable `xx-xx-common` crate from `.aimdb/state.toml`
