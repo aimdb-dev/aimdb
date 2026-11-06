@@ -233,6 +233,8 @@ test: test-operational-events test-build-info-link
 	cargo test --package aimdb-sync --features log --test log_facade
 	@printf "$(YELLOW)  → Testing MQTT demo contracts (keys, aimdb.lock)$(NC)\n"
 	cargo test --package mqtt-connector-demo-common --features std
+	@printf "$(YELLOW)  → Testing embedded-check-fixture (contracts against aimdb.lock, migration chain)$(NC)\n"
+	cargo test --package embedded-check-fixture
 	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
 	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -369,8 +371,9 @@ clippy: clippy-operational-events
 	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net" --all-targets -- -D warnings
 	cargo clippy --package aimdb-embassy-adapter --no-default-features --features "alloc,net,embassy-sync,embassy-time" --lib -- -D warnings
 	@printf "$(YELLOW)  → Clippy on embedded-check-fixture (production and sim builds)$(NC)\n"
-	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features migratable -- -D warnings
-	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features migratable,sim -- -D warnings
+	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf -- -D warnings
+	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features sim -- -D warnings
+	cargo clippy --package embedded-check-fixture --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper (no_std)$(NC)\n"
@@ -562,10 +565,10 @@ test-embedded:
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,ros2
 	@printf "$(YELLOW)  → Checking aimdb-data-contracts (no_std + alloc + linkable-cdr) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-data-contracts --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc,linkable-cdr
-	@printf "$(YELLOW)  → Checking embedded-check-fixture (migration chain, sources and a transform_join on Embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --features migratable
+	@printf "$(YELLOW)  → Checking embedded-check-fixture (Linkable contracts, migration chain, sources, links and a transform_join on Embassy) on thumbv7em-none-eabihf target$(NC)\n"
+	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR)
 	@printf "$(YELLOW)  → Checking embedded-check-fixture (sim build: .simulate() on Embassy) on thumbv7em-none-eabihf target$(NC)\n"
-	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --features migratable,sim
+	cargo check --package embedded-check-fixture --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --features sim
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std minimal) on thumbv7em-none-eabihf target$(NC)\n"
 	cargo check --package aimdb-core --target thumbv7em-none-eabihf --target-dir $(EMBEDDED_CHECK_TARGET_DIR) --no-default-features --features alloc
 	@printf "$(YELLOW)  → Checking aimdb-core (no_std + alloc + remote) on thumbv7em-none-eabihf target$(NC)\n"
@@ -887,11 +890,12 @@ readme-check:
 # passing it vacuously. A positive control per crate asserts the sim build
 # DOES find `rand`, proving the tracer still traces. Also asserts `simulatable`
 # is not a default feature of the contracts crate (which would pull `rand` into
-# its own default graph).
+# its own default graph). `--target all` keeps target-specific dependencies,
+# such as the fixture's MCU-only Embassy wiring, in the graph.
 SIM_CRATES := embedded-check-fixture
 check-no-sim:
 	@printf "$(GREEN)Proving production graphs are simulation-free...$(NC)\n"
-	@tree_rand() { cargo tree -p "$$1" $$2 -e normal -i rand 2>&1; }; \
+	@tree_rand() { cargo tree -p "$$1" $$2 --target all -e normal -i rand 2>&1; }; \
 	assert_rand_free() { \
 		if out=$$(tree_rand "$$1" "$$2"); then \
 			printf "$(RED)✗ $$3$(NC)\n"; \

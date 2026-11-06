@@ -1,0 +1,22 @@
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "dew_point"
+version = 1
+shape = "sha256:a710b829e701cfc5b1d80fcf8720880b89e6b8688291dd3dbb0fb46eb1ad3414"
+
+[[contract]]
+name = "humidity"
+version = 1
+shape = "sha256:f95efd937b6996b3453c33097680de14e8786a068e37515ecca5b17ed65b92d0"
+
+[[contract]]
+name = "temperature"
+version = 1
+shape = "sha256:714d93a9bbeff7e3d3fff42ff7952f4bd063d1a440a5fb5ba75b80a84893e0ba"
+
+[[contract]]
+name = "temperature"
+version = 2
+shape = "sha256:50a78658af56e57f11eb1acda274403d18fdc859ac46a3e7fb52240cc6b049c0"

@@ -1,10 +1,20 @@
-//! Contracts as an application's contracts crate writes them.
+//! Contracts as an application's contracts crate writes them: JSON on the
+//! wire through `Linkable`, a migration chain for the older temperature
+//! schema, and every contract locked in `aimdb.lock`.
 
-use aimdb_data_contracts::{SchemaType, Streamable};
+use aimdb_data_contracts::{
+    Linkable, MigrationChain, MigrationError, MigrationStep, SchemaType, Streamable, WireFormat,
+};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "migratable")]
-use aimdb_data_contracts::{MigrationError, MigrationStep};
+// The same `NAME@VERSION` always has the same wire shape; the generated test
+// checks the catalog against `aimdb.lock`.
+aimdb_data_contracts::catalog! {
+    contracts: [TemperatureV1, TemperatureV2, Humidity, DewPoint],
+    helpers: [],
+}
 
 #[cfg(feature = "sim")]
 use aimdb_data_contracts::{RandomWalkParams, Simulatable};
@@ -45,14 +55,14 @@ impl SchemaType for TemperatureV2 {
 impl Streamable for TemperatureV2 {}
 
 /// Temperature, schema v1: a value and its unit.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Linkable)]
 pub struct TemperatureV1 {
     #[serde(default = "v1")]
     pub schema_version: u32,
     pub temp: f32,
     pub timestamp: u64,
     /// "C", "F" or "K".
-    pub unit: alloc::string::String,
+    pub unit: String,
 }
 
 fn v1() -> u32 {
@@ -65,10 +75,8 @@ impl SchemaType for TemperatureV1 {
 }
 
 /// v1 (value and unit) to v2 (Celsius).
-#[cfg(feature = "migratable")]
 pub struct TemperatureV1ToV2;
 
-#[cfg(feature = "migratable")]
 impl MigrationStep for TemperatureV1ToV2 {
     type Older = TemperatureV1;
     type Newer = TemperatureV2;
@@ -89,12 +97,11 @@ impl MigrationStep for TemperatureV1ToV2 {
             schema_version: 1,
             temp: v2.celsius,
             timestamp: v2.timestamp,
-            unit: alloc::string::String::from("C"),
+            unit: String::from("C"),
         })
     }
 }
 
-#[cfg(feature = "migratable")]
 aimdb_data_contracts::migration_chain! {
     type Current = TemperatureV2;
     version_field = "schema_version";
@@ -103,8 +110,22 @@ aimdb_data_contracts::migration_chain! {
     }
 }
 
+/// The current schema reads every version on the wire: a v1 payload is
+/// migrated through the chain, so old senders keep working.
+impl Linkable for TemperatureV2 {
+    const WIRE_FORMAT: WireFormat = WireFormat::Json;
+
+    fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        Self::migrate_from_bytes(data).map_err(|e| e.to_string())
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| e.to_string())
+    }
+}
+
 /// Relative humidity in percent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Linkable)]
 pub struct Humidity {
     pub percent: f32,
     pub timestamp: u64,
@@ -117,7 +138,7 @@ impl SchemaType for Humidity {
 impl Streamable for Humidity {}
 
 /// Dew point, derived from temperature and humidity.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Linkable)]
 pub struct DewPoint {
     pub celsius: f32,
     pub timestamp: u64,

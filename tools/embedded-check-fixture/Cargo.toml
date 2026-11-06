@@ -8,13 +8,23 @@ publish = false
 
 [features]
 default = []
-# A user-written migration chain, compiled `no_std` on Cortex-M.
-migratable = ["aimdb-data-contracts/migratable"]
 # The dev-tier simulation build. `rand` is the tracer `make check-no-sim` uses:
 # the default graph must not contain it, and this one must.
 sim = ["aimdb-data-contracts/simulatable", "dep:rand"]
 
 [dependencies]
+# JSON on the wire (`#[derive(Linkable)]`) and a migration chain, `no_std + alloc`.
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false, features = [
+    "linkable-json",
+    "migratable",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { version = "0.10.1", default-features = false, optional = true }
+
+# The Embassy wiring (`wiring.rs`) is built for the MCU only: the executor's
+# Cortex-M code does not build on the host, where the lock test runs.
+[target.'cfg(target_os = "none")'.dependencies]
 aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
     "alloc",
 ] }
@@ -22,6 +32,8 @@ aimdb-embassy-adapter = { path = "../../aimdb-embassy-adapter", default-features
     "alloc",
     "embassy-runtime",
 ] }
-aimdb-data-contracts = { path = "../../aimdb-data-contracts", default-features = false }
-serde = { workspace = true }
-rand = { version = "0.10.1", default-features = false, optional = true }
+
+[dev-dependencies]
+# `catalog!` checks `aimdb.lock` in this crate's tests; dev-only, so the
+# Cortex-M builds never see it.
+aimdb-data-contracts = { path = "../../aimdb-data-contracts", features = ["lock"] }
