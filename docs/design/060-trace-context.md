@@ -8,7 +8,11 @@ and across connectors that can carry them. Propagation goes through the
 existing transform, join and producer APIs. Together with the dependency
 graph, trace ID and depth let Rerun taps correlate writes and name parent
 candidates (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`,
-connector dispatch); additive on the wire (the graph shapes do not change).
+session engine, runtime adapters); additive on the wire (the graph shapes do
+not change). Ships as a 3.x minor release despite the breaks (§8.1).
+
+A throwaway prototype of phases 1 and 2 passed every test in §10 that it
+covered; its measurements are quoted in §4.3 and §5.
 
 ---
 
@@ -167,11 +171,32 @@ unchanged. Only origin writes need a new one:
 trace_id = salt (8 bytes) ‖ counter (8 bytes)
 ```
 
-The salt is taken once at `build()`: `getrandom` on Tokio,
-`crypto.getRandomValues` on WASM, and `.id_seed(u64)` on Embassy (a hardware
-RNG, or the chip ID mixed with a boot counter). Without a seed, an Embassy
-`build()` fails. The counter is a `portable_atomic::AtomicU64`. No RNG call
-per write.
+The salt is taken once at `build()`, from the runtime adapter, not from a
+`std` switch in core: several crates build core without `std` even on a
+hosted target, so a feature flag picks the wrong source.
+
+```rust
+pub trait RuntimeOps {
+    // …
+    /// A 64-bit seed for trace IDs, or `None` if the platform has no entropy.
+    fn id_seed(&self) -> Option<u64>;
+}
+```
+
+| Adapter | Seed |
+|---|---|
+| Tokio | OS randomness (`getrandom`) |
+| WASM | `crypto.getRandomValues` |
+| Embassy | from the adapter's configuration: a hardware RNG value, or the chip ID mixed with a persisted boot counter |
+| `test_support` runtimes | a fixed seed |
+
+`AimDbBuilder::id_seed(u64)` overrides the adapter, for reproducible IDs in
+tests. If neither supplies a seed, `build()` fails with a configuration
+error.
+
+The counter is a 64-bit atomic where the target has one and a critical
+section elsewhere (Cortex-M has no native 64-bit atomics). Only origin writes
+touch it; there is no RNG call per write.
 
 ### 4.3 Memory
 
@@ -179,6 +204,11 @@ per write.
 bytes. A 16-slot `f32` ring on Embassy goes from 256 to 640 bytes. The 058
 `size_of` assertions are updated; the allocation gates must show no added
 allocation.
+
+Measured in the prototype: no allocation added on the produce, consume,
+connector or AimX paths; `record.get` allocates 93 more bytes per call for
+its longer reply. On the host, an origin write takes about 14 ns longer
+(the ID counter) and a continued write about 3 ns.
 
 ## 5. Wire
 
@@ -205,8 +235,13 @@ One carrier value everywhere: `<trace_id as 32 hex>/<depth>`, e.g.
     `trace()` is `None`;
   - **ingesting** (inbound connector writing locally): the local write starts
     a trace.
+- A malformed field (bad hex, depth above 255, all-zero ID) is treated as
+  absent: the value is kept and its trace is `None`. The trace is advisory
+  and must never cost a value.
 - A receiver that ingests a traced value continues it: same ID, depth + 1.
-- About 45 bytes per value on AimX. No connector wraps the payload.
+- 45 bytes per value on AimX at depth 0–9, 46 at 10–99, 47 above (measured:
+  an `event` with a small value grows from 73 to 118 bytes). No connector
+  wraps the payload.
 
 ### 5.1 AimX outbound mirror writes
 
@@ -220,9 +255,31 @@ receiving dispatch passes only the value to `set_record_from_json`.
   `{"t":"write","topic":…,"trace":"<32 hex>/<depth>","payload":…}`. It gains
   no `ts`: the receiver stamps the write locally (058).
 - The mirror pump sends `msg.metadata.trace()`.
-- `Inbound::Write` and `Dispatch::write` carry an `Option<TraceContext>`
+- `Inbound::Write` and `Session::write` carry an `Option<TraceContext>`
   through to the record write, which continues it (depth + 1) or, without
   one, starts a trace.
+
+### 5.2 Session engine
+
+The trace travels in the session engine's own types, as new fields and
+parameters, not through defaulted `*_traced` methods: a default would let a
+session that does not override it drop traces silently.
+
+| Type | Change |
+|---|---|
+| `SubUpdate` | `trace: Option<TraceContext>` |
+| `Outbound::Event`, `Outbound::Snapshot` | `trace: Option<TraceContext>` |
+| `Inbound::Write` | `trace: Option<TraceContext>` |
+| `Session::write` | takes `trace: Option<TraceContext>` |
+| `Session::snapshots` | returns each value's trace |
+| `ClientHandle::write` | takes the trace; the mirror pump passes `msg.metadata.trace()` |
+
+Every `Session` implementation carries the trace: the AimX session and the
+WebSocket connector's session pass it to the record write. Inbound connectors
+call `InboundDispatch::dispatch_traced(topic, payload, trace)`; the ingest
+closure receives it through a new `TopicMatch::trace()` accessor, so
+`IngestFn` keeps its signature. `InboundDispatch::dispatch` remains for
+transports without a carrier.
 
 This is independent of open question 3, which is about `record.set` issued
 by a user or tool, not about mirror writes.
@@ -290,11 +347,27 @@ layout) is a separate design.
 |---|---|
 | Join handlers | `on_triggers` receives `DerivedWriter<O>` instead of `Producer<O>` |
 | `WriteMetadata` | 32 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
-| Connectors | inbound dispatch takes `Option<TraceContext>` |
-| Session engine | `Inbound::Write` and `Dispatch::write` carry an `Option<TraceContext>` |
-| Embassy | `build()` requires `.id_seed(…)` |
-| `Producer<T>` | additive: `produce_from` |
+| Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
+| Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
+| `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
+| `Producer<T>`, `InboundDispatch`, `TopicMatch` | additive: `produce_from`, `dispatch_traced`, `trace()` |
+| `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
+
+In the prototype, the only user code that had to change was the three
+weather-mesh join handlers (`produce` → `produce_from(…, trigger.metadata())`)
+and the codegen join stub (`Producer<O>` → `DerivedWriter<O>`).
+
+### 8.1 Release
+
+AimDB has no active user base to protect, so 060 ships as a minor release
+although it breaks APIs:
+
+- `aimdb-core` and the adapter and connector crates: 3.x minor.
+- `aimdb-client`: 0.9.0.
+- AimX protocol: the next minor after 059's 4.1. The wire change is additive.
+
+The CHANGELOG lists every row of the table above under "Breaking changes".
 
 ## 9. Phases
 
@@ -314,6 +387,11 @@ layout) is a separate design.
   `Producer::produce_from` continues one.
 - Every locally written value has `trace()` = `Some`.
 - Fixed seed gives identical IDs across runs; no all-zero ID.
+- Seeds: each adapter supplies one; `.id_seed()` overrides it; `build()`
+  fails without either; the `test_support` runtimes build without
+  `.id_seed()` (core's no_std test suites, `aimdb-data-contracts`).
+- A malformed `trace` field on a value or `write` frame keeps the value and
+  decodes as `None`.
 - **Legacy frame, both paths:** the same AimX value frame without `trace`
   - decoded twice by `aimdb-client` gives `None` both times;
   - ingested by an inbound connector gives a local write with a new trace at
@@ -322,7 +400,7 @@ layout) is a separate design.
   depth + 1.
 - **Mirror push:** instance A mirrors a record to instance B over AimX; B
   stores A's trace ID at A's depth + 1. A `write` frame without `trace`
-  starts a trace on B.
+  starts a trace on B. The same over the WebSocket connector.
 - `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
   fixture with a transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
@@ -354,12 +432,19 @@ layout) is a separate design.
    new trace. `DerivedWriter` makes it a compile error.
 7. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
+8. **Defaulted `*_traced` session methods** to keep the session engine
+   additive. A session that does not override them drops traces silently,
+   and the surface doubles. Rejected: new fields and parameters (§5.2).
+9. **Seed from a `std` feature switch in core.** In the prototype it failed
+   37 existing tests: crates such as `aimdb-data-contracts` and the WASM
+   adapter build core without `std` on hosted targets. Rejected: the
+   adapter supplies the seed (§4.2).
 
 ## 12. Open questions
 
 1. **Tokio MQTT backend.** Move to `rumqttc::v5` so it can carry traces?
-2. **Serial links.** Is about 45 bytes per value acceptable, or should Serial
-   leave the trace off by default?
+2. **Serial links.** Is 45 bytes per value (about 3.9 ms at 115,200 baud)
+   acceptable, or should Serial leave the trace off by default?
 3. **`record.set` with a trace.** Should a remote client be able to continue
    a trace, or does every remote set start one?
 4. **Typed single-input async transform.** Would make taps that write other
@@ -368,4 +453,4 @@ layout) is a separate design.
 5. **Exact parentage.** Does any consumer need the parent in the diamond
    case badly enough to pay 8 bytes per slot for a parent span ID?
 6. **Opt-out for small MCUs.** Is 24 bytes per slot acceptable everywhere, or
-   is a feature flag needed?
+   is a feature flag needed? (A 16-slot `f32` ring: 256 → 640 bytes.)
