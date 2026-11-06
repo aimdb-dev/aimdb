@@ -1,7 +1,7 @@
 # AimDB Makefile
 # Simple automation for common development tasks
 
-.PHONY: ros2-interop help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check codegen-drift check-no-sim check-no-globals check-toolchain-pin bench-gate
+.PHONY: ros2-interop help build test clean clean-embedded fmt fmt-check clippy doc all check test-embedded test-wasm wasm wasm-test wasm-test-deps examples deny audit security publish publish-check readme-check check-no-sim check-no-globals check-toolchain-pin bench-gate
 .DEFAULT_GOAL := help
 
 # Separate target dir for embedded checks so an interrupted example build
@@ -61,7 +61,6 @@ help:
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    ros2-interop         ros2:// against a ROS 2 distribution in Docker (DISTRO=lyrical)\n"
-	@printf "    codegen-drift        Compile codegen output against the workspace API\n"
 	@printf "    bench-gate           Assert connector allocation counts (b0_alloc_connector)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
@@ -135,8 +134,6 @@ build:
 		printf '%s\n' "$$out" | grep -iE '$(SYNC_NO_STD_FORBIDDEN)'; exit 1; \
 	fi
 	@printf "$(BLUE)✓ no_std graph is free of $(SYNC_NO_STD_FORBIDDEN)$(NC)\n"
-	@printf "$(YELLOW)  → Building codegen library$(NC)\n"
-	cargo build --package aimdb-codegen
 	@printf "$(YELLOW)  → Building CLI tools$(NC)\n"
 	cargo build --package aimdb-cli
 	@printf "$(YELLOW)  → Building MCP server$(NC)\n"
@@ -238,8 +235,6 @@ test: test-operational-events test-build-info-link
 	cargo test --package mqtt-connector-demo-common --features std
 	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
 	cargo test --package aimdb-sync --features data-contracts
-	@printf "$(YELLOW)  → Testing codegen library$(NC)\n"
-	cargo test --package aimdb-codegen
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
 	cargo test --package aimdb-cli
 	@printf "$(YELLOW)  → Testing CLI tools (YAML output)$(NC)\n"
@@ -299,7 +294,7 @@ test: test-operational-events test-build-info-link
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -308,7 +303,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-codegen aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 weather-mesh-common weather-hub weather-station-alpha weather-station-beta hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -387,8 +382,6 @@ clippy: clippy-operational-events
 	cargo clippy --package aimdb-client --no-default-features --features "transport-serial" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on client library (TCP transport arm)$(NC)\n"
 	cargo clippy --package aimdb-client --no-default-features --features "transport-tcp" --all-targets -- -D warnings
-	@printf "$(YELLOW)  → Clippy on codegen library$(NC)\n"
-	cargo clippy --package aimdb-codegen --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools$(NC)\n"
 	cargo clippy --package aimdb-cli --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on CLI tools (serial transport)$(NC)\n"
@@ -494,7 +487,6 @@ doc:
 	cargo doc --package aimdb-mqtt-connector --features "std" --no-deps
 	cargo doc --package aimdb-zenoh-connector --features "std" --no-deps
 	cargo doc --package aimdb-knx-connector --no-default-features --features "std" --no-deps
-	cargo doc --package aimdb-codegen --no-deps
 	cargo doc --package aimdb-cli --no-deps
 	cargo doc --package aimdb-mcp --no-deps
 	cargo doc --package aimdb-persistence --no-deps
@@ -780,7 +772,6 @@ publish-check:
 # through aimdb-client), and every workspace-internal one is now path-only, so
 # Cargo drops it from the packaged manifest.
 PUBLISH_ORDER := \
-	aimdb-codegen \
 	aimdb-derive \
 	aimdb-build-info \
 	aimdb-cdr \
@@ -891,13 +882,6 @@ readme-check:
 	cargo check --package readme-quickstart
 	@printf "$(GREEN)✓ README quickstart is in sync and compiles$(NC)\n"
 
-# Compiles aimdb-codegen's generated output (common crate, hub crate, flat
-# schema) against the local workspace so template drift against the real API
-# breaks loudly (design 038 §3.10 decision).
-codegen-drift:
-	@printf "$(GREEN)Checking codegen templates against the workspace API...$(NC)\n"
-	./tools/scripts/codegen-drift-check.sh
-
 # Prove that simulation code (the dev-tier `simulatable` contract) never
 # reaches a production binary. `rand` is the tracer: it is reachable iff
 # `simulatable` is enabled (aimdb-data-contracts/src/simulatable.rs).
@@ -937,8 +921,7 @@ check-no-sim:
 	printf "$(GREEN)✓ Production is simulation-free$(NC)\n"
 
 # No library crate may install a process-global on its host's behalf.
-# Applications may, so `tools/`, `examples/` and codegen's generated `main` are
-# not scanned. The one exception: the fork detector owns the runtime thread it
+# Applications may, so `tools/` and `examples/` are not scanned. The one exception: the fork detector owns the runtime thread it
 # protects. Syntax-aware fixtures verify production rejection and test exclusion.
 GLOBALS_SCANNED := aimdb-core aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-derive aimdb-client \
 	aimdb-tokio-adapter aimdb-embassy-adapter aimdb-wasm-adapter aimdb-sync \
@@ -996,7 +979,7 @@ check-toolchain-pin:
 	printf "$(GREEN)✓ Devcontainer and rust-toolchain.toml agree$(NC)\n"
 
 ## Convenience commands
-check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm deny readme-check codegen-drift check-no-sim check-no-globals
+check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm deny readme-check check-no-sim check-no-globals
 	@printf "$(GREEN)Comprehensive development checks completed!$(NC)\n"
 	@printf "$(BLUE)✓ Code formatting verified$(NC)\n"
 	@printf "$(BLUE)✓ Linter passed$(NC)\n"
@@ -1005,7 +988,6 @@ check: check-toolchain-pin fmt-check clippy test test-embedded test-wasm deny re
 	@printf "$(BLUE)✓ WASM target compatibility verified$(NC)\n"
 	@printf "$(BLUE)✓ Dependencies verified (deny)$(NC)\n"
 	@printf "$(BLUE)✓ README quickstart in sync and compiling$(NC)\n"
-	@printf "$(BLUE)✓ Codegen output compiles against the workspace$(NC)\n"
 	@printf "$(BLUE)✓ No library crate installs a process-global$(NC)\n"
 	@printf "$(BLUE)✓ Devcontainer and CI pinned to the same compiler$(NC)\n"
 
