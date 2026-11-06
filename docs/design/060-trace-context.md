@@ -66,7 +66,7 @@ through a `DerivedProducer<O>`:
 builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .transform::<Temperature, _>(TempKey::Calibrated, |t| {
-            t.task(|ctx, mut rx, producer| async move {
+            t.on_values(|ctx, mut rx, producer| async move {
                 while let Ok(temp) = rx.recv().await {        // Stamped<Temperature>
                     if temp.value.celsius > 80.0 {
                         producer.produce_from(Alarm::Overheat, temp.metadata());
@@ -291,7 +291,8 @@ host, a write that drew from the counter took about 14 ns longer and one
 that did not about 3 ns. The prototype guarded the counter with a lock; with
 a native atomic, and every write now drawing a span, the cost is re-measured
 in phase 1, including on Embassy (`embassy-bench-stm32h5`) with the 48-byte
-envelope against tracing off.
+envelope against tracing off. The 48 bytes are accepted; the benchmark
+documents the cost, it does not reopen the decision.
 
 ## 5. Wire
 
@@ -399,7 +400,10 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
   subscribers unchanged and drops them for 3.1.1 subscribers; the payload
   never changes. A retained message keeps its property, so a late subscriber
   continues the retained write's trace.
-- **Brokers that only speak 3.1.1:** open question 1.
+- **Brokers that only speak 3.1.1:** not supported. The Tokio backend
+  requires MQTT 5; a 3.1.1-only broker refuses the connection, and the
+  connector reports it as an MQTT version error naming the broker. Mosquitto
+  1.6+, EMQX, HiveMQ and AWS IoT Core speak MQTT 5.
 
 ## 6. Rerun taps and agents
 
@@ -449,8 +453,8 @@ layout) is a separate design.
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
 | `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
-| MQTT, Tokio backend | MQTT 5 instead of 3.1.1 (§5.3) |
-| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `task`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag` |
+| MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
+| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
@@ -472,7 +476,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 ## 9. Phases
 
 1. **Core:** envelope with span and parent, IDs and seeds, automatic
-   propagation in `map` / `with_state`, the single-input `task` body,
+   propagation in `map` / `with_state`, the single-input `on_values` body,
    `DerivedProducer` in joins, `Producer::produce_from`, the `trace-context`
    feature, tests on Tokio, Embassy and WASM. Enough for Rerun taps on one
    instance.
@@ -483,7 +487,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 
 ## 10. Tests
 
-- Source → `map` → `with_state` → `task` → join keeps one trace ID; depth
+- Source → `map` → `with_state` → `on_values` → join keeps one trace ID; depth
   grows by one per write; each write's `parent` is its cause's `span`.
 - Every write gets a new span; spans in one instance never repeat or are zero.
 - **Cross-instance identity, deterministic:** two instances whose seeds
@@ -493,7 +497,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   report `TagCollision` instead of storing `span == parent` silently.
 - `produce_origin` and `Producer::produce` start new traces with no parent;
   `Producer::produce_from` continues one.
-- `task`: typed receiver; zero, one and several writes per input; the graph
+- `on_values`: typed receiver; zero, one and several writes per input; the graph
   shows `Transform { input }`.
 - Every locally written value has `trace()` = `Some`.
 - Fixed seed gives identical IDs across runs.
@@ -521,7 +525,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   delivered untraced and counted as `trace_omitted`; one that does not fit
   without the property is rejected as oversize.
 - `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
-  fixture with a transform, a `task` and a join.
+  fixture with a transform, an `on_values` transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
 - **Exact parents:** in the diamond `Raw → A, Raw → B, A + B → C`, each write
   of `C` names the span of the write of `A` or `B` that triggered it; with
@@ -538,7 +542,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 1. **Merge `transform` and `transform_join` into one builder.** Changes the
    graph shapes on the wire and every transform call, and makes a
    single-input caller downcast its own declared type through the boxed join
-   path. Rejected: a typed `task` body on the existing single-input builder
+   path. Rejected: a typed `on_values` body on the existing single-input builder
    (§2.2).
 2. **Parent candidates from the graph instead of stored parents.** Costs
    nothing per slot, but is ambiguous in diamonds, which some pipelines
@@ -572,20 +576,17 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
     adapter build core without `std` on hosted targets. Rejected: the
     adapter supplies the seed (§4.2).
 
-## 12. Open questions
+## 12. Decisions
 
-1. **MQTT brokers that only speak 3.1.1.** After the move to MQTT 5, should
-   the Tokio backend keep a 3.1.1 mode without traces, selected per broker,
-   or require MQTT 5?
-2. **Name of the single-input async body.** `task` (used above) or another
-   name?
-3. **Envelope size on Embassy.** Exact cross-instance parents make
-   `WriteMetadata` 48 bytes (+40 per slot over 058; a 16-slot `f32` ring:
-   256 → 896 bytes). Settle after the phase-1 Embassy benchmark;
-   `trace-context` off remains the opt-out.
+All earlier open questions are settled:
 
-Decided since the previous revision: Tokio MQTT moves to MQTT 5; Serial
-leaves the trace off by default; every `record.set` starts a trace; the
-single-input async transform ships now; parents are exact (64-bit write
-identity: instance tag ‖ counter);
-`trace-context` off is the opt-out for small MCUs.
+| Question | Decision |
+|---|---|
+| Tokio MQTT backend | moves to MQTT 5 and requires it; no 3.1.1 mode |
+| Serial links | trace off by default; the connector's configuration turns it on |
+| `record.set` | every remote set starts a trace |
+| Single-input async transform | ships now, as `on_values` (§2.2) |
+| Parent identity | exact, across instances: 64-bit span ID = instance tag ‖ counter (§4.2) |
+| Envelope size | 48 bytes accepted everywhere; `trace-context` off is the opt-out for small MCUs |
+
+No open questions remain.
