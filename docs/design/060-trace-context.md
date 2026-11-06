@@ -7,8 +7,9 @@ trace ID, the write's own span ID, its parent's span ID, and a depth. It is
 carried in `WriteMetadata` (058) and propagated along derivations and across
 connectors that can carry it. Propagation goes through the existing
 transform, join and producer APIs, plus one new transform body for
-single-input async derivations. Rerun taps and agents get exact causal
-chains (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`, session
+single-input async derivations. Rerun taps get exact causal chains, and
+agents can follow them through the writes they captured or can still read
+(§6). Breaking for Rust APIs (join handlers, `WriteMetadata`, session
 engine, runtime adapters); additive on the wire (the graph shapes do not
 change). Ships as a 3.x minor release despite the breaks (§8.1).
 
@@ -29,8 +30,8 @@ IDs) passed every test in §10 that it covered; its measurements are quoted in
 | Field | Origin write | Derived write |
 |---|---|---|
 | `trace_id` (16 bytes) | new | the cause's |
-| `span` (4 bytes) | new | new |
-| `parent` (4 bytes) | none | the cause's `span` |
+| `span` (8 bytes) | new | new |
+| `parent` (8 bytes) | none | the cause's `span` |
 | `depth` (`u8`) | 0 | the cause's + 1, saturating at 255 |
 
 The stamp (058) says **when** a value was written here. The trace context
@@ -128,7 +129,7 @@ impl WriteMetadata {
 let t = reader.recv().await?;
 let tc = t.metadata().trace().expect("local writes always carry a trace");
 tc.trace_id();   // TraceId, Display = 32 hex chars
-tc.span();       // SpanId, Display = 8 hex chars
+tc.span();       // SpanId, Display = 16 hex chars
 tc.parent();     // Option<SpanId>: None for an origin
 tc.depth();      // u8
 ```
@@ -163,8 +164,9 @@ their 4.x shapes (`{"transform":{"input":…}}`,
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TraceId([u8; 16]);
 
+/// One write's identity: instance tag (high 32 bits) ‖ write counter (low 32).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpanId(NonZeroU32);
+pub struct SpanId(NonZeroU64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TraceContext {
@@ -202,21 +204,40 @@ trace: a remote client cannot continue one.
 
 ### 4.2 IDs
 
-The trace ID is W3C-sized (16 bytes), so a later OTEL exporter can use it
-unchanged. Span IDs are 32 bits: they only need to be unique within one
-trace, and two of them fit in the 8 bytes the exact parent may cost.
+The trace ID and the span ID are W3C-sized (16 and 8 bytes), so a later OTEL
+exporter can use both unchanged. A span ID identifies one write across every
+instance that takes part in a trace, and a parent field holds the parent's
+full span ID, including the instance it was written on:
 
 ```text
-counter  = instance counter, + 1 per write
-span     = mix32(salt32 ⊕ counter)          // bijective; 0 is skipped
-trace_id = salt (8 bytes) ‖ counter (8 bytes)   (origin writes only)
+counter  = instance write counter, starting at 1, + 1 per write
+span     = instance_tag (32 bits) ‖ counter (low 32 bits)
+trace_id = seed (8 bytes) ‖ counter (8 bytes)   (origin writes only)
 ```
 
-- Within one instance, span IDs are unique for 2³² writes. Two writes from
-  different instances in the same trace collide with probability about
-  k² / 2³³ for k such writes.
-- An OTEL exporter widens span IDs to W3C's 8 bytes by prefixing the
-  writing instance's salt.
+There is no mixing step: two instances with different tags can never produce
+the same span, whatever their counters. (A mixed 32-bit span cannot give
+that guarantee: `0x10 ⊕ 1` and `0x13 ⊕ 2` are the same input to the mix, so
+two instances can emit the same span, and a mirrored write can end up with
+`span == parent`.)
+
+**Guarantee.** Within one trace, two writes have different span IDs if
+
+1. the instances that wrote them have different instance tags, and
+2. no instance writes more than 2³² times while the trace is alive (the
+   counter's low 32 bits wrap after that).
+
+**Instance tags.** By default the tag is the high 32 bits of the instance's
+seed (below), so tags are distinct with probability at least 1 − n² / 2³³
+for n instances (100 instances: about 1 in 860,000 to collide).
+Deployments that need the guarantee without probability assign tags:
+`AimDbBuilder::instance_tag(u32)`, for example from a provisioning table.
+
+**Detecting a collision.** A write whose new span would equal its parent, or
+an inbound span that carries the instance's own tag with a counter the
+instance has not reached yet, can only come from two instances sharing a
+tag. The instance reports it (`TraceEvent::TagCollision`, counted with
+`observability`) and still writes the value.
 
 The salt is taken once at `build()`, from the runtime adapter, not from a
 `std` switch in core: several crates build core without `std` even on a
@@ -243,20 +264,23 @@ error.
 
 The counter is a 64-bit atomic where the target has one and a critical
 section elsewhere (Cortex-M has no native 64-bit atomics). Every write
-touches it; there is no RNG call per write.
+touches it; there is no RNG call per write. The seed fills the trace ID's
+first 8 bytes and, unless `instance_tag` overrides it, the instance tag.
 
 ### 4.3 Memory and time
 
-`WriteMetadata` grows from 8 to 40 bytes (8 stamp + 28 trace, padded to 8).
-Every buffer slot pays it:
+`WriteMetadata` grows from 8 to 48 bytes (8 stamp + 40 trace: 16 trace ID,
+8 span, 8 parent, 1 depth, padded to 8). Every buffer slot pays it:
 
 | `T` | `Stamped<T>` (058) | `Stamped<T>` (060) | Added per slot |
 |---|---|---|---|
-| `u8`, `f32`, `f64` | 16 | 48 | 32 |
-| 12 B, align 4 | 24 | 56 | 32 |
-| 24 B, align 8 | 32 | 64 | 32 |
+| `u8`, `f32`, `f64` | 16 | 56 | 40 |
+| 12 B, align 4 | 24 | 64 | 40 |
+| 24 B, align 8 | 32 | 72 | 40 |
 
-A 16-slot `f32` ring on Embassy goes from 256 to 768 bytes. With
+A 16-slot `f32` ring on Embassy goes from 256 to 896 bytes. 32-bit write
+identities would not save space: with the 8-byte stamp, the struct pads to
+48 bytes either way once a parent carries its instance. With
 `trace-context` off (§2.6), nothing changes. The 058 `size_of` assertions
 are updated; the allocation gates must show no added allocation.
 
@@ -266,14 +290,15 @@ allocation added on the produce, consume, connector or AimX paths;
 host, a write that drew from the counter took about 14 ns longer and one
 that did not about 3 ns. The prototype guarded the counter with a lock; with
 a native atomic, and every write now drawing a span, the cost is re-measured
-in phase 1.
+in phase 1, including on Embassy (`embassy-bench-stm32h5`) with the 48-byte
+envelope against tracing off.
 
 ## 5. Wire
 
 One carrier value everywhere:
-`<trace_id: 32 hex>/<depth>/<span: 8 hex>/<parent: 8 hex>`, with parent
-`00000000` for an origin. For example
-`4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d0/5a07b3f1`.
+`<trace_id: 32 hex>/<depth>/<span: 16 hex>/<parent: 16 hex>`, with parent
+`0000000000000000` for an origin. For example
+`4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d000000a1f/5a07b3f100000004`.
 
 | Connector | Carries it as |
 |---|---|
@@ -285,7 +310,7 @@ One carrier value everywhere:
 
 ```json
 {"t":"event","sub":"7","seq":42,"ts":81234567000,
- "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d0/5a07b3f1","data":{"celsius":21.5}}
+ "trace":"4bf92f3577b34da6a3ce929d0e0e4736/3/9c41e2d000000a1f/5a07b3f100000004","data":{"celsius":21.5}}
 ```
 
 - The field is optional: an older peer or a link with tracing off sends
@@ -301,8 +326,14 @@ One carrier value everywhere:
   advisory and must never cost a value.
 - A receiver that ingests a traced value continues it: same ID, depth + 1,
   a new span, and the sender's span as parent.
-- About 63 bytes per value on AimX (the prototype measured 45 for the ID and
-  depth alone; the two span IDs add 18). No connector wraps the payload.
+- About 79 bytes per value on AimX (the prototype measured 45 for the ID and
+  depth alone; the two span IDs add 34). No connector wraps the payload.
+- **The trace never costs a value.** A carrier with a size limit (an MQTT
+  broker's maximum packet size, a transport's frame limit) drops the trace
+  before it drops the value: if the value fits without the trace but not
+  with it, it is sent without one, and the omission is counted per route.
+  The receiver starts a trace, as for any untraced value. Only a value that
+  does not fit even without the trace is rejected.
 
 ### 5.1 AimX outbound mirror writes
 
@@ -357,9 +388,13 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
 - **Embassy backend (`mountain-mqtt`):** already speaks MQTT 5 and accepts up
   to 32 properties per inbound publish, but neither reads nor writes user
   properties. `deliver` reads `aimdb-trace`; `publish_staged` adds it.
-- **Cost:** the property adds about 68 bytes per publish (1 + 2 + 11 + 2 +
-  52). The embedded write ring and the broker's maximum packet size are
-  checked with the property included.
+- **Cost:** the property adds about 84 bytes per publish (1 + 2 + 11 + 2 +
+  68).
+- **Size limits:** the publish is sized with the property first. If it
+  exceeds the broker's maximum packet size or the embedded write ring, it is
+  sized again without the property; if it fits, it is sent untraced and
+  counted as `trace_omitted` on the route. Only a publish that does not fit
+  without the property is rejected as oversize (§5).
 - **Other subscribers:** an MQTT 5 broker forwards user properties to MQTT 5
   subscribers unchanged and drops them for 3.1.1 subscribers; the payload
   never changes. A retained message keeps its property, so a late subscriber
@@ -387,8 +422,13 @@ It shows the hop as known but not captured.
 Depth orders a trace across instances without comparing clocks, and is
 shown as a timeline. Depth saturating at 255 no longer affects parentage.
 
-Agents read the same through MCP: `get_record` returns span and parent, so an
-agent can walk a chain without guessing.
+Agents read the same through MCP: `get_record` returns the current value
+with its span and parent. An agent can follow a parent link only to a write
+it captured (a `watch` stream, a Rerun recording) or can still read: if the
+parent's record has been written again since, `get_record` returns the newer
+value, whose span does not match, and the agent reports the hop as no
+longer available instead of guessing. Looking up past writes by span is not
+part of this design.
 
 The Rerun integration itself (crate, mapping contracts to Rerun types,
 layout) is a separate design.
@@ -405,12 +445,12 @@ layout) is a separate design.
 | Area | Change |
 |---|---|
 | Join handlers | `on_triggers` receives `DerivedProducer<O>` instead of `Producer<O>` |
-| `WriteMetadata` | 40 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
+| `WriteMetadata` | 48 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
 | `build()` | fails when neither the adapter nor `.id_seed()` supplies a seed |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1 (§5.3) |
-| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch` | additive: `task`, `produce_from`, `dispatch_traced`, `trace()` |
+| `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `task`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
@@ -446,6 +486,11 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 - Source → `map` → `with_state` → `task` → join keeps one trace ID; depth
   grows by one per write; each write's `parent` is its cause's `span`.
 - Every write gets a new span; spans in one instance never repeat or are zero.
+- **Cross-instance identity, deterministic:** two instances whose seeds
+  collided under a 32-bit mix (`0x10 ⊕ 1`, `0x13 ⊕ 2`) get different spans;
+  A writes, B mirrors it, and B's span differs from its parent. Two
+  instances configured with the same `instance_tag` and aligned counters
+  report `TagCollision` instead of storing `span == parent` silently.
 - `produce_origin` and `Producer::produce` start new traces with no parent;
   `Producer::produce_from` continues one.
 - `task`: typed receiver; zero, one and several writes per input; the graph
@@ -471,9 +516,10 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 - Serial: no `trace` by default; present when turned on.
 - `record.set` always starts a trace.
 - **MQTT v5:** a publish carries `aimdb-trace`; a receiving instance continues
-  the trace; a publish without the property starts one; on Embassy, a publish
-  whose property pushes it past the broker's maximum packet size is rejected
-  and counted like any oversize publish.
+  the trace; a publish without the property starts one. A publish that fits
+  the broker's maximum packet size without the property but not with it is
+  delivered untraced and counted as `trace_omitted`; one that does not fit
+  without the property is rejected as oversize.
 - `graph.nodes` and `graph.edges` replies are byte-identical to 4.x for a
   fixture with a transform, a `task` and a join.
 - A value that is migrated on the inbound path keeps its trace.
@@ -481,7 +527,11 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   of `C` names the span of the write of `A` or `B` that triggered it; with
   that write missing from a recording, the parent is reported as known but
   not captured.
-- `size_of::<WriteMetadata>() == 40`; allocation gates unchanged.
+- **Agent follow-up:** after `Alarm` names a `Temperature` write as its
+  parent and `Temperature` is written again, `get_record("Temperature")`
+  returns a span that does not match, and the hop is reported as no longer
+  available.
+- `size_of::<WriteMetadata>() == 48`; allocation gates unchanged.
 
 ## 11. Alternatives considered
 
@@ -494,25 +544,30 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
    nothing per slot, but is ambiguous in diamonds, which some pipelines
    have, and agents cannot act on "one of these two". Rejected: store the
    parent span.
-3. **64-bit span IDs.** W3C-sized, but 16 bytes per slot instead of 8.
-   Uniqueness within one trace only needs 32 bits. Rejected; an OTEL
-   exporter widens them (§4.2).
-4. **Pick a parent by stamp order.** Wrong in the diamond case even with
+3. **32-bit span IDs mixed from salt and counter.** Saves 8 bytes per slot
+   (40 instead of 48), but two instances can feed the mix the same input, so
+   a span is not unique across instances and a parent cannot name its
+   instance.
+   Rejected: instance tag ‖ counter (§4.2).
+4. **Random 64-bit span IDs.** Needs an RNG call per write and is still only
+   probabilistically unique. Rejected: tags are drawn once, and can be
+   assigned for a hard guarantee.
+5. **Pick a parent by stamp order.** Wrong in the diamond case even with
    every write captured. Rejected.
-5. **Mint a trace ID in the client for untraced values.** Two reads of the
+6. **Mint a trace ID in the client for untraced values.** Two reads of the
    same stored value would report different IDs. Rejected: `None` on read,
    new ID only on local insertion.
-6. **Implicit "current trace"** (task-local). Not available on Embassy,
+7. **Implicit "current trace"** (task-local). Not available on Embassy,
    unclear across `.await`. The cause is an argument instead.
-7. **Sampling and a span sink.** No consumer needs them yet.
-8. **Plain `produce()` in joins and tasks.** A forgotten cause would silently
+8. **Sampling and a span sink.** No consumer needs them yet.
+9. **Plain `produce()` in joins and tasks.** A forgotten cause would silently
    start a new trace. `DerivedProducer` makes it a compile error.
-9. **Carry the trace inside the payload** where a protocol has no headers.
+10. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
-10. **Defaulted `*_traced` session methods** to keep the session engine
+11. **Defaulted `*_traced` session methods** to keep the session engine
     additive. A session that does not override them drops traces silently,
     and the surface doubles. Rejected: new fields and parameters (§5.2).
-11. **Seed from a `std` feature switch in core.** In the prototype it failed
+12. **Seed from a `std` feature switch in core.** In the prototype it failed
     37 existing tests: crates such as `aimdb-data-contracts` and the WASM
     adapter build core without `std` on hosted targets. Rejected: the
     adapter supplies the seed (§4.2).
@@ -524,8 +579,13 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
    or require MQTT 5?
 2. **Name of the single-input async body.** `task` (used above) or another
    name?
+3. **Envelope size on Embassy.** Exact cross-instance parents make
+   `WriteMetadata` 48 bytes (+40 per slot over 058; a 16-slot `f32` ring:
+   256 → 896 bytes). Settle after the phase-1 Embassy benchmark;
+   `trace-context` off remains the opt-out.
 
 Decided since the previous revision: Tokio MQTT moves to MQTT 5; Serial
 leaves the trace off by default; every `record.set` starts a trace; the
-single-input async transform ships now; parents are exact (32-bit span IDs);
+single-input async transform ships now; parents are exact (64-bit write
+identity: instance tag ‖ counter);
 `trace-context` off is the opt-out for small MCUs.
