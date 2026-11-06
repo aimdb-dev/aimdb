@@ -1,7 +1,7 @@
 # Architecture Agent — Data-Driven Design Tooling
 
 **Version:** 0.1
-**Status:** 📋 Proposed
+**Status:** Superseded — removed in [#411](https://github.com/aimdb-dev/aimdb/issues/411): `aimdb-codegen`, `aimdb generate` and the MCP architecture agent are deleted, and agents write the wiring in Rust.
 **Last Updated:** February 22, 2026
 **Milestone:** M11 — Architecture Agent
 **Depends On:** [009-M4-mcp-integration](009-M4-mcp-integration.md)

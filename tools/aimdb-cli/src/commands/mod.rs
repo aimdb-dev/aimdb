@@ -2,7 +2,6 @@
 //!
 //! This module contains the implementations for all CLI commands.
 
-pub mod generate;
 pub mod graph;
 pub mod instance;
 pub mod record;

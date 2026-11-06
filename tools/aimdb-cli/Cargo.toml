@@ -18,7 +18,6 @@ path = "src/main.rs"
 [dependencies]
 # AimDB client library
 aimdb-client = { version = "0.8.0", path = "../../aimdb-client" }
-aimdb-codegen = { version = "0.4.0", path = "../../aimdb-codegen" }
 
 # Core dependencies - reuse protocol types from aimdb-core.
 # `observability` keeps the optional RecordMetadata fields (signal_stats,

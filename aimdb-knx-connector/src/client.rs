@@ -275,8 +275,8 @@ pub async fn connection_task<B, D, S>(
         // the handshake for good; NAT is degraded but recovers.
         //
         // An unspecified IP is NAT too, not an address. Binding `0.0.0.0` is the
-        // normal host default (it is what the demos, the doc example and
-        // `aimdb-codegen` all pass), and the socket then reports `0.0.0.0:port`
+        // normal host default (it is what the demos and the doc example pass),
+        // and the socket then reports `0.0.0.0:port`
         // — a real port paired with an IP that routes nowhere. Advertising that
         // verbatim is worse than either honest option: a gateway that honours
         // the HPAI sends its tunnel data into the void, while `0.0.0.0:0` is the
@@ -417,8 +417,8 @@ mod tests {
     /// The counterpart of the test above, for the bind address everything
     /// actually ships with.
     ///
-    /// `Ipv4Addr::UNSPECIFIED` is what the demos, the crate doc example and
-    /// `aimdb-codegen` all pass, so `local_addr()` reports `0.0.0.0:<port>`.
+    /// `Ipv4Addr::UNSPECIFIED` is what the demos and the crate doc example
+    /// pass, so `local_addr()` reports `0.0.0.0:<port>`.
     /// That must go out as the NAT HPAI (`0.0.0.0:0`), not as the port paired
     /// with an IP that routes nowhere — a gateway honouring the latter would
     /// send its tunnel data into the void.

@@ -5,7 +5,6 @@
 use crate::connection::ConnectionPool;
 use once_cell::sync::OnceCell;
 
-pub mod architecture;
 pub mod buffer_metrics;
 pub mod graph;
 pub mod instance;
@@ -54,12 +53,6 @@ pub(crate) fn resolve_endpoint(explicit: Option<String>) -> crate::error::McpRes
 }
 
 // Re-export tool functions
-pub use architecture::{
-    get_architecture, propose_add_binary, propose_add_connector, propose_add_record,
-    propose_add_task, propose_modify_buffer, propose_modify_fields, propose_modify_key_variants,
-    remove_binary, remove_record, remove_task, rename_record, reset_session, resolve_proposal,
-    save_memory, validate_against_instance,
-};
 pub use buffer_metrics::{get_buffer_metrics, reset_buffer_metrics};
 pub use graph::{graph_edges, graph_nodes, graph_topo_order};
 pub use instance::{discover_instances, get_instance_info};

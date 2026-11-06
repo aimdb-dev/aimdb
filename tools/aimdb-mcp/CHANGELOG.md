@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **The architecture agent (#411).** The 16 `state.toml` tools
+  (`get_architecture`, `propose_*`, `resolve_proposal`, `remove_*`,
+  `rename_record`, `validate_against_instance`, `save_memory`,
+  `reset_session`), the `aimdb://architecture*` resources, the
+  `architecture_agent`, `onboarding` and `breaking_change_review` prompts, and
+  the `aimdb-codegen` dependency. The server is introspection only: 14 tools,
+  11 offered by default. `--allow-writes` and `--public` are unchanged. Write
+  the wiring in Rust as the AimDB usage guide shows and inspect it with these
+  tools.
+
 ## [0.10.0] - 2026-11-03
 
 ### Added

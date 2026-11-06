@@ -55,9 +55,6 @@ jobs:
     - name: Check README quickstart drift
       run: make readme-check
 
-    - name: Check codegen template drift
-      run: make codegen-drift
-
     - name: Prove production is simulation-free
       run: make check-no-sim
 

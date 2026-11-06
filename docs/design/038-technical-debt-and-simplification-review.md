@@ -215,6 +215,8 @@ Move `aimdb-codegen` + the MCP `architecture`/`prompts` modules to their own rep
 
 > **Decision (2026-07-01): extraction deferred — both stay in the repo for now.** `aimdb-mcp` stays permanently (alongside `aimdb-cli`); `aimdb-codegen` stays at least until extraction is worth the disruption. The in-repo mitigation therefore becomes the *active* recommendation: add a CI job that compiles generated output against the workspace so template drift breaks loudly, and consider trimming the whole-project templates down to record/schema snippets. If codegen is extracted later, the MCP `architecture/` + `prompts/` modules must move **with** it — they are its main consumer, and leaving them behind would invert the coupling instead of removing it.
 
+> **Decision (2026-11-06): removed, not extracted ([#411](https://github.com/aimdb-dev/aimdb/issues/411)).** Since #388 (`reg.input` / `reg.output`, `builder.connect`) the Rust API is short enough to be the agent interface on its own, with mistakes reported by the compiler. `aimdb-codegen` (0.4.1 is its last release), `aimdb generate`, the MCP architecture tools, resources and `state.toml` prompts, and the codegen drift check are deleted with no migration. `aimdb-mcp` is now introspection only. Extraction was rejected because it would keep a second, unchecked model of the API alive in another repository.
+
 ### 3.11 Feature-flag consolidation — **~40 gates and a testable matrix, breaking for embedded fine-tuners**
 
 Current: 9 features, 183 `cfg` gates in core, with implication chains users must learn (`std → remote-access → json-serialize`, `connector-session` separate but required by aimx…). Collapse to five:
@@ -253,7 +255,7 @@ Respecting the 034 Phase-4 decision to stay monolithic: at minimum move the 5-cr
 | §3.4–§3.6 registry/traits/validation | ~520 | no | low | **implemented** |
 | §3.7–§3.8 API pruning | ~450 | mechanical | low | **implemented** |
 | §3.9 one protocol | ~1,500 | browser clients | medium–high | **implemented (design 047)** |
-| §3.10 extract agent | ~4,000 (relocated) | no | organizational | **deferred** — CI drift check implemented instead |
+| §3.10 extract agent | ~8,400 (removed) | `aimdb generate`, MCP architecture tools | organizational | **removed** (#411) — not extracted; drift check removed with it |
 | §3.11 features | (gates, not lines) | feature selectors | low | **implemented** as amended |
 | §3.12 examples/workspace | (build time) | no | low | **discarded for now** |
 
@@ -280,6 +282,8 @@ These are root causes, not symptoms — each explains a cluster of the findings 
 **D6 — Scope creep into product territory.** The architecture agent (TOML state machine + full-project codegen + MCP ideation sessions) is a genuinely interesting product that does not belong in the data-plane repo. It ties an LLM-workflow release cadence to the database's, and its string templates are the only "API consumers" in the workspace the compiler cannot check. The README drift (§2.6) is the small, visible version of the same failure mode.
 
 > **Decision (2026-07-01):** `aimdb-mcp` stays (alongside `aimdb-cli`); `aimdb-codegen` stays in the repo *for now* — extraction deferred. See the §3.10 decision for the active mitigation (CI drift check for generated code) and the constraint if extraction happens later (the MCP `architecture/`+`prompts/` modules move with codegen).
+>
+> **Update (2026-11-06):** superseded — the subsystem was removed instead of extracted (#411, see §3.10).
 
 **D7 — Encoding scale assumptions the system contradicts.** Five index structures and O(1)-everything rhetoric for a registry of ≤100 records that is immutable after startup; interned-and-leaked `Copy` keys with a debug-only misuse detector for keys created once at boot; `by_type` indexing for a lookup used only by introspection. The hot path (produce/consume) was correctly optimized via pre-resolved handles (029) — which made the registry's micro-optimizations irrelevant, and they stayed anyway.
 
