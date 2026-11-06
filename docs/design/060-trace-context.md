@@ -13,9 +13,9 @@ agents can follow them through the writes they captured or can still read
 engine, runtime adapters); additive on the wire (the graph shapes do not
 change). Ships as a 3.x minor release despite the breaks (§8.1).
 
-A throwaway prototype of phases 1 and 2 (trace ID and depth, without span
-IDs) passed every test in §10 that it covered; its measurements are quoted in
-§4.3 and §5.
+Two throwaway prototypes tested this design. The second implements all of
+it except Zenoh, the CLI/MCP display and Rerun; §13 lists what it showed, and
+its measurements are quoted in §4.3, §5 and §5.3.
 
 ---
 
@@ -154,6 +154,22 @@ off removes the trace from `WriteMetadata` (back to 8 bytes, §4.3),
 ignored. No ID seed is needed or read, so an Embassy build without an
 entropy source or `.id_seed()` works. This is the opt-out for MCUs that
 cannot spare the RAM.
+
+**What "on by default" reaches.** Cargo features unify across the
+application's dependency graph, so tracing is on when any crate in it enables
+`aimdb-core/trace-context`. The feature is in the default features of
+`aimdb-core`, `aimdb-embassy-adapter` and `aimdb-wasm-adapter`. But 25 of the
+44 crates in this workspace that depend on core do so with
+`default-features = false`, and every Embassy example and connector disables
+the Embassy adapter's defaults. In the prototype that left tracing off in
+all four Embassy examples and in `aimdb-bench`, silently. So:
+
+- **Applications that disable default features list `trace-context`.** The
+  Embassy examples do (phase 1), and the Embassy getting-started docs show
+  it with `with_id_seed(…)`.
+- **Library crates (connectors, `aimdb-data-contracts`) never enable or
+  disable it.** They follow the application.
+- **Benchmarks and tests that measure tracing enable it explicitly.**
 
 ## 3. Dependency graph
 
@@ -316,10 +332,20 @@ tests. With `trace-context` enabled, `build()` fails with a configuration
 error if neither supplies a seed. With it off, no seed is needed and none is
 read: a seedless Embassy build works.
 
-The counter is a 64-bit atomic where the target has one and a critical
-section elsewhere (Cortex-M has no native 64-bit atomics). Every write
-touches it; there is no RNG call per write. The seed fills the trace ID's
-first 8 bytes and, unless `instance_tag` overrides it, the instance tag.
+The counter is a 64-bit atomic where the target has one, and a
+`critical-section` lock elsewhere (Cortex-M has no native 64-bit atomics).
+It must be a critical section, not a spin lock: a record written from an
+interrupt handler while the main context holds a spin lock would deadlock a
+single-core MCU. (The prototype used a spin lock; it is not acceptable for
+the implementation.) Every write touches the counter; there is no RNG call
+per write. The seed fills the trace ID's first 8 bytes and, unless
+`instance_tag` overrides it, the instance tag.
+
+`RuntimeOps::id_seed` is a required method. In the prototype that meant six
+implementations (Tokio, Embassy, WASM, two `test_support` runtimes, one
+test stub). `EmbassyAdapter` gains a field for its seed, so it is no longer
+a unit struct: `EmbassyAdapter::new().with_id_seed(seed)`. The WASM adapter
+needs `web-sys`'s `Crypto` feature for `crypto.getRandomValues`.
 
 ### 4.3 Memory and time
 
@@ -338,15 +364,25 @@ identities would not save space: with the 8-byte stamp, the struct pads to
 `trace-context` off (§2.6), nothing changes. The 058 `size_of` assertions
 are updated; the allocation gates must show no added allocation.
 
-Measured in the prototype (trace ID and depth only, 32-byte metadata): no
-allocation added on the produce, consume, connector or AimX paths;
-`record.get` allocates 93 more bytes per call for its longer reply. On the
-host, a write that drew from the counter took about 14 ns longer and one
-that did not about 3 ns. The prototype guarded the counter with a lock; with
-a native atomic, and every write now drawing a span, the cost is re-measured
-in phase 1, including on Embassy (`embassy-bench-stm32h5`) with the 48-byte
-envelope against tracing off. The 48 bytes are accepted; the benchmark
-documents the cost, it does not reopen the decision.
+The sizes are compile-time assertions in `aimdb-core` (48 bytes with
+`trace-context`, 8 without), checked on the host, `thumbv7em-none-eabihf`
+and `wasm32-unknown-unknown`.
+
+Measured in the second prototype (48-byte envelope, native atomic counter,
+release build, host): a write takes about 10–12 ns longer than on `main`,
+origins and continued writes alike, since every write now draws a span.
+
+| Operation | `main` | prototype |
+|---|---|---|
+| `produce` (origin) | 104.7 ns | 116.2 ns |
+| `produce_from` | n/a | 115.0 ns |
+| `produce` + `try_recv` | 112.8 ns | 125.2 ns |
+
+No allocation is added on the produce, consume and connector paths
+(`aimdb-bench` B0 suites), nor on AimX subscription events. `record.get`
+gains one allocation per call (§5). The Embassy benchmark
+(`embassy-bench-stm32h5`) runs in phase 1 to document the MCU cost; the 48
+bytes are accepted, so it does not reopen the decision.
 
 ## 5. Wire
 
@@ -358,7 +394,7 @@ One carrier value everywhere:
 | Connector | Carries it as |
 |---|---|
 | AimX over TCP, UDS, WebSocket | optional `trace` field next to `ts` on every value |
-| AimX over Serial | off by default; the connector's configuration turns it on |
+| AimX over Serial | off by default: Serial uses `AimxCodecUntraced`, which sends no `trace` and ignores one it receives; choosing `AimxCodec` turns it on |
 | MQTT v5 (both backends, §5.3) | user property `aimdb-trace` |
 | Zenoh | attachment key `aimdb-trace` |
 | KNX | not carried |
@@ -381,8 +417,17 @@ One carrier value everywhere:
   advisory and must never cost a value.
 - A receiver that ingests a traced value continues it: same ID, depth + 1,
   a new span, and the sender's span as parent.
-- About 79 bytes per value on AimX (the prototype measured 45 for the ID and
-  depth alone; the two span IDs add 34). No connector wraps the payload.
+- 79 bytes per value on AimX at depth 0–9, 80 at 10–99, 81 above
+  (measured: an `event` with a small value grows from 73 to 152 bytes). No
+  connector wraps the payload.
+- **`record.get` must not gain an allocation.** The AimX encoder serializes
+  a reply frame with `serde_json::to_vec`, which starts at 128 bytes and
+  doubles. With the trace, a small `record.get` reply crosses 256 bytes
+  (190 → 268) and pays one more reallocation: in the prototype, 17 → 18
+  allocations per call and +704 bytes. The implementation assembles the
+  reply around the already exactly sized `{"value","ts","trace"}` object,
+  as subscription events already do, so the allocation gate holds.
+  Subscription events, which reuse their buffer, were unaffected.
 - **The trace never costs a value.** A carrier with a size limit (an MQTT
   broker's maximum packet size, a transport's frame limit) drops the trace
   before it drops the value: if the value fits without the trace but not
@@ -425,7 +470,10 @@ session that does not override it drop traces silently.
 | `ClientHandle::write` | takes the trace; the mirror pump passes `msg.metadata.trace()` |
 
 Every `Session` implementation carries the trace: the AimX session and the
-WebSocket connector's session pass it to the record write. Inbound connectors
+WebSocket connector's session pass it to the record write. For the
+WebSocket connector that reaches further than its `Session`: its fan-out bus
+(`ClientManager::broadcast`) and its late-join snapshot cache carry the trace
+too, and its public `Snapshot` type gains a field. Inbound connectors
 call `InboundDispatch::dispatch_traced(topic, payload, trace)`; the ingest
 closure receives it through a new `TopicMatch::trace()` accessor, so
 `IngestFn` keeps its signature. `InboundDispatch::dispatch` remains for
@@ -443,13 +491,26 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
 - **Embassy backend (`mountain-mqtt`):** already speaks MQTT 5 and accepts up
   to 32 properties per inbound publish, but neither reads nor writes user
   properties. `deliver` reads `aimdb-trace`; `publish_staged` adds it.
-- **Cost:** the property adds about 84 bytes per publish (1 + 2 + 11 + 2 +
-  68).
+- **Cost:** the property adds 84 bytes per publish (1 + 2 + 11 + 2 + 68;
+  measured: a small publish grows from 33 to 117 bytes).
 - **Size limits:** the publish is sized with the property first. If it
   exceeds the broker's maximum packet size or the embedded write ring, it is
   sized again without the property; if it fits, it is sent untraced and
   counted as `trace_omitted` on the route. Only a publish that does not fit
   without the property is rejected as oversize (§5).
+- **Oversize on the Tokio backend is new.** Today only the Embassy backend
+  skips oversize publishes. `rumqttc` sends any publish, and in the
+  prototype a publish over the broker's limit closed the whole connection;
+  publishes after it were lost until the reconnect. With MQTT 5 the broker
+  announces its maximum packet size in CONNACK, so the Tokio backend checks
+  each publish against it before sending, rejects an oversize one, and the
+  connection survives.
+- **Tested** against mosquitto 2.0.18 with both backends (the Embassy
+  backend over `TokioNet`): the receiver continues the publisher's trace
+  with its write as parent; with `max_packet_size 160`, a value that fits
+  only without the property arrives untraced and is counted; an oversize
+  value is rejected and a later publish still arrives. The 3.1.1 refusal
+  path is implemented but untested: no 3.1.1-only broker was available.
 - **Other subscribers:** an MQTT 5 broker forwards user properties to MQTT 5
   subscribers unchanged and drops them for 3.1.1 subscribers; the payload
   never changes. A retained message keeps its property, so a late subscriber
@@ -505,16 +566,19 @@ layout) is a separate design.
 | Join handlers | `on_triggers` receives `DerivedProducer<O>` instead of `Producer<O>` |
 | `WriteMetadata` | 48 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
-| Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
+| Runtime adapters | `RuntimeOps::id_seed()` (required); `EmbassyAdapter` is no longer a unit struct and takes its seed with `with_id_seed` |
+| WebSocket connector | its public `Snapshot` type gains the trace; its fan-out carries it (§5.2) |
+| Serial connector | its constructors return connectors over `AimxCodecUntraced` |
 | `build()` | with `trace-context` enabled, fails when neither the adapter nor `.id_seed()` supplies a seed |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
 | `TransformBuilder`, `Producer<T>`, `InboundDispatch`, `TopicMatch`, `AimDbBuilder` | additive: `on_values`, `produce_from`, `dispatch_traced`, `trace()`, `instance_tag`, `counter_start` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
-In the prototype, the only user code that had to change was the three
-weather-mesh join handlers (`produce` → `produce_from(…, trigger.metadata())`)
-and the codegen join stub (`Producer<O>` → `DerivedProducer<O>`).
+In the prototype, the user code that had to change was the join handlers
+(three weather-mesh stations, the Tokio and WASM join tests:
+`produce` → `produce_from(…, trigger.metadata())`) and the codegen join stub
+(`Producer<O>` → `DerivedProducer<O>`).
 
 ### 8.1 Release
 
@@ -532,12 +596,14 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 1. **Core:** envelope with span and parent, IDs and seeds, automatic
    propagation in `map` / `with_state`, the single-input `on_values` body,
    `DerivedProducer` in joins, `Producer::produce_from`, the `trace-context`
-   feature, tests on Tokio, Embassy and WASM. Enough for Rerun taps on one
-   instance.
+   feature and its listing in the Embassy examples (§2.6), tests on Tokio,
+   Embassy and WASM. Enough for Rerun taps on one instance.
 2. **AimX:** `trace` field on values and on mirror `write` frames, session
-   engine, client, CLI, MCP; Serial off by default. Enough for chains across
-   AimX-linked instances in both directions.
-3. **MQTT v5** on both backends, and **Zenoh**.
+   engine (WebSocket fan-out included), client, CLI, MCP; Serial off by
+   default; the `record.get` reply without an added allocation. Enough for
+   chains across AimX-linked instances in both directions.
+3. **MQTT v5** on both backends, with the Tokio oversize check, and
+   **Zenoh**.
 
 ## 10. Tests
 
@@ -611,7 +677,15 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   parent and `Temperature` is written again, `get_record("Temperature")`
   returns a span that does not match, and the hop is reported as no longer
   available.
-- `size_of::<WriteMetadata>() == 48`; allocation gates unchanged.
+- `size_of::<WriteMetadata>() == 48` (8 with `trace-context` off), asserted
+  at compile time on every target; allocation gates unchanged, including
+  `record.get`.
+- **Feature reach:** the Embassy examples build with `trace-context` on; a
+  benchmark that measures tracing fails if it builds without it.
+- **Counter on Cortex-M:** writing a record from an interrupt handler while
+  the main context writes does not deadlock.
+- **MQTT oversize (Tokio):** a publish over the broker's maximum packet size
+  is rejected before sending, and the connection survives it.
 
 ## 11. Alternatives considered
 
@@ -651,6 +725,9 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
     37 existing tests: crates such as `aimdb-data-contracts` and the WASM
     adapter build core without `std` on hosted targets. Rejected: the
     adapter supplies the seed (§4.2).
+13. **A spin lock for the counter on targets without 64-bit atomics.**
+    Simple, but deadlocks a single-core MCU when an interrupt handler writes
+    a record while the main context holds it. Rejected: `critical-section`.
 
 ## 12. Decisions
 
@@ -666,3 +743,33 @@ All earlier open questions are settled:
 | Envelope size | 48 bytes accepted everywhere; `trace-context` off is the opt-out for small MCUs |
 
 No open questions remain.
+
+## 13. Prototype results
+
+The second throwaway prototype implemented §2 to §5 except Zenoh and the
+CLI/MCP display. It was not merged.
+
+| Claim | Result |
+|---|---|
+| Propagation through `map`, `with_state`, `on_values` and joins; parent = cause's span | holds |
+| Exact parents in the diamond | holds, over 20 diamonds |
+| Cross-instance parents over AimX (UDS), both directions | holds |
+| Cross-instance parents over MQTT 5, both backends, real broker | holds |
+| Review example `0x10 ⊕ 1` / `0x13 ⊕ 2` | distinct spans |
+| Same tag, aligned counters | `TagCollision`, no self-parent |
+| Retained value after reboot | `TagCollision`, counter moved past it; none with `counter_start` |
+| Counter jump of 2³² | reproduces the old span undetected, as §4.2 states |
+| Counter wrap, tag zero | no zero span; `instance_tag(0)` fails `build()` |
+| `on_values` after lag | skips, reports, a later value still produces |
+| Seed rules; tracing off without a seed | hold; no_std suites pass with tracing on and off |
+| 48 / 8 bytes | asserted on host, Cortex-M, wasm32 |
+| Wire cost | AimX +79 bytes, MQTT +84 bytes |
+| Allocations | none added, except `record.get` (+1, fixed by §5) |
+| Write time | +10–12 ns per write on the host |
+| Existing suites | pass (987 tests in the touched crates), codegen drift passes |
+
+Findings that changed this document: tracing's reach through
+`default-features = false` (§2.6); a critical section, not a spin lock, for
+the counter (§4.2); the `record.get` allocation (§5); the WebSocket fan-out
+and snapshot cache (§5.2); the Tokio MQTT oversize check (§5.3); the
+adapter and connector API changes (§8).
