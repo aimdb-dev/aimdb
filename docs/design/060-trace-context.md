@@ -59,16 +59,16 @@ reg.transform::<Temperature, _>(TempKey::Raw, |t| t.map(|raw| Some(calibrate(raw
 
 A single-input transform gains an async body, next to `map` and
 `with_state`. It receives the input as typed `Stamped<I>` values and writes
-through a `DerivedWriter<O>`:
+through a `DerivedProducer<O>`:
 
 ```rust
 builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .transform::<Temperature, _>(TempKey::Calibrated, |t| {
-            t.task(|ctx, mut rx, writer| async move {
+            t.task(|ctx, mut rx, producer| async move {
                 while let Ok(temp) = rx.recv().await {        // Stamped<Temperature>
                     if temp.value.celsius > 80.0 {
-                        writer.produce_from(Alarm::Overheat, temp.metadata());
+                        producer.produce_from(Alarm::Overheat, temp.metadata());
                     }
                 }
             })
@@ -85,29 +85,29 @@ builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
 
 ### 2.3 Joins
 
-`on_triggers` handlers receive a `DerivedWriter<O>` instead of a
+`on_triggers` handlers receive a `DerivedProducer<O>` instead of a
 `Producer<O>`. `JoinTrigger` already carries the input's `WriteMetadata`:
 
 ```rust
 reg.transform_join(|b| b
     .input::<Temperature>(TempKey::Gamma)
     .input::<Humidity>(HumidityKey::Gamma)
-    .on_triggers(|mut rx, writer| async move {
+    .on_triggers(|mut rx, producer| async move {
         while let Ok(trigger) = rx.recv().await {
             // … update state …
-            writer.produce_from(dew_point(&t, &h), trigger.metadata());
+            producer.produce_from(dew_point(&t, &h), trigger.metadata());
         }
     }));
 ```
 
 ```rust
-impl<O> DerivedWriter<O> {
+impl<O> DerivedProducer<O> {
     pub fn produce_from(&self, value: O, cause: &WriteMetadata);
     pub fn produce_origin(&self, value: O);   // timer, timeout: an explicit choice
 }
 ```
 
-`DerivedWriter` has no plain `produce`, so a join or an async transform
+`DerivedProducer` has no plain `produce`, so a join or an async transform
 cannot forget its cause.
 
 ### 2.4 Producers
@@ -189,9 +189,9 @@ continues `c` with `parent = c.span`. Only
 
 | Writer | Cause |
 |---|---|
-| `Producer::produce`, `DerivedWriter::produce_origin` | `None` |
+| `Producer::produce`, `DerivedProducer::produce_origin` | `None` |
 | `map`, `with_state` | the input |
-| `Producer::produce_from`, `DerivedWriter::produce_from` | the given metadata |
+| `Producer::produce_from`, `DerivedProducer::produce_from` | the given metadata |
 | inbound connector with a trace on the wire | the wire trace |
 | AimX `write` from a peer's outbound mirror, with a trace | the wire trace (§5.1) |
 | inbound connector or AimX `write` without one, AimX `record.set`, persistence restore | `None` |
@@ -404,7 +404,7 @@ layout) is a separate design.
 
 | Area | Change |
 |---|---|
-| Join handlers | `on_triggers` receives `DerivedWriter<O>` instead of `Producer<O>` |
+| Join handlers | `on_triggers` receives `DerivedProducer<O>` instead of `Producer<O>` |
 | `WriteMetadata` | 40 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | Runtime adapters | `RuntimeOps::id_seed()`; Embassy takes its seed in the adapter configuration |
@@ -416,7 +416,7 @@ layout) is a separate design.
 
 In the prototype, the only user code that had to change was the three
 weather-mesh join handlers (`produce` → `produce_from(…, trigger.metadata())`)
-and the codegen join stub (`Producer<O>` → `DerivedWriter<O>`).
+and the codegen join stub (`Producer<O>` → `DerivedProducer<O>`).
 
 ### 8.1 Release
 
@@ -433,7 +433,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 
 1. **Core:** envelope with span and parent, IDs and seeds, automatic
    propagation in `map` / `with_state`, the single-input `task` body,
-   `DerivedWriter` in joins, `Producer::produce_from`, the `trace-context`
+   `DerivedProducer` in joins, `Producer::produce_from`, the `trace-context`
    feature, tests on Tokio, Embassy and WASM. Enough for Rerun taps on one
    instance.
 2. **AimX:** `trace` field on values and on mirror `write` frames, session
@@ -506,7 +506,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
    unclear across `.await`. The cause is an argument instead.
 7. **Sampling and a span sink.** No consumer needs them yet.
 8. **Plain `produce()` in joins and tasks.** A forgotten cause would silently
-   start a new trace. `DerivedWriter` makes it a compile error.
+   start a new trace. `DerivedProducer` makes it a compile error.
 9. **Carry the trace inside the payload** where a protocol has no headers.
    Breaks every non-AimDB consumer.
 10. **Defaulted `*_traced` session methods** to keep the session engine
