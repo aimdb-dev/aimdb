@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_persistence(backend, Duration::from_secs(7 * 24 * 3600));
 
     builder.configure::<Accuracy>("accuracy.vienna", |reg| {
-        reg.persist("accuracy.vienna");
+        reg.persist();
     });
 
     let db = builder.build().await?;

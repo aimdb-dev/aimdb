@@ -497,6 +497,14 @@ where
         self.extensions
     }
 
+    /// Returns the key this record is registered under.
+    ///
+    /// Extension crates use it to name per-record state; `aimdb-persistence`
+    /// stores a record's history under this key.
+    pub fn record_key(&self) -> &str {
+        &self.record_key
+    }
+
     /// Assigns a human-readable name to the stage registered immediately before
     /// this call (the most recent `.source()`, `.tap()`, or `.link_to()`).
     ///
