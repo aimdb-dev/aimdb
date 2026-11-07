@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **Obsolete AimX message types (#419).** `protocol::{Request, Response,
+  ErrorObject, Event}` are no longer re-exported; `aimdb-core` removed them.
+
 ## [0.8.0] - 2026-11-03
 
 ### Changed (breaking)

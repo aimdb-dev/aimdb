@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The crate's `build.rs` (#419). It checked a `metrics` feature that does not
+  exist and a `test-utils` requirement the manifest already enforces, and
+  nothing read the `feature_tokio` cfg it emitted.
+
 ## [0.8.0] - 2026-11-03
 
 ### Changed (breaking)

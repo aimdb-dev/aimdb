@@ -16,12 +16,9 @@ use tracing::debug;
 ///
 /// # Example
 /// ```rust,no_run
-/// # #[cfg(not(feature = "std"))]
-/// # {
 /// use aimdb_embassy_adapter::EmbassyAdapter;
 ///
 /// let adapter = EmbassyAdapter::new();
-/// # }
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct EmbassyAdapter;

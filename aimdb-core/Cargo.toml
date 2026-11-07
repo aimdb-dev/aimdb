@@ -10,7 +10,6 @@ readme = "README.md"
 description = "Type-safe async data pipelines — one Rust codebase from MCU to cloud"
 keywords = ["database", "async", "in-memory", "sync", "embedded"]
 categories = ["database-implementations", "asynchronous", "embedded"]
-build = "build.rs"
 
 [features]
 default = ["std", "alloc", "derive"]

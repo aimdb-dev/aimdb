@@ -6,9 +6,9 @@
 
 // Re-export protocol types from aimdb-core
 pub use aimdb_core::remote::{
-    version_compatible, BuildReply, ErrorObject, Event, HelloMessage, InstanceIdentityReply,
-    InstanceInfoReply, PostLinkChunk, PostLinkReply, RecordMetadata, Request, Response,
-    WelcomeMessage, POST_LINK_CHUNK_MAX, PROTOCOL_VERSION,
+    version_compatible, BuildReply, HelloMessage, InstanceIdentityReply, InstanceInfoReply,
+    PostLinkChunk, PostLinkReply, RecordMetadata, WelcomeMessage, POST_LINK_CHUNK_MAX,
+    PROTOCOL_VERSION,
 };
 
 /// Client identifier

@@ -9,7 +9,6 @@ homepage.workspace = true
 description = "Embassy async runtime adapter for AimDB embedded targets"
 keywords = ["embassy", "embedded", "async", "no_std", "runtime"]
 categories = ["embedded", "asynchronous", "no-std"]
-build = "build.rs"
 
 [features]
 default = ["alloc"]
@@ -44,10 +43,6 @@ net = [
 tracing = ["aimdb-core/tracing", "dep:tracing"]
 log = ["aimdb-core/log"]
 defmt = ["aimdb-core/defmt"]
-
-# Note: std feature is intentionally kept but will cause build.rs to fail if enabled
-# This provides clear error messages when accidentally enabled
-std = []
 
 # Observability: buffer introspection counters plus automatic stage profiling.
 # Backed by `aimdb-core`'s portable-atomic-based counters (with the
