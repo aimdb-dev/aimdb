@@ -202,8 +202,9 @@ Options:
 - `-f, --full`: Show full pretty-printed JSON for each event
 - `--format <table|json>`: `json` writes one NDJSON object per update on
   stdout and every status line on stderr
-- `--new`: Count only updates written after the watch is armed. Without it, a
-  `SingleLatest` record's current value can arrive first and pass as a new one.
+- `--new`: Count only updates written after the watch is armed. Without it, the
+  record's current value arrives first, as a snapshot followed by a
+  `📸 snapshot complete` line, and counts toward `--count`.
 - `--timeout <SECS>`: Give up after SECS. Exits 4 if `--count` updates have not
   arrived by then; with `--count 0` it is a normal end.
 

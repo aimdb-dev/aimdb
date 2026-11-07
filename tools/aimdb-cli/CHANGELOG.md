@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON output is unchanged: it already carries `schema_type` /
   `schema_version`.
 
+### Changed
+
+- **`aimdb watch <record>` starts with the record's current value as a
+  snapshot (#438),** followed by the `📸 snapshot complete` line. The value
+  arrived before too, as a plain first event; it still counts toward
+  `--count`, and `--new` still skips it.
+
 ### Removed (breaking)
 
 - **`aimdb generate` (#411)** and the `aimdb-codegen` dependency. Write the

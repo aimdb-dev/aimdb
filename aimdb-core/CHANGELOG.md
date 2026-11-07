@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which applies the defaults: `name` `#` and `limit` `DEFAULT_QUERY_LIMIT`
   (1). `QueryHandlerParams::limit` is now `usize`; a custom `QueryHandlerFn`
   that relied on `None` now receives 1.
+- **Wire: an exact-topic AimX subscribe sends a late-join snapshot (#438),**
+  as wildcard subscribes and WebSocket already do: the record's current
+  value as a `snap` frame, then events from `seq` 2. A record with no
+  current value (none written yet, or an `SpmcRing`) sends none. The value a
+  fresh reader starts on is no longer also sent as the first event, on exact
+  and wildcard subscribes alike.
 
 ### Removed
 

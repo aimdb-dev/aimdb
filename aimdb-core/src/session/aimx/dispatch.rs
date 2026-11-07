@@ -73,6 +73,7 @@ impl Dispatch for AimxDispatch {
             db: self.db.clone(),
             config: self.config.clone(),
             drain_readers: HashMap::new(),
+            pending_snapshots: Vec::new(),
         })
     }
 }
@@ -85,6 +86,9 @@ struct AimxSession {
     config: Arc<AimxConfig>,
     /// Per-record drain readers, created lazily on first `record.drain`.
     drain_readers: HashMap<String, Box<dyn JsonBufferReader + Send>>,
+    /// Late-join snapshots read by the last `subscribe`, handed to the engine
+    /// by `snapshots`, which it calls right after.
+    pending_snapshots: Vec<(String, Payload, crate::Stamp)>,
 }
 
 /// Internal dispatch result. Most methods still build a JSON tree; hot record
@@ -130,32 +134,23 @@ impl Session for AimxSession {
         // The engine owns the subscription lifecycle and the per-connection cap;
         // AimX has no async authorization, so this is a trivial wrapper.
         Box::pin(async move {
+            self.pending_snapshots.clear();
             if is_wildcard(topic) {
                 return Ok(self.subscribe_wildcard(topic));
             }
             // Exact-topic fast path: resolve one key, untagged updates.
-            let stream = crate::remote::stream::stream_record_updates(&self.db, topic)
-                .map_err(map_db_err)?;
+            let stream = self.record_stream(topic).map_err(map_db_err)?;
             Ok(Box::pin(
                 stream.map(|(data, ts, skipped)| SubUpdate::new(data, ts).with_skipped(skipped)),
             ) as BoxStream<'static, SubUpdate>)
         })
     }
 
-    fn snapshots(&mut self, topic: &str) -> Vec<(String, Payload, crate::Stamp)> {
-        // Late-join state for wildcard subscriptions: the current value of every
-        // matched record that has one. Exact-topic AimX subscribes stay
-        // event-only (unchanged wire for UDS/serial/TCP clients).
-        if !is_wildcard(topic) {
-            return Vec::new();
-        }
-        self.matched_keys(topic)
-            .into_iter()
-            .filter_map(|key| {
-                let sample = self.db.try_latest_as_json(&key)?;
-                Some((key, to_payload(&sample.value), sample.stamp()))
-            })
-            .collect()
+    /// The current value of every record the last `subscribe` covers that has
+    /// one, exact topic or wildcard alike. A record with none (nothing written
+    /// yet, or an `SpmcRing` buffer) sends no snapshot.
+    fn snapshots(&mut self, _topic: &str) -> Vec<(String, Payload, crate::Stamp)> {
+        core::mem::take(&mut self.pending_snapshots)
     }
 
     fn write<'a>(
@@ -194,10 +189,10 @@ impl AimxSession {
     /// One wildcard subscription fans in every matched record's update stream,
     /// each event tagged with the record that fired. Records without remote
     /// access are skipped — the subscription covers what can stream.
-    fn subscribe_wildcard(&self, pattern: &str) -> BoxStream<'static, SubUpdate> {
+    fn subscribe_wildcard(&mut self, pattern: &str) -> BoxStream<'static, SubUpdate> {
         let mut streams: Vec<BoxStream<'static, SubUpdate>> = Vec::new();
         for key in self.matched_keys(pattern) {
-            match crate::remote::stream::stream_record_updates(&self.db, &key) {
+            match self.record_stream(&key) {
                 Ok(stream) => {
                     let tag: Arc<str> = Arc::from(key.as_str());
                     streams.push(Box::pin(stream.map(move |(data, ts, skipped)| {
@@ -216,6 +211,30 @@ impl AimxSession {
         // An empty match set yields a stream that ends immediately — with a
         // builder-frozen record set, "no matches now" is "no matches ever".
         Box::pin(futures_util::stream::select_all(streams))
+    }
+
+    /// Opens `key`'s update stream, then reads its current value into
+    /// `pending_snapshots`, in that order. A fresh reader may replay that same
+    /// value (a `SingleLatest` reader starts on it), so the stream drops
+    /// leading updates stamped at or before the snapshot: the client sees the
+    /// value once, as the snapshot. A write after the snapshot is stamped later
+    /// and streams as an event.
+    fn record_stream(
+        &mut self,
+        key: &str,
+    ) -> crate::DbResult<
+        impl futures_util::Stream<Item = (Payload, crate::Stamp, u64)> + Send + 'static,
+    > {
+        let stream = crate::remote::stream::stream_record_updates(&self.db, key)?;
+        let snapshot = self.db.try_latest_as_json_bytes(key).map(|sample| {
+            let ts = sample.stamp();
+            self.pending_snapshots
+                .push((key.to_string(), Payload::from(sample.value), ts));
+            ts
+        });
+        Ok(stream.skip_while(move |(_, ts, _)| {
+            core::future::ready(snapshot.is_some_and(|seen| *ts <= seen))
+        }))
     }
 
     /// Match the method and produce a tree or already-serialized JSON reply.
