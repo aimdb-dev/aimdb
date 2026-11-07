@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RecordRegistrar::record_key()` (#426), so extension crates can name
   per-record state after the record. `aimdb-persistence` uses it.
+- **`OutboundLatest` (#434):** each outbound link's current value, rendered on
+  demand through the link's topic writer and serializer, with the same route
+  ids as `OutboundRoutes`. Connectors build late-join snapshots from it
+  instead of caching what they sent. Records without a current value
+  (`SpmcRing`, or nothing written yet) render nothing.
 
 ### Changed (wire)
 

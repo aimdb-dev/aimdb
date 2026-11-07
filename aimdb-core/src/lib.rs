@@ -191,7 +191,8 @@ pub use connector::{TopicBuf, TopicOverflow, TopicWriter};
 // Router exports for connector implementations
 pub use inbound_dispatch::{InboundDispatch, InboundRouteInfo};
 pub use outbound::{
-    OutboundMessage, OutboundPayload, OutboundRoutes, RouteId, RouteInfo, RouteStats,
+    LatestMessage, OutboundLatest, OutboundMessage, OutboundPayload, OutboundRoutes, RouteId,
+    RouteInfo, RouteStats,
 };
 
 // Topic grammar for connectors with wildcard subscriptions

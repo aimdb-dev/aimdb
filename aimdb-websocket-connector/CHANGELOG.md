@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `record.query` reply drops `total` (#429)** and is `{"records": [...]}`,
   as on AimX. Use the length of `records` instead. Rows from the
   `QueryHandlerFn` are filtered by grant directly, without a JSON round trip.
+- **Late-join snapshots come from the record's current value (#434),** not
+  from a cache of what the server last sent. A snapshot is the record's
+  current value, serialized by its `ws://` link, on the topic that value
+  produces. Two consequences:
+  - `SpmcRing` records send no snapshot, as on AimX. Use `SingleLatest` for
+    records whose subscribers need the current value.
+  - With a topic writer, a record sends a snapshot only on its current topic,
+    not on every topic it has published to.
+
+  The per-topic cache, which grew with every distinct topic, is gone.
 
 ## [0.4.0] - 2026-11-03
 

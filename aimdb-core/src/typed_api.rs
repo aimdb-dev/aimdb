@@ -1589,9 +1589,63 @@ where
             })
         };
 
+        let topic_writer = link.topic_writer;
+        let has_topic_writer = topic_writer.is_some();
+
+        // Renders the record's current value through this link's topic writer
+        // and serializer, for late-join snapshots (`OutboundLatest`).
+        let latest_fn: crate::outbound::LatestFn = {
+            let record_key = self.record_key.clone();
+            let topic_writer = topic_writer.clone();
+            let serialize = serialize.clone();
+            let serialize_into = serialize_into.clone();
+            Arc::new(move |db: &AimDb, ctx: &crate::RuntimeContext| {
+                let sample = db
+                    .inner()
+                    .get_typed_record_by_key::<T>(&record_key)
+                    .ok()?
+                    .latest()?
+                    .into_stamped();
+
+                let topic = match &topic_writer {
+                    None => None,
+                    Some((capacity, writer)) => {
+                        let mut buf = alloc::vec![0u8; *capacity];
+                        let mut out = crate::connector::TopicBuf::new(&mut buf);
+                        let written = write_topic(&**writer, &sample.value, &mut out).ok()?;
+                        let len = out.len();
+                        // `TopicBuf` only ever holds whole `&str`s.
+                        written
+                            .then(|| String::from_utf8(buf[..len].to_vec()).ok())
+                            .flatten()
+                    }
+                };
+
+                let mut scratch =
+                    alloc::vec![0u8; serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity)];
+                let payload = match serialize_outbound(
+                    &serialize,
+                    serialize_into.as_ref().map(|(_, f)| f),
+                    ctx,
+                    &sample.value,
+                    &mut scratch,
+                )
+                .ok()?
+                {
+                    crate::outbound::StagedPayload::Scratch(len) => scratch[..len].to_vec(),
+                    crate::outbound::StagedPayload::Owned(bytes) => bytes,
+                };
+
+                Some(crate::outbound::Rendered {
+                    topic,
+                    payload,
+                    metadata: *sample.metadata(),
+                })
+            })
+        };
+
         // Subscribed when `OutboundRoutes` is built.
         let route_factory: crate::outbound::RouteFactoryFn = {
-            let topic_writer = link.topic_writer;
             Arc::new(move |db: &AimDb| {
                 let (topic_capacity, writer) = match &topic_writer {
                     Some((capacity, writer)) => (*capacity, Some(writer.clone())),
@@ -1612,7 +1666,7 @@ where
 
         // Named `out`, not `link`: `out.config = link.config` must read the
         // user's link, not the new one.
-        let mut out = ConnectorLink::new(url, route_factory);
+        let mut out = ConnectorLink::new(url, route_factory, latest_fn, has_topic_writer);
         out.config = link.config;
 
         // Routes are built later, when a connector builds its `OutboundRoutes`.
