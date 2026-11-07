@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RecordRegistrar::record_key()` (#426), so extension crates can name
   per-record state after the record. `aimdb-persistence` uses it.
 
+### Changed (wire)
+
+- **AimX `record.query` without a query handler returns `not_found` (#427),**
+  not `internal`, matching WebSocket. A handler that runs and fails still
+  returns `internal`.
+
 ## [3.0.0] - 2026-11-03
 
 ### Changed (breaking, wire)
