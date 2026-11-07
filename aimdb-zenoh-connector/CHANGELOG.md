@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ROS 2 examples and walkthrough (#421).** `ros2_gateway` keeps
+  `geometry_msgs/Twist` from `/cmd_vel` as a record and republishes it as
+  JSON on plain Zenoh, on one session, with AimX for `aimdb watch`.
+  `turtlesim_mcp` drives turtlesim with `GoTo`/`Stop` goals written over AimX,
+  for example by Claude through `aimdb-mcp`; a `transform_join` controller
+  turns goal and pose into `cmd_vel`. `zenoh_sub` prints a key expression's
+  samples. `docs/ros2-walkthrough.md` runs both, and `make ros2-interop`
+  checks them against Jazzy and Lyrical.
+
 ## [0.1.0] - 2026-11-03
 
 ### Added

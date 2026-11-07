@@ -14,6 +14,8 @@
 //! aimdb watch robot.cmd_vel
 //! cargo run -p aimdb-zenoh-connector --features std --example zenoh_sub -- 'telemetry/**'
 //! ```
+//!
+//! Walkthrough: `docs/ros2-walkthrough.md`.
 
 use std::sync::Arc;
 
@@ -78,8 +80,10 @@ async fn main() {
         .with_connector(zenoh)
         .with_connector(ros2)
         .with_connector(aimx);
+    // SingleLatest: the record is the robot's current command, which
+    // `aimdb record get` reads and a late `aimdb watch` receives first.
     builder.configure::<Twist>("robot.cmd_vel", |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
+        reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from("ros2://cmd_vel") // CDR, as a ROS subscription
             .linked_to_with("zenoh://telemetry/cmd_vel", Json); // JSON, plain Zenoh

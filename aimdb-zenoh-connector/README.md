@@ -156,7 +156,16 @@ cargo test -p aimdb-zenoh-connector --features std   # includes an in-process ro
 make ros2-interop DISTRO=lyrical                      # against real ROS 2, in Docker
 ```
 
-The examples `ros2_talker` and `ros2_listener` are a publisher and a
-subscription for trying the connector against a ROS 2 host.
+## Examples
+
+| Example | What it shows |
+|---|---|
+| `ros2_talker`, `ros2_listener` | A ROS publisher and a ROS subscription |
+| [`ros2_gateway`](examples/ros2_gateway.rs) | `geometry_msgs/Twist` from `/cmd_vel` kept as a record, republished as JSON on plain Zenoh on the same session, watched with `aimdb watch` |
+| [`turtlesim_mcp`](examples/turtlesim_mcp.rs) | turtlesim driven by goals written over AimX, for example by Claude through `aimdb-mcp`; an AimDB controller turns goal and pose into `cmd_vel` |
+| [`zenoh_sub`](examples/zenoh_sub.rs) | Prints the samples on a key expression, a stand-in for `z_sub` |
+
+[The ROS 2 walkthrough](https://github.com/aimdb-dev/aimdb/blob/main/docs/ros2-walkthrough.md)
+runs the gateway and the turtle step by step; `make ros2-interop` checks it.
 
 Design: [053 — Zenoh connector](https://github.com/aimdb-dev/aimdb/blob/main/docs/design/053-zenoh-connector.md).

@@ -159,8 +159,54 @@ $(cat "$watch_log")"
 watched=$(grep -c '"value":{"angular":{"x":0.0,"y":0.0,"z":0.3},"linear":{"x":0.5,"y":0.0,"z":0.0}}' "$watch_log" || true)
 [[ $watched -eq 3 ]] || fail "aimdb watch printed $watched of 3 Twists:
 $(cat "$watch_log")"
+# A watch that starts after the last message gets it as a snapshot.
+late=$("$AIMDB" --connect "unix://$socket" watch robot.cmd_vel --format json \
+    --count 1 --timeout 10 2>/dev/null) || fail "a late aimdb watch got no snapshot"
+grep -q '"linear":{"x":0.5' <<<"$late" || fail "the late snapshot is not the last Twist:
+$late"
 rm -f "$gateway_log" "$zenoh_log" "$watch_log"
 unset ROS_DOMAIN_ID
-echo "ok: gateway (ros2 topic pub, 3 of 3 republished as JSON, aimdb watch)"
+echo "ok: gateway (ros2 topic pub, 3 of 3 republished as JSON, aimdb watch, late snapshot)"
+
+# --- turtlesim_mcp (docs/ros2-walkthrough.md): a goal written over AimX
+# drives the turtle there; the controller's output refuses remote writes.
+docker run -d --name "$PREFIX-turtlesim" --network host \
+    -e QT_QPA_PLATFORM=offscreen "$IMAGE" ros2 run turtlesim turtlesim_node >/dev/null
+socket=$(mktemp -u /tmp/aimdb-interop-XXXXXX.sock)
+pilot_log=$(mktemp)
+ROS_DISTRO=$DISTRO AIMX_SOCKET=$socket "$EXAMPLES/turtlesim_mcp" >"$pilot_log" 2>&1 &
+PIDS+=($!)
+aimdb() { "$AIMDB" --connect "unix://$socket" "$@"; }
+
+# Prints the turtle's "x y", once turtle.pose holds a value.
+pose() {
+    aimdb record get turtle.pose 2>/dev/null \
+        | python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v["x"], v["y"])' 2>/dev/null
+}
+for _ in $(seq 1 30); do pose >/dev/null && break; sleep 1; done
+start=$(pose) || fail "turtle.pose never received /turtle1/pose:
+$(cat "$pilot_log")"
+
+aimdb record set turtle.goal '{"GoTo": {"x": 8.0, "y": 8.0}}' >/dev/null \
+    || fail "turtle.goal is not writable over AimX"
+arrived=
+for _ in $(seq 1 30); do
+    if pose | awk '{ exit !((($1-8)^2 + ($2-8)^2) < 0.1^2) }'; then
+        arrived=$(pose)
+        break
+    fi
+    sleep 1
+done
+[[ -n $arrived ]] || fail "the turtle did not reach (8, 8) from ($start), at ($(pose)):
+$(cat "$pilot_log")"
+
+if out=$(aimdb record set turtle.cmd_vel \
+    '{"linear":{"x":9.0,"y":0.0,"z":0.0},"angular":{"x":0.0,"y":0.0,"z":0.0}}' 2>&1); then
+    fail "turtle.cmd_vel accepted a remote write"
+fi
+grep -q 'denied' <<<"$out" || fail "the write to turtle.cmd_vel failed for another reason:
+$out"
+rm -f "$pilot_log"
+echo "ok: turtlesim_mcp (GoTo from ($start) to ($arrived), cmd_vel write denied)"
 
 echo "PASS ($DISTRO)"

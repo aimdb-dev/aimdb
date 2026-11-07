@@ -83,3 +83,7 @@ required-features = ["std"]
 [[example]]
 name = "zenoh_sub"
 required-features = ["std"]
+
+[[example]]
+name = "turtlesim_mcp"
+required-features = ["std"]
