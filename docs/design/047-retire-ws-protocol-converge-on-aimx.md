@@ -114,8 +114,8 @@ registration, which would be its own design.
   skipped (logged), matching "subscribe to what can stream". A wildcard that
   matches nothing yields an empty stream that ends immediately — with a
   frozen record set, "no matches now" is "no matches ever". Exact-topic
-  subscribe keeps its existing fast path and (unchanged) emits no snapshot
-  on the UDS/serial/TCP paths.
+  subscribe keeps its existing fast path. *Superseded by #438:* it now also
+  emits a snapshot of the record's current value, as WebSocket does.
 - Core stays pull-per-record (no fan-out bus — no_std targets must not pay a
   per-record pump); the WS server's `ClientManager` bus keeps per-event
   pattern matching for many-client fan-out.
