@@ -89,8 +89,8 @@ impl AuthHandler for DenyAuth {
     }
 }
 
-/// Grants everything to a client that asks via `?grant=all`, nothing to anyone
-/// else — one server, two very differently privileged clients. Only
+/// Grants everything to a client that asks via `?grant=all`, the single read
+/// pattern `p` to `?grant=p`, and nothing to anyone else. Only
 /// `authenticate` is overridden, so the read paths ride the trait defaults.
 struct GrantByQuery;
 impl AuthHandler for GrantByQuery {
@@ -98,15 +98,15 @@ impl AuthHandler for GrantByQuery {
         &'a self,
         request: &'a AuthRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Permissions, AuthError>> + Send + 'a>> {
-        let all = request
-            .query_params
-            .get("grant")
-            .is_some_and(|g| g == "all");
+        let grant = request.query_params.get("grant").cloned();
         Box::pin(async move {
-            Ok(if all {
-                Permissions::allow_all()
-            } else {
-                Permissions::default()
+            Ok(match grant.as_deref() {
+                Some("all") => Permissions::allow_all(),
+                Some(pattern) => Permissions {
+                    read_patterns: vec![pattern.to_string()],
+                    write_patterns: Vec::new(),
+                },
+                None => Permissions::default(),
             })
         })
     }
@@ -492,6 +492,54 @@ async fn server_query_without_handler_is_not_found() {
     assert_eq!(
         ws_recv_tag(&mut c, "reply").await,
         json!({"t":"reply","id":3,"err":"not_found"})
+    );
+}
+
+/// A client granted `sensors.*` gets only those rows from `record.query`.
+/// Filtering keeps or drops whole records, so a granted record keeps every row
+/// the handler returned for it (its full per-record limit).
+#[tokio::test]
+async fn query_rows_are_filtered_by_the_client_grant() {
+    let addr = free_addr();
+    let ws = WebSocketConnector::new().with_auth(GrantByQuery);
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(ws.bind(addr).path("/ws"));
+    let handler: QueryHandlerFn = Box::new(|_params| {
+        Box::pin(async {
+            let row = |topic: &str, ts| QueryRecord {
+                topic: topic.into(),
+                payload: json!(ts),
+                ts,
+            };
+            Ok(vec![
+                row("sensors.temp", 1),
+                row("ledger", 2),
+                row("sensors.hum", 3),
+                row("sensors.temp", 4),
+                row("ledger", 5),
+            ])
+        })
+    });
+    sb.extensions_mut().insert(handler);
+    let (_db, runner) = sb.build().await.expect("build db");
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+
+    let mut c = ws_connect_with(addr, "&grant=sensors.*").await;
+    ws_send(
+        &mut c,
+        json!({"t":"req","id":1,"method":"record.query","params":{"name":"#","limit":10}}),
+    )
+    .await;
+    let reply = ws_recv_tag(&mut c, "reply").await;
+    assert_eq!(
+        reply["ok"],
+        json!({"records": [
+            {"topic":"sensors.temp","payload":1,"ts":1},
+            {"topic":"sensors.hum","payload":3,"ts":3},
+            {"topic":"sensors.temp","payload":4,"ts":4},
+        ]})
     );
 }
 
