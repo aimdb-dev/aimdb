@@ -222,9 +222,8 @@ async fn wildcard_subscribe_fans_in_matching_records() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
-    // Drain events until the other matched record fires (the seeded record's
-    // current value may replay first — SingleLatest readers start warm). Every
-    // event must be topic-tagged and inside the pattern.
+    // Drain events until the other matched record fires. Every event must be
+    // topic-tagged and inside the pattern.
     let mut saw_berlin = false;
     for _ in 0..20 {
         match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
@@ -250,6 +249,81 @@ async fn wildcard_subscribe_fans_in_matching_records() {
     );
 
     drop(conn);
+}
+
+/// The stream's next update, failing the test after two seconds.
+async fn next(
+    stream: &mut aimdb_core::session::BoxStream<
+        'static,
+        Result<aimdb_client::RecordUpdate, aimdb_client::ClientError>,
+    >,
+) -> aimdb_client::RecordUpdate {
+    tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("an update within the timeout")
+        .expect("the stream is open")
+        .expect("not refused")
+}
+
+/// An exact-topic subscribe gets the record's current value as a snapshot,
+/// the same one a wildcard matching only that record gets, and then only
+/// later writes: the value the fresh reader starts on is not sent again.
+/// A ring, or a record with no value yet, gets no snapshot (#438).
+#[tokio::test]
+async fn exact_subscribe_sends_the_current_value_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let config = AimxConfig::uds_default().socket_path(sock.to_str().unwrap());
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    for (key, cfg) in [
+        ("temp.vienna", BufferCfg::SingleLatest),
+        ("empty", BufferCfg::SingleLatest),
+        ("ring", BufferCfg::SpmcRing { capacity: 16 }),
+    ] {
+        builder.configure::<Setting>(key, |reg| {
+            reg.buffer(cfg).with_remote_access();
+        });
+    }
+    let (db, runner) = builder.build().await.expect("build db");
+    tokio::spawn(runner.run());
+    for key in ["temp.vienna", "ring"] {
+        db.set_record_from_json(key, json!({ "level": 1 }))
+            .expect("seed");
+    }
+
+    let conn = AimxConnection::connect(sock.to_str().unwrap())
+        .await
+        .expect("connect");
+    let mut exact = conn.subscribe("temp.vienna").expect("subscribe");
+    let mut wildcard = conn.subscribe("temp.#").expect("subscribe");
+    let mut empty = conn.subscribe("empty").expect("subscribe");
+    let mut ring = conn.subscribe("ring").expect("subscribe");
+    // The server handles requests in order: once this replies, every
+    // subscription above is open and its snapshots are sent.
+    conn.get_record("temp.vienna").await.expect("get");
+
+    let snapshot = next(&mut exact).await;
+    assert_eq!(snapshot.value, Some(json!({ "level": 1 })));
+    assert!(snapshot.snapshot_end, "the only snapshot closes the burst");
+    let matched = next(&mut wildcard).await;
+    assert_eq!(
+        (&matched.topic, &matched.value, matched.ts),
+        (&snapshot.topic, &snapshot.value, snapshot.ts),
+        "exact and wildcard give the same snapshot"
+    );
+
+    for key in ["temp.vienna", "empty", "ring"] {
+        db.set_record_from_json(key, json!({ "level": 2 }))
+            .expect("write");
+    }
+    for stream in [&mut exact, &mut wildcard, &mut empty, &mut ring] {
+        let update = next(stream).await;
+        assert_eq!(update.value, Some(json!({ "level": 2 })), "{update:?}");
+        assert!(!update.snapshot_end, "a live event: {update:?}");
+    }
 }
 
 /// `record.get` on a ring (`SpmcRing`) record has no canonical latest, so it
