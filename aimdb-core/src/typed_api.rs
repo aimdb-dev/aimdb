@@ -1599,49 +1599,56 @@ where
             let topic_writer = topic_writer.clone();
             let serialize = serialize.clone();
             let serialize_into = serialize_into.clone();
-            Arc::new(move |db: &AimDb, ctx: &crate::RuntimeContext| {
-                let sample = db
-                    .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
-                    .ok()?
-                    .latest()?
-                    .into_stamped();
+            Arc::new(
+                move |db: &AimDb,
+                      ctx: &crate::RuntimeContext,
+                      accept: &dyn Fn(Option<&str>) -> bool| {
+                    let sample = db
+                        .inner()
+                        .get_typed_record_by_key::<T>(&record_key)
+                        .ok()?
+                        .latest()?
+                        .into_stamped();
 
-                let topic = match &topic_writer {
-                    None => None,
-                    Some((capacity, writer)) => {
-                        let mut buf = alloc::vec![0u8; *capacity];
-                        let mut out = crate::connector::TopicBuf::new(&mut buf);
-                        let written = write_topic(&**writer, &sample.value, &mut out).ok()?;
-                        let len = out.len();
-                        // `TopicBuf` only ever holds whole `&str`s.
-                        written
-                            .then(|| String::from_utf8(buf[..len].to_vec()).ok())
-                            .flatten()
+                    let topic = match &topic_writer {
+                        None => None,
+                        Some((capacity, writer)) => {
+                            let mut buf = alloc::vec![0u8; *capacity];
+                            let mut out = crate::connector::TopicBuf::new(&mut buf);
+                            let written = write_topic(&**writer, &sample.value, &mut out).ok()?;
+                            let len = out.len();
+                            // `TopicBuf` only ever holds whole `&str`s.
+                            written
+                                .then(|| String::from_utf8(buf[..len].to_vec()).ok())
+                                .flatten()
+                        }
+                    };
+                    // Serialize only for a topic the caller wants.
+                    if !accept(topic.as_deref()) {
+                        return None;
                     }
-                };
 
-                let mut scratch =
-                    alloc::vec![0u8; serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity)];
-                let payload = match serialize_outbound(
-                    &serialize,
-                    serialize_into.as_ref().map(|(_, f)| f),
-                    ctx,
-                    &sample.value,
-                    &mut scratch,
-                )
-                .ok()?
-                {
-                    crate::outbound::StagedPayload::Scratch(len) => scratch[..len].to_vec(),
-                    crate::outbound::StagedPayload::Owned(bytes) => bytes,
-                };
+                    let mut scratch = alloc::vec![0u8; serialize_into.as_ref().map_or(0, |(capacity, _)| *capacity)];
+                    let payload = match serialize_outbound(
+                        &serialize,
+                        serialize_into.as_ref().map(|(_, f)| f),
+                        ctx,
+                        &sample.value,
+                        &mut scratch,
+                    )
+                    .ok()?
+                    {
+                        crate::outbound::StagedPayload::Scratch(len) => scratch[..len].to_vec(),
+                        crate::outbound::StagedPayload::Owned(bytes) => bytes,
+                    };
 
-                Some(crate::outbound::Rendered {
-                    topic,
-                    payload,
-                    metadata: *sample.metadata(),
-                })
-            })
+                    Some(crate::outbound::Rendered {
+                        topic,
+                        payload,
+                        metadata: *sample.metadata(),
+                    })
+                },
+            )
         };
 
         // Subscribed when `OutboundRoutes` is built.

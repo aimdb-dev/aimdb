@@ -23,10 +23,16 @@ pub(crate) struct Rendered {
     pub(crate) metadata: crate::WriteMetadata,
 }
 
-/// Renders a link's current value. `None` if the record has no current value
-/// (none written yet, or an `SpmcRing` buffer), or if its topic does not fit
-/// or serializing it fails.
-pub(crate) type LatestFn = Arc<dyn Fn(&AimDb, &RuntimeContext) -> Option<Rendered> + Send + Sync>;
+/// Renders a link's current value. The topic is resolved first and passed to
+/// `accept` (`None`: the link's default topic); the value is serialized only
+/// if `accept` returns `true`. `None` if the record has no current value (none
+/// written yet, or an `SpmcRing` buffer), `accept` rejects the topic, or the
+/// topic does not fit or serializing fails.
+pub(crate) type LatestFn = Arc<
+    dyn Fn(&AimDb, &RuntimeContext, &dyn Fn(Option<&str>) -> bool) -> Option<Rendered>
+        + Send
+        + Sync,
+>;
 
 /// A link's current value, rendered by [`OutboundLatest::render`].
 #[derive(Debug, Clone)]
@@ -109,20 +115,24 @@ impl OutboundLatest {
         self.routes.get(id).map(|r| r.record_index)
     }
 
-    /// The topic route `id` always sends on, or `None` if a topic writer
-    /// picks it per value. Lets a caller skip rendering routes whose topic
-    /// cannot match.
-    pub fn fixed_topic(&self, id: RouteId) -> Option<&str> {
-        let route = self.routes.get(id)?;
-        (!route.has_topic_writer).then_some(&*route.default_topic)
-    }
-
     /// Route `id`'s current value, through its topic writer and serializer.
     /// `None` if the record has no current value, or the value's topic does
     /// not fit or it fails to serialize (the live path reports those).
     pub fn render(&self, id: RouteId) -> Option<LatestMessage> {
+        self.render_if(id, |_| true)
+    }
+
+    /// [`render`](Self::render), but only if `accept` takes the value's topic.
+    /// The value is serialized only after `accept` returns `true`, and a link
+    /// without a topic writer is checked before its value is even read, so
+    /// rejected routes cost next to nothing.
+    pub fn render_if(&self, id: RouteId, accept: impl Fn(&str) -> bool) -> Option<LatestMessage> {
         let route = self.routes.get(id)?;
-        let rendered = (route.render)(&self.db, &self.ctx)?;
+        if !route.has_topic_writer && !accept(&route.default_topic) {
+            return None;
+        }
+        let accept_topic = |topic: Option<&str>| accept(topic.unwrap_or(&route.default_topic));
+        let rendered = (route.render)(&self.db, &self.ctx, &accept_topic)?;
         Some(LatestMessage {
             record_index: route.record_index,
             topic: rendered

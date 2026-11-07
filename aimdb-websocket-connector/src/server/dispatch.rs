@@ -185,9 +185,8 @@ impl Session for WsSession {
             return Vec::new();
         }
 
-        // Each link the client may read, rendered from its record's current
-        // value. A link whose topic is fixed is skipped before rendering when
-        // that topic cannot match.
+        // Each link the client may read whose topic matches, rendered from its
+        // record's current value. Non-matching links are never serialized.
         let latest = &self.latest;
         (0..latest.len())
             .filter(|&id| {
@@ -195,13 +194,7 @@ impl Session for WsSession {
                     .record_index(id)
                     .is_some_and(|index| self.info.record_perms.is_allowed(index))
             })
-            .filter(|&id| {
-                latest
-                    .fixed_topic(id)
-                    .is_none_or(|fixed| aimdb_core::topic_matches(topic, fixed))
-            })
-            .filter_map(|id| latest.render(id))
-            .filter(|msg| aimdb_core::topic_matches(topic, &msg.topic))
+            .filter_map(|id| latest.render_if(id, |t| aimdb_core::topic_matches(topic, t)))
             .map(|msg| {
                 let ts = msg.stamp();
                 (msg.topic, Payload::from(msg.payload), ts)

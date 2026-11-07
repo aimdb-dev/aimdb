@@ -1026,6 +1026,54 @@ async fn topic_writer_snapshot_is_on_the_current_topic() {
     );
 }
 
+/// A subscribe serializes only the links whose topic matches: the topic is
+/// resolved first, then the value is serialized for a match.
+#[tokio::test]
+async fn snapshots_serialize_only_matching_links() {
+    static SERIALIZED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    let addr = free_addr();
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
+    sb.configure::<Inject>("counted", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_to("ws://_")
+            .with_topic_writer(128, InjectTopic)
+            .with_serializer(|_ctx, m: &Inject| {
+                SERIALIZED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(serde_json::to_vec(&m.payload).unwrap())
+            })
+            .finish();
+    });
+    let (db, runner) = sb.build().await.expect("build db");
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+
+    let mut c = ws_connect(addr).await;
+    // Subscribe first, so the live send is counted before the late joiner.
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"#"})).await;
+    ws_recv_tag(&mut c, "subscribed").await;
+    set(&db, "counted", json!({"topic": "a.x", "payload": 1}));
+    ws_recv_tag(&mut c, "event").await;
+    let live = SERIALIZED.load(std::sync::atomic::Ordering::SeqCst);
+
+    // A subscribe whose pattern the current topic does not match.
+    let mut late = ws_connect(addr).await;
+    ws_send(&mut late, json!({"t":"sub","id":2,"topic":"b.#"})).await;
+    ws_recv_tag(&mut late, "subscribed").await;
+    assert_eq!(SERIALIZED.load(std::sync::atomic::Ordering::SeqCst), live);
+
+    // A matching one serializes the value once more for its snapshot.
+    ws_send(&mut late, json!({"t":"sub","id":3,"topic":"a.#"})).await;
+    ws_recv_tag(&mut late, "snap").await;
+    assert_eq!(
+        SERIALIZED.load(std::sync::atomic::Ordering::SeqCst),
+        live + 1
+    );
+}
+
 // ── Golden wire frames (locks the exact on-the-wire JSON shape) ──────
 
 #[tokio::test]
