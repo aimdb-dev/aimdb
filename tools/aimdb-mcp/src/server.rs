@@ -190,7 +190,10 @@ impl McpServer {
             },
             Tool {
                 name: "list_records".to_string(),
-                description: "List all records from a specific AimDB instance. Returns metadata including buffer type, capacity, producer/consumer counts, and timestamps.".to_string(),
+                description: "List all records from a specific AimDB instance. Returns metadata including buffer type, capacity, producer/consumer counts, \
+                    and the declared data contract as schema_type and schema_version. Those two fields \
+                    are absent when the record was configured without a schema. Use get_record to \
+                    see an observed value.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -259,35 +262,6 @@ impl McpServer {
                         }
                     },
                     "required": [],
-                    "additionalProperties": false
-                }),
-            },
-            Tool {
-                name: "query_schema".to_string(),
-                description: "Get JSON schema and type information for a record.\n\n\
-                    Returns the data structure, field types, and metadata.\n\
-                    Use this before setting record values to understand expected format.\n\n\
-                    Schema is inferred from current value + database metadata.\n\n\
-                    💡 TIP: Field names like 'celsius', 'timestamp', 'sensor_id' carry semantic meaning.\n\
-                    If units or formats are unclear, ask the user for clarification.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "endpoint": {
-                            "type": "string",
-                            "description": "Endpoint URL (unix://PATH, serial://DEVICE?baud=N) or a bare path. Falls back to AIMDB_CONNECT env var if omitted."
-                        },
-                        "record_name": {
-                            "type": "string",
-                            "description": "Name of the record to query schema for (e.g., server::Temperature)"
-                        },
-                        "include_example": {
-                            "type": "boolean",
-                            "description": "Include current value as example (default: true)",
-                            "default": true
-                        }
-                    },
-                    "required": ["record_name"],
                     "additionalProperties": false
                 }),
             },
@@ -501,7 +475,6 @@ impl McpServer {
             "get_record" => tools::get_record(params.arguments).await?,
             "set_record" => tools::set_record(params.arguments).await?,
             "get_instance_info" => tools::get_instance_info(params.arguments).await?,
-            "query_schema" => tools::query_schema(params.arguments).await?,
             "drain_record" => tools::drain_record(params.arguments).await?,
             "graph_nodes" => tools::graph_nodes(params.arguments).await?,
             "graph_edges" => tools::graph_edges(params.arguments).await?,
@@ -627,7 +600,6 @@ mod tests {
             "get_record",
             "set_record",
             "get_instance_info",
-            "query_schema",
             "drain_record",
             "graph_nodes",
             "graph_edges",
@@ -648,6 +620,30 @@ mod tests {
                 known_tools.contains(tool),
                 "WRITE_TOOLS contains unknown tool: {tool}"
             );
+        }
+    }
+
+    /// `query_schema` was retired (#420): it is offered in no mode and a call
+    /// to it is an unknown tool.
+    #[tokio::test]
+    async fn query_schema_is_retired() {
+        for server in [
+            McpServer::new(),
+            McpServer::new().with_allow_writes(true),
+            McpServer::new().with_public_mode(true),
+        ] {
+            let names = tool_names(&server).await;
+            assert!(!names.iter().any(|n| n == "query_schema"), "{names:?}");
+
+            let params = ToolCallParams {
+                name: "query_schema".to_string(),
+                arguments: Some(json!({ "record_name": "r" })),
+            };
+            let err = server.handle_tools_call(params).await.unwrap_err();
+            let McpError::MethodNotFound(message) = err else {
+                panic!("expected MethodNotFound, got: {err:?}");
+            };
+            assert!(message.contains("Unknown tool: query_schema"), "{message}");
         }
     }
 

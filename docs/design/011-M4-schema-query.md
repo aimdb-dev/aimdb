@@ -1,10 +1,19 @@
 # Query Schema Tool - Design Document
 
 **Version:** 1.0  
-**Status:** ✅ Implemented  
+**Status:** ⛔ Superseded (#420)  
 **Created:** November 5, 2025  
 **Related Issue:** #43 (Phase 4 - Schema Query)  
 **Parent Doc:** [009-M4-mcp-integration.md](./009-M4-mcp-integration.md)
+
+> **Superseded.** `query_schema` was removed from `aimdb-mcp` in #420. It
+> inferred a schema from a single live value, so every field present was
+> marked required and an array's item type came from its first element, and
+> clients could mistake the output for the record's versioned contract.
+> Clients now use `list_records` (`schema_type` / `schema_version`, absent
+> when the record declares no schema) for the declared contract and
+> `get_record` (`{value, ts}`) for an observed value. The rest of this
+> document is kept unchanged as a historical record.
 
 ---
 

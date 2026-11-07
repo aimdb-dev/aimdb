@@ -10,7 +10,6 @@ pub mod graph;
 pub mod instance;
 pub mod profiling;
 pub mod record;
-pub mod schema;
 
 // Global connection pool (initialized once)
 static CONNECTION_POOL: OnceCell<ConnectionPool> = OnceCell::new();
@@ -58,4 +57,3 @@ pub use graph::{graph_edges, graph_nodes, graph_topo_order};
 pub use instance::{discover_instances, get_instance_info};
 pub use profiling::{get_stage_profiling, reset_stage_profiling};
 pub use record::{drain_record, get_record, list_records, set_record};
-pub use schema::query_schema;

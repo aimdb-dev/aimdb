@@ -68,6 +68,14 @@ struct RecordInfo {
     writable: bool,
     /// Number of outbound connector links
     outbound_connector_count: usize,
+    /// Declared data-contract schema name, when the record was configured
+    /// with one. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_type: Option<String>,
+    /// Version of the schema named by `schema_type`. Absent when the record
+    /// declares no schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_version: Option<u32>,
 }
 
 /// List all records from a specific AimDB instance
@@ -120,6 +128,8 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
             consumer_count: r.consumer_count,
             writable: r.writable,
             outbound_connector_count: r.outbound_connector_count,
+            schema_type: r.schema_type,
+            schema_version: r.schema_version,
         })
         .collect();
 
@@ -350,6 +360,39 @@ mod tests {
             stamped_json(&sample),
             json!({"value": {"c": 21.5}, "ts": 81})
         );
+    }
+
+    fn record_info(schema_type: Option<&str>, schema_version: Option<u32>) -> RecordInfo {
+        RecordInfo {
+            record_key: "temp.berlin".into(),
+            name: "Temperature".into(),
+            type_id: "0x1".into(),
+            buffer_type: "single_latest".into(),
+            buffer_capacity: None,
+            producer_count: 1,
+            consumer_count: 0,
+            writable: false,
+            outbound_connector_count: 0,
+            schema_type: schema_type.map(str::to_string),
+            schema_version,
+        }
+    }
+
+    /// `list_records` carries the declared contract when there is one.
+    #[test]
+    fn record_info_includes_declared_schema() {
+        let v = serde_json::to_value(record_info(Some("temperature"), Some(2))).unwrap();
+        assert_eq!(v["schema_type"], json!("temperature"));
+        assert_eq!(v["schema_version"], json!(2));
+    }
+
+    /// Records without a declared schema omit both fields.
+    #[test]
+    fn record_info_omits_absent_schema() {
+        let v = serde_json::to_value(record_info(None, None)).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("schema_type"));
+        assert!(!obj.contains_key("schema_version"));
     }
 
     #[tokio::test]
