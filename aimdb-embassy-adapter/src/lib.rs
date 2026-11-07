@@ -23,31 +23,27 @@ extern crate alloc;
 #[cfg(feature = "embassy-sync")]
 mod events;
 
-// Only include the implementation when std feature is not enabled
-// Embassy adapter is designed exclusively for no_std environments
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[cfg(feature = "embassy-sync")]
 pub mod buffer;
 
-#[cfg(not(feature = "std"))]
 mod runtime;
 
 // Force-`Send` helper for Embassy connectors (see module docs).
-#[cfg(not(feature = "std"))]
 pub mod send_wrapper;
 
 // Centralized Embassy connector helpers — the one audited
 // home for the single-core `unsafe` + `SendFutureWrapper`.
-#[cfg(all(not(feature = "std"), feature = "connectors"))]
+#[cfg(feature = "connectors")]
 pub mod connectors;
 
 // Embassy byte sources behind core's I/O traits that need no network stack —
 // a UART is not a socket, so it does not pay for one.
-#[cfg(all(not(feature = "std"), feature = "connector-io"))]
+#[cfg(feature = "connector-io")]
 pub mod io;
 
 // Embassy implementations of core's runtime-neutral I/O traits, so connector
 // crates stay runtime-neutral.
-#[cfg(all(not(feature = "std"), feature = "net"))]
+#[cfg(feature = "net")]
 pub mod net;
 
 /// Link stubs for **host** test binaries that touch the Embassy adapter:
@@ -103,19 +99,17 @@ macro_rules! host_test_stubs {
     };
 }
 
-#[cfg(not(feature = "std"))]
 pub use send_wrapper::SendFutureWrapper;
 
 // Runtime exports
-#[cfg(not(feature = "std"))]
 pub use runtime::EmbassyAdapter;
 
 // Buffer implementation exports
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[cfg(feature = "embassy-sync")]
 pub use buffer::EmbassyBuffer;
 
 // Re-export core types for convenience
-#[cfg(all(not(feature = "std"), feature = "embassy-runtime"))]
+#[cfg(feature = "embassy-runtime")]
 pub use embassy_executor::Spawner;
 
 /// Embassy-specific delay function
@@ -128,7 +122,7 @@ pub use embassy_executor::Spawner;
 ///
 /// # Example
 /// ```rust,no_run
-/// # #[cfg(all(not(feature = "std"), feature = "embassy-time"))]
+/// # #[cfg(feature = "embassy-time")]
 /// # {
 /// use aimdb_embassy_adapter::delay_ms;
 ///
@@ -137,7 +131,7 @@ pub use embassy_executor::Spawner;
 /// # }
 /// # }
 /// ```
-#[cfg(all(not(feature = "std"), feature = "embassy-time"))]
+#[cfg(feature = "embassy-time")]
 pub async fn delay_ms(ms: u64) {
     embassy_time::Timer::after(embassy_time::Duration::from_millis(ms)).await;
 }
@@ -149,16 +143,12 @@ pub async fn delay_ms(ms: u64) {
 ///
 /// # Example
 /// ```rust,no_run
-/// # #[cfg(not(feature = "std"))]
-/// # {
 /// use aimdb_embassy_adapter::yield_now;
 ///
 /// # async fn example() {
 /// yield_now().await;
 /// # }
-/// # }
 /// ```
-#[cfg(not(feature = "std"))]
 pub async fn yield_now() {
     // Embassy doesn't have a built-in yield_now, but we can simulate it
     // by using a very short timer delay
@@ -182,7 +172,7 @@ pub async fn yield_now() {
 /// by [`EmbassyBuffer`] with conservative default const generics
 /// (`CAP=16`, `SUBS=4`, `PUBS=4`, `WATCH_N=1`); use
 /// [`EmbassyRecordRegistrarExtCustom::buffer_sized`] for precise sizing.
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[cfg(feature = "embassy-sync")]
 pub trait EmbassyRecordRegistrarExt<T>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
@@ -212,7 +202,7 @@ where
 ///
 /// This enum allows explicit selection of buffer semantics when configuring
 /// Embassy buffers with custom const generics.
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[cfg(feature = "embassy-sync")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbassyBufferType {
     /// SPMC ring buffer - multiple consumers can read independently
@@ -232,7 +222,7 @@ pub enum EmbassyBufferType {
 ///
 /// These methods allow fine-grained control over Embassy buffer const generics,
 /// which is necessary for embedded systems with limited resources.
-#[cfg(all(not(feature = "std"), feature = "embassy-sync"))]
+#[cfg(feature = "embassy-sync")]
 pub trait EmbassyRecordRegistrarExtCustom<'a, T>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **The `std` feature (#419).** It existed only so `build.rs` could reject it:
+  enabling it panicked the build. Cargo now rejects `features = ["std"]`
+  itself; use `aimdb-tokio-adapter` on std hosts.
+
+### Removed
+
+- The crate's `build.rs` (#419). Apart from the `std` check, it emitted cfgs
+  nothing read (`no_std_enforced`, `feature_no_std`, `embedded_target`,
+  `core_available`) and a `--gc-sections` link argument that only reached this
+  crate's own test binaries. The `not(feature = "std")` gates in `lib.rs` go
+  with it.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added
