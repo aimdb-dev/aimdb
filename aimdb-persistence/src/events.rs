@@ -155,7 +155,7 @@ mod tests {
         };
         capture::with(observer.clone(), || {
             missing.configure::<u32>("missing", |reg| {
-                reg.persist("missing");
+                reg.persist();
             });
         });
         let mut builder = aimdb_core::AimDbBuilder::new()
@@ -163,11 +163,11 @@ mod tests {
             .with_persistence(Arc::new(BrokenBackend), core::time::Duration::from_secs(1));
         builder.configure::<u32>("value", |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
-                .persist("value");
+                .persist();
         });
         builder.configure::<Unencodable>("encode", |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
-                .persist("encode");
+                .persist();
         });
         let (db, runner) = builder.build().await.unwrap();
         let values = capture::future(observer.clone(), db.query_latest::<u32>("#", 1))

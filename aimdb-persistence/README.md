@@ -14,7 +14,7 @@ pluggable storage backend into the AimDB builder and query API:
 |---|---|
 | [`PersistenceBackend`] trait | Interface for concrete backends (SQLite, Postgres, …) |
 | `AimDbBuilderPersistExt` | `.with_persistence(backend, retention)` on the builder |
-| `RecordRegistrarPersistExt` | `.persist("my_record.key")` on record configuration |
+| `RecordRegistrarPersistExt` | `.persist()` on record configuration |
 | `AimDbQueryExt` | `.query_latest()` / `.query_range()` on a live `AimDb<R>` |
 
 For a concrete backend, add [`aimdb-persistence-sqlite`](../aimdb-persistence-sqlite/README.md).
@@ -65,10 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Opt individual records into persistence.
     builder.configure::<Accuracy>("accuracy.vienna", |reg| {
-        reg.persist("accuracy.vienna");
+        reg.persist();
     });
     builder.configure::<Accuracy>("accuracy.berlin", |reg| {
-        reg.persist("accuracy.berlin");
+        reg.persist();
     });
 
     let db = builder.build().await?;
@@ -136,11 +136,12 @@ builder.with_persistence(
 
 ```rust
 builder.configure::<MyRecord>("my_record.key", |reg| {
-    reg.persist("my_record.key");
-    // .persist() accepts anything that converts to String:
-    // reg.persist(format!("my_record.{}", city));
+    reg.persist();
 });
 ```
+
+History is stored under the record key (`my_record.key` here), so a history
+query returns rows with that key as their name.
 
 `T` must implement `serde::Serialize`. `.with_remote_access()` is **not**
 required — the persistence subscriber taps the typed buffer directly.

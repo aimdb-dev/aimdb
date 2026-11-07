@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`.persist()` takes no name (#426).** History is stored under the record
+  key, so `record.query` returns the key as `topic` and WebSocket clients
+  read history with the same grants as live values. Rows already written
+  under a custom name stay as they are; nothing new is written under them.
+
 ## [0.3.0] - 2026-11-03
 
 ### Changed (breaking)

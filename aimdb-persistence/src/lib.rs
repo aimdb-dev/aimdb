@@ -46,7 +46,7 @@
 //!
 //! builder.configure::<MyRecord>("my.record", |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 500 })
-//!        .persist("my.record");
+//!        .persist();
 //! });
 //!
 //! let (db, runner) = builder.build().await?;

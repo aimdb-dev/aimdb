@@ -23,15 +23,19 @@ where
     /// Spawns a background subscriber (via `.tap()`) that serializes each
     /// value to JSON and writes it to the configured backend. Retention is
     /// managed by the cleanup task registered during `with_persistence()`.
-    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T>;
+    ///
+    /// Rows are stored under the record key. That key is also the `topic` a
+    /// history query returns, so history is authorized against the same name
+    /// as live reads.
+    fn persist(&mut self) -> &mut RecordRegistrar<'a, T>;
 }
 
 impl<'a, T> RecordRegistrarPersistExt<'a, T> for RecordRegistrar<'a, T>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
-    fn persist(&mut self, record_name: impl Into<String>) -> &mut RecordRegistrar<'a, T> {
-        let record_name: String = record_name.into();
+    fn persist(&mut self) -> &mut RecordRegistrar<'a, T> {
+        let record_name = self.record_key().to_owned();
         // Retrieve the backend from the builder's Extensions TypeMap, if configured.
         let backend: Option<Arc<dyn PersistenceBackend>> = self
             .extensions()

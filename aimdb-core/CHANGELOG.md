@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest no longer declares, and nothing read the `feature_std`,
   `feature_no_std` or `embedded_target` cfgs it emitted.
 
+### Added
+
+- `RecordRegistrar::record_key()` (#426), so extension crates can name
+  per-record state after the record. `aimdb-persistence` uses it.
+
 ## [3.0.0] - 2026-11-03
 
 ### Changed (breaking, wire)
