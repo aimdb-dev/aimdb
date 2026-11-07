@@ -385,8 +385,8 @@ impl AimxSession {
     }
 
     /// `record.query`: resolve the persistence query handler registered in the
-    /// db's `Extensions` (absent → not configured) and return its handler
-    /// future.
+    /// db's `Extensions` and return its handler future. Without a handler,
+    /// history is not set up on this server: `NotFound`, as on WebSocket.
     ///
     /// Deliberately **not** an `async fn`: an `async fn(&self)` future would
     /// capture `&self` across its await, forcing `AimxSession: Sync` — which the
@@ -407,7 +407,7 @@ impl AimxSession {
             .db
             .extensions()
             .get::<crate::remote::QueryHandlerFn>()
-            .ok_or(RpcError::Internal)?;
+            .ok_or(RpcError::NotFound)?;
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
@@ -581,6 +581,22 @@ mod tests {
             "an omitted name must span every record, at every depth"
         );
     }
+
+    /// Without a query handler, history is not set up: `NotFound`, the same
+    /// answer the WebSocket transport gives (#427).
+    #[tokio::test]
+    async fn a_query_without_a_handler_is_not_found() {
+        let builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        let (db, _runner) = builder.build().await.expect("build db");
+
+        let dispatch = AimxDispatch::new(Arc::new(db), AimxConfig::uds_default());
+        let mut session = dispatch.open(&SessionCtx::default());
+        let reply = session.call("record.query", to_payload(&json!({}))).await;
+
+        assert_eq!(reply, Err(RpcError::NotFound));
+    }
+
     #[cfg(feature = "std")]
     #[tokio::test]
     async fn protocol_and_wildcard_failures_are_typed() {
