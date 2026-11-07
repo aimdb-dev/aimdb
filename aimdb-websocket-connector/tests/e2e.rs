@@ -31,8 +31,7 @@ use aimdb_data_contracts::{SchemaType, Streamable};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_websocket_connector::transport::WsDialer;
 use aimdb_websocket_connector::{
-    AuthError, AuthHandler, AuthRequest, Permissions, QueryFuture, QueryHandler, QueryRecord,
-    WebSocketConnector,
+    AuthError, AuthHandler, AuthRequest, Permissions, WebSocketConnector,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -109,28 +108,6 @@ impl AuthHandler for GrantByQuery {
             } else {
                 Permissions::default()
             })
-        })
-    }
-}
-
-struct OneRecordQuery;
-impl QueryHandler for OneRecordQuery {
-    fn handle_query<'a>(
-        &'a self,
-        _pattern: &'a str,
-        _from: Option<u64>,
-        _to: Option<u64>,
-        _limit: Option<usize>,
-    ) -> QueryFuture<'a> {
-        Box::pin(async {
-            Ok((
-                vec![QueryRecord {
-                    topic: "temp".into(),
-                    payload: json!(21.0),
-                    ts: 7,
-                }],
-                1,
-            ))
         })
     }
 }
@@ -434,11 +411,17 @@ async fn server_wildcard_late_join_snapshots_per_match() {
 #[tokio::test]
 async fn server_query_and_record_list() {
     let addr = free_addr();
-    let mut ws = WebSocketConnector::new().with_query_handler(OneRecordQuery);
+    let mut ws = WebSocketConnector::new();
     ws.register::<Temp>();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(ws.bind(addr).path("/ws"));
+    let handler: QueryHandlerFn = Box::new(|_params| {
+        Box::pin(async {
+            Ok(json!({"records": [{"topic":"temp","payload":21.0,"ts":7}], "total": 1}))
+        })
+    });
+    sb.extensions_mut().insert(handler);
     sb.configure::<Temp>("temp", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
@@ -497,7 +480,7 @@ async fn server_query_and_record_list() {
 async fn server_query_without_handler_is_not_found() {
     let (addr, _db) = spawn_default().await;
     let mut c = ws_connect(addr).await;
-    // No custom handler and no with_persistence → not_found (3-code vocabulary).
+    // No with_persistence → not_found (3-code vocabulary).
     ws_send(
         &mut c,
         json!({"t":"req","id":3,"method":"record.query","params":{"name":"*"}}),
@@ -522,8 +505,7 @@ async fn record_list_and_query_answer_to_the_client_grants() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(ws.bind(addr).path("/ws"));
 
-    // History on the *database*, as `with_persistence` registers it. No
-    // `with_query_handler` here, so this exercises the Extensions fallback.
+    // History on the *database*, as `with_persistence` registers it.
     let handler: QueryHandlerFn = Box::new(|_params| {
         Box::pin(async {
             Ok(json!({"records": [{"topic":"ledger","payload":42,"ts":1}], "total": 1}))

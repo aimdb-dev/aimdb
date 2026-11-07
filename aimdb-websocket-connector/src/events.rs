@@ -11,9 +11,6 @@ mod target {
 
 #[derive(Debug)]
 pub(crate) enum WebSocketEvent<'a> {
-    QueryHandlerFailed {
-        error: &'a str,
-    },
     PersistenceQueryFailed {
         error: &'a str,
     },
@@ -49,13 +46,6 @@ pub(crate) fn report(event: WebSocketEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-        WebSocketEvent::QueryHandlerFailed { error } => {
-            aimdb_core::log_warn!(
-                target: target::DISPATCH,
-                "record.query handler failed: {}",
-                error
-            );
-        }
         WebSocketEvent::PersistenceQueryFailed { error } => {
             aimdb_core::log_warn!(
                 target: target::DISPATCH,

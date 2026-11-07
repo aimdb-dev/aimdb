@@ -35,7 +35,7 @@ use super::{
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    session::{NoSnapshot, QueryHandler, Snapshot, SnapshotProvider},
+    session::{NoSnapshot, Snapshot, SnapshotProvider},
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -79,9 +79,6 @@ pub struct WebSocketConnectorBuilder {
     /// the WebSocket handshake without having to send a subscribe frame.
     /// Use `["#"]` to push all topics to every client.
     auto_subscribe_topics: Vec<String>,
-    /// Custom handler for `record.query` calls. `None` falls back to the
-    /// `QueryHandlerFn` that `with_persistence` registers in Extensions.
-    query_handler: Option<Arc<dyn QueryHandler>>,
     /// Registered streamable types for schema resolution.
     streamable_registry: StreamableRegistry,
 }
@@ -98,7 +95,6 @@ impl Default for WebSocketConnectorBuilder {
             channel_capacity: 256,
             additional_routes: None,
             auto_subscribe_topics: Vec::new(),
-            query_handler: None,
             streamable_registry: StreamableRegistry::new(),
         }
     }
@@ -242,17 +238,6 @@ impl WebSocketConnectorBuilder {
         self
     }
 
-    /// Plug in a custom handler for `record.query` calls (history retrieval).
-    ///
-    /// Without this, `record.query` delegates to the `QueryHandlerFn` that
-    /// `aimdb-persistence::with_persistence` registers in Extensions; with
-    /// neither, clients get `not_found`. Rows outside of client's permissions
-    /// and query pattern are not returned.
-    pub fn with_query_handler(mut self, handler: impl QueryHandler + 'static) -> Self {
-        self.query_handler = Some(Arc::new(handler));
-        self
-    }
-
     /// Register a [`Streamable`] type for WebSocket schema resolution.
     ///
     /// Each call monomorphizes closures that capture `T` for serialization,
@@ -333,7 +318,6 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
                 db: db.clone(),
                 client_mgr: client_mgr.clone(),
                 snapshot_provider,
-                query_handler: self.query_handler.clone(),
                 inbound,
                 schema_by_type,
                 auth: self.auth.clone(),

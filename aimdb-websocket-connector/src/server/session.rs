@@ -2,55 +2,16 @@
 //!
 //! The WS server rides `run_session` ([`aimdb_core::session::run_session`]) via
 //! [`super::dispatch`]; what lives here is the pluggable application surface the
-//! dispatch consumes:
+//! dispatch consumes: [`SnapshotProvider`] supplies the late-join current values
+//! for a subscription pattern.
 //!
-//! - [`QueryHandler`] — answers `record.query` calls from a persistence backend
-//!   (result rows are the shared [`QueryRecord`] vocabulary; without a custom
-//!   handler the dispatch falls back to the `QueryHandlerFn` that
-//!   `aimdb-persistence::with_persistence` registers in Extensions);
-//! - [`SnapshotProvider`] — supplies the late-join current values for a
-//!   subscription pattern.
+//! `record.query` has no WebSocket-specific hook. It is answered by the
+//! `QueryHandlerFn` in the database's Extensions (registered by
+//! `aimdb-persistence::with_persistence`), the same handler every transport uses.
 //!
 //! `record.list` rows are core's [`RecordMetadata`](aimdb_core::remote::RecordMetadata),
 //! shared with every other transport; the dispatch only stamps in the schema
 //! name core can't resolve.
-
-use core::future::Future;
-use core::pin::Pin;
-
-pub use aimdb_core::remote::QueryRecord;
-// Re-export so the builder/dispatch can use it easily.
-
-// ════════════════════════════════════════════════════════════════════
-// Query handler
-// ════════════════════════════════════════════════════════════════════
-
-/// Boxed future returned by [`QueryHandler::handle_query`].
-pub type QueryFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(Vec<QueryRecord>, usize), String>> + Send + 'a>>;
-
-/// Trait for handling `record.query` calls from WebSocket clients.
-///
-/// Implementations typically query a persistence backend and return matching
-/// records. The trait is async to support database I/O.
-pub trait QueryHandler: Send + Sync + 'static {
-    /// Execute a history query and return `(records, total_count)`.
-    /// `total_count` is limited to the handler's pattern match count,
-    /// and could be further restricted by clients'
-    /// [`Permissions::read_patterns`](crate::Permissions::read_patterns).
-    ///
-    /// - `pattern` — topic pattern (MQTT wildcards, `"*"` for all)
-    /// - `from` / `to` — time range (inclusive; units are the handler's
-    ///   contract — the persistence backend uses milliseconds since Unix epoch)
-    /// - `limit` — max records per matching topic
-    fn handle_query<'a>(
-        &'a self,
-        pattern: &'a str,
-        from: Option<u64>,
-        to: Option<u64>,
-        limit: Option<usize>,
-    ) -> QueryFuture<'a>;
-}
 
 // ════════════════════════════════════════════════════════════════════
 // Snapshot provider (late-join)
