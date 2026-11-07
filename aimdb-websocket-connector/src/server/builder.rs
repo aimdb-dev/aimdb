@@ -15,19 +15,18 @@
 //! ```
 
 use std::{
-    collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Instant,
 };
 
 use aimdb_data_contracts::Streamable;
 
-use aimdb_core::{ConnectorBuilder, Dispatch, ExactGrammar, InboundDispatch, OutboundRoutes};
+use aimdb_core::{
+    ConnectorBuilder, Dispatch, ExactGrammar, InboundDispatch, OutboundLatest, OutboundRoutes,
+};
 use axum::Router as AxumRouter;
-
-use aimdb_core::topic_matches;
 
 use super::{
     auth::{AuthHandler, DynAuthHandler, NoAuth},
@@ -35,7 +34,6 @@ use super::{
     dispatch::WsDispatch,
     http::{build_server_future, ServerState},
     registry::StreamableRegistry,
-    session::{NoSnapshot, Snapshot, SnapshotProvider},
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -145,9 +143,11 @@ impl WebSocketConnectorBuilder {
 
     /// Enable or disable late-join snapshots (default: `true`).
     ///
-    /// When enabled, a client that subscribes to a topic immediately receives
-    /// the current value (if one is available) as a `snapshot` message before
-    /// live `data` pushes start.
+    /// When enabled, a client that subscribes receives a `snap` frame for each
+    /// matching `ws://` link before live events start. The snapshot is the
+    /// record's current value, serialized by the link, on the topic that value
+    /// produces. A record without a current value (nothing written yet, or an
+    /// `SpmcRing` buffer) sends none.
     pub fn with_late_join(mut self, enabled: bool) -> Self {
         self.late_join = enabled;
         self
@@ -285,18 +285,11 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             // bus checks client permissions against.
             let outbound = OutboundRoutes::new(db, "ws")?;
 
-            // ── Late-join snapshot cache (only when enabled) ──────
-            let snapshot_map: Option<SnapshotCache> =
-                self.late_join.then(|| Arc::new(Mutex::new(HashMap::new())));
-
             // ── Client manager ────────────────────────────────────
             let client_mgr = ClientManager::new(self.channel_capacity.max(1));
 
-            // ── Build snapshot provider ──────────────────────────
-            let snapshot_provider: Arc<dyn SnapshotProvider> = match &snapshot_map {
-                Some(map) => Arc::new(DynMapSnapshot(map.clone())),
-                None => Arc::new(NoSnapshot),
-            };
+            // ── Late-join snapshots: each link's current value ───
+            let latest = OutboundLatest::new(db, "ws");
 
             // ── Schema names for record.list enrichment ───────────
             // Core builds each `record.list` row but can't map a `TypeId` to a
@@ -317,7 +310,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             let dispatch: Arc<dyn Dispatch> = Arc::new(WsDispatch {
                 db: db.clone(),
                 client_mgr: client_mgr.clone(),
-                snapshot_provider,
+                latest,
                 inbound,
                 schema_by_type,
                 auth: self.auth.clone(),
@@ -325,7 +318,7 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             });
 
             // ── Outbound: one broadcast loop pulls records → bus ────
-            let broadcast = run_broadcast(outbound, client_mgr.clone(), snapshot_map);
+            let broadcast = run_broadcast(outbound, client_mgr.clone());
 
             // ── Build Axum server future ──────────────────────────
             let state = ServerState {
@@ -351,51 +344,18 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
     }
 }
 
-/// Shared late-join cache: (RecordId, topic) → last serialized bytes and the
-/// stamp of the write they came from.
-pub(crate) type SnapshotCache = Arc<Mutex<HashMap<(usize, String), (Vec<u8>, aimdb_core::Stamp)>>>;
-
 /// Pull every outbound record update and fan it out to subscribed clients.
 ///
 /// The bus carries raw record-value bytes tagged with the topic, the
 /// record's index and the value's write stamp; each connection's AimX codec
-/// applies the `event` envelope (with `ts`) downstream. With late-join on, the latest bytes per (record, topic) are
-/// cached for snapshots first. Returns once every outbound route has closed.
-async fn run_broadcast(
-    mut outbound: OutboundRoutes,
-    client_mgr: ClientManager,
-    snapshot: Option<SnapshotCache>,
-) {
+/// applies the `event` envelope (with `ts`) downstream. Returns once every
+/// outbound route has closed.
+async fn run_broadcast(mut outbound: OutboundRoutes, client_mgr: ClientManager) {
     while let Some(msg) = outbound.next().await {
         let index = msg.route.record_index;
         let ts = msg.stamp();
-        let bytes = msg.payload.as_slice();
-        if let Some(map) = &snapshot {
-            map.lock()
-                .unwrap()
-                .insert((index, msg.topic.to_string()), (bytes.to_vec(), ts));
-        }
-        client_mgr.broadcast(msg.topic, index, bytes, ts).await;
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// Dynamic snapshot provider backed by the shared Mutex<HashMap>
-// ════════════════════════════════════════════════════════════════════
-
-/// Wrapper for SnapshotCache
-struct DynMapSnapshot(SnapshotCache);
-
-impl SnapshotProvider for DynMapSnapshot {
-    fn snapshots(&self, pattern: &str) -> Vec<Snapshot> {
-        let Ok(map) = self.0.lock() else {
-            return Vec::new();
-        };
-        map.iter()
-            .filter(|((_, topic), _)| topic_matches(pattern, topic))
-            .map(|((record_id, topic), (bytes, ts))| {
-                (*record_id, topic.clone(), bytes.clone(), *ts)
-            })
-            .collect()
+        client_mgr
+            .broadcast(msg.topic, index, msg.payload.as_slice(), ts)
+            .await;
     }
 }

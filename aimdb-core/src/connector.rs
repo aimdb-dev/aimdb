@@ -481,6 +481,13 @@ pub struct ConnectorLink {
 
     /// Builds the link's route for `OutboundRoutes`.
     pub(crate) route_factory: crate::outbound::RouteFactoryFn,
+
+    /// Renders the record's current value as this link would send it, for
+    /// `OutboundLatest`.
+    pub(crate) latest_fn: crate::outbound::LatestFn,
+
+    /// Whether a topic writer picks the topic per value.
+    pub(crate) has_topic_writer: bool,
 }
 
 impl Debug for ConnectorLink {
@@ -493,12 +500,20 @@ impl Debug for ConnectorLink {
 }
 
 impl ConnectorLink {
-    /// Creates a new connector link from a link address and route factory
-    pub(crate) fn new(url: LinkAddress, route_factory: crate::outbound::RouteFactoryFn) -> Self {
+    /// Creates a new connector link from a link address, its route factory
+    /// and its latest-value renderer.
+    pub(crate) fn new(
+        url: LinkAddress,
+        route_factory: crate::outbound::RouteFactoryFn,
+        latest_fn: crate::outbound::LatestFn,
+        has_topic_writer: bool,
+    ) -> Self {
         Self {
             url,
             config: Vec::new(),
             route_factory,
+            latest_fn,
+            has_topic_writer,
         }
     }
 }

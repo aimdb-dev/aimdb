@@ -162,6 +162,26 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
             })
             .finish();
     });
+    // Records with a current value, which late-join snapshots are built from
+    // (a ring like `inject` has none). Each sends on its own key.
+    for key in LATEST {
+        sb.configure::<Value>(key, |reg| {
+            reg.buffer(BufferCfg::SingleLatest)
+                .with_remote_access()
+                .link_to(&format!("ws://{key}"))
+                .with_serializer(|_ctx, v: &Value| Ok(serde_json::to_vec(v).unwrap()))
+                .finish();
+        });
+    }
+    // A current value whose topic its writer picks per value.
+    sb.configure::<Inject>("moving", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_to("ws://_")
+            .with_topic_writer(128, InjectTopic)
+            .with_serializer(|_ctx, m: &Inject| Ok(serde_json::to_vec(&m.payload).unwrap()))
+            .finish();
+    });
     let (db, runner) = sb.build().await.expect("build server db");
     let db = Arc::new(db);
     tokio::spawn(runner.run());
@@ -172,6 +192,14 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
 /// Default allow-all, late-join-on server.
 async fn spawn_default() -> (SocketAddr, Arc<AimDb>) {
     spawn(WebSocketConnector::new().with_late_join(true)).await
+}
+
+/// The fixture's `SingleLatest` records, each linked to `ws://<key>`.
+const LATEST: [&str; 3] = ["sensors.temp", "sensors.humidity", "t"];
+
+/// Write `value` to one of the [`LATEST`] records.
+fn set(db: &AimDb, key: &str, value: Value) {
+    db.set_record_from_json(key, value).expect("set");
 }
 
 /// Push `payload` to subscribers of `topic` (one outbound record update).
@@ -345,9 +373,8 @@ async fn server_two_subscriptions_and_unsubscribe() {
 #[tokio::test]
 async fn server_late_join_snapshot() {
     let (addr, db) = spawn_default().await;
-    // Produce the value first so the late-join cache holds it, then subscribe.
-    inject(&db, "sensors.temp", json!(99));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The snapshot is the record's current value at subscribe time.
+    set(&db, "sensors.temp", json!(99));
 
     let mut c = ws_connect(addr).await;
     ws_send(&mut c, json!({"t":"sub","id":4,"topic":"sensors.temp"})).await;
@@ -380,14 +407,13 @@ fn without_ts(mut frame: Value) -> (Value, u64) {
 #[tokio::test]
 async fn server_wildcard_late_join_snapshots_per_match() {
     let (addr, db) = spawn_default().await;
-    inject(&db, "sensors.temp", json!(1));
-    inject(&db, "sensors.humidity", json!(2));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    set(&db, "sensors.temp", json!(1));
+    set(&db, "sensors.humidity", json!(2));
 
     let mut c = ws_connect(addr).await;
     ws_send(&mut c, json!({"t":"sub","id":9,"topic":"sensors.#"})).await;
     assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"9"}));
-    // One snapshot per cached record under the pattern (order is map order),
+    // One snapshot per record under the pattern (in route order),
     // numbered 1..=N with only the final one flagged `last` — that flag is what
     // lets a client close out the burst without waiting for a live event.
     let mut snaps = Vec::new();
@@ -963,13 +989,97 @@ async fn stalled_client_does_not_block_a_healthy_one() {
     let _ = stalled.close(None).await;
 }
 
+/// A ring has no current value, so its links send no snapshot: the first
+/// frame after the ack is the next live event.
+#[tokio::test]
+async fn ring_records_send_no_snapshot() {
+    let (addr, db) = spawn_default().await;
+    inject(&db, "ring.x", json!(1));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut c = ws_connect(addr).await;
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"ring.x"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
+    inject(&db, "ring.x", json!(2));
+    let (event, _ts) = without_ts(ws_recv(&mut c).await);
+    assert_eq!(
+        event,
+        json!({"t":"event","sub":"1","seq":1,"topic":"ring.x","data":2})
+    );
+}
+
+/// With a topic writer, the snapshot is the current value on the topic that
+/// value produces; topics it published on earlier get none.
+#[tokio::test]
+async fn topic_writer_snapshot_is_on_the_current_topic() {
+    let (addr, db) = spawn_default().await;
+    set(&db, "moving", json!({"topic": "m.a", "payload": 1}));
+    set(&db, "moving", json!({"topic": "m.b", "payload": 2}));
+
+    let mut c = ws_connect(addr).await;
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"m.#"})).await;
+    assert_eq!(ws_recv(&mut c).await, json!({"t":"subscribed","sub":"1"}));
+    let (snap, _ts) = without_ts(ws_recv(&mut c).await);
+    assert_eq!(
+        snap,
+        json!({"t":"snap","sub":"1","seq":1,"last":true,"topic":"m.b","data":2})
+    );
+}
+
+/// A subscribe serializes only the links whose topic matches: the topic is
+/// resolved first, then the value is serialized for a match.
+#[tokio::test]
+async fn snapshots_serialize_only_matching_links() {
+    static SERIALIZED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    let addr = free_addr();
+    let mut sb = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
+    sb.configure::<Inject>("counted", |reg| {
+        reg.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .link_to("ws://_")
+            .with_topic_writer(128, InjectTopic)
+            .with_serializer(|_ctx, m: &Inject| {
+                SERIALIZED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(serde_json::to_vec(&m.payload).unwrap())
+            })
+            .finish();
+    });
+    let (db, runner) = sb.build().await.expect("build db");
+    tokio::spawn(runner.run());
+    wait_for_listen(addr).await;
+
+    let mut c = ws_connect(addr).await;
+    // Subscribe first, so the live send is counted before the late joiner.
+    ws_send(&mut c, json!({"t":"sub","id":1,"topic":"#"})).await;
+    ws_recv_tag(&mut c, "subscribed").await;
+    set(&db, "counted", json!({"topic": "a.x", "payload": 1}));
+    ws_recv_tag(&mut c, "event").await;
+    let live = SERIALIZED.load(std::sync::atomic::Ordering::SeqCst);
+
+    // A subscribe whose pattern the current topic does not match.
+    let mut late = ws_connect(addr).await;
+    ws_send(&mut late, json!({"t":"sub","id":2,"topic":"b.#"})).await;
+    ws_recv_tag(&mut late, "subscribed").await;
+    assert_eq!(SERIALIZED.load(std::sync::atomic::Ordering::SeqCst), live);
+
+    // A matching one serializes the value once more for its snapshot.
+    ws_send(&mut late, json!({"t":"sub","id":3,"topic":"a.#"})).await;
+    ws_recv_tag(&mut late, "snap").await;
+    assert_eq!(
+        SERIALIZED.load(std::sync::atomic::Ordering::SeqCst),
+        live + 1
+    );
+}
+
 // ── Golden wire frames (locks the exact on-the-wire JSON shape) ──────
 
 #[tokio::test]
 async fn golden_wire_frames() {
     let (addr, db) = spawn_default().await;
-    inject(&db, "t", json!(5)); // seed the late-join cache
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    set(&db, "t", json!(5)); // the late-join snapshot's value
 
     let mut c = ws_connect(addr).await;
     ws_send(&mut c, json!({"t":"sub","id":1,"topic":"t"})).await;
@@ -983,7 +1093,7 @@ async fn golden_wire_frames() {
     // The event continues the snapshot burst's `seq` (one snapshot, so `seq:2`)
     // — a single counter over the whole subscription, so loss anywhere in it is
     // visible as a gap.
-    inject(&db, "t", json!(42));
+    set(&db, "t", json!(42));
     let (event, event_ts) = without_ts(ws_recv(&mut c).await);
     assert_eq!(
         event,

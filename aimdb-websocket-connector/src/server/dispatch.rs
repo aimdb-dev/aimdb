@@ -28,7 +28,6 @@ use serde_json::Value;
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions, RecordsBits},
     client_manager::ClientManager,
-    session::SnapshotProvider,
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
@@ -37,7 +36,8 @@ pub struct WsDispatch {
     /// `QueryHandlerFn` for `record.query`.
     pub(crate) db: aimdb_core::builder::AimDb,
     pub(crate) client_mgr: ClientManager,
-    pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
+    /// Each `ws://` link's current value, for late-join snapshots.
+    pub(crate) latest: aimdb_core::OutboundLatest,
     pub(crate) inbound: aimdb_core::InboundDispatch,
     /// Record `type_id` string → data-contract schema name, used to stamp
     /// `schema_type` onto the `record.list` rows core hands back.
@@ -75,7 +75,7 @@ impl Dispatch for WsDispatch {
         Box::new(WsSession {
             db: self.db.clone(),
             client_mgr: self.client_mgr.clone(),
-            snapshot_provider: self.snapshot_provider.clone(),
+            latest: self.latest.clone(),
             inbound: self.inbound.clone(),
             schema_by_type: self.schema_by_type.clone(),
             auth: self.auth.clone(),
@@ -89,7 +89,7 @@ impl Dispatch for WsDispatch {
 struct WsSession {
     db: aimdb_core::builder::AimDb,
     client_mgr: ClientManager,
-    snapshot_provider: Arc<dyn SnapshotProvider>,
+    latest: aimdb_core::OutboundLatest,
     inbound: aimdb_core::InboundDispatch,
     schema_by_type: Arc<HashMap<String, String>>,
     auth: Arc<dyn AuthHandler>,
@@ -185,12 +185,20 @@ impl Session for WsSession {
             return Vec::new();
         }
 
-        // Filtered by client's record permissions
-        self.snapshot_provider
-            .snapshots(topic)
-            .into_iter()
-            .filter(|(record_id, _, _, _)| self.info.record_perms.is_allowed(*record_id))
-            .map(|(_, topic, bytes, ts)| (topic, Payload::from(bytes.as_slice()), ts))
+        // Each link the client may read whose topic matches, rendered from its
+        // record's current value. Non-matching links are never serialized.
+        let latest = &self.latest;
+        (0..latest.len())
+            .filter(|&id| {
+                latest
+                    .record_index(id)
+                    .is_some_and(|index| self.info.record_perms.is_allowed(index))
+            })
+            .filter_map(|id| latest.render_if(id, |t| aimdb_core::topic_matches(topic, t)))
+            .map(|msg| {
+                let ts = msg.stamp();
+                (msg.topic, Payload::from(msg.payload), ts)
+            })
             .collect()
     }
 
