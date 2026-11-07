@@ -12,9 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Obsolete AimX message types (#419).** `remote::{Request, Response,
   ErrorObject, Event}` are gone. They predate the shared session codec and
   had no callers; the AimX wire path is `session::aimx`.
+
+### Changed (breaking)
+
 - **`QueryHandlerFn` returns typed rows (#429):**
   `Result<Vec<QueryRecord>, String>`, sorted by `ts` ascending, instead of a
   ready-made `{records, total}` JSON value.
+- **`record.query` params are resolved before the handler runs (#430).**
+  Every transport parses them with the new `QueryHandlerParams::from_json`,
+  which applies the defaults: `name` `#` and `limit` `DEFAULT_QUERY_LIMIT`
+  (1). `QueryHandlerParams::limit` is now `usize`; a custom `QueryHandlerFn`
+  that relied on `None` now receives 1.
 
 ### Removed
 
