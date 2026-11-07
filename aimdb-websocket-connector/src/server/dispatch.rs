@@ -18,9 +18,7 @@ use crate::events::{report, WebSocketEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aimdb_core::remote::{
-    PostLinkError, QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN,
-};
+use aimdb_core::remote::{PostLinkError, QueryHandlerFn, QueryHandlerParams, QUERY_ALL_PATTERN};
 use aimdb_core::session::Session;
 use aimdb_core::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
@@ -213,7 +211,7 @@ impl Session for WsSession {
 
 impl WsSession {
     /// `record.query` with the shared `{name, limit, start, end}` params and
-    /// `{records, total}` result, answered by the Extensions-registered
+    /// `{records}` result, answered by the Extensions-registered
     /// `QueryHandlerFn` (`with_persistence`), as on every transport; without
     /// one → `NotFound`.
     /// A client having no grant will have its query denied.
@@ -252,26 +250,14 @@ impl WsSession {
                 end,
             })
         };
-        let mut values = handler_fut.await.map_err(|_e| {
+        let records = handler_fut.await.map_err(|_e| {
             report(WebSocketEvent::PersistenceQueryFailed { error: &_e });
             RpcError::Internal
         })?;
 
-        // The QueryHandlerFn returns json, so that needs to be parsed back to Vec<QueryRecord>
-        // so the output could be filtered by per-client grant.
-        // A malformed json is QueryHandlerFn bug and surfaces as `Internal`
-        let records: Vec<QueryRecord> = match values.get_mut("records").map(Value::take) {
-            None | Some(Value::Null) => Vec::new(),
-            Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
-                report(WebSocketEvent::MalformedQueryResult { error: &_e });
-                RpcError::Internal
-            })?,
-        };
-
-        // Query results need to be filtered by grant patterns,
-        // This ensures that clients could query reach persist records in store,
+        // Drop the rows the client's grants don't cover.
         let records = self.auth.authorize_query_record(&self.info, records);
 
-        Ok(serde_json::json!({ "records": records, "total": records.len() }))
+        Ok(serde_json::json!({ "records": records }))
     }
 }

@@ -672,7 +672,7 @@ impl WsBridge {
     /// dot-separated segment, `#` zero or more — so `#`, not `*`, is "every
     /// record".
     ///
-    /// Returns a `Promise<Object>` that resolves with `{ records, total }`.
+    /// Returns a `Promise<Object>` that resolves with `{ records }`.
     ///
     /// ```ts
     /// const result = await bridge.query('#', { from: 1700000000000, to: 1700003600000, limit: 500 });

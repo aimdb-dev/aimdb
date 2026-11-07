@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Obsolete AimX message types (#419).** `remote::{Request, Response,
   ErrorObject, Event}` are gone. They predate the shared session codec and
   had no callers; the AimX wire path is `session::aimx`.
+- **`QueryHandlerFn` returns typed rows (#429):**
+  `Result<Vec<QueryRecord>, String>`, sorted by `ts` ascending, instead of a
+  ready-made `{records, total}` JSON value.
 
 ### Removed
 
@@ -29,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AimX `record.query` without a query handler returns `not_found` (#427),**
   not `internal`, matching WebSocket. A handler that runs and fails still
   returns `internal`.
+- **The `record.query` reply drops `total` (#429)** and is `{"records": [...]}`.
+  `total` only ever repeated the row count; use the length of `records`.
 
 ## [3.0.0] - 2026-11-03
 

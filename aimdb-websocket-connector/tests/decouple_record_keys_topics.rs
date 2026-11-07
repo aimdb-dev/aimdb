@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
-use aimdb_core::remote::QueryHandlerFn;
+use aimdb_core::remote::{QueryHandlerFn, QueryRecord};
 use aimdb_core::{builder::AimDb, remote::QueryHandlerParams};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
@@ -311,7 +311,6 @@ enum GrantType {
 enum CustomQueryHandler {
     All,
     NoRecord,
-    Malformed,
 }
 
 impl CustomQueryHandler {
@@ -326,21 +325,21 @@ impl CustomQueryHandler {
                             ("secret.sensor", 2, 2),
                             ("old.sensor", 3, 3),
                         ];
-                        let records: Vec<_> = all
+                        let records: Vec<QueryRecord> = all
                             .iter()
                             .filter(|(key, _, _)| aimdb_core::topic_matches(&p.name, key))
-                            .map(|(key, payload, ts)| json!({"topic": key, "payload": payload, "ts": ts}))
+                            .map(|(key, payload, ts)| QueryRecord {
+                                topic: key.to_string(),
+                                payload: json!(payload),
+                                ts: *ts,
+                            })
                             .collect();
-                        let total = records.len();
-                        Ok(json!({"records": records, "total": total}))
+                        Ok(records)
                     })
                 });
                 handler
             }
-            Self::NoRecord => Box::new(|_| Box::pin(async move { Ok(json!({"total": 0})) })),
-            Self::Malformed => {
-                Box::new(|_| Box::pin(async move { Ok(json!({"records": "malformed"})) }))
-            }
+            Self::NoRecord => Box::new(|_| Box::pin(async move { Ok(Vec::new()) })),
         }
     }
 }
@@ -864,7 +863,7 @@ async fn record_query_uphold_record_grant() {
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
     assert_eq!(reply["id"], 1);
-    assert_eq!(reply["ok"]["total"], 1);
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 1);
     assert_eq!(
         reply["ok"]["records"][0]["topic"],
         "public.ledger".to_string()
@@ -883,7 +882,7 @@ async fn record_query_uphold_record_grant() {
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
     assert_eq!(reply["id"], 2);
-    assert_eq!(reply["ok"]["total"], 0);
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -972,7 +971,7 @@ async fn record_query_returns_unregistered_record_in_store() {
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
     assert_eq!(reply["id"], 1);
-    assert_eq!(reply["ok"]["total"], 1);
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 1);
     assert_eq!(reply["ok"]["records"][0]["topic"], "old.sensor");
     assert_eq!(reply["ok"]["records"][0]["payload"], 3);
 
@@ -988,7 +987,7 @@ async fn record_query_returns_unregistered_record_in_store() {
     )
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
-    assert_eq!(reply["ok"]["total"], 0);
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -1013,7 +1012,7 @@ async fn record_query_returns_partial_rows_across_grants() {
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
     assert_eq!(reply["id"], 1);
-    assert_eq!(reply["ok"]["total"], 2);
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 2);
     let topics: Vec<&str> = reply["ok"]["records"]
         .as_array()
         .expect("records array")
@@ -1127,40 +1126,5 @@ async fn query_handler_returns_empty_handled_as_empty() {
     .await;
     let reply = ws_recv_tag(&mut client, "reply").await;
     assert_eq!(reply["id"], 1);
-    assert_eq!(reply["ok"]["total"], 0);
-}
-
-#[tokio::test]
-async fn query_handler_malformed_handled_as_err() {
-    let addr = free_addr();
-    let _server_db =
-        test_fixture(addr, GrantType::Fixed, Some(CustomQueryHandler::Malformed)).await;
-
-    let mut client = ws_connect(addr).await;
-    ws_send(
-        &mut client,
-        json!({
-            "t": "sub",
-            "id": 1,
-            "topic": "#",
-        }),
-    )
-    .await;
-    let ack = ws_recv_tag(&mut client, "subscribed").await;
-    assert_eq!(ack["sub"], "1");
-
-    // Query for all returned allowed records
-    ws_send(
-        &mut client,
-        json!({
-            "t": "req",
-            "id": 1,
-            "method": "record.query",
-            "params": {"name": "#"},
-        }),
-    )
-    .await;
-    let reply = ws_recv_tag(&mut client, "reply").await;
-    assert_eq!(reply["id"], 1);
-    assert_eq!(reply["err"], "internal".to_string());
+    assert_eq!(reply["ok"]["records"].as_array().unwrap().len(), 0);
 }

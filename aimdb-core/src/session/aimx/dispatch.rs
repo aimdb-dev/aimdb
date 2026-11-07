@@ -251,6 +251,7 @@ impl AimxSession {
             "record.query" => self
                 .record_query(params)?
                 .await
+                .map(|records| json!({ "records": records }))
                 .map_err(|_| RpcError::Internal),
             "graph.nodes" => Ok(json!(self.db.inner().dependency_graph().nodes)),
             "graph.edges" => Ok(json!(self.db.inner().dependency_graph().edges)),
@@ -399,7 +400,12 @@ impl AimxSession {
         params: Value,
     ) -> Result<
         core::pin::Pin<
-            Box<dyn core::future::Future<Output = Result<Value, String>> + Send + 'static>,
+            Box<
+                dyn core::future::Future<
+                        Output = Result<alloc::vec::Vec<crate::remote::QueryRecord>, String>,
+                    > + Send
+                    + 'static,
+            >,
         >,
         RpcError,
     > {
@@ -560,7 +566,7 @@ mod tests {
 
         let handler: QueryHandlerFn = Box::new(|params| {
             *SEEN.lock().expect("uncontended") = Some(params.name.clone());
-            Box::pin(async { Ok(json!({ "records": [], "total": 0 })) })
+            Box::pin(async { Ok(Vec::new()) })
         });
 
         let mut builder = crate::AimDbBuilder::new()

@@ -1,11 +1,10 @@
-//! The `QueryHandlerFn` registered by `with_persistence` produces the shared
-//! `record.query` result shape — `{"records": [{topic, payload, ts}, …],
-//! "total": N}`, rows sorted by `ts` ascending.
+//! The `QueryHandlerFn` registered by `with_persistence` returns the shared
+//! `QueryRecord` rows, sorted by `ts` ascending.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams};
+use aimdb_core::remote::{QueryHandlerFn, QueryHandlerParams, QueryRecord};
 use aimdb_core::AimDbBuilder;
 use aimdb_persistence::{
     AimDbBuilderPersistExt, BoxFuture, PersistenceBackend, PersistenceError, QueryParams,
@@ -55,7 +54,7 @@ impl PersistenceBackend for MockBackend {
 }
 
 #[tokio::test]
-async fn query_handler_returns_records_total_shape() {
+async fn query_handler_returns_rows_sorted_by_ts() {
     let (db, runner) = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_persistence(
@@ -71,7 +70,7 @@ async fn query_handler_returns_records_total_shape() {
         .extensions()
         .get::<QueryHandlerFn>()
         .expect("with_persistence registers the query handler");
-    let result = handler(QueryHandlerParams {
+    let records = handler(QueryHandlerParams {
         name: "*".into(),
         limit: None,
         start: None,
@@ -80,16 +79,20 @@ async fn query_handler_returns_records_total_shape() {
     .await
     .expect("query succeeds");
 
-    assert_eq!(result["total"], json!(2));
-    let records = result["records"].as_array().expect("records array");
-    assert_eq!(records.len(), 2);
     // Sorted ascending by ts, regardless of backend order.
     assert_eq!(
-        records[0],
-        json!({"topic": "temp.vienna", "payload": {"celsius": 21.5}, "ts": 1_000})
-    );
-    assert_eq!(
-        records[1],
-        json!({"topic": "temp.berlin", "payload": {"celsius": 18.0}, "ts": 2_000})
+        records,
+        [
+            QueryRecord {
+                topic: "temp.vienna".into(),
+                payload: json!({"celsius": 21.5}),
+                ts: 1_000,
+            },
+            QueryRecord {
+                topic: "temp.berlin".into(),
+                payload: json!({"celsius": 18.0}),
+                ts: 2_000,
+            },
+        ]
     );
 }

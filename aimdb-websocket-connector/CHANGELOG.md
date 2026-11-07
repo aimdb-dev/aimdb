@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `builder.extensions_mut().insert::<QueryHandlerFn>(…)`. AimX transports then
   serve it too.
 
+### Changed (breaking, wire)
+
+- **The `record.query` reply drops `total` (#429)** and is `{"records": [...]}`,
+  as on AimX. Use the length of `records` instead. Rows from the
+  `QueryHandlerFn` are filtered by grant directly, without a JSON round trip.
+
 ## [0.4.0] - 2026-11-03
 
 ### Added

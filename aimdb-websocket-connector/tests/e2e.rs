@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::{TopicBuf, TopicOverflow, TopicWriter};
-use aimdb_core::remote::QueryHandlerFn;
+use aimdb_core::remote::{QueryHandlerFn, QueryRecord};
 use aimdb_core::session::{aimx::AimxCodec, run_client, ClientConfig};
 use aimdb_core::{AimDb, AimDbBuilder};
 use aimdb_data_contracts::{SchemaType, Streamable};
@@ -418,7 +418,11 @@ async fn server_query_and_record_list() {
         .with_connector(ws.bind(addr).path("/ws"));
     let handler: QueryHandlerFn = Box::new(|_params| {
         Box::pin(async {
-            Ok(json!({"records": [{"topic":"temp","payload":21.0,"ts":7}], "total": 1}))
+            Ok(vec![QueryRecord {
+                topic: "temp".into(),
+                payload: json!(21.0),
+                ts: 7,
+            }])
         })
     });
     sb.extensions_mut().insert(handler);
@@ -436,7 +440,7 @@ async fn server_query_and_record_list() {
     let mut c = ws_connect(addr).await;
 
     // record.query rides a plain AimX request; the reply carries the shared
-    // `{records, total}` shape.
+    // `{records}` shape.
     ws_send(
         &mut c,
         json!({"t":"req","id":10,"method":"record.query","params":{"name":"#"}}),
@@ -444,10 +448,9 @@ async fn server_query_and_record_list() {
     .await;
     let reply = ws_recv_tag(&mut c, "reply").await;
     assert_eq!(reply["id"], 10);
-    assert_eq!(reply["ok"]["total"], 1);
     assert_eq!(
-        reply["ok"]["records"],
-        json!([{"topic":"temp","payload":21.0,"ts":7}])
+        reply["ok"],
+        json!({"records": [{"topic":"temp","payload":21.0,"ts":7}]})
     );
 
     // record.list returns core's shared `RecordMetadata` rows — the same shape
@@ -508,7 +511,11 @@ async fn record_list_and_query_answer_to_the_client_grants() {
     // History on the *database*, as `with_persistence` registers it.
     let handler: QueryHandlerFn = Box::new(|_params| {
         Box::pin(async {
-            Ok(json!({"records": [{"topic":"ledger","payload":42,"ts":1}], "total": 1}))
+            Ok(vec![QueryRecord {
+                topic: "ledger".into(),
+                payload: json!(42),
+                ts: 1,
+            }])
         })
     });
     sb.extensions_mut().insert(handler);
@@ -573,10 +580,9 @@ async fn record_list_and_query_answer_to_the_client_grants() {
     )
     .await;
     let reply = ws_recv_tag(&mut a, "reply").await;
-    assert_eq!(reply["ok"]["total"], 1);
     assert_eq!(
-        reply["ok"]["records"],
-        json!([{"topic":"ledger","payload":42,"ts":1}])
+        reply["ok"],
+        json!({"records": [{"topic":"ledger","payload":42,"ts":1}]})
     );
 
     // …and the full database is enumerable, unregistered `Ledger` included.
