@@ -10,7 +10,6 @@ homepage.workspace = true
 description = "Tokio runtime adapter for AimDB - full-featured std async runtime support"
 keywords = ["tokio", "async", "runtime", "adapter", "database"]
 categories = ["asynchronous", "database-implementations"]
-build = "build.rs"
 
 [features]
 default = ["std", "tokio-runtime"]

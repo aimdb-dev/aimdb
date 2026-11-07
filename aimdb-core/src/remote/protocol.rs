@@ -1,7 +1,8 @@
 //! AimX Protocol Message Types
 //!
 //! Defines the method-level payloads for the remote access protocol: the
-//! hello/welcome handshake bodies and the request/response/event shapes.
+//! hello/welcome handshake bodies and the instance-info, build and post-link
+//! replies.
 //! These ride the **AimX** NDJSON envelope; the wire framing itself lives
 //! in [`crate::session::aimx`] (feature `connector-session`). See
 //! `docs/design/remote-access-via-connectors.md` for the architecture.
@@ -177,110 +178,6 @@ pub struct PostLinkChunk {
     pub data: String,
 }
 
-/// Request message from client
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
-    /// Unique request identifier
-    pub id: u64,
-
-    /// Method name
-    pub method: String,
-
-    /// Method parameters (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<JsonValue>,
-}
-
-/// Response message from server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Response {
-    /// Success response
-    Success {
-        /// Request ID
-        id: u64,
-        /// Result value
-        result: JsonValue,
-    },
-    /// Error response
-    Error {
-        /// Request ID
-        id: u64,
-        /// Error details
-        error: ErrorObject,
-    },
-}
-
-impl Response {
-    /// Creates a success response
-    pub fn success(id: u64, result: JsonValue) -> Self {
-        Self::Success { id, result }
-    }
-
-    /// Creates an error response
-    pub fn error(id: u64, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Error {
-            id,
-            error: ErrorObject {
-                code: code.into(),
-                message: message.into(),
-                details: None,
-            },
-        }
-    }
-
-    /// Creates an error response with details
-    pub fn error_with_details(
-        id: u64,
-        code: impl Into<String>,
-        message: impl Into<String>,
-        details: JsonValue,
-    ) -> Self {
-        Self::Error {
-            id,
-            error: ErrorObject {
-                code: code.into(),
-                message: message.into(),
-                details: Some(details),
-            },
-        }
-    }
-}
-
-/// Error object in response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorObject {
-    /// Error code
-    pub code: String,
-
-    /// Human-readable error message
-    pub message: String,
-
-    /// Additional error details (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<JsonValue>,
-}
-
-/// Event message from server (subscription push)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Event {
-    /// Subscription identifier
-    pub subscription_id: String,
-
-    /// Monotonic sequence number
-    pub sequence: u64,
-
-    /// Event data (record value)
-    pub data: JsonValue,
-
-    /// Unix timestamp in "secs.nanosecs" format (e.g., "1730379296.123456789")
-    pub timestamp: String,
-
-    /// Number of dropped events since last delivery (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dropped: Option<u64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,69 +283,5 @@ mod tests {
         assert!(!version_compatible(""));
         assert!(!version_compatible(".0"));
         assert!(!version_compatible("garbage"));
-    }
-
-    #[test]
-    fn test_request_serialization() {
-        let request = Request {
-            id: 1,
-            method: "record.list".to_string(),
-            params: Some(serde_json::json!({})),
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("\"id\":1"));
-        assert!(json.contains("\"method\":\"record.list\""));
-    }
-
-    #[test]
-    fn test_response_success() {
-        let response = Response::success(1, serde_json::json!({"status": "ok"}));
-
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"id\":1"));
-        assert!(json.contains("\"result\""));
-        assert!(json.contains("\"status\":\"ok\""));
-    }
-
-    #[test]
-    fn test_response_error() {
-        let response = Response::error(2, "NOT_FOUND", "Record not found");
-
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"id\":2"));
-        assert!(json.contains("\"error\""));
-        assert!(json.contains("\"code\":\"NOT_FOUND\""));
-        assert!(json.contains("\"message\":\"Record not found\""));
-    }
-
-    #[test]
-    fn test_event_serialization() {
-        let event = Event {
-            subscription_id: "sub-123".to_string(),
-            sequence: 42,
-            data: serde_json::json!({"temp": 23.5}),
-            timestamp: "1730379296.123456789".to_string(),
-            dropped: None,
-        };
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"subscription_id\":\"sub-123\""));
-        assert!(json.contains("\"sequence\":42"));
-        assert!(json.contains("\"temp\":23.5"));
-    }
-
-    #[test]
-    fn test_event_with_dropped() {
-        let event = Event {
-            subscription_id: "sub-456".to_string(),
-            sequence: 100,
-            data: serde_json::json!({"value": 1}),
-            timestamp: "1730379300.987654321".to_string(),
-            dropped: Some(5),
-        };
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"dropped\":5"));
     }
 }

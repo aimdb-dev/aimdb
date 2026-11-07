@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **Obsolete AimX message types (#419).** `remote::{Request, Response,
+  ErrorObject, Event}` are gone. They predate the shared session codec and
+  had no callers; the AimX wire path is `session::aimx`.
+
+### Removed
+
+- The crate's `build.rs` (#419). Its feature checks named features the
+  manifest no longer declares, and nothing read the `feature_std`,
+  `feature_no_std` or `embedded_target` cfgs it emitted.
+
 ## [3.0.0] - 2026-11-03
 
 ### Changed (breaking, wire)
