@@ -145,6 +145,3 @@ pub type WsClientConnector = client::WsClientConnectorBuilder;
 
 /// Canonical `record.query` result row (shared AimX vocabulary, from core).
 pub use aimdb_core::remote::QueryRecord;
-
-#[cfg(feature = "server")]
-pub use server::session::{QueryFuture, QueryHandler};

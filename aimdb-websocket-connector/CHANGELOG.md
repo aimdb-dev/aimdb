@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **The WebSocket-only `QueryHandler` (#428).** `QueryHandler`, `QueryFuture`
+  and `WebSocketConnector::with_query_handler` are gone. `record.query` is always
+  answered by the `QueryHandlerFn` in the database's Extensions, so WebSocket
+  and AimX clients see the same history. To migrate, register the handler on
+  the builder instead:
+  `builder.extensions_mut().insert::<QueryHandlerFn>(…)`. AimX transports then
+  serve it too.
+
 ## [0.4.0] - 2026-11-03
 
 ### Added

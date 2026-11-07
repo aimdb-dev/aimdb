@@ -30,17 +30,16 @@ use serde_json::Value;
 use super::{
     auth::{AuthHandler, ClientId, ClientInfo, Permissions, RecordsBits},
     client_manager::ClientManager,
-    session::{QueryHandler, SnapshotProvider},
+    session::SnapshotProvider,
 };
 
 /// The shared WS dispatch — one `Arc<dyn Dispatch>` per server.
 pub struct WsDispatch {
     /// Cheap-clone db handle — resolves the Extensions-registered
-    /// `QueryHandlerFn` when no custom query handler is plugged in.
+    /// `QueryHandlerFn` for `record.query`.
     pub(crate) db: aimdb_core::builder::AimDb,
     pub(crate) client_mgr: ClientManager,
     pub(crate) snapshot_provider: Arc<dyn SnapshotProvider>,
-    pub(crate) query_handler: Option<Arc<dyn QueryHandler>>,
     pub(crate) inbound: aimdb_core::InboundDispatch,
     /// Record `type_id` string → data-contract schema name, used to stamp
     /// `schema_type` onto the `record.list` rows core hands back.
@@ -79,7 +78,6 @@ impl Dispatch for WsDispatch {
             db: self.db.clone(),
             client_mgr: self.client_mgr.clone(),
             snapshot_provider: self.snapshot_provider.clone(),
-            query_handler: self.query_handler.clone(),
             inbound: self.inbound.clone(),
             schema_by_type: self.schema_by_type.clone(),
             auth: self.auth.clone(),
@@ -94,7 +92,6 @@ struct WsSession {
     db: aimdb_core::builder::AimDb,
     client_mgr: ClientManager,
     snapshot_provider: Arc<dyn SnapshotProvider>,
-    query_handler: Option<Arc<dyn QueryHandler>>,
     inbound: aimdb_core::InboundDispatch,
     schema_by_type: Arc<HashMap<String, String>>,
     auth: Arc<dyn AuthHandler>,
@@ -216,9 +213,9 @@ impl Session for WsSession {
 
 impl WsSession {
     /// `record.query` with the shared `{name, limit, start, end}` params and
-    /// `{records, total}` result: a plugged-in
-    /// [`QueryHandler`] wins; otherwise delegate to the Extensions-registered
-    /// `QueryHandlerFn` (`with_persistence`); neither → `NotFound`.
+    /// `{records, total}` result, answered by the Extensions-registered
+    /// `QueryHandlerFn` (`with_persistence`), as on every transport; without
+    /// one → `NotFound`.
     /// A client having no grant will have its query denied.
     /// Grants allow clients to query both live and persist records.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
@@ -242,44 +239,33 @@ impl WsSession {
         };
 
         // The query is handled here
-        let records: Vec<QueryRecord> = if let Some(handler) = &self.query_handler {
-            let (records, _total) = handler
-                .handle_query(&name, start, end, limit)
-                .await
-                .map_err(|_e| {
-                    report(WebSocketEvent::QueryHandlerFailed { error: &_e });
-                    RpcError::Internal
-                })?;
-            records
-        } else {
-            let handler_fut = {
-                let handler = self
-                    .db
-                    .extensions()
-                    .get::<QueryHandlerFn>()
-                    .ok_or(RpcError::NotFound)?;
-                handler(QueryHandlerParams {
-                    name,
-                    limit,
-                    start,
-                    end,
-                })
-            };
-            let mut values = handler_fut.await.map_err(|_e| {
-                report(WebSocketEvent::PersistenceQueryFailed { error: &_e });
-                RpcError::Internal
-            })?;
+        let handler_fut = {
+            let handler = self
+                .db
+                .extensions()
+                .get::<QueryHandlerFn>()
+                .ok_or(RpcError::NotFound)?;
+            handler(QueryHandlerParams {
+                name,
+                limit,
+                start,
+                end,
+            })
+        };
+        let mut values = handler_fut.await.map_err(|_e| {
+            report(WebSocketEvent::PersistenceQueryFailed { error: &_e });
+            RpcError::Internal
+        })?;
 
-            // The QueryHandlerFn returns json, so that needs to be parsed back to Vec<QueryRecord>
-            // so the output could be filtered by per-client grant.
-            // A malformed json is QueryHandlerFn bug and surfaces as `Internal`
-            match values.get_mut("records").map(Value::take) {
-                None | Some(Value::Null) => Vec::new(),
-                Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
-                    report(WebSocketEvent::MalformedQueryResult { error: &_e });
-                    RpcError::Internal
-                })?,
-            }
+        // The QueryHandlerFn returns json, so that needs to be parsed back to Vec<QueryRecord>
+        // so the output could be filtered by per-client grant.
+        // A malformed json is QueryHandlerFn bug and surfaces as `Internal`
+        let records: Vec<QueryRecord> = match values.get_mut("records").map(Value::take) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(r) => serde_json::from_value::<Vec<QueryRecord>>(r).map_err(|_e| {
+                report(WebSocketEvent::MalformedQueryResult { error: &_e });
+                RpcError::Internal
+            })?,
         };
 
         // Query results need to be filtered by grant patterns,
