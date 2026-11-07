@@ -63,7 +63,7 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
             let backend = query_backend.clone();
             Box::pin(async move {
                 let query_params = QueryParams {
-                    limit_per_record: params.limit.or(Some(1)),
+                    limit_per_record: Some(params.limit),
                     start_time: params.start,
                     end_time: params.end,
                 };

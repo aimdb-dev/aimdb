@@ -414,23 +414,9 @@ impl AimxSession {
             .extensions()
             .get::<crate::remote::QueryHandlerFn>()
             .ok_or(RpcError::NotFound)?;
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(crate::remote::QUERY_ALL_PATTERN)
-            .to_string();
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok());
-        let start = params.get("start").and_then(|v| v.as_u64());
-        let end = params.get("end").and_then(|v| v.as_u64());
-        Ok(handler(crate::remote::QueryHandlerParams {
-            name,
-            limit,
-            start,
-            end,
-        }))
+        Ok(handler(crate::remote::QueryHandlerParams::from_json(
+            &params,
+        )))
     }
 
     /// `hello`: the version-gated handshake.
@@ -547,7 +533,9 @@ fn map_db_err(e: DbError) -> RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::{QueryHandlerFn, QUERY_ALL_PATTERN};
+    use crate::remote::{
+        QueryHandlerFn, QueryHandlerParams, DEFAULT_QUERY_LIMIT, QUERY_ALL_PATTERN,
+    };
     use std::sync::Mutex;
 
     /// `record.query` with no `name` must reach the handler as the same pattern
@@ -556,16 +544,15 @@ mod tests {
     /// default silently dropped every nested record here while the WS connector
     /// returned them — the same request answering differently per link.
     ///
-    /// Driven through the real dispatch (`Dispatch::open` → `Session::call`),
-    /// since the defaulting lives in `record_query`, not at the wire edge. The
-    /// WS dispatch defaults through the same constant, so the two cannot
-    /// drift again.
+    /// Driven through the real dispatch (`Dispatch::open` → `Session::call`).
+    /// Both transports default through `QueryHandlerParams::from_json`, so the
+    /// handler also receives the default limit and the two cannot drift.
     #[tokio::test]
     async fn an_omitted_query_name_spans_every_record() {
-        static SEEN: Mutex<Option<String>> = Mutex::new(None);
+        static SEEN: Mutex<Option<QueryHandlerParams>> = Mutex::new(None);
 
         let handler: QueryHandlerFn = Box::new(|params| {
-            *SEEN.lock().expect("uncontended") = Some(params.name.clone());
+            *SEEN.lock().expect("uncontended") = Some(params);
             Box::pin(async { Ok(Vec::new()) })
         });
 
@@ -581,11 +568,16 @@ mod tests {
             .await
             .expect("the query resolves");
 
+        let seen = SEEN
+            .lock()
+            .expect("uncontended")
+            .take()
+            .expect("handler ran");
         assert_eq!(
-            SEEN.lock().expect("uncontended").as_deref(),
-            Some(QUERY_ALL_PATTERN),
+            seen.name, QUERY_ALL_PATTERN,
             "an omitted name must span every record, at every depth"
         );
+        assert_eq!(seen.limit, DEFAULT_QUERY_LIMIT);
     }
 
     /// Without a query handler, history is not set up: `NotFound`, the same

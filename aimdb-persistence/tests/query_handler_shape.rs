@@ -72,7 +72,7 @@ async fn query_handler_returns_rows_sorted_by_ts() {
         .expect("with_persistence registers the query handler");
     let records = handler(QueryHandlerParams {
         name: "*".into(),
-        limit: None,
+        limit: 10,
         start: None,
         end: None,
     })

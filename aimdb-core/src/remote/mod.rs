@@ -59,7 +59,9 @@ pub use protocol::{
     InstanceInfoReply, PostLinkChunk, PostLinkReply, WelcomeMessage, INSTANCE_INFO_REPLY_MAX,
     POST_LINK_CHUNK_MAX, PROTOCOL_VERSION, VERSION_PARAM,
 };
-pub use query::{QueryHandlerFn, QueryHandlerParams, QueryRecord, QUERY_ALL_PATTERN};
+pub use query::{
+    QueryHandlerFn, QueryHandlerParams, QueryRecord, DEFAULT_QUERY_LIMIT, QUERY_ALL_PATTERN,
+};
 
 // Internal exports for implementation
 #[cfg(feature = "connector-session")]
