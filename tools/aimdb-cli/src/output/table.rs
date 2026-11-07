@@ -52,6 +52,7 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
     builder.push_record(vec![
         "Name",
         "Type ID",
+        "Schema",
         "Buffer Type",
         "Producers",
         "Consumers",
@@ -65,6 +66,13 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
             "yes".green().to_string()
         } else {
             "no".dimmed().to_string()
+        };
+        // The declared data contract, as in the graph table; `-` when the
+        // record was configured without a schema.
+        let schema_str = match (&record.schema_type, record.schema_version) {
+            (Some(name), Some(version)) => format!("{name} v{version}"),
+            (Some(name), None) => name.clone(),
+            _ => "-".dimmed().to_string(),
         };
         let signal_str = record
             .signal_stats
@@ -92,6 +100,7 @@ pub fn format_records_table(records: &[RecordMetadata]) -> String {
         builder.push_record(vec![
             record.name.clone(),
             record.type_id.clone(),
+            schema_str,
             record.buffer_type.clone(),
             record.producer_count.to_string(),
             record.consumer_count.to_string(),
@@ -552,6 +561,10 @@ Permissions:
             false,
             0,
         )
+        .with_schema(Some(&aimdb_core::graph::SchemaInfo {
+            name: "temperature".to_string(),
+            version: 2,
+        }))
         .with_signal_stats(vec![
             SignalStatsInfo {
                 signal: "temperature".to_string(),
@@ -593,13 +606,13 @@ Permissions:
         assert_eq!(
             table,
             "\
-┌─────────────┬──────────────────┬─────────────┬───────────┬───────────┬──────────┬───────────────────────────────┐
-│ Name        │ Type ID          │ Buffer Type │ Producers │ Consumers │ Writable │ Signal                        │
-├─────────────┼──────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
-│ Temperature │ type-temperature │ spmc_ring   │ 1         │ 2         │ no       │ 21.5 C (18..24, avg 20.25) +1 │
-├─────────────┼──────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
-│ Config      │ type-config      │ mailbox     │ 0         │ 3         │ yes      │ -                             │
-└─────────────┴──────────────────┴─────────────┴───────────┴───────────┴──────────┴───────────────────────────────┘"
+┌─────────────┬──────────────────┬────────────────┬─────────────┬───────────┬───────────┬──────────┬───────────────────────────────┐
+│ Name        │ Type ID          │ Schema         │ Buffer Type │ Producers │ Consumers │ Writable │ Signal                        │
+├─────────────┼──────────────────┼────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
+│ Temperature │ type-temperature │ temperature v2 │ spmc_ring   │ 1         │ 2         │ no       │ 21.5 C (18..24, avg 20.25) +1 │
+├─────────────┼──────────────────┼────────────────┼─────────────┼───────────┼───────────┼──────────┼───────────────────────────────┤
+│ Config      │ type-config      │ -              │ mailbox     │ 0         │ 3         │ yes      │ -                             │
+└─────────────┴──────────────────┴────────────────┴─────────────┴───────────┴───────────┴──────────┴───────────────────────────────┘"
         );
     }
 
@@ -640,11 +653,11 @@ Permissions:
         assert_eq!(
             table,
             "\
-┌──────┬───────────┬───────────────┬───────────┬───────────┬──────────┬──────────────────────────┐
-│ Name │ Type ID   │ Buffer Type   │ Producers │ Consumers │ Writable │ Signal                   │
-├──────┼───────────┼───────────────┼───────────┼───────────┼──────────┼──────────────────────────┤
-│ Load │ type-load │ single_latest │ 1         │ 0         │ no       │ 0.75 (0.5..1, avg 0.625) │
-└──────┴───────────┴───────────────┴───────────┴───────────┴──────────┴──────────────────────────┘"
+┌──────┬───────────┬────────┬───────────────┬───────────┬───────────┬──────────┬──────────────────────────┐
+│ Name │ Type ID   │ Schema │ Buffer Type   │ Producers │ Consumers │ Writable │ Signal                   │
+├──────┼───────────┼────────┼───────────────┼───────────┼───────────┼──────────┼──────────────────────────┤
+│ Load │ type-load │ -      │ single_latest │ 1         │ 0         │ no       │ 0.75 (0.5..1, avg 0.625) │
+└──────┴───────────┴────────┴───────────────┴───────────┴───────────┴──────────┴──────────────────────────┘"
         );
     }
 

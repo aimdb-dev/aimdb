@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`aimdb record list` shows a `Schema` column** with the record's declared
+  data contract (`name vN`, `-` when none), as the graph table already does.
+  JSON output is unchanged: it already carries `schema_type` /
+  `schema_version`.
+
 ### Removed (breaking)
 
 - **`aimdb generate` (#411)** and the `aimdb-codegen` dependency. Write the
