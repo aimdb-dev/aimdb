@@ -14,6 +14,7 @@ set -euo pipefail
 DISTRO=${1:?usage: ros2_interop.sh <distro>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 EXAMPLES=${EXAMPLES:-target/debug/examples}
+AIMDB=${AIMDB:-target/debug/aimdb}
 IMAGE=${IMAGE:-aimdb-ros2-interop:$DISTRO}
 PREFIX=aimdb-interop-$DISTRO-$$
 PIDS=()
@@ -36,7 +37,8 @@ fail() {
 # and read back with `docker logs`, which works on every Docker setup.
 ros() {
     local name=$PREFIX-cli-$RANDOM
-    docker run -d --name "$name" --network host "$IMAGE" "$@" >/dev/null
+    docker run -d --name "$name" --network host \
+        -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" "$IMAGE" "$@" >/dev/null
     docker wait "$name" >/dev/null
     docker logs "$name" 2>&1
     docker container rm "$name" >/dev/null
@@ -114,5 +116,51 @@ received=$(grep -c "received: hello from $DISTRO" "$listener_log" || true)
 rm -f "$listener_log"
 [[ $received -eq 3 ]] || fail "the listener received $received of 3 messages"
 echo "ok: subscription (topic info -v, topic pub, 3 of 3 received)"
+
+# --- The gateway (examples/ros2_gateway.md): ROS publishes a Twist on
+# /cmd_vel in domain 42; AimDB stores it, republishes it as JSON on plain
+# Zenoh and serves it over AimX.
+export ROS_DOMAIN_ID=42
+socket=$(mktemp -u /tmp/aimdb-interop-XXXXXX.sock)
+gateway_log=$(mktemp)
+zenoh_log=$(mktemp)
+watch_log=$(mktemp)
+AIMX_SOCKET=$socket "$EXAMPLES/ros2_gateway" >"$gateway_log" 2>&1 &
+PIDS+=($!)
+"$EXAMPLES/zenoh_sub" 'telemetry/**' >"$zenoh_log" 2>&1 &
+PIDS+=($!)
+for _ in $(seq 1 30); do
+    [[ -S $socket ]] && grep -q '^zenoh_sub:' "$zenoh_log" && break
+    sleep 1
+done
+[[ -S $socket ]] || fail "the gateway did not open $socket"
+grep -q '^zenoh_sub:' "$zenoh_log" || fail "zenoh_sub did not subscribe:
+$(cat "$zenoh_log")"
+"$AIMDB" --connect "unix://$socket" watch robot.cmd_vel --format json --new \
+    --count 3 --timeout 60 >"$watch_log" 2>&1 &
+watch_pid=$!
+PIDS+=($watch_pid)
+
+ros_until 'Subscription count: 1' ros2 topic info -v /cmd_vel >/dev/null \
+    || fail "ros2 topic info -v does not show the gateway's subscription"
+ros timeout 30 ros2 topic pub --times 3 -r 2 /cmd_vel geometry_msgs/msg/Twist \
+    "{linear: {x: 0.5}, angular: {z: 0.3}}" >/dev/null
+
+json='{"linear":{"x":0.5,"y":0.0,"z":0.0},"angular":{"x":0.0,"y":0.0,"z":0.3}}'
+for _ in $(seq 1 10); do
+    [[ $(grep -cxF "telemetry/cmd_vel: $json" "$zenoh_log") -ge 3 ]] && break
+    sleep 1
+done
+republished=$(grep -cxF "telemetry/cmd_vel: $json" "$zenoh_log" || true)
+[[ $republished -eq 3 ]] || fail "zenoh_sub received $republished of 3 JSON payloads:
+$(cat "$zenoh_log")"
+wait "$watch_pid" || fail "aimdb watch did not see 3 updates:
+$(cat "$watch_log")"
+watched=$(grep -c '"value":{"angular":{"x":0.0,"y":0.0,"z":0.3},"linear":{"x":0.5,"y":0.0,"z":0.0}}' "$watch_log" || true)
+[[ $watched -eq 3 ]] || fail "aimdb watch printed $watched of 3 Twists:
+$(cat "$watch_log")"
+rm -f "$gateway_log" "$zenoh_log" "$watch_log"
+unset ROS_DOMAIN_ID
+echo "ok: gateway (ros2 topic pub, 3 of 3 republished as JSON, aimdb watch)"
 
 echo "PASS ($DISTRO)"

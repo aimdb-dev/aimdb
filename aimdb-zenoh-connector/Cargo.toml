@@ -63,6 +63,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # `tests/ros2_outbound.rs`: derived ROS types and a non-CDR codec.
 aimdb-data-contracts = { path = "../aimdb-data-contracts", features = ["ros2", "linkable-json"] }
 serde = { version = "1", features = ["derive"] }
+# `examples/ros2_gateway.rs`: AimX over a Unix socket, for `aimdb watch`.
+aimdb-uds-connector = { path = "../aimdb-uds-connector" }
 # The `register` bound, as a compile error.
 trybuild = "1.0"
 
@@ -72,4 +74,12 @@ required-features = ["std"]
 
 [[example]]
 name = "ros2_listener"
+required-features = ["std"]
+
+[[example]]
+name = "ros2_gateway"
+required-features = ["std"]
+
+[[example]]
+name = "zenoh_sub"
 required-features = ["std"]
