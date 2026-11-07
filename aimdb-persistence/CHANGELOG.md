@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `with_persistence` query handler returns typed rows (#429)**, matching
   the new `QueryHandlerFn` signature in `aimdb-core`. Replies no longer carry
   `total`.
+- **The query handler no longer applies a default limit (#430).** It uses the
+  resolved `QueryHandlerParams::limit` from `aimdb-core`, which defaults to 1
+  as before.
 
 ## [0.3.0] - 2026-11-03
 

@@ -18,7 +18,7 @@ use crate::events::{report, WebSocketEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aimdb_core::remote::{PostLinkError, QueryHandlerFn, QueryHandlerParams, QUERY_ALL_PATTERN};
+use aimdb_core::remote::{PostLinkError, QueryHandlerFn, QueryHandlerParams};
 use aimdb_core::session::Session;
 use aimdb_core::{
     AuthError, BoxFut, BoxStream, Dispatch, Payload, PeerInfo, RpcError, SessionCtx, SubUpdate,
@@ -217,18 +217,6 @@ impl WsSession {
     /// A client having no grant will have its query denied.
     /// Grants allow clients to query both live and persist records.
     async fn record_query(&self, params: Value) -> Result<Value, RpcError> {
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(QUERY_ALL_PATTERN)
-            .to_string();
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| usize::try_from(v).ok());
-        let start = params.get("start").and_then(|v| v.as_u64());
-        let end = params.get("end").and_then(|v| v.as_u64());
-
         // No-grant clients have their requests denied
         // Grant clients whose perms matching persisted records,
         // but matching no live records, are not denied
@@ -243,12 +231,7 @@ impl WsSession {
                 .extensions()
                 .get::<QueryHandlerFn>()
                 .ok_or(RpcError::NotFound)?;
-            handler(QueryHandlerParams {
-                name,
-                limit,
-                start,
-                end,
-            })
+            handler(QueryHandlerParams::from_json(&params))
         };
         let records = handler_fut.await.map_err(|_e| {
             report(WebSocketEvent::PersistenceQueryFailed { error: &_e });
