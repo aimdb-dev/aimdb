@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key, so `record.query` returns the key as `topic` and WebSocket clients
   read history with the same grants as live values. Rows already written
   under a custom name stay as they are; nothing new is written under them.
+- **The `with_persistence` query handler returns typed rows (#429)**, matching
+  the new `QueryHandlerFn` signature in `aimdb-core`. Replies no longer carry
+  `total`.
 
 ## [0.3.0] - 2026-11-03
 

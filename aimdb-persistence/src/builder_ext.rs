@@ -56,9 +56,8 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
             retention_ms,
         });
 
-        // Register a QueryHandlerFn so AimX record.query can delegate to us.
-        // Result shape is the shared `{records, total}` vocabulary — one row type
-        // (`QueryRecord`) for every transport.
+        // Register a QueryHandlerFn so every transport's record.query can
+        // delegate to us. Rows are the shared `QueryRecord`, sorted by `ts`.
         let query_backend = backend.clone();
         let handler: QueryHandlerFn = Box::new(move |params: QueryHandlerParams| {
             let backend = query_backend.clone();
@@ -83,12 +82,7 @@ impl AimDbBuilderPersistExt for AimDbBuilder {
                     })
                     .collect();
                 records.sort_by_key(|r| r.ts);
-
-                let total = records.len();
-                Ok(serde_json::json!({
-                    "records": records,
-                    "total": total,
-                }))
+                Ok(records)
             })
         });
         self.extensions_mut().insert(handler);

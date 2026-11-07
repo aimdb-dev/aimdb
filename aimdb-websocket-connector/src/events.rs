@@ -14,9 +14,6 @@ pub(crate) enum WebSocketEvent<'a> {
     PersistenceQueryFailed {
         error: &'a str,
     },
-    MalformedQueryResult {
-        error: &'a serde_json::Error,
-    },
     BindFailed {
         address: core::net::SocketAddr,
         error: &'a std::io::Error,
@@ -50,13 +47,6 @@ pub(crate) fn report(event: WebSocketEvent<'_>) {
             aimdb_core::log_warn!(
                 target: target::DISPATCH,
                 "record.query persistence handler failed: {}",
-                error
-            );
-        }
-        WebSocketEvent::MalformedQueryResult { error } => {
-            aimdb_core::log_warn!(
-                target: target::DISPATCH,
-                "record.query handler returned malformed records: {}",
                 error
             );
         }
