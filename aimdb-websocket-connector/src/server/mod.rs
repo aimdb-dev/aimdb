@@ -14,4 +14,3 @@ pub mod client_manager;
 pub(crate) mod dispatch;
 pub(crate) mod http;
 pub(crate) mod registry;
-pub(crate) mod session;
