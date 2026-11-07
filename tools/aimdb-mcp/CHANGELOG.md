@@ -14,10 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rename_record`, `validate_against_instance`, `save_memory`,
   `reset_session`), the `aimdb://architecture*` resources, the
   `architecture_agent`, `onboarding` and `breaking_change_review` prompts, and
-  the `aimdb-codegen` dependency. The server is introspection only: 14 tools,
-  11 offered by default. `--allow-writes` and `--public` are unchanged. Write
+  the `aimdb-codegen` dependency. The server is introspection only. `--allow-writes` and `--public` are unchanged. Write
   the wiring in Rust as the AimDB usage guide shows and inspect it with these
   tools.
+
+- **`query_schema` (#420).** It inferred a JSON Schema from one live value,
+  marking every field present as required and typing arrays from their first
+  element, which clients could mistake for the record's contract. MCP clients
+  that call it now get an `Unknown tool` error. Use `list_records`
+  (`schema_type` / `schema_version`) for the declared contract and
+  `get_record` for an observed value. 13 tools remain, 10 offered by default.
+
+### Added
+
+- **`list_records` returns `schema_type` and `schema_version` (#420)** for
+  records configured with a data-contract schema; both are omitted otherwise.
 
 ## [0.10.0] - 2026-11-03
 

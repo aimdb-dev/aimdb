@@ -11,8 +11,8 @@ Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspectio
 **Key Features:**
 - **LLM-Powered**: Natural language queries to AimDB instances
 - **Auto-Discovery**: Automatically finds running AimDB servers
-- **Schema Inference**: Infers JSON schemas from record values
-- **Rich Toolset**: 14 tools covering introspection, record ops, the dependency graph, and metrics/profiling
+- **Record Contracts**: Reports each record's declared schema name and version
+- **Rich Toolset**: 13 tools covering introspection, record ops, the dependency graph, and metrics/profiling
 - **VS Code Integration**: Works seamlessly with GitHub Copilot
 
 ## Architecture
@@ -29,7 +29,7 @@ Model Context Protocol (MCP) server for AimDB - enables LLM-powered introspectio
 │     aimdb-mcp Server         │
 │  - Protocol translation      │
 │  - Tool implementations      │
-│  - Schema inference          │
+│  - Record introspection      │
 └──────────────┬───────────────┘
                │ aimdb-client
                ▼
@@ -194,9 +194,9 @@ This creates an instance at `/tmp/aimdb-demo.sock` with sample records.
 
 ## Available Tools
 
-14 tools in total. The three tools that change a running instance
+13 tools in total. The three tools that change a running instance
 (`set_record`, `reset_stage_profiling`, `reset_buffer_metrics`) are offered only
-with `--allow-writes`, so 11 tools are advertised by default. In `--public` mode only
+with `--allow-writes`, so 10 tools are advertised by default. In `--public` mode only
 `discover_instances`, `list_records`, and `get_record` are advertised (see
 [Tool Modes](#tool-modes)).
 
@@ -229,7 +229,8 @@ List all records in an instance:
 ```
 Query: "What records are in the demo instance?"
 
-Result: Record names, types, buffer configs, producer/consumer counts
+Result: Record names, types, buffer configs, producer/consumer counts, and the
+declared schema (`schema_type`, `schema_version`) where the record has one
 ```
 
 ### 4. get_record
@@ -252,17 +253,7 @@ Query: "Set the config log_level to debug"
 Action: Updates server::Config record
 ```
 
-### 6. query_schema
-
-Infer JSON schema from record values:
-
-```
-Query: "What's the schema of the Temperature record?"
-
-Result: JSON Schema with types, required fields, and example
-```
-
-### 7. drain_record
+### 6. drain_record
 
 Drain all values accumulated since the last drain (a destructive batch read):
 
@@ -276,7 +267,7 @@ To wait for the *next* update after a prompt ("press B1, then check it
 fired"), use the CLI's `aimdb watch --new --timeout`; see
 [Waiting for an event](../aimdb-cli/README.md#waiting-for-an-event-agents-scripts).
 
-### 8. graph_nodes
+### 7. graph_nodes
 
 List all nodes in the dependency graph:
 
@@ -286,7 +277,7 @@ Query: "Show me the record graph nodes"
 Result: Per-record origin (source/link/transform/passive), schema name and version, buffer config, tap count, and outbound link addresses
 ```
 
-### 9. graph_edges
+### 8. graph_edges
 
 List the directed edges (data flow) between records:
 
@@ -296,7 +287,7 @@ Query: "How does data flow between records?"
 Result: Directed edges from sources through transforms to consumers
 ```
 
-### 10. graph_topo_order
+### 9. graph_topo_order
 
 Show the topological (spawn/initialization) order of records:
 
@@ -306,7 +297,7 @@ Query: "What order are records initialized in?"
 Result: Record keys ordered so dependencies precede their dependents
 ```
 
-### 11. get_stage_profiling
+### 10. get_stage_profiling
 
 Show automatic per-stage timing — how long each `.source()` / `.tap()` / `.link()`
 callback takes (wall-clock, including `.await` / I/O / sleeps) — for records
@@ -323,7 +314,7 @@ Result: Per-stage call_count / avg / min / max (ns) plus a "bottleneck" pointing
 Stage names come from `.with_name("...")` on the registrar; unnamed stages show as
 `source[0]`, `tap[0]`, etc.
 
-### 12. reset_stage_profiling
+### 11. reset_stage_profiling
 
 Reset stage profiling counters for every record on the target instance (requires
 `--allow-writes`, write permission on the instance and the `profiling` feature).
@@ -335,7 +326,7 @@ Query: "Reset the stage profiling counters."
 Result: { "reset": true }
 ```
 
-### 13. get_buffer_metrics
+### 12. get_buffer_metrics
 
 Return live buffer introspection counters
 (`produced_count` / `consumed_count` / `dropped_count` / `occupancy`) for records
@@ -348,7 +339,7 @@ Query: "What's the producer/consumer lag on my Temperature buffer?"
 Result: Per-record produced/consumed/dropped counts and current (used, capacity).
 ```
 
-### 14. reset_buffer_metrics
+### 13. reset_buffer_metrics
 
 Reset buffer introspection counters for every record on the target instance
 (requires `--allow-writes`, write permission on the instance and the `metrics`
@@ -360,35 +351,32 @@ Query: "Reset the buffer metrics counters."
 Result: { "reset": true }
 ```
 
-## Schema Inference
+## Record Contracts
 
-The MCP server can infer JSON schemas from record values:
+The MCP server does not infer schemas. To learn what a record holds, use the
+contract the record declares and look at a real value:
+
+- **`list_records`** returns `schema_type` and `schema_version` for each record
+  configured with a data-contract schema. This is the versioned AimDB contract.
+- **`get_record`** returns the current value as `{value, ts}`. Treat it as one
+  observed sample: it shows the shape of this value, not which fields are
+  optional or what an array may hold.
+
+Schema metadata can be absent. A record configured without a schema has no
+`schema_type` or `schema_version`; the fields are omitted, not null. In that
+case `get_record` is the only view of the data, and the agent should ask the
+user about units or semantics it cannot tell from the value.
 
 ```json
-// Record value
-{
-  "celsius": 23.5,
-  "sensor_id": "sensor-001",
-  "timestamp": 1730379296
-}
+// list_records (excerpt)
+{ "record_key": "temp.berlin", "buffer_type": "single_latest",
+  "schema_type": "temperature", "schema_version": 2 }
 
-// Inferred schema
-{
-  "type": "object",
-  "properties": {
-    "celsius": { "type": "number" },
-    "sensor_id": { "type": "string" },
-    "timestamp": { "type": "integer" }
-  },
-  "required": ["celsius", "sensor_id", "timestamp"]
-}
+// get_record
+{ "value": { "celsius": 23.5, "sensor_id": "sensor-001" }, "ts": 81234000 }
 ```
 
-**Limitations:**
-- Best-effort inference from current value
-- May not capture full type constraints
-- Nullable fields require multiple samples
-- Ask user for clarification on ambiguous cases
+`graph_nodes` carries the same contract as `schema: { name, version }`.
 
 ## Resources
 
@@ -412,7 +400,7 @@ The server provides one helper prompt (not available in `--public` mode):
 - **Format**: NDJSON (newline-delimited JSON)
 
 ### Capabilities
-- **Tools**: ✓ (14 tools; 11 advertised by default, all 14 with `--allow-writes`, 3 in `--public` mode)
+- **Tools**: ✓ (13 tools; 10 advertised by default, all 13 with `--allow-writes`, 3 in `--public` mode)
 - **Resources**: ✓ (instances and their records)
 - **Prompts**: ✓ (1 prompt)
 - **Sampling**: ✗ (not supported)
@@ -454,9 +442,9 @@ User: "What data is available in the demo instance?"
 
 LLM:
 1. list_records(/tmp/aimdb-demo.sock) → gets record list
-2. For interesting records: get_record() → shows values
-3. query_schema() → explains structure
-4. Summarizes available data types
+2. Reads schema_type / schema_version from that list → the declared contract
+3. For interesting records: get_record() → an observed value
+4. Summarizes available data, noting records without a declared schema
 ```
 
 ### Data Monitoring
@@ -607,7 +595,7 @@ stat /tmp/aimdb-demo.sock
 
 - **MCP Specification**: https://spec.modelcontextprotocol.io/
 - **AimX Protocol**: `docs/design/008-M3-remote-access.md`
-- **Schema Design**: `docs/design/011-M4-schema-query.md`
+- **Schema Query (superseded, historical)**: `docs/design/011-M4-schema-query.md`
 
 ## License
 
