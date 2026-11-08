@@ -866,6 +866,7 @@ DISTRO ?= lyrical
 ros2-interop:
 	@printf "$(GREEN)ROS 2 interop on $(DISTRO)...$(NC)\n"
 	cargo build --package aimdb-zenoh-connector --features "std" --examples
+	cargo build --package aimdb-cli
 	./aimdb-zenoh-connector/tests/interop/ros2_interop.sh $(DISTRO)
 
 ## Drift guards

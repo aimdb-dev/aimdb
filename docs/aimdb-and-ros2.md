@@ -127,6 +127,10 @@ $ ros2 topic pub --once /cell4/spindle_cmd cell_msgs/msg/SpindleCommand "{rpm: 1
 distribution in Docker, with the connector's `ros2_talker` and `ros2_listener`
 examples.
 
+[The ROS 2 walkthrough](ros2-walkthrough.md) runs two complete examples: a
+gateway that republishes `/cmd_vel` as JSON, and turtlesim driven by goals
+written over AimX, for example by Claude through `aimdb-mcp`.
+
 ## Not yet
 
 Services, actions, `TRANSIENT_LOCAL` (latched topics), Humble, and a

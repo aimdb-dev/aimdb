@@ -14,6 +14,7 @@ set -euo pipefail
 DISTRO=${1:?usage: ros2_interop.sh <distro>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 EXAMPLES=${EXAMPLES:-target/debug/examples}
+AIMDB=${AIMDB:-target/debug/aimdb}
 IMAGE=${IMAGE:-aimdb-ros2-interop:$DISTRO}
 PREFIX=aimdb-interop-$DISTRO-$$
 PIDS=()
@@ -36,7 +37,8 @@ fail() {
 # and read back with `docker logs`, which works on every Docker setup.
 ros() {
     local name=$PREFIX-cli-$RANDOM
-    docker run -d --name "$name" --network host "$IMAGE" "$@" >/dev/null
+    docker run -d --name "$name" --network host \
+        -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" "$IMAGE" "$@" >/dev/null
     docker wait "$name" >/dev/null
     docker logs "$name" 2>&1
     docker container rm "$name" >/dev/null
@@ -114,5 +116,97 @@ received=$(grep -c "received: hello from $DISTRO" "$listener_log" || true)
 rm -f "$listener_log"
 [[ $received -eq 3 ]] || fail "the listener received $received of 3 messages"
 echo "ok: subscription (topic info -v, topic pub, 3 of 3 received)"
+
+# --- The gateway (examples/ros2_gateway.md): ROS publishes a Twist on
+# /cmd_vel in domain 42; AimDB stores it, republishes it as JSON on plain
+# Zenoh and serves it over AimX.
+export ROS_DOMAIN_ID=42
+socket=$(mktemp -u /tmp/aimdb-interop-XXXXXX.sock)
+gateway_log=$(mktemp)
+zenoh_log=$(mktemp)
+watch_log=$(mktemp)
+AIMX_SOCKET=$socket "$EXAMPLES/ros2_gateway" >"$gateway_log" 2>&1 &
+PIDS+=($!)
+"$EXAMPLES/zenoh_sub" 'telemetry/**' >"$zenoh_log" 2>&1 &
+PIDS+=($!)
+for _ in $(seq 1 30); do
+    [[ -S $socket ]] && grep -q '^zenoh_sub:' "$zenoh_log" && break
+    sleep 1
+done
+[[ -S $socket ]] || fail "the gateway did not open $socket"
+grep -q '^zenoh_sub:' "$zenoh_log" || fail "zenoh_sub did not subscribe:
+$(cat "$zenoh_log")"
+"$AIMDB" --connect "unix://$socket" watch robot.cmd_vel --format json --new \
+    --count 3 --timeout 60 >"$watch_log" 2>&1 &
+watch_pid=$!
+PIDS+=($watch_pid)
+
+ros_until 'Subscription count: 1' ros2 topic info -v /cmd_vel >/dev/null \
+    || fail "ros2 topic info -v does not show the gateway's subscription"
+ros timeout 30 ros2 topic pub --times 3 -r 2 /cmd_vel geometry_msgs/msg/Twist \
+    "{linear: {x: 0.5}, angular: {z: 0.3}}" >/dev/null
+
+json='{"linear":{"x":0.5,"y":0.0,"z":0.0},"angular":{"x":0.0,"y":0.0,"z":0.3}}'
+for _ in $(seq 1 10); do
+    [[ $(grep -cxF "telemetry/cmd_vel: $json" "$zenoh_log") -ge 3 ]] && break
+    sleep 1
+done
+republished=$(grep -cxF "telemetry/cmd_vel: $json" "$zenoh_log" || true)
+[[ $republished -eq 3 ]] || fail "zenoh_sub received $republished of 3 JSON payloads:
+$(cat "$zenoh_log")"
+wait "$watch_pid" || fail "aimdb watch did not see 3 updates:
+$(cat "$watch_log")"
+watched=$(grep -c '"value":{"angular":{"x":0.0,"y":0.0,"z":0.3},"linear":{"x":0.5,"y":0.0,"z":0.0}}' "$watch_log" || true)
+[[ $watched -eq 3 ]] || fail "aimdb watch printed $watched of 3 Twists:
+$(cat "$watch_log")"
+# A watch that starts after the last message gets it as a snapshot.
+late=$("$AIMDB" --connect "unix://$socket" watch robot.cmd_vel --format json \
+    --count 1 --timeout 10 2>/dev/null) || fail "a late aimdb watch got no snapshot"
+grep -q '"linear":{"x":0.5' <<<"$late" || fail "the late snapshot is not the last Twist:
+$late"
+rm -f "$gateway_log" "$zenoh_log" "$watch_log"
+unset ROS_DOMAIN_ID
+echo "ok: gateway (ros2 topic pub, 3 of 3 republished as JSON, aimdb watch, late snapshot)"
+
+# --- turtlesim_mcp (docs/ros2-walkthrough.md): a goal written over AimX
+# drives the turtle there; the controller's output refuses remote writes.
+docker run -d --name "$PREFIX-turtlesim" --network host \
+    -e QT_QPA_PLATFORM=offscreen "$IMAGE" ros2 run turtlesim turtlesim_node >/dev/null
+socket=$(mktemp -u /tmp/aimdb-interop-XXXXXX.sock)
+pilot_log=$(mktemp)
+ROS_DISTRO=$DISTRO AIMX_SOCKET=$socket "$EXAMPLES/turtlesim_mcp" >"$pilot_log" 2>&1 &
+PIDS+=($!)
+aimdb() { "$AIMDB" --connect "unix://$socket" "$@"; }
+
+# Prints the turtle's "x y", once turtle.pose holds a value.
+pose() {
+    aimdb record get turtle.pose 2>/dev/null \
+        | python3 -c 'import json,sys; v=json.load(sys.stdin)["value"]; print(v["x"], v["y"])' 2>/dev/null
+}
+for _ in $(seq 1 30); do pose >/dev/null && break; sleep 1; done
+start=$(pose) || fail "turtle.pose never received /turtle1/pose:
+$(cat "$pilot_log")"
+
+aimdb record set turtle.goal '{"GoTo": {"x": 8.0, "y": 8.0}}' >/dev/null \
+    || fail "turtle.goal is not writable over AimX"
+arrived=
+for _ in $(seq 1 30); do
+    if pose | awk '{ exit !((($1-8)^2 + ($2-8)^2) < 0.1^2) }'; then
+        arrived=$(pose)
+        break
+    fi
+    sleep 1
+done
+[[ -n $arrived ]] || fail "the turtle did not reach (8, 8) from ($start), at ($(pose)):
+$(cat "$pilot_log")"
+
+if out=$(aimdb record set turtle.cmd_vel \
+    '{"linear":{"x":9.0,"y":0.0,"z":0.0},"angular":{"x":0.0,"y":0.0,"z":0.0}}' 2>&1); then
+    fail "turtle.cmd_vel accepted a remote write"
+fi
+grep -q 'denied' <<<"$out" || fail "the write to turtle.cmd_vel failed for another reason:
+$out"
+rm -f "$pilot_log"
+echo "ok: turtlesim_mcp (GoTo from ($start) to ($arrived), cmd_vel write denied)"
 
 echo "PASS ($DISTRO)"
