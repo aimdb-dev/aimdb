@@ -121,10 +121,10 @@ defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
 # Hash map for no_std (same implementation as std::collections::HashMap)
-hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
+hashbrown = { version = "0.16", default-features = false, features = ["default-hasher"] }
 
 [dev-dependencies]
 # Scoped subscribers in logging tests require std independently of other crates.

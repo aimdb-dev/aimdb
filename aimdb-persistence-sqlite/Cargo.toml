@@ -18,7 +18,7 @@ log = ["aimdb-core/log"]
 [dependencies]
 aimdb-core = { version = "3.0.0", path = "../aimdb-core", default-features = false, features = ["alloc"] }
 aimdb-persistence = { version = "0.3.0", path = "../aimdb-persistence" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["sync"] }
 

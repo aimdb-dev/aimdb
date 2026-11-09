@@ -57,7 +57,7 @@ aimdb-tokio-adapter = { version = "0.8.0", path = "../aimdb-tokio-adapter" }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
