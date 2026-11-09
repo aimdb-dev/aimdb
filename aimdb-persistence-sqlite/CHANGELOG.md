@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Upgrade `rusqlite` 0.32 → 0.41 (bundled SQLite 3.54.1)** to fix
+  RUSTSEC-2026-0459 / CVE-2026-119375: SQLite before 3.54.0 could return
+  uninitialized page-cache memory when opening a database alongside a crafted
+  `-wal` file with a mismatched page size.
+
 ## [0.3.0] - 2026-11-03
 
 ### Changed (breaking)
