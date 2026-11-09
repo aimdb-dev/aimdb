@@ -558,6 +558,12 @@ mod tests {
         block_on(test_support::assert_spmc_ring_contract(|| {
             WasmBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 })
         }));
+        // Wakes run inside the buffer's `RefCell` borrow, so a push from a waker
+        // fails in the adapter itself; that cell is the adapter's limit.
+        block_on(test_support::assert_latest_slot_contract(
+            || WasmBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 }),
+            test_support::ReentrantPush::AdapterLimit,
+        ));
     }
 
     // ========================================================================

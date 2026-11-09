@@ -1020,6 +1020,12 @@ mod tests {
             TokioBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 })
         })
         .await;
+        // broadcast wakes after releasing its own lock, so a waker may push.
+        test_support::assert_latest_slot_contract(
+            || TokioBuffer::<aimdb_core::Stamped<i32>>::new(&BufferCfg::SpmcRing { capacity: 4 }),
+            test_support::ReentrantPush::Supported,
+        )
+        .await;
     }
 
     #[tokio::test]

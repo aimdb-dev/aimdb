@@ -207,3 +207,124 @@ where
         "SpmcRing peek must be None (no canonical latest)"
     );
 }
+
+/// Whether an adapter's ring tolerates a push from inside one of its own
+/// wakes, for [`assert_latest_slot_contract`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReentrantPush {
+    /// The ring wakes readers after releasing its own lock (tokio), so a
+    /// waker may push to the same ring.
+    Supported,
+    /// The ring wakes readers while holding its own lock (Embassy, wasm), so a
+    /// re-entrant push fails inside the adapter. That cell is skipped.
+    AdapterLimit,
+}
+
+/// Asserts the contract of the latest-value wrapper core puts around every
+/// `SpmcRing` (`LatestSlot`, see `buffer/latest.rs`) against an adapter's
+/// real ring, with its real, synchronous wakes.
+///
+/// `mk` must produce an `SpmcRing` whose capacity holds at least 4 values.
+///
+/// Cells covered (foreign code × what it does):
+/// - a waker, run inside `push`, reads `peek` on the same ring: it sees the
+///   value being pushed, without deadlock or panic;
+/// - a waker pushes to the same ring (when `reentrant` is
+///   [`ReentrantPush::Supported`]): `peek` ends on the ring's last value;
+/// - the reader receives every value in ring order, and `peek` is
+///   non-destructive.
+pub async fn assert_latest_slot_contract<B, F>(mk: F, reentrant: ReentrantPush)
+where
+    B: Buffer<Stamped<i32>> + DynBuffer<Stamped<i32>> + 'static,
+    F: Fn() -> B,
+{
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
+    use alloc::vec::Vec;
+    use core::task::{Context, Poll, Waker};
+
+    use super::LatestSlot;
+
+    type Slot = LatestSlot<Stamped<i32>>;
+
+    /// On wake: read the slot, and optionally push `push_on_wake` once.
+    struct Probe {
+        slot: Arc<Slot>,
+        seen: spin::Mutex<Vec<Option<Stamped<i32>>>>,
+        push_on_wake: spin::Mutex<Option<Stamped<i32>>>,
+    }
+    impl Wake for Probe {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            let seen = self.slot.peek();
+            self.seen.lock().push(seen);
+            let push = self.push_on_wake.lock().take();
+            if let Some(v) = push {
+                self.slot.push(v);
+            }
+        }
+    }
+
+    let new_slot = || Arc::new(LatestSlot::new(Arc::new(mk()) as Arc<dyn DynBuffer<_>>));
+
+    // ── A waker reads the same ring during the push that woke it ──────────
+    let slot = new_slot();
+    let probe = Arc::new(Probe {
+        slot: slot.clone(),
+        seen: spin::Mutex::new(Vec::new()),
+        push_on_wake: spin::Mutex::new(None),
+    });
+    let waker = Waker::from(probe.clone());
+    let mut reader = slot.subscribe_boxed();
+    assert!(
+        reader
+            .poll_recv(&mut Context::from_waker(&waker))
+            .is_pending(),
+        "an empty ring is pending"
+    );
+    slot.push(sample(1));
+    assert_eq!(
+        probe.seen.lock().first().cloned(),
+        Some(Some(sample(1))),
+        "the push woke the reader synchronously, and the waker's peek saw the \
+         value being pushed"
+    );
+    assert!(
+        matches!(
+            reader.poll_recv(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(ref v)) if *v == sample(1)
+        ),
+        "the reader receives the value"
+    );
+    assert_eq!(slot.peek(), Some(sample(1)), "peek is non-destructive");
+    assert_eq!(slot.peek(), Some(sample(1)));
+
+    // ── A waker pushes to the same ring ──────────────────────────────────
+    if reentrant == ReentrantPush::Supported {
+        let slot = new_slot();
+        let probe = Arc::new(Probe {
+            slot: slot.clone(),
+            seen: spin::Mutex::new(Vec::new()),
+            push_on_wake: spin::Mutex::new(Some(sample(3))),
+        });
+        let waker = Waker::from(probe.clone());
+        let mut reader = slot.subscribe_boxed();
+        assert!(reader
+            .poll_recv(&mut Context::from_waker(&waker))
+            .is_pending());
+        // 2 enters the ring, wakes the probe, which pushes 3 from inside.
+        slot.push(sample(2));
+        let mut received = Vec::new();
+        while let Poll::Ready(Ok(v)) = reader.poll_recv(&mut Context::from_waker(&waker)) {
+            received.push(v);
+        }
+        assert_eq!(received, [sample(2), sample(3)], "ring order");
+        assert_eq!(
+            slot.peek(),
+            received.last().cloned(),
+            "peek ends on the value the ring received last"
+        );
+    }
+}

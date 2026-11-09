@@ -17,10 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single `peek()` for every buffer type: the ring fallback that drained the
   connection's cursor is gone, so `record.get` no longer consumes values a
   later `record.drain` should return, and `not_found` now always means "no
-  such record or no value yet". Cost: one clone and a short lock per push on
-  ring records. On `no_std` the lock is a spin lock unless the new
-  `critical-section` feature is on, which makes it a `critical_section::Mutex`
-  so interrupt handlers can push to a ring; the Embassy adapter enables it.
+  such record or no value yet". Cost per push on ring records: one clone, one
+  `Arc` allocation, and a short lock. The wrapper's contract is written out in
+  `buffer/latest.rs`: the snapshot matches the ring's order with concurrent
+  writers; no wrapper lock is held while wakers, `T::clone` or `T::drop` run,
+  so they may read the same ring; a waker may push to the same ring where the
+  adapter allows it (tokio). On `no_std` the new `critical-section` feature
+  makes the locks interrupt-safe; the Embassy adapter enables it.
+
+### Added
+
+- **`buffer::test_support::assert_latest_slot_contract` (#450).** Runs the
+  wrapper's contract against an adapter's real ring with real, synchronous
+  wakes. The tokio, Embassy and wasm adapters run it in their buffer suites.
 
 ### Migration
 
