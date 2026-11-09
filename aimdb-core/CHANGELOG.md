@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ids as `OutboundRoutes`. Connectors build late-join snapshots from it
   instead of caching what they sent. Records without a current value
   (`SpmcRing`, or nothing written yet) render nothing.
+- **`EnvelopeCodec::hello` (#443):** the request a client opens each
+  connection with under `ClientConfig::sends_hello`. Defaults to `None`, which
+  keeps the `Ping`/`Pong` handshake; `AimxCodec` returns AimX's `hello`.
+
+### Changed
+
+- **`ClientConfig::sends_hello` sends the codec's hello (#443)** when it has
+  one, instead of a `Ping`, so it starts a session on servers that serve one
+  long connection. The hello goes out once per connection, ahead of every
+  command, and its reply is not awaited: frame order is enough. A reply
+  refusing the protocol version is logged; the client keeps running. Codecs
+  without a hello keep the `Ping`/`Pong` exchange, which still waits.
 
 ### Changed (wire)
 

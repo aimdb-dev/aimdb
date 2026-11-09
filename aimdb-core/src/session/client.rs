@@ -69,8 +69,19 @@ pub struct ClientConfig {
     /// [`RpcError::Internal`], a dropped `subscribe` ends its stream. Defaults to
     /// 256; clamped to `1..=MAX_COMMAND_QUEUE_CAP`.
     pub max_offline_queue: usize,
-    /// Send a Ping handshake on connect and await the Pong before serving caller
-    /// commands. A real protocol swaps Ping/Pong for its Hello.
+    /// Open every connection with a handshake, ahead of any caller command.
+    /// What that means depends on the codec:
+    ///
+    /// - With a [`hello`](EnvelopeCodec::hello) request (AimX: `hello`), the
+    ///   engine sends it once and goes straight on, **without waiting for the
+    ///   reply**. The connection keeps frame order, so the server handles the
+    ///   `hello` before anything sent after it; that is what tells a server on
+    ///   a connection that never closes (a serial line) that a new client is
+    ///   behind it, so it ends the previous client's session. The reply
+    ///   arrives later and is dropped, except that a refused protocol version
+    ///   is logged. A `hello` lost on the way is not resent.
+    /// - Without one, the engine sends a `Ping` and waits for the `Pong`
+    ///   before serving commands.
     pub sends_hello: bool,
 }
 
@@ -87,6 +98,11 @@ impl Default for ClientConfig {
         }
     }
 }
+
+/// Correlation id of the handshake `hello` (see [`ClientConfig::sends_hello`]).
+/// [`ClientHandle`] ids start at 1, so its reply never matches a caller's
+/// call or subscription.
+const HELLO_ID: u64 = 0;
 
 /// Exponential backoff (ms) for the `attempt`-th redial (1-based), capped at
 /// [`ClientConfig::max_reconnect_delay`].
@@ -633,19 +649,35 @@ where
             .fuse()
     });
 
-    // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
+    // Handshake-as-caller, before serving commands: the codec's hello, which
+    // also starts a fresh session on the server, or else a Ping/Pong.
     if config.sends_hello {
-        out.clear();
-        if codec.encode_inbound(Inbound::Ping, &mut out).is_err() || conn.send(&out).await.is_err()
-        {
-            return Ended::Disconnected;
-        }
-        match conn.recv().await {
-            Ok(Some(frame)) => match codec.decode_outbound(&frame) {
-                Ok(Outbound::Pong) => {}
+        if let Some((method, params)) = codec.hello() {
+            // Sent once, not awaited: frame order puts it ahead of every
+            // command, and the demux loop below drops its reply.
+            out.clear();
+            let hello = Inbound::Request {
+                id: HELLO_ID,
+                method: method.into(),
+                params,
+            };
+            if codec.encode_inbound(hello, &mut out).is_err() || conn.send(&out).await.is_err() {
+                return Ended::Disconnected;
+            }
+        } else {
+            out.clear();
+            if codec.encode_inbound(Inbound::Ping, &mut out).is_err()
+                || conn.send(&out).await.is_err()
+            {
+                return Ended::Disconnected;
+            }
+            match conn.recv().await {
+                Ok(Some(frame)) => match codec.decode_outbound(&frame) {
+                    Ok(Outbound::Pong) => {}
+                    _ => return Ended::Disconnected,
+                },
                 _ => return Ended::Disconnected,
-            },
-            _ => return Ended::Disconnected,
+            }
         }
     }
 
@@ -700,6 +732,17 @@ where
                     Ok(None) | Err(_) => return Ended::Disconnected,
                 };
                 match codec.decode_outbound(&frame) {
+                    // The reply to the handshake hello, which nobody awaits.
+                    // Only a refusal is worth a word: the server keeps
+                    // serving, but on a protocol this client may not speak.
+                    Ok(Outbound::Reply {
+                        id: HELLO_ID,
+                        result,
+                    }) => {
+                        if result == Err(RpcError::VersionMismatch) {
+                            report(SessionEvent::HelloRefused);
+                        }
+                    }
                     Ok(Outbound::Reply { id, result }) => {
                         if let Some(tx) = pending.remove(&id) {
                             let _ = tx.send(result);
