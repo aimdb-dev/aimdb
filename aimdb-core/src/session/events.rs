@@ -60,6 +60,10 @@ pub(crate) enum SessionEvent<'a> {
         topic: &'a str,
         skipped: u64,
     },
+    HelloUnanswered {
+        after_ms: u64,
+    },
+    HelloRefused,
     ReceiveFramingFailed,
     SendFrameRejected {
         bytes: usize,
@@ -144,6 +148,15 @@ pub(crate) fn report(event: SessionEvent<'_>) {
             "mirror gap on '{}': {} update(s) lost (latest-state, no resync)",
             topic,
             skipped
+        ),
+        SessionEvent::HelloUnanswered { after_ms } => log_warn!(
+            target: target::CLIENT,
+            "no reply to hello after {} ms; resending until the server answers",
+            after_ms
+        ),
+        SessionEvent::HelloRefused => log_error!(
+            target: target::CLIENT,
+            "server refused the hello: incompatible protocol version; stopping the client"
         ),
         SessionEvent::ReceiveFramingFailed => {
             log_warn!(

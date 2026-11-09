@@ -69,8 +69,17 @@ pub struct ClientConfig {
     /// [`RpcError::Internal`], a dropped `subscribe` ends its stream. Defaults to
     /// 256; clamped to `1..=MAX_COMMAND_QUEUE_CAP`.
     pub max_offline_queue: usize,
-    /// Send a Ping handshake on connect and await the Pong before serving caller
-    /// commands. A real protocol swaps Ping/Pong for its Hello.
+    /// Open every connection with a handshake and finish it before serving
+    /// caller commands. The handshake is the codec's
+    /// [`hello`](EnvelopeCodec::hello) request when it has one (AimX: `hello`),
+    /// else a `Ping`/`Pong` exchange.
+    ///
+    /// A `hello` is what tells a server on a connection that never closes (a
+    /// serial line) that a new client is behind it, so it ends the previous
+    /// client's session. Frames of that session that arrive before the reply
+    /// are discarded, and an unanswered `hello` is sent again every
+    /// [`HELLO_RESEND_MS`] for as long as the connection stays up. A server
+    /// that refuses the client's protocol version stops the engine.
     pub sends_hello: bool,
 }
 
@@ -87,6 +96,14 @@ impl Default for ClientConfig {
         }
     }
 }
+
+/// How long (ms) the client waits for the reply to its `hello` before sending
+/// it again (see [`ClientConfig::sends_hello`]).
+pub const HELLO_RESEND_MS: u64 = 1000;
+
+/// Correlation id of the handshake `hello`. [`ClientHandle`] ids start at 1,
+/// so no caller's call or subscription can share it.
+const HELLO_ID: u64 = 0;
 
 /// Exponential backoff (ms) for the `attempt`-th redial (1-based), capped at
 /// [`ClientConfig::max_reconnect_delay`].
@@ -361,6 +378,9 @@ enum Ended {
     Disconnected,
     /// Every [`ClientHandle`] was dropped — stop the engine.
     HandlesDropped,
+    /// The server refused the handshake for good (an incompatible protocol
+    /// version) — redialing cannot help, so stop the engine.
+    Refused,
 }
 
 /// On engine exit, close and drain the command channel so buffered/in-flight
@@ -537,7 +557,7 @@ async fn client_loop<D, C>(
         };
 
         match drive_connection(conn, &codec, &cmd_rx, &prune_rx, &config, &ctx).await {
-            Ended::HandlesDropped => return,
+            Ended::HandlesDropped | Ended::Refused => return,
             Ended::Disconnected => match reconnect_after(&mut attempt, &config, &ctx).await {
                 true => continue,
                 false => return,
@@ -589,6 +609,83 @@ fn sweep_abandoned(pending: &mut PendingCalls) {
     pending.retain(|_, reply| !reply.is_canceled());
 }
 
+/// Send the codec's `hello` and wait for its reply, resending it every
+/// [`HELLO_RESEND_MS`] until one arrives (a frame lost on a lossy line, or a
+/// peer that is not up yet).
+///
+/// Every other frame is discarded: on a connection that outlived its previous
+/// client, the server keeps streaming that client's events until it reads the
+/// `hello`. A resent `hello` is harmless — the server handles them in order,
+/// before anything this client sends next, and the extra reply that comes
+/// back later matches no pending call, so the demux loop drops it.
+async fn send_hello<C>(
+    conn: &mut Box<dyn Connection>,
+    codec: &C,
+    out: &mut Vec<u8>,
+    method: &'static str,
+    params: Payload,
+    ctx: &crate::RuntimeContext,
+) -> Result<(), Ended>
+where
+    C: EnvelopeCodec + ?Sized,
+{
+    let mut resent = false;
+    loop {
+        out.clear();
+        let hello = Inbound::Request {
+            id: HELLO_ID,
+            method: method.into(),
+            params: params.clone(),
+        };
+        if codec.encode_inbound(hello, out).is_err() || conn.send(out).await.is_err() {
+            return Err(Ended::Disconnected);
+        }
+        let mut resend = ctx
+            .time()
+            .sleep(core::time::Duration::from_millis(HELLO_RESEND_MS))
+            .fuse();
+        loop {
+            let frame = {
+                let mut recv = conn.recv().fuse();
+                select_biased! {
+                    r = recv => Some(r),
+                    _ = resend => None,
+                }
+            };
+            let frame = match frame {
+                Some(Ok(Some(frame))) => frame,
+                Some(Ok(None) | Err(_)) => return Err(Ended::Disconnected),
+                // No reply in time: send it again.
+                None => break,
+            };
+            match codec.decode_outbound(&frame) {
+                Ok(Outbound::Reply {
+                    id: HELLO_ID,
+                    result,
+                }) => {
+                    return match result {
+                        Err(RpcError::VersionMismatch) => {
+                            report(SessionEvent::HelloRefused);
+                            Err(Ended::Refused)
+                        }
+                        // Any other answer still came from a server that read
+                        // the `hello`, which is all the handshake is for.
+                        _ => Ok(()),
+                    };
+                }
+                // A frame of the session this `hello` replaces.
+                _ => continue,
+            }
+        }
+        if !resent {
+            report(SessionEvent::HelloUnanswered {
+                after_ms: HELLO_RESEND_MS,
+            });
+            resent = true;
+        }
+    }
+}
+
 /// Drive one dialed [`Connection`]: optional handshake, then `biased` demux of
 /// server frames (resolve `Reply` by `id`, route `Event`/`Snapshot` to their
 /// subscription channels) interleaved with caller commands. Pending state is
@@ -633,19 +730,27 @@ where
             .fuse()
     });
 
-    // Handshake-as-caller: prove the link with Ping/Pong before serving commands.
+    // Handshake-as-caller, before serving commands: the codec's hello, which
+    // also starts a fresh session on the server, or else a Ping/Pong.
     if config.sends_hello {
-        out.clear();
-        if codec.encode_inbound(Inbound::Ping, &mut out).is_err() || conn.send(&out).await.is_err()
-        {
-            return Ended::Disconnected;
-        }
-        match conn.recv().await {
-            Ok(Some(frame)) => match codec.decode_outbound(&frame) {
-                Ok(Outbound::Pong) => {}
+        if let Some((method, params)) = codec.hello() {
+            if let Err(ended) = send_hello(&mut conn, codec, &mut out, method, params, ctx).await {
+                return ended;
+            }
+        } else {
+            out.clear();
+            if codec.encode_inbound(Inbound::Ping, &mut out).is_err()
+                || conn.send(&out).await.is_err()
+            {
+                return Ended::Disconnected;
+            }
+            match conn.recv().await {
+                Ok(Some(frame)) => match codec.decode_outbound(&frame) {
+                    Ok(Outbound::Pong) => {}
+                    _ => return Ended::Disconnected,
+                },
                 _ => return Ended::Disconnected,
-            },
-            _ => return Ended::Disconnected,
+            }
         }
     }
 

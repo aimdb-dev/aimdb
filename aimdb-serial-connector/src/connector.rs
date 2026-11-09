@@ -72,7 +72,7 @@ impl Dialer for SerialPortDialer {
     fn connect(&self) -> BoxFut<'_, TransportResult<Box<dyn Connection>>> {
         Box::pin(async move {
             use tokio_serial::SerialPortBuilderExt;
-            let stream = tokio_serial::new(&self.path, self.baud)
+            let mut stream = tokio_serial::new(&self.path, self.baud)
                 .open_native_async()
                 .map_err(|_| TransportError::Io)?;
             // Discard bytes a previous session left in the OS input buffer;
@@ -80,6 +80,14 @@ impl Dialer for SerialPortDialer {
             // and desyncs the stream until the next COBS sentinel.
             use tokio_serial::SerialPort;
             let _ = stream.clear(tokio_serial::ClearBuffer::Input);
+            // Close any frame a previous process left half-written on the
+            // line, so the board does not glue the `hello` onto it and drop
+            // both. A spare sentinel is an empty chunk the reader skips.
+            use tokio::io::AsyncWriteExt;
+            stream
+                .write_all(&[crate::framing::DELIM])
+                .await
+                .map_err(|_| TransportError::Io)?;
             Ok(
                 Box::new(framed(aimdb_tokio_adapter::net::TokioByteStream(stream)))
                     as Box<dyn Connection>,
@@ -93,6 +101,13 @@ pub struct SerialClient;
 
 impl SerialClient {
     /// Mirror records to and from the AimX peer on `stream`, served once.
+    ///
+    /// The client opens the connection with a `hello` and waits for the reply
+    /// before it subscribes, so a server that kept running while its previous
+    /// client went away ends that client's session (see the crate docs,
+    /// "Sessions on a line that never closes"). A caller passing its own
+    /// config through `.with_config(...)` keeps that by leaving `sends_hello`
+    /// on.
     ///
     /// Reconnect is **disabled** (unlike `ClientConfig::default`): the stream is
     /// moved in and cannot be re-acquired. `run_client` would stop anyway — it
@@ -114,6 +129,7 @@ impl SerialClient {
             .scheme(DEFAULT_SCHEME)
             .with_config(ClientConfig {
                 reconnect: false,
+                sends_hello: true,
                 ..ClientConfig::default()
             })
     }
@@ -122,7 +138,8 @@ impl SerialClient {
     /// reconnecting after a drop.
     ///
     /// Keeps `ClientConfig`'s default `reconnect: true` — unlike
-    /// [`new`](Self::new), this dialer can genuinely reopen the device.
+    /// [`new`](Self::new), this dialer can genuinely reopen the device. Sends a
+    /// `hello` on every connection, as [`new`](Self::new) does.
     #[cfg(feature = "std")]
     pub fn over_port(
         path: impl Into<String>,
@@ -130,6 +147,10 @@ impl SerialClient {
     ) -> SessionClientConnector<SerialPortDialer, AimxCodec> {
         SessionClientConnector::new(SerialPortDialer::new(path, baud), AimxCodec)
             .scheme(DEFAULT_SCHEME)
+            .with_config(ClientConfig {
+                sends_hello: true,
+                ..ClientConfig::default()
+            })
     }
 }
 
