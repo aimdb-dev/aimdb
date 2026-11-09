@@ -170,64 +170,69 @@ async fn a_restarted_client_keeps_mirroring() {
     }
 }
 
-/// A board that loses the first `hello`, has events of an earlier session in
-/// flight, and answers the second `hello`: the client waits it out and only
-/// then subscribes. A board refusing the version stops the client instead.
+/// The client sends `hello` first and subscribes without waiting for the
+/// `Welcome`. When the reply does arrive, late and with id `0`, it touches no
+/// subscription — not even a refusal, which is only logged.
 #[tokio::test]
-async fn the_hello_is_resent_and_stray_frames_are_skipped() {
+async fn the_hello_goes_first_and_its_reply_is_not_awaited() {
     let (board_end, process_end) = tokio::io::duplex(64 * 1024);
-    let host = start_fake_host(process_end).await;
-    let (mut rd, mut wr) = tokio::io::split(board_end);
-    let mut acc = FrameAccumulator::new();
-
-    let first = next_frame(&mut rd, &mut acc).await;
-    assert_eq!(first["method"], "hello", "the client opens with a hello");
-    assert_eq!(first["id"], 0);
-    // An earlier session's traffic, and no reply to the hello.
-    send(&mut wr, json!({"t":"pong"})).await;
-    send(&mut wr, json!({"t":"reply","id":7,"ok":null})).await;
-
-    let started = tokio::time::Instant::now();
-    let second = next_frame(&mut rd, &mut acc).await;
-    assert_eq!(second["method"], "hello", "the unanswered hello is resent");
-    assert!(started.elapsed() >= Duration::from_millis(500));
-    send(&mut wr, json!({"t":"reply","id":0,"ok":{}})).await;
-
-    let sub = next_frame(&mut rd, &mut acc).await;
-    assert_eq!(sub["t"], "sub", "subscribes once greeted, got {sub}");
-    assert_eq!(sub["topic"], "temp");
-    host.abort();
-}
-
-#[tokio::test]
-async fn a_refused_version_stops_the_client() {
-    let (board_end, process_end) = tokio::io::duplex(64 * 1024);
-    let host = start_fake_host(process_end).await;
+    let (db, host) = start_fake_host(process_end).await;
     let (mut rd, mut wr) = tokio::io::split(board_end);
     let mut acc = FrameAccumulator::new();
 
     let hello = next_frame(&mut rd, &mut acc).await;
+    assert_eq!(
+        hello["t"], "req",
+        "the client opens with a hello, got {hello}"
+    );
     assert_eq!(hello["method"], "hello");
+    assert_eq!(hello["id"], 0);
+    assert_eq!(
+        hello["params"]["version"],
+        aimdb_core::remote::PROTOCOL_VERSION
+    );
+
+    // No Welcome sent: the subscription follows anyway.
+    let sub = next_frame(&mut rd, &mut acc).await;
+    assert_eq!(sub["t"], "sub", "subscribes without a Welcome, got {sub}");
+    assert_eq!(sub["topic"], "temp");
+    let sub_id = sub["id"].as_u64().expect("a subscribe id");
+    assert_ne!(sub_id, 0, "the subscription cannot share the hello's id");
+    let sub_id = sub_id.to_string();
+
+    let event =
+        |seq: u64, c: u64| json!({"t":"event","sub":sub_id,"seq":seq,"ts":seq,"data":{"c":c}});
+    send(&mut wr, event(1, 1)).await;
+    assert!(mirrors(&db, 1).await, "the first event reaches the mirror");
+
+    // The replies to the hello, late: a Welcome, then a refusal.
+    send(&mut wr, json!({"t":"reply","id":0,"ok":{}})).await;
     send(
         &mut wr,
         json!({"t":"reply","id":0,"err":"version_mismatch"}),
     )
     .await;
-
-    // Neither a subscribe nor another hello follows.
-    let mut buf = [0u8; 256];
-    match tokio::time::timeout(Duration::from_millis(1500), rd.read(&mut buf)).await {
-        Err(_) | Ok(Ok(0)) => {}
-        Ok(r) => panic!(
-            "the client kept talking after a refusal: {r:?} {:?}",
-            &buf[..]
-        ),
-    }
+    send(&mut wr, event(2, 2)).await;
+    assert!(
+        mirrors(&db, 2).await,
+        "a late reply with id 0 must not end the subscription"
+    );
     host.abort();
 }
 
+/// Wait up to a second for the host's mirrored `temp` to read `c`.
+async fn mirrors(db: &AimDb, c: u64) -> bool {
+    for _ in 0..50 {
+        if mirrored(db) == Some(c) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 /// A host process mirroring `temp` over `stream`, which a test drives by hand.
-async fn start_fake_host(stream: DuplexStream) -> JoinHandle<()> {
+async fn start_fake_host(stream: DuplexStream) -> (Arc<AimDb>, JoinHandle<()>) {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(SerialClient::new(TokioByteStream(stream)));
@@ -240,8 +245,8 @@ async fn start_fake_host(stream: DuplexStream) -> JoinHandle<()> {
             })
             .finish();
     });
-    let (_db, runner) = builder.build().await.expect("build host db");
-    tokio::spawn(runner.run())
+    let (db, runner) = builder.build().await.expect("build host db");
+    (Arc::new(db), tokio::spawn(runner.run()))
 }
 
 async fn send(wr: &mut WriteHalf<DuplexStream>, v: Value) {

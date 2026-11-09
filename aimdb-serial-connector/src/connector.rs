@@ -102,9 +102,9 @@ pub struct SerialClient;
 impl SerialClient {
     /// Mirror records to and from the AimX peer on `stream`, served once.
     ///
-    /// The client opens the connection with a `hello` and waits for the reply
-    /// before it subscribes, so a server that kept running while its previous
-    /// client went away ends that client's session (see the crate docs,
+    /// The client opens the connection with a `hello`, ahead of its
+    /// subscriptions and writes, so a server that kept running while its
+    /// previous client went away ends that client's session (see the crate docs,
     /// "Sessions on a line that never closes"). A caller passing its own
     /// config through `.with_config(...)` keeps that by leaving `sends_hello`
     /// on.

@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the old session: its subscriptions reused ids the old session still
   held, the board refused them, and records mirrored from the board went
   silent until a board reset. `SerialClient::new` and `over_port` now open
-  every connection with a `hello` and wait for the reply before subscribing.
+  every connection with a `hello`, ahead of their subscriptions and writes,
+  without waiting for the reply. A `hello` lost on the line is not resent.
   `over_port` also writes a frame delimiter when it opens the port, so a
   frame a previous process left half-written cannot swallow the `hello`.
 

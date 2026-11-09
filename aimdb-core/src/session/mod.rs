@@ -42,7 +42,7 @@ mod topic_match;
 pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 
 #[cfg(feature = "connector-session")]
-pub use client::{pump_client, run_client, ClientConfig, ClientHandle, HELLO_RESEND_MS};
+pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
@@ -566,8 +566,9 @@ pub trait EnvelopeCodec: Send + Sync {
     /// server's [`Session::starts_session`] holds, so a server serving one long
     /// connection (a serial line) knows the client behind it changed.
     ///
-    /// `None` (the default) falls back to a `Ping`/`Pong` handshake, which only
-    /// proves the link.
+    /// The client sends it once per connection and does not wait for the
+    /// reply. `None` (the default) falls back to a `Ping`/`Pong` handshake,
+    /// which only proves the link.
     fn hello(&self) -> Option<(&'static str, Payload)> {
         None
     }

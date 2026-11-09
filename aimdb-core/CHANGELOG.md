@@ -52,11 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`ClientConfig::sends_hello` sends the codec's hello (#443)** when it has
-  one, instead of always a `Ping`, so it starts a session on servers that
-  serve one long connection. Frames of the previous session that arrive
-  before the reply are skipped, an unanswered hello is resent every
-  `HELLO_RESEND_MS` (1 s), and a server that refuses the protocol version
-  stops the client instead of leaving it redialing.
+  one, instead of a `Ping`, so it starts a session on servers that serve one
+  long connection. The hello goes out once per connection, ahead of every
+  command, and its reply is not awaited: frame order is enough. A reply
+  refusing the protocol version is logged; the client keeps running. Codecs
+  without a hello keep the `Ping`/`Pong` exchange, which still waits.
 
 ### Changed (wire)
 
