@@ -239,12 +239,11 @@ impl AimxConnection {
 
     /// Get a record's current value.
     ///
-    /// For a `SingleLatest`/state record this is a non-destructive read. A ring
-    /// (`SpmcRing`) has no canonical latest, so the server returns the most recent
-    /// value from this connection's drain cursor — which **advances that cursor**
-    /// (interleaving with [`drain_record`](Self::drain_record)) and is empty until
-    /// the ring produces a value after the connection first reads it. Prefer
-    /// [`drain_record`](Self::drain_record) for ring/history records.
+    /// A non-destructive read of the last value written, for every buffer type
+    /// (`SingleLatest`, `Mailbox` and `SpmcRing`). It never moves this
+    /// connection's drain cursor; use [`drain_record`](Self::drain_record) for a
+    /// ring's history. A server error with code `not_found` means the record does
+    /// not exist or holds no value yet.
     ///
     /// The value comes with the stamp of its write; a reply without `ts` is a
     /// [`ClientError::Protocol`].

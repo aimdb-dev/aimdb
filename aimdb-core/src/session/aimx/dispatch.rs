@@ -226,7 +226,19 @@ impl AimxSession {
         impl futures_util::Stream<Item = (Payload, crate::Stamp, u64)> + Send + 'static,
     > {
         let stream = crate::remote::stream::stream_record_updates(&self.db, key)?;
-        let snapshot = self.db.try_latest_as_json_bytes(key).map(|sample| {
+        // A ring is a stream of events, not a state: it gets no snapshot.
+        let is_ring = self
+            .db
+            .inner()
+            .resolve_str(key)
+            .and_then(|id| self.db.inner().storage(id))
+            .is_some_and(|record| record.is_ring());
+        let latest = if is_ring {
+            None
+        } else {
+            self.db.try_latest_as_json_bytes(key)
+        };
+        let snapshot = latest.map(|sample| {
             let ts = sample.stamp();
             self.pending_snapshots
                 .push((key.to_string(), Payload::from(sample.value), ts));
@@ -319,25 +331,19 @@ impl AimxSession {
     /// `record.get`: the record's current value and its write stamp,
     /// `{"value": <value>, "ts": <ns>}`.
     ///
-    /// A `SingleLatest`/state record exposes a non-destructive canonical latest
+    /// A non-destructive read of the record's latest value
     /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)).
-    /// A ring
-    /// ([`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)) has none, so we fall back
-    /// to the connection's drain cursor and return the **most recent** available
-    /// value. Two consequences of that fallback: it *advances the shared drain
-    /// cursor* (so `record.get` and `record.drain` interleave on one connection),
-    /// and it yields `NotFound` until the ring produces a value *after* the cursor
-    /// is first opened (a fresh broadcast reader starts at the tail). Use
-    /// `record.drain` for a ring's full backlog.
-    fn record_get(&mut self, name: &str) -> Result<Payload, RpcError> {
-        if let Some(sample) = self.db.try_latest_as_json_bytes(name) {
-            return Ok(super::value_reply(&sample.value, sample.stamp()));
-        }
-        // Ring fallback: drain to the newest currently-available value (or NotFound).
-        self.drain_values(name, usize::MAX)?
-            .pop()
-            .map(|sample| to_payload(&stamped_value_json(sample)))
-            .ok_or(RpcError::NotFound)
+    /// Every buffer type has one: `SingleLatest` and `Mailbox` natively, and
+    /// `SpmcRing` through the `LatestSlot` core
+    /// installs at build time. It never touches this connection's drain
+    /// cursor. `NotFound` means the record does not exist or holds no value
+    /// yet.
+    fn record_get(&self, name: &str) -> Result<Payload, RpcError> {
+        let sample = self
+            .db
+            .try_latest_as_json_bytes(name)
+            .ok_or(RpcError::NotFound)?;
+        Ok(super::value_reply(&sample.value, sample.stamp()))
     }
 
     /// `record.drain`: return everything accumulated since the previous drain
@@ -359,9 +365,7 @@ impl AimxSession {
     }
 
     /// Lazily open (on first call) the per-record drain cursor and read up to
-    /// `limit` values accumulated since the previous read (oldest-first). Shared
-    /// by [`record.drain`](Self::record_drain) and [`record.get`](Self::record_get)'s
-    /// ring fallback, so both read from the same per-connection cursor.
+    /// `limit` values accumulated since the previous read (oldest-first).
     fn drain_values(&mut self, name: &str, limit: usize) -> Result<Vec<Stamped<Value>>, RpcError> {
         if !self.drain_readers.contains_key(name) {
             let id = self

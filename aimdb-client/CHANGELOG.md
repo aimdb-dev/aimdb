@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`get_record` on a ring returns its last value (#444).** It no longer moves
+  the connection's drain cursor, and it no longer comes back empty until the
+  ring produces after the first read.
+
 ### Removed (breaking)
 
 - **Obsolete AimX message types (#419).** `protocol::{Request, Response,

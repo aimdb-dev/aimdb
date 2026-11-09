@@ -88,14 +88,16 @@ pub trait DynBuffer<T: Clone + Send>: Send + Sync {
     ///
     /// Returns `Some(T)` if the buffer holds a current value that can be read
     /// without affecting any consumer's position. Returns `None` if the buffer
-    /// type has no canonical "current value" concept (e.g., SPMC Ring) or if
+    /// type has no current-value slot of its own (e.g., SPMC Ring) or if
     /// no value has been produced yet.
     ///
-    /// This is the buffer-native point-in-time read used by AimX `record.get`
-    ///. Implementations must not advance any reader position.
+    /// Implementations must not advance any reader position.
     ///
     /// The default returns `None`, which is the correct behaviour for buffers
-    /// without a canonical latest value.
+    /// without a current-value slot. Adapters do not need to add one: core
+    /// wraps every `SpmcRing` buffer in a `LatestSlot` at build time, so
+    /// `TypedRecord::latest()` and AimX `record.get` see the last value
+    /// written on every buffer type.
     fn peek(&self) -> Option<T> {
         None
     }

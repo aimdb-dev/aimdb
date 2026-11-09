@@ -26,7 +26,8 @@ pub(crate) struct Rendered {
 /// Renders a link's current value. The topic is resolved first and passed to
 /// `accept` (`None`: the link's default topic); the value is serialized only
 /// if `accept` returns `true`. `None` if the record has no current value (none
-/// written yet, or an `SpmcRing` buffer), `accept` rejects the topic, or the
+/// written yet), is an `SpmcRing` (a stream of events, so no late-join
+/// snapshot), `accept` rejects the topic, or the
 /// topic does not fit or serializing fails.
 pub(crate) type LatestFn = Arc<
     dyn Fn(&AimDb, &RuntimeContext, &dyn Fn(Option<&str>) -> bool) -> Option<Rendered>

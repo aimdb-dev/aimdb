@@ -59,6 +59,7 @@
 mod cfg;
 #[cfg(feature = "observability")]
 mod counters;
+mod latest;
 mod reader;
 mod traits;
 mod writer;
@@ -76,6 +77,7 @@ pub use reader::Reader;
 pub use traits::{Buffer, BufferReader, DynBuffer, TryProduceError};
 
 // Crate-private — used by Producer<T> to push without per-call lookup
+pub(crate) use latest::LatestSlot;
 pub(crate) use traits::WriteHandle;
 pub(crate) use writer::RecordWriter;
 

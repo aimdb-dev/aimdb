@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (wire)
+
+- **`record.get` and `latest()` read a ring's last value (#444).** Core wraps
+  every `SpmcRing` buffer in `LatestSlot` at build time, which remembers the
+  last value pushed and answers `peek()`. `TypedRecord::latest()`,
+  `AimDb::latest()` and `try_latest_as_json*` now return it instead of `None`,
+  on every runtime adapter, with no adapter changes. AimX `record.get` is a
+  single `peek()` for every buffer type: the ring fallback that drained the
+  connection's cursor is gone, so `record.get` no longer consumes values a
+  later `record.drain` should return, and `not_found` now always means "no
+  such record or no value yet". Cost: one clone and a short lock per push on
+  ring records.
+
 ### Removed (breaking)
 
 - **Obsolete AimX message types (#419).** `remote::{Request, Response,

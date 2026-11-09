@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `record.get` on rings and empty records (#444)
+
+- **Every buffer type now has a readable latest value.** Core remembers a
+  ring's last value, so `record.get` and `latest()` work on `SpmcRing` records
+  without draining a cursor, and `aimdb-mcp`'s `get_record` drops its 3 s retry.
+  See [aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-client](aimdb-client/CHANGELOG.md) and
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md).
+
 ### Removed — `examples/weather-mesh-demo`
 
 - **The in-repo weather mesh demo is gone.** The fleet behind aimdb.dev lives in

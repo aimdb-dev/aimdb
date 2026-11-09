@@ -211,7 +211,9 @@ impl McpServer {
                 description: "Get the current value of a specific record from an AimDB instance. \
                     Returns {\"value\": <the record's JSON value>, \"ts\": <write time>}, where ts is \
                     nanoseconds since the AimDB instance started (not wall-clock time; only comparable \
-                    within one instance lifetime).".to_string(),
+                    within one instance lifetime). For a ring buffer this is the last value written; \
+                    use drain_record for its history. Returns a not_found error at once when the \
+                    record does not exist or holds no value yet.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {

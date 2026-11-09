@@ -1603,12 +1603,12 @@ where
                 move |db: &AimDb,
                       ctx: &crate::RuntimeContext,
                       accept: &dyn Fn(Option<&str>) -> bool| {
-                    let sample = db
-                        .inner()
-                        .get_typed_record_by_key::<T>(&record_key)
-                        .ok()?
-                        .latest()?
-                        .into_stamped();
+                    let record = db.inner().get_typed_record_by_key::<T>(&record_key).ok()?;
+                    // A ring is a stream of events: no late-join snapshot.
+                    if crate::typed_record::AnyRecord::is_ring(record) {
+                        return None;
+                    }
+                    let sample = record.latest()?.into_stamped();
 
                     let topic = match &topic_writer {
                         None => None,

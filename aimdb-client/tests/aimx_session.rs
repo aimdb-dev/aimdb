@@ -326,10 +326,10 @@ async fn exact_subscribe_sends_the_current_value_once() {
     }
 }
 
-/// `record.get` on a ring (`SpmcRing`) record has no canonical latest, so it
-/// falls back to draining the connection's cursor for the most-recent value.
+/// `record.get` on a ring (`SpmcRing`) record returns the last value written,
+/// on the first call, without moving the connection's drain cursor.
 #[tokio::test]
-async fn record_get_on_ring_falls_back_to_drain() {
+async fn record_get_on_ring_returns_last_value_without_draining() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -348,28 +348,36 @@ async fn record_get_on_ring_falls_back_to_drain() {
     let conn = AimxConnection::connect(sock.to_str().unwrap())
         .await
         .expect("connect");
-    let producer = db.producer::<Reading>("stream").expect("producer");
 
-    // First get opens the cursor; a fresh broadcast reader starts at the tail, so
-    // it sees nothing until a value is produced afterwards.
+    // Nothing written yet: not_found straight away.
     assert!(conn.get_record("stream").await.is_err());
 
-    // Produce after the cursor is open; get now returns the most-recent value.
-    let mut got = None;
-    for n in 1..=50u64 {
-        producer.produce(Reading { n });
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        if let Ok(v) = conn.get_record("stream").await {
-            got = Some(v);
+    // Values written before this connection read the record are visible.
+    let producer = db.producer::<Reading>("stream").expect("producer");
+    producer.produce(Reading { n: 1 });
+    producer.produce(Reading { n: 2 });
+
+    let got = conn.get_record("stream").await.expect("ring get");
+    assert_eq!(got.value, serde_json::json!({ "n": 2 }));
+    // Non-destructive: the same value again.
+    let again = conn.get_record("stream").await.expect("ring get again");
+    assert_eq!(again.value, serde_json::json!({ "n": 2 }));
+
+    // `record.get` opened no drain cursor: the first drain opens one at the
+    // tail and sees only what is written after it.
+    let first = conn.drain_record("stream").await.expect("drain");
+    assert_eq!(first.count, 0);
+    producer.produce(Reading { n: 3 });
+    let mut drained = Vec::new();
+    for _ in 0..50 {
+        drained.extend(conn.drain_record("stream").await.expect("drain").values);
+        if !drained.is_empty() {
             break;
         }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let got = got.expect("ring get returns a value after producing");
-    assert!(
-        got.value.get("n").is_some(),
-        "ring get yields a Reading: {}",
-        got.value
-    );
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].value, serde_json::json!({ "n": 3 }));
 
     drop(conn);
 }
