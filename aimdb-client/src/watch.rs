@@ -84,8 +84,13 @@ pub async fn arm(conn: &AimxConnection, record: &str) -> Result<Armed, ClientErr
     let baseline = match conn.get_record(record).await {
         Ok(current) => Some(current.stamp()),
         // No value yet (or an unknown record, whose subscribe refusal is
-        // picked up below).
-        Err(ClientError::ServerError { code, .. }) if code == "not_found" => None,
+        // picked up below), or a ring: it has no current value, and its
+        // subscription starts after the last write, so nothing old can count.
+        Err(ClientError::ServerError { code, .. })
+            if code == "not_found" || code == "unsupported" =>
+        {
+            None
+        }
         Err(e) => return Err(e),
     };
     let stream = match stream.next().now_or_never() {

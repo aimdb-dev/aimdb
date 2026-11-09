@@ -226,19 +226,7 @@ impl AimxSession {
         impl futures_util::Stream<Item = (Payload, crate::Stamp, u64)> + Send + 'static,
     > {
         let stream = crate::remote::stream::stream_record_updates(&self.db, key)?;
-        // A ring is a stream of events, not a state: it gets no snapshot.
-        let is_ring = self
-            .db
-            .inner()
-            .resolve_str(key)
-            .and_then(|id| self.db.inner().storage(id))
-            .is_some_and(|record| record.is_ring());
-        let latest = if is_ring {
-            None
-        } else {
-            self.db.try_latest_as_json_bytes(key)
-        };
-        let snapshot = latest.map(|sample| {
+        let snapshot = self.db.try_latest_as_json_bytes(key).map(|sample| {
             let ts = sample.stamp();
             self.pending_snapshots
                 .push((key.to_string(), Payload::from(sample.value), ts));
@@ -331,19 +319,37 @@ impl AimxSession {
     /// `record.get`: the record's current value and its write stamp,
     /// `{"value": <value>, "ts": <ns>}`.
     ///
-    /// A non-destructive read of the record's latest value
-    /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)).
-    /// Every buffer type has one: `SingleLatest` and `Mailbox` natively, and
-    /// `SpmcRing` through the `LatestSlot` core
-    /// installs at build time. It never touches this connection's drain
-    /// cursor. `NotFound` means the record does not exist or holds no value
-    /// yet.
+    /// A single, non-destructive read of the buffer's own snapshot
+    /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)):
+    /// it returns at once and never touches this connection's drain cursor.
+    ///
+    /// - `NotFound`: no such record, or a record with a snapshot (`SingleLatest`,
+    ///   `Mailbox`) that holds no value yet.
+    /// - `Unsupported`: an [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing). A
+    ///   ring is a stream with no snapshot; read it with `record.drain`
+    ///   (unread events) or `record.subscribe` (future events). An application
+    ///   that needs an inspectable current state exposes a `SingleLatest`
+    ///   record next to the stream.
+    ///
+    /// The ring check reads the declared [`BufferCfg`](crate::buffer::BufferCfg):
+    /// a ring registered with `buffer_raw()` and no `buffer_cfg()` reports
+    /// `NotFound`, because core cannot tell it is a ring.
     fn record_get(&self, name: &str) -> Result<Payload, RpcError> {
-        let sample = self
-            .db
-            .try_latest_as_json_bytes(name)
+        if let Some(sample) = self.db.try_latest_as_json_bytes(name) {
+            return Ok(super::value_reply(&sample.value, sample.stamp()));
+        }
+        let inner = self.db.inner();
+        let record = inner
+            .resolve_str(name)
+            .and_then(|id| inner.storage(id))
             .ok_or(RpcError::NotFound)?;
-        Ok(super::value_reply(&sample.value, sample.stamp()))
+        // Only the miss path pays for this lookup.
+        let ring = crate::buffer::BufferCfg::SpmcRing { capacity: 0 }.name();
+        if record.buffer_info().0 == ring {
+            Err(RpcError::Unsupported)
+        } else {
+            Err(RpcError::NotFound)
+        }
     }
 
     /// `record.drain`: return everything accumulated since the previous drain

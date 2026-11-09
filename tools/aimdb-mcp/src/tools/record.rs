@@ -161,9 +161,9 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
         endpoint, params.record_name
     );
 
-    // `record.get` is a single non-destructive read for every buffer type (rings
-    // included), so it needs no retry and no drain cursor: `not_found` means the
-    // record does not exist or holds no value yet, and is returned at once.
+    // `record.get` is a single non-destructive read with no drain cursor, so it
+    // needs no retry: `not_found` (no such record, or no value yet) and
+    // `unsupported` (a ring, which has no current value) come back at once.
     let client = if let Some(pool) = super::connection_pool() {
         pool.get_connection(&endpoint)
             .await

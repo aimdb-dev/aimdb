@@ -239,11 +239,14 @@ impl AimxConnection {
 
     /// Get a record's current value.
     ///
-    /// A non-destructive read of the last value written, for every buffer type
-    /// (`SingleLatest`, `Mailbox` and `SpmcRing`). It never moves this
-    /// connection's drain cursor; use [`drain_record`](Self::drain_record) for a
-    /// ring's history. A server error with code `not_found` means the record does
-    /// not exist or holds no value yet.
+    /// A single, non-destructive read of the record's snapshot (`SingleLatest`,
+    /// `Mailbox`). It returns at once and never moves this connection's drain
+    /// cursor. Server errors:
+    ///
+    /// - `not_found`: no such record, or no value yet.
+    /// - `unsupported`: the record is a ring (`SpmcRing`), which has no current
+    ///   value. Use [`drain_record`](Self::drain_record) for unread events or
+    ///   [`subscribe`](Self::subscribe) for new ones.
     ///
     /// The value comes with the stamp of its write; a reply without `ts` is a
     /// [`ClientError::Protocol`].
@@ -570,6 +573,12 @@ fn rpc_err(e: RpcError) -> ClientError {
             ClientError::server_error("not_found", "method or record not found", None)
         }
         RpcError::Denied => ClientError::server_error("denied", "permission denied", None),
+        RpcError::Unsupported => ClientError::server_error(
+            "unsupported",
+            "not supported for this record (a ring has no current value: \
+             use drain_record for unread events or subscribe for new ones)",
+            None,
+        ),
         // `Internal` today, plus any future non-exhaustive variant.
         _ => ClientError::server_error("internal", "engine/transport failure", None),
     }

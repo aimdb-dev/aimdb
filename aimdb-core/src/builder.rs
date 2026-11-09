@@ -877,7 +877,6 @@ impl AimDbBuilder {
         let clock = runtime.new_clock();
         for entry in &mut storages {
             entry.record.bind_clock(clock.clone());
-            entry.record.seal_buffer();
         }
 
         log_debug!(
@@ -1161,9 +1160,10 @@ impl AimDb {
 
     /// Reads a record's current value without consuming it.
     ///
-    /// Returns `Ok(None)` before the first value or for records without a
-    /// buffer. For an [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing) this is
-    /// the last value written; use a subscriber to read the ring's stream.
+    /// Returns `Ok(None)` before the first value, for records without a buffer,
+    /// or for buffers without a canonical latest value (notably
+    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)). Use a subscriber to
+    /// read a ring's stream instead.
     ///
     /// Unknown keys and mismatched types return the same errors as
     /// [`produce`](Self::produce). This read needs neither serialization nor
@@ -1309,10 +1309,11 @@ impl AimDb {
     ///
     /// # Returns
     /// `Some(JsonValue)` with the current value, or `None` if the record has no
-    /// value yet or no buffer. For an
-    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing) the current value is the
-    /// last one written; read the ring's backlog via a subscriber or
-    /// `record.drain`.
+    /// value yet, no buffer, or a buffer with **no canonical latest** — i.e.
+    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing). A ring is a stream/backlog
+    /// with no single "current value"; read it via a subscriber or `record.drain`,
+    /// not a peek (`record.get`). Use [`SingleLatest`](crate::buffer::BufferCfg::SingleLatest)
+    /// for state you want to read latest-value style.
     #[cfg(feature = "remote")]
     pub fn try_latest_as_json(
         &self,

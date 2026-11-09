@@ -9,36 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (wire)
 
-- **`record.get` and `latest()` read a ring's last value (#444).** Core wraps
-  every `SpmcRing` buffer in `LatestSlot` at build time, which remembers the
-  last value pushed and answers `peek()`. `TypedRecord::latest()`,
-  `AimDb::latest()` and `try_latest_as_json*` now return it instead of `None`,
-  on every runtime adapter, with no adapter changes. AimX `record.get` is a
-  single `peek()` for every buffer type: the ring fallback that drained the
-  connection's cursor is gone, so `record.get` no longer consumes values a
-  later `record.drain` should return, and `not_found` now always means "no
-  such record or no value yet". Cost per push on ring records: one clone, one
-  `Arc` allocation, and a short lock. The wrapper's contract is written out in
-  `buffer/latest.rs`: the snapshot matches the ring's order with concurrent
-  writers; no wrapper lock is held while wakers, `T::clone` or `T::drop` run,
-  so they may read the same ring; a waker may push to the same ring where the
-  adapter allows it (tokio). On `no_std` the new `critical-section` feature
-  makes the locks interrupt-safe; the Embassy adapter enables it.
+- **`record.get` is a single, non-destructive read (#444).** It returns the
+  buffer's own snapshot (`SingleLatest`, `Mailbox`) and never touches the
+  connection's drain cursor, so only `record.drain` advances it. The fallback
+  that drained a ring to answer `record.get` is gone: it made a point-in-time
+  read wait for a future write and consumed events a later `record.drain`
+  should have returned. A ring (`SpmcRing`) now answers with the new error
+  code `unsupported`; read it with `record.drain` (unread events) or
+  `record.subscribe` (new ones). An empty `SingleLatest`/`Mailbox` record and
+  an unknown name answer `not_found` at once. A ring registered with
+  `buffer_raw()` and no `buffer_cfg()` answers `not_found`, since core cannot
+  tell it is a ring.
 
 ### Added
 
-- **`buffer::test_support::assert_latest_slot_contract` (#450).** Runs the
-  wrapper's contract against an adapter's real ring with real, synchronous
-  wakes. The tokio, Embassy and wasm adapters run it in their buffer suites.
-
-### Migration
-
-- **Declare the kind of a `buffer_raw()` buffer on remote-access records
-  (#450).** Core can only give a ring its readable latest value when it knows
-  the buffer is a ring, and `record.get` no longer drains a cursor to find one.
-  A record with `.with_remote_access()` and a raw buffer with no declared
-  `BufferCfg` now fails `build()`. Add `.buffer_cfg(BufferCfg::SpmcRing { .. })`
-  (or the matching kind) after `.buffer_raw(...)`, or use `buffer_with_cfg`.
+- **`RpcError::Unsupported` (#444),** wire code `"unsupported"`: the method
+  exists but the target cannot serve it. Older clients decode an unknown code
+  as `internal`.
 
 ### Removed (breaking)
 

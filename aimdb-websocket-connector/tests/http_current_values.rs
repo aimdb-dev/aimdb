@@ -65,20 +65,8 @@ async fn typed_latest_preserves_lookup_and_buffer_semantics() {
         db.latest::<Reading>("second").unwrap().map(|s| s.value),
         Some(Reading(3))
     );
-    // A ring has no current-value slot of its own; core remembers its last
-    // value, so `latest` reads it without consuming anything.
-    assert_eq!(db.latest::<Reading>("ring").unwrap().map(|s| s.value), None);
-    let mut ring = db.subscribe::<Reading>("ring").unwrap();
     db.produce("ring", Reading(4)).unwrap();
-    db.produce("ring", Reading(6)).unwrap();
-    for _ in 0..2 {
-        assert_eq!(
-            db.latest::<Reading>("ring").unwrap().map(|s| s.value),
-            Some(Reading(6))
-        );
-    }
-    assert_eq!(ring.try_recv().unwrap().value, Reading(4));
-    assert_eq!(ring.try_recv().unwrap().value, Reading(6));
+    assert_eq!(db.latest::<Reading>("ring").unwrap().map(|s| s.value), None);
     let mut mailbox = db.subscribe::<Reading>("mailbox").unwrap();
     db.produce("mailbox", Reading(5)).unwrap();
     assert_eq!(

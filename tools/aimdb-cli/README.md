@@ -156,7 +156,9 @@ Options:
 - `-w, --writable`: Show only writable records
 
 #### `record get`
-Get the current value of a specific record.
+Get the current value of a specific record. A `spmc_ring` record is a stream
+with no current value, so `record get` reports `unsupported` for it; use
+`watch` to follow its events.
 
 ```bash
 aimdb record get <RECORD> [OPTIONS]

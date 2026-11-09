@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`get_record` on a ring returns its last value (#444).** It no longer moves
-  the connection's drain cursor, and it no longer comes back empty until the
-  ring produces after the first read.
+- **`get_record` on a ring returns `unsupported` (#444).** A ring has no
+  current value; use `drain_record` or `subscribe`. `get_record` no longer moves
+  the connection's drain cursor, so `drain_record` returns every unread event.
+  `watch::arm` treats `unsupported` like `not_found`: no baseline.
 
 ### Removed (breaking)
 

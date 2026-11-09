@@ -55,16 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // A ring (SpmcRing) answers record.get the same way: with the last value
-    // written, without touching this connection's drain cursor.
-    println!("📤 record.get on Temperature (SpmcRing — last value written)...");
+    // A ring (SpmcRing) is a stream with no current value, so record.get
+    // reports `unsupported`. Its events are read with record.drain (below) or
+    // record.subscribe.
+    println!("📤 record.get on Temperature (SpmcRing — no current value)...");
     match conn.get_record("server::Temperature").await {
-        Ok(v) => println!(
-            "🌡️  Most recent Temperature (written {}):\n{}",
-            since_start(v.stamp()),
-            serde_json::to_string_pretty(&v.value)?
-        ),
-        Err(e) => println!("ℹ️  No reading yet: {e}"),
+        Ok(v) => println!("❌ UNEXPECTED value: {}", v.value),
+        Err(e) => println!("✅ Expected: {e}"),
     }
     println!();
 

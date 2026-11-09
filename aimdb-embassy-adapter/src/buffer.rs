@@ -872,12 +872,6 @@ mod tests {
         block_on(test_support::assert_single_latest_contract(B::new_watch));
         block_on(test_support::assert_mailbox_contract(B::new_mailbox));
         block_on(test_support::assert_spmc_ring_contract(B::new_spmc));
-        // PubSub wakes subscribers inside its own lock, so a push from a waker
-        // fails in embassy-sync itself; that cell is the adapter's limit.
-        block_on(test_support::assert_latest_slot_contract(
-            B::new_spmc,
-            test_support::ReentrantPush::AdapterLimit,
-        ));
     }
 
     /// Design 058 §4.5: the write stamp costs every slot. The buffer keeps

@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`get_record` answers at once (#444).** It no longer retries `not_found`
-  for up to 3 s, so an empty record or a misspelled name returns immediately
-  instead of after 3 s. A ring returns its last value on the first call.
+- **`get_record` answers at once (#444).** It no longer retries `not_found` for
+  up to 3 s, so an empty record or a misspelled name returns immediately
+  instead of after 3 s. A ring returns `unsupported` (use `drain_record`), and
+  `get_record` no longer shares `drain_record`'s cursor.
 
 ### Removed (breaking)
 

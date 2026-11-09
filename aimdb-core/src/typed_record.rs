@@ -284,23 +284,6 @@ pub trait AnyRecord: Send + Sync {
     /// runs (design 058 §3.3).
     fn bind_clock(&mut self, clock: Arc<dyn crate::clock::InstanceClock>);
 
-    /// Gives the record's buffer a canonical latest value if it has none of
-    /// its own.
-    ///
-    /// Called by `AimDbBuilder::build()` for every record before any task
-    /// runs. A [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing) buffer is
-    /// wrapped in `LatestSlot`, so `latest()`
-    /// and AimX `record.get` work on rings the same way they work on
-    /// `SingleLatest` and `Mailbox` buffers, on every runtime adapter.
-    fn seal_buffer(&mut self);
-
-    /// Whether the record's buffer is an
-    /// [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing): a stream of events
-    /// rather than a state. A ring's latest value is readable on request
-    /// (`latest()`, `record.get`), but late-join snapshots skip it, so a new
-    /// subscriber does not receive an old event as if it were current state.
-    fn is_ring(&self) -> bool;
-
     /// Returns the record's JSON remote-access surface, if it has one.
     ///
     /// This accessor is the single place the `remote` cfg-gate lives
@@ -1246,10 +1229,10 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Returns the latest produced value
     ///
     /// Returns the most recent value wrapped in `RecordValue<T>`, or `None` if no
-    /// value has been produced yet or the record has no buffer. Works for every
-    /// buffer type: an [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing) gets its
-    /// latest value from the `LatestSlot` installed
-    /// at build time. Non-blocking.
+    /// value has been produced yet, the record has no buffer, or the buffer has
+    /// **no canonical latest** — i.e. [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)
+    /// (a ring is a stream/backlog; read it via a subscriber/drain instead).
+    /// Non-blocking.
     ///
     /// **Both std and no_std**: Direct access via `Deref`, `.get()`, `.into_inner()`
     ///
@@ -1288,15 +1271,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         self.clock = Some(clock);
     }
 
-    fn seal_buffer(&mut self) {
-        if !self.is_ring() {
-            return;
-        }
-        if let Some(inner) = self.buffer.take() {
-            self.buffer = Some(Arc::new(crate::buffer::LatestSlot::new(inner)));
-        }
-    }
-
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
@@ -1317,23 +1291,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
                 None,
                 "record has .with_remote_access() but no buffer; \
                  add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work",
-            ));
-        }
-
-        // A buffer from `buffer_raw()` hides its kind. Core gives a ring its
-        // readable latest value (`LatestSlot`) only when it knows the buffer is
-        // a ring, and `record.get` no longer falls back to draining, so an
-        // undeclared raw ring would answer `not_found` forever. Require the
-        // kind to be declared instead of guessing.
-        #[cfg(feature = "remote")]
-        if self.remote_codec.is_some() && self.has_buffer() && self.buffer_cfg.is_none() {
-            errors.push(crate::error::ConfigError::new(
-                "",
-                None,
-                "record has .with_remote_access() and a buffer from .buffer_raw() \
-                 with no declared kind; declare it after .buffer_raw() with \
-                 .buffer_cfg(BufferCfg::SpmcRing { .. }) for a ring, or the matching \
-                 BufferCfg otherwise, so record.get reads the right value",
             ));
         }
 
@@ -1375,13 +1332,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
 
     fn has_producer(&self) -> bool {
         TypedRecord::has_producer(self)
-    }
-
-    fn is_ring(&self) -> bool {
-        matches!(
-            self.buffer_cfg,
-            Some(crate::buffer::BufferCfg::SpmcRing { .. })
-        )
     }
 
     fn has_buffer(&self) -> bool {

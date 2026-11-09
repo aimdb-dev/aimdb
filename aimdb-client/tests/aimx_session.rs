@@ -326,10 +326,11 @@ async fn exact_subscribe_sends_the_current_value_once() {
     }
 }
 
-/// `record.get` on a ring (`SpmcRing`) record returns the last value written,
-/// on the first call, without moving the connection's drain cursor.
+/// `record.get` is one non-destructive read (#444): it answers at once for an
+/// empty record, an unknown name and a ring, and never moves the connection's
+/// drain cursor, so `record.drain` still returns every unread event.
 #[tokio::test]
-async fn record_get_on_ring_returns_last_value_without_draining() {
+async fn record_get_answers_at_once_and_leaves_drain_intact() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -341,6 +342,9 @@ async fn record_get_on_ring_returns_last_value_without_draining() {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
+    builder.configure::<Reading>("state", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
     let (db, runner) = builder.build().await.expect("build db");
     let db = Arc::new(db);
     tokio::spawn(runner.run());
@@ -349,35 +353,60 @@ async fn record_get_on_ring_returns_last_value_without_draining() {
         .await
         .expect("connect");
 
-    // Nothing written yet: not_found straight away.
-    assert!(conn.get_record("stream").await.is_err());
+    // Each miss answers at once (the old MCP retry took 3 s per read).
+    let code = |r: Result<_, aimdb_client::ClientError>| match r {
+        Err(aimdb_client::ClientError::ServerError { code, .. }) => code,
+        other => panic!("expected a server error, got {other:?}"),
+    };
+    let started = std::time::Instant::now();
+    assert_eq!(code(conn.get_record("state").await), "not_found", "empty");
+    assert_eq!(
+        code(conn.get_record("missing").await),
+        "not_found",
+        "unknown"
+    );
+    assert_eq!(code(conn.get_record("stream").await), "unsupported", "ring");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "three misses took {:?}",
+        started.elapsed()
+    );
 
-    // Values written before this connection read the record are visible.
-    let producer = db.producer::<Reading>("stream").expect("producer");
-    producer.produce(Reading { n: 1 });
-    producer.produce(Reading { n: 2 });
+    // Open the drain cursors, then write.
+    assert_eq!(conn.drain_record("stream").await.expect("drain").count, 0);
+    assert_eq!(conn.drain_record("state").await.expect("drain").count, 0);
+    let ring = db.producer::<Reading>("stream").expect("producer");
+    let state = db.producer::<Reading>("state").expect("producer");
+    for n in 1..=3 {
+        ring.produce(Reading { n });
+    }
+    state.produce(Reading { n: 7 });
 
-    let got = conn.get_record("stream").await.expect("ring get");
-    assert_eq!(got.value, serde_json::json!({ "n": 2 }));
-    // Non-destructive: the same value again.
-    let again = conn.get_record("stream").await.expect("ring get again");
-    assert_eq!(again.value, serde_json::json!({ "n": 2 }));
+    // Reads in between: the ring still refuses, the state answers, twice.
+    assert_eq!(code(conn.get_record("stream").await), "unsupported");
+    for _ in 0..2 {
+        let got = conn.get_record("state").await.expect("state get");
+        assert_eq!(got.value, serde_json::json!({ "n": 7 }));
+    }
 
-    // `record.get` opened no drain cursor: the first drain opens one at the
-    // tail and sees only what is written after it.
-    let first = conn.drain_record("stream").await.expect("drain");
-    assert_eq!(first.count, 0);
-    producer.produce(Reading { n: 3 });
+    // Drain still sees every event the gets did not consume.
     let mut drained = Vec::new();
     for _ in 0..50 {
         drained.extend(conn.drain_record("stream").await.expect("drain").values);
-        if !drained.is_empty() {
+        if drained.len() >= 3 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].value, serde_json::json!({ "n": 3 }));
+    let ns: Vec<_> = drained.iter().map(|v| v.value["n"].clone()).collect();
+    assert_eq!(ns, [1, 2, 3]);
+    let state_drain = conn.drain_record("state").await.expect("drain");
+    let ns: Vec<_> = state_drain
+        .values
+        .iter()
+        .map(|v| v.value["n"].clone())
+        .collect();
+    assert_eq!(ns, [7]);
 
     drop(conn);
 }
