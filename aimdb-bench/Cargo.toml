@@ -131,7 +131,7 @@ aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = fa
 # F13) references `criterion::Criterion` in its public signature, so this
 # must be a regular (if optional/std-gated) dependency, not a dev-dependency:
 # dev-dependencies aren't visible to the library's own compilation.
-criterion = { version = "0.5", default-features = false, features = [
+criterion = { version = "0.8", default-features = false, features = [
     "cargo_bench_support",
 ], optional = true }
 

@@ -69,7 +69,7 @@ aimdb-core = { version = "3.0.0", path = "../aimdb-core", optional = true, defau
 ] }
 # `lock` only: tracing the wire shape, its hash, and reading `aimdb.lock`.
 serde-reflection = { version = "0.6", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 toml = { version = "1", optional = true, default-features = false, features = ["std", "serde", "parse"] }
 # RNG is caller-supplied, so we need only the `Rng`/`RngExt` traits and the
 # always-available `SmallRng` — no `std_rng`.
