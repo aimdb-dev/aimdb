@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Startup warning for `max_connections(1)`.** A persistent client such as
+  `aimdb-mcp` can occupy the only slot, and instance discovery's separate
+  connection then fails.
+
 ## [0.2.0] - 2026-11-03
 
 ### Changed (breaking, wire)

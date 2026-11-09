@@ -56,12 +56,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use aimdb_core::connector::ConnectorBuilder;
-use aimdb_core::log_info;
 use aimdb_core::remote::AimxConfig;
 use aimdb_core::session::aimx::{AimxCodec, AimxDispatch};
 use aimdb_core::session::{
     Dispatch, SessionClientConnector, SessionConfig, SessionLimits, SessionServerConnector,
 };
+use aimdb_core::{log_info, log_warn};
 use aimdb_core::{AimDb, DbError, DbResult};
 
 type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -133,6 +133,10 @@ impl UdsServer {
     }
 
     /// Maximum concurrently served connections.
+    ///
+    /// With `1`, a persistent client such as `aimdb-mcp` can occupy the only
+    /// slot, and instance discovery's separate connection then fails. The
+    /// server logs a warning at startup in that case.
     pub fn max_connections(mut self, max: usize) -> Self {
         self.config = self.config.max_connections(max);
         self
@@ -162,6 +166,14 @@ impl ConnectorBuilder for UdsServer {
         let config = self.config.clone();
         let scheme = self.scheme.clone();
         Box::pin(async move {
+            if config.max_connections == 1 {
+                log_warn!(
+                    "AimX UDS server at {} has max_connections=1: a persistent client such as \
+                     aimdb-mcp can occupy the only slot, and instance discovery's separate \
+                     connection will then fail",
+                    config.socket_path
+                );
+            }
             let session_config = SessionConfig {
                 limits: SessionLimits {
                     max_connections: config.max_connections,
