@@ -161,19 +161,21 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
         endpoint, params.record_name
     );
 
-    // `record.get` is a single non-destructive read with no drain cursor, so it
-    // needs no retry: `not_found` (no such record, or no value yet) and
-    // `unsupported` (a ring, which has no current value) come back at once.
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    // The persistent client `drain_record` uses: on serial a second connection
+    // fails (the tty is open) or says `hello` again, which resets the board's
+    // session and its drain cursors. Sharing is safe because `record.get` never
+    // touches the drain cursor (the server keeps them apart).
+    let pool = super::connection_pool()
+        .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
+    let client_arc = pool
+        .get_drain_client(&endpoint)
+        .await
+        .map_err(McpError::Client)?;
+    let client = client_arc.lock().await;
 
+    // One `record.get`, no retry: `not_found` (no such record, or no value yet)
+    // and `unsupported` (a ring) come back at once and leave the session as it
+    // is. A stopped engine is replaced by `get_drain_client` on the next call.
     let sample = client
         .get_record(&params.record_name)
         .await
@@ -255,8 +257,8 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         endpoint, params.record_name
     );
 
-    // Use persistent drain client so the server-side drain reader persists
-    // across calls, allowing values to accumulate between drains.
+    // The persistent client, shared with `get_record`: the server-side drain
+    // cursor lives in its session, so values accumulate between calls.
     let pool = super::connection_pool()
         .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
 
@@ -267,27 +269,17 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
 
     let client = client_arc.lock().await;
 
-    // Drain record values
+    // An error reply keeps the session (and its cursors); a stopped engine is
+    // replaced by `get_drain_client` on the next call.
     let response = match params.limit {
         Some(limit) => client
             .drain_record_with_limit(&params.record_name, limit)
             .await
-            .map_err(|e| {
-                // On connection error, invalidate so next call reconnects
-                let socket = endpoint.clone();
-                let pool = pool.clone();
-                tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
-                McpError::Client(e)
-            })?,
+            .map_err(McpError::Client)?,
         None => client
             .drain_record(&params.record_name)
             .await
-            .map_err(|e| {
-                let socket = endpoint.clone();
-                let pool = pool.clone();
-                tokio::spawn(async move { pool.invalidate_drain_client(&socket).await });
-                McpError::Client(e)
-            })?,
+            .map_err(McpError::Client)?,
     };
 
     debug!(

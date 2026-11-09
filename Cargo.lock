@@ -248,11 +248,13 @@ version = "0.10.0"
 dependencies = [
  "aimdb-client",
  "aimdb-core",
+ "aimdb-serial-connector",
  "aimdb-tokio-adapter",
  "aimdb-uds-connector",
  "anyhow",
  "chrono",
  "clap",
+ "libc",
  "once_cell",
  "serde",
  "serde_json",

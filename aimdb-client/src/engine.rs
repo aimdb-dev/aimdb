@@ -231,6 +231,16 @@ impl AimxConnection {
         &self.server_info
     }
 
+    /// Whether this connection's engine has stopped: the transport closed or
+    /// failed. The engine does not reconnect, so every later call fails; a
+    /// caller that keeps a connection open replaces it.
+    ///
+    /// This is the reliable signal: an `internal` error can also be an
+    /// ordinary server reply on a healthy connection.
+    pub fn is_closed(&self) -> bool {
+        self.engine.is_finished()
+    }
+
     /// List all registered records.
     pub async fn list_records(&self) -> ClientResult<Vec<RecordMetadata>> {
         let reply = self.call("record.list", null_payload()).await?;

@@ -81,21 +81,37 @@ impl ConnectionPool {
         }
     }
 
-    /// Get or create a persistent drain client for a socket path.
+    /// Get or create the persistent client for an endpoint.
     ///
-    /// Drain clients are kept alive across calls so the server-side drain
-    /// reader accumulates values between invocations. The first drain call
-    /// on a new connection is a cold start (returns empty); subsequent calls
-    /// return all values accumulated since the previous drain.
+    /// One connection per endpoint, kept across calls and shared by
+    /// `get_record` and `drain_record`; callers take its lock for each call.
+    /// Keeping it open matters twice: the server's drain cursor lives in the
+    /// session, so values accumulate between drains, and on serial a second
+    /// connection either fails (the tty is open) or sends a new `hello` that
+    /// resets the board's session and discards that cursor.
+    ///
+    /// The client is replaced only once its engine has stopped
+    /// ([`AimxConnection::is_closed`]), never because a call returned an error:
+    /// `not_found`, `unsupported` and even `internal` are replies on a healthy
+    /// session. A client busy with a call is returned as is; if its engine has
+    /// stopped, the next call replaces it.
     pub async fn get_drain_client(
         &self,
         endpoint: &str,
     ) -> Result<Arc<tokio::sync::Mutex<AimxConnection>>, ClientError> {
-        let drain_map = self.drain_clients.lock().await;
+        let mut drain_map = self.drain_clients.lock().await;
 
         if let Some(client) = drain_map.get(endpoint) {
-            debug!("♻️  Reusing persistent drain client for {}", endpoint);
-            return Ok(Arc::clone(client));
+            let closed = client.try_lock().is_ok_and(|c| c.is_closed());
+            if !closed {
+                debug!("♻️  Reusing persistent client for {}", endpoint);
+                return Ok(Arc::clone(client));
+            }
+            debug!(
+                "🔁 Persistent client for {} has stopped, reconnecting",
+                endpoint
+            );
+            drain_map.remove(endpoint);
         }
 
         debug!("🔌 Creating persistent drain client for {}", endpoint);
@@ -109,7 +125,9 @@ impl ConnectionPool {
         let mut drain_map = self.drain_clients.lock().await;
         // Double-check: another task may have inserted while we were connecting
         if let Some(existing) = drain_map.get(endpoint) {
-            return Ok(Arc::clone(existing));
+            if !existing.try_lock().is_ok_and(|c| c.is_closed()) {
+                return Ok(Arc::clone(existing));
+            }
         }
         drain_map.insert(endpoint.to_string(), Arc::clone(&shared));
         Ok(shared)
