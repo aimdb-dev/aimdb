@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_record` answers at once (#444).** It no longer retries `not_found` for
+  up to 3 s, so an empty record or a misspelled name returns immediately
+  instead of after 3 s. A ring returns `unsupported` (use `drain_record`), and
+  `get_record` no longer shares `drain_record`'s cursor.
+- **`get_record` and `drain_record` share one session per endpoint (#450).**
+  `get_record` opened a second connection, which over serial failed (the tty
+  was already open) or sent a new `hello` that reset the board's session and
+  discarded its drain cursor. Both now use the persistent client, one call at a
+  time. An error reply (`not_found`, `unsupported`, even `internal`) keeps the
+  session; the client is replaced only once its engine has stopped.
+
 ### Removed (breaking)
 
 - **The architecture agent (#411).** The 16 `state.toml` tools

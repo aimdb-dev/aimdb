@@ -319,25 +319,37 @@ impl AimxSession {
     /// `record.get`: the record's current value and its write stamp,
     /// `{"value": <value>, "ts": <ns>}`.
     ///
-    /// A `SingleLatest`/state record exposes a non-destructive canonical latest
-    /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)).
-    /// A ring
-    /// ([`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)) has none, so we fall back
-    /// to the connection's drain cursor and return the **most recent** available
-    /// value. Two consequences of that fallback: it *advances the shared drain
-    /// cursor* (so `record.get` and `record.drain` interleave on one connection),
-    /// and it yields `NotFound` until the ring produces a value *after* the cursor
-    /// is first opened (a fresh broadcast reader starts at the tail). Use
-    /// `record.drain` for a ring's full backlog.
-    fn record_get(&mut self, name: &str) -> Result<Payload, RpcError> {
+    /// A single, non-destructive read of the buffer's own snapshot
+    /// ([`try_latest_as_json_bytes`](crate::AimDb::try_latest_as_json_bytes)):
+    /// it returns at once and never touches this connection's drain cursor.
+    ///
+    /// - `NotFound`: no such record, or a record with a snapshot (`SingleLatest`,
+    ///   `Mailbox`) that holds no value yet.
+    /// - `Unsupported`: an [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing). A
+    ///   ring is a stream with no snapshot; read it with `record.drain`
+    ///   (unread events) or `record.subscribe` (future events). An application
+    ///   that needs an inspectable current state exposes a `SingleLatest`
+    ///   record next to the stream.
+    ///
+    /// The ring check reads the declared [`BufferCfg`](crate::buffer::BufferCfg):
+    /// a ring registered with `buffer_raw()` and no `buffer_cfg()` reports
+    /// `NotFound`, because core cannot tell it is a ring.
+    fn record_get(&self, name: &str) -> Result<Payload, RpcError> {
         if let Some(sample) = self.db.try_latest_as_json_bytes(name) {
             return Ok(super::value_reply(&sample.value, sample.stamp()));
         }
-        // Ring fallback: drain to the newest currently-available value (or NotFound).
-        self.drain_values(name, usize::MAX)?
-            .pop()
-            .map(|sample| to_payload(&stamped_value_json(sample)))
-            .ok_or(RpcError::NotFound)
+        let inner = self.db.inner();
+        let record = inner
+            .resolve_str(name)
+            .and_then(|id| inner.storage(id))
+            .ok_or(RpcError::NotFound)?;
+        // Only the miss path pays for this lookup.
+        let ring = crate::buffer::BufferCfg::SpmcRing { capacity: 0 }.name();
+        if record.buffer_info().0 == ring {
+            Err(RpcError::Unsupported)
+        } else {
+            Err(RpcError::NotFound)
+        }
     }
 
     /// `record.drain`: return everything accumulated since the previous drain
@@ -359,9 +371,7 @@ impl AimxSession {
     }
 
     /// Lazily open (on first call) the per-record drain cursor and read up to
-    /// `limit` values accumulated since the previous read (oldest-first). Shared
-    /// by [`record.drain`](Self::record_drain) and [`record.get`](Self::record_get)'s
-    /// ring fallback, so both read from the same per-connection cursor.
+    /// `limit` values accumulated since the previous read (oldest-first).
     fn drain_values(&mut self, name: &str, limit: usize) -> Result<Vec<Stamped<Value>>, RpcError> {
         if !self.drain_readers.contains_key(name) {
             let id = self

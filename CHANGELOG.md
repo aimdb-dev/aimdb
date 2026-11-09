@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `record.get` answers at once and no longer drains (#444)
+
+- **`record.get` is a single, non-destructive read.** `aimdb-mcp`'s
+  `get_record` drops its 3 s retry, the server drops the get-to-drain fallback,
+  and a ring answers `unsupported` instead of consuming events. See
+  [aimdb-core](aimdb-core/CHANGELOG.md),
+  [aimdb-client](aimdb-client/CHANGELOG.md) and
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md).
+
 ### Removed — `examples/weather-mesh-demo`
 
 - **The in-repo weather mesh demo is gone.** The fleet behind aimdb.dev lives in

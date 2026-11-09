@@ -231,6 +231,16 @@ impl AimxConnection {
         &self.server_info
     }
 
+    /// Whether this connection's engine has stopped: the transport closed or
+    /// failed. The engine does not reconnect, so every later call fails; a
+    /// caller that keeps a connection open replaces it.
+    ///
+    /// This is the reliable signal: an `internal` error can also be an
+    /// ordinary server reply on a healthy connection.
+    pub fn is_closed(&self) -> bool {
+        self.engine.is_finished()
+    }
+
     /// List all registered records.
     pub async fn list_records(&self) -> ClientResult<Vec<RecordMetadata>> {
         let reply = self.call("record.list", null_payload()).await?;
@@ -239,12 +249,14 @@ impl AimxConnection {
 
     /// Get a record's current value.
     ///
-    /// For a `SingleLatest`/state record this is a non-destructive read. A ring
-    /// (`SpmcRing`) has no canonical latest, so the server returns the most recent
-    /// value from this connection's drain cursor — which **advances that cursor**
-    /// (interleaving with [`drain_record`](Self::drain_record)) and is empty until
-    /// the ring produces a value after the connection first reads it. Prefer
-    /// [`drain_record`](Self::drain_record) for ring/history records.
+    /// A single, non-destructive read of the record's snapshot (`SingleLatest`,
+    /// `Mailbox`). It returns at once and never moves this connection's drain
+    /// cursor. Server errors:
+    ///
+    /// - `not_found`: no such record, or no value yet.
+    /// - `unsupported`: the record is a ring (`SpmcRing`), which has no current
+    ///   value. Use [`drain_record`](Self::drain_record) for unread events or
+    ///   [`subscribe`](Self::subscribe) for new ones.
     ///
     /// The value comes with the stamp of its write; a reply without `ts` is a
     /// [`ClientError::Protocol`].
@@ -571,6 +583,12 @@ fn rpc_err(e: RpcError) -> ClientError {
             ClientError::server_error("not_found", "method or record not found", None)
         }
         RpcError::Denied => ClientError::server_error("denied", "permission denied", None),
+        RpcError::Unsupported => ClientError::server_error(
+            "unsupported",
+            "not supported for this record (a ring has no current value: \
+             use drain_record for unread events or subscribe for new ones)",
+            None,
+        ),
         // `Internal` today, plus any future non-exhaustive variant.
         _ => ClientError::server_error("internal", "engine/transport failure", None),
     }

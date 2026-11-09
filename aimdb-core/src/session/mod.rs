@@ -270,6 +270,9 @@ pub enum CodecError {
 pub enum RpcError {
     /// No such method or topic.
     NotFound,
+    /// The method exists but the target cannot serve it, e.g. `record.get` on
+    /// a ring buffer, which has no current value to read.
+    Unsupported,
     /// The caller lacks permission for this operation.
     Denied,
     /// The handler failed.

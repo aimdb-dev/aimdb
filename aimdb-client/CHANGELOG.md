@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`get_record` on a ring returns `unsupported` (#444).** A ring has no
+  current value; use `drain_record` or `subscribe`. `get_record` no longer moves
+  the connection's drain cursor, so `drain_record` returns every unread event.
+  `watch::arm` treats `unsupported` like `not_found`: no baseline.
+
+### Added
+
+- **`AimxConnection::is_closed()` (#450):** whether the connection's engine has
+  stopped. A caller keeping a connection open uses it to decide when to
+  reconnect; an `internal` error reply does not mean the connection is gone.
+
 ### Removed (breaking)
 
 - **Obsolete AimX message types (#419).** `protocol::{Request, Response,

@@ -840,6 +840,7 @@ impl WsBridge {
 fn rpc_err_str(e: &RpcError) -> &'static str {
     match e {
         RpcError::NotFound => "not_found",
+        RpcError::Unsupported => "unsupported (a ring has no current value)",
         RpcError::Denied => "denied",
         RpcError::VersionMismatch => {
             "version_mismatch (server rejected the client protocol version)"

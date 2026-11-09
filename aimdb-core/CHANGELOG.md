@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (wire)
+
+- **`record.get` is a single, non-destructive read (#444).** It returns the
+  buffer's own snapshot (`SingleLatest`, `Mailbox`) and never touches the
+  connection's drain cursor, so only `record.drain` advances it. The fallback
+  that drained a ring to answer `record.get` is gone: it made a point-in-time
+  read wait for a future write and consumed events a later `record.drain`
+  should have returned. A ring (`SpmcRing`) now answers with the new error
+  code `unsupported`; read it with `record.drain` (unread events) or
+  `record.subscribe` (new ones). An empty `SingleLatest`/`Mailbox` record and
+  an unknown name answer `not_found` at once. A ring registered with
+  `buffer_raw()` and no `buffer_cfg()` answers `not_found`, since core cannot
+  tell it is a ring.
+
+### Added
+
+- **`RpcError::Unsupported` (#444),** wire code `"unsupported"`: the method
+  exists but the target cannot serve it. Older clients decode an unknown code
+  as `internal`.
+
 ### Removed (breaking)
 
 - **Obsolete AimX message types (#419).** `remote::{Request, Response,

@@ -55,27 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // A ring (SpmcRing) has no canonical latest, so the server falls back to
-    // *draining* this connection's cursor and returning the most recent value. A
-    // fresh cursor starts at the ring tail, so the first read is empty until a new
-    // value arrives — we retry over a couple of ticks. (This opens the *same*
-    // cursor `record.drain` uses below.)
-    println!("📤 record.get on Temperature (SpmcRing — drains the cursor for the latest)...");
-    let mut latest = None;
-    for _ in 0..10 {
-        if let Ok(v) = conn.get_record("server::Temperature").await {
-            latest = Some(v);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    match latest {
-        Some(v) => println!(
-            "🌡️  Most recent Temperature (via drain fallback, written {}):\n{}",
-            since_start(v.stamp()),
-            serde_json::to_string_pretty(&v.value)?
-        ),
-        None => println!("ℹ️  No reading yet — the ring cursor was still empty."),
+    // A ring (SpmcRing) is a stream with no current value, so record.get
+    // reports `unsupported`. Its events are read with record.drain (below) or
+    // record.subscribe.
+    println!("📤 record.get on Temperature (SpmcRing — no current value)...");
+    match conn.get_record("server::Temperature").await {
+        Ok(v) => println!("❌ UNEXPECTED value: {}", v.value),
+        Err(e) => println!("✅ Expected: {e}"),
     }
     println!();
 
@@ -138,14 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🧪 Record History (record.drain)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // `record.get` above already opened this connection's Temperature cursor, so
-    // this drain returns only what's accrued since (they share one cursor).
-    println!("📤 Drain #1: history since the (already-open) cursor...");
+    // The first drain opens this connection's Temperature cursor at the ring
+    // tail, so it returns nothing yet.
+    println!("📤 Drain #1: opens the cursor...");
     let d1 = conn.drain_record("server::Temperature").await?;
-    println!(
-        "   Values: {} (cursor shared with the record.get above)\n",
-        d1.count
-    );
+    println!("   Values: {} (cursor just opened)\n", d1.count);
 
     println!("⏳ Waiting 7s for temperature readings to accumulate...");
     tokio::time::sleep(Duration::from_secs(7)).await;

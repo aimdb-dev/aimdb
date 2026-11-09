@@ -147,6 +147,7 @@ fn payload_of(raw: Option<&RawValue>) -> Payload {
 fn err_code(e: &RpcError) -> &'static str {
     match e {
         RpcError::NotFound => "not_found",
+        RpcError::Unsupported => "unsupported",
         RpcError::Denied => "denied",
         RpcError::Internal => "internal",
         RpcError::VersionMismatch => "version_mismatch",
@@ -158,6 +159,7 @@ fn err_code(e: &RpcError) -> &'static str {
 fn code_err(s: &str) -> RpcError {
     match s {
         "not_found" => RpcError::NotFound,
+        "unsupported" => RpcError::Unsupported,
         "denied" => RpcError::Denied,
         "version_mismatch" => RpcError::VersionMismatch,
         _ => RpcError::Internal,
@@ -509,6 +511,7 @@ mod tests {
     fn reply_err_codes_roundtrip() {
         for err in [
             RpcError::NotFound,
+            RpcError::Unsupported,
             RpcError::Denied,
             RpcError::Internal,
             RpcError::VersionMismatch,

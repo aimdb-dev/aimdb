@@ -69,3 +69,12 @@ chrono = "0.4"
 # `__event_capture!` for the test-only `events::capture` module.
 aimdb-core = { version = "3.0.0", path = "../../aimdb-core", default-features = false }
 tokio-test = "0.4"
+# tests/get_record.rs: a real AimX server over a Unix socket.
+aimdb-tokio-adapter = { version = "0.8.0", path = "../../aimdb-tokio-adapter" }
+aimdb-uds-connector = { version = "0.2.0", path = "../../aimdb-uds-connector" }
+tempfile = "3"
+# tests/serial_session.rs: a board (`SerialServer`) behind a pty.
+aimdb-serial-connector = { version = "0.2.0", path = "../../aimdb-serial-connector", features = [
+    "std",
+] }
+libc = "0.2"
