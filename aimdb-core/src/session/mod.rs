@@ -559,6 +559,19 @@ pub trait EnvelopeCodec: Send + Sync {
     /// reply/event). The dual of [`encode`](EnvelopeCodec::encode); the result
     /// borrows the frame (`Outbound`'s `sub`/`topic` are `&str` slices into it).
     fn decode_outbound<'a>(&self, frame: &'a [u8]) -> Result<Outbound<'a>, CodecError>;
+
+    /// The request a client opens each connection with when
+    /// [`ClientConfig::sends_hello`](crate::session::ClientConfig::sends_hello)
+    /// is set: its method and params. It should be a method for which the
+    /// server's [`Session::starts_session`] holds, so a server serving one long
+    /// connection (a serial line) knows the client behind it changed.
+    ///
+    /// The client sends it once per connection and does not wait for the
+    /// reply. `None` (the default) falls back to a `Ping`/`Pong` handshake,
+    /// which only proves the link.
+    fn hello(&self) -> Option<(&'static str, Payload)> {
+        None
+    }
 }
 
 // ===========================================================================

@@ -31,6 +31,13 @@
 //! and answers the new client from a fresh one. So every client that connects
 //! gets its events, however often clients come and go.
 //!
+//! Every client sends one: `SerialClient` opens each connection with a
+//! `hello`, ahead of its subscriptions and writes, and `aimdb-client` sends
+//! one when it connects. `SerialClient` does not wait for the reply — the
+//! line keeps byte order, so the server reads the `hello` first — and does
+//! not resend a `hello` lost on the line: the client then stays in the old
+//! session until it reconnects.
+//!
 //! Until the next `hello`, a client that left keeps its subscriptions: they
 //! go on streaming into the UART and hold their buffer slots. Size the
 //! subscriber slots of a record with remote access for the subscribers a

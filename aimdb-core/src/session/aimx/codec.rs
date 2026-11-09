@@ -392,6 +392,16 @@ impl EnvelopeCodec for AimxCodec {
             _ => Err(CodecError::Malformed),
         }
     }
+
+    /// `hello` opens every AimX session, and a second one on a connection
+    /// tells the server the client changed (see `AimxSession::starts_session`).
+    fn hello(&self) -> Option<(&'static str, Payload)> {
+        let params = alloc::format!(
+            r#"{{"client":"aimdb-session-client","version":"{}"}}"#,
+            crate::remote::PROTOCOL_VERSION
+        );
+        Some(("hello", Arc::from(params.as_bytes())))
+    }
 }
 
 #[cfg(test)]
