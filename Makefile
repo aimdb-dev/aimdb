@@ -243,7 +243,7 @@ test: test-operational-events test-build-info-link
 	cargo test --package aimdb-cli --features yaml
 	@printf "$(YELLOW)  → Testing MCP server$(NC)\n"
 	cargo test --package aimdb-mcp
-	@printf "$(YELLOW)  → Testing MCP server (serial: one session for get and drain)$(NC)\n"
+	@printf "$(YELLOW)  → Testing MCP server (serial: one session for every tool)$(NC)\n"
 	cargo test --package aimdb-mcp --features "transport-serial" --test serial_session
 	@printf "$(YELLOW)  → Testing persistence backend$(NC)\n"
 	cargo test --package aimdb-persistence

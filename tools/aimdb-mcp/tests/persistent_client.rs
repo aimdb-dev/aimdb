@@ -79,12 +79,12 @@ async fn the_client_is_kept_across_error_replies_and_replaced_once_stopped() {
     let pool = ConnectionPool::new();
 
     let server = Server::start(&sock);
-    let first = pool.get_drain_client(&endpoint).await.expect("connect");
+    let first = pool.get_client(&endpoint).await.expect("connect");
 
     // Error replies are answers on a healthy session: the client stays.
     for missing in ["missing", "also-missing"] {
         assert!(first.lock().await.get_record(missing).await.is_err());
-        let again = pool.get_drain_client(&endpoint).await.unwrap();
+        let again = pool.get_client(&endpoint).await.unwrap();
         assert!(Arc::ptr_eq(&first, &again), "kept after an error reply");
     }
     assert!(!first.lock().await.is_closed());
@@ -103,8 +103,23 @@ async fn the_client_is_kept_across_error_replies_and_replaced_once_stopped() {
 
     // The instance is back: the next call replaces the stopped client.
     let _server = Server::start(&sock);
-    let next = pool.get_drain_client(&endpoint).await.expect("reconnect");
+    let next = pool.get_client(&endpoint).await.expect("reconnect");
     assert!(!Arc::ptr_eq(&first, &next), "a stopped client is replaced");
     let got = next.lock().await.get_record("state").await.expect("get");
     assert_eq!(got.value["n"], 1);
+}
+
+#[tokio::test]
+async fn the_records_resource_uses_the_pool() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+    let endpoint = sock.to_str().unwrap().to_string();
+    let pool = ConnectionPool::new();
+    aimdb_mcp::tools::init_connection_pool(pool.clone());
+
+    let _server = Server::start(&sock);
+    aimdb_mcp::resources::records::read_records_resource(&endpoint)
+        .await
+        .expect("read the records resource");
+    assert_eq!(pool.connection_count().await, 1, "the pool made the client");
 }

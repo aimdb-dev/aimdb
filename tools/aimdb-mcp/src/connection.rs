@@ -1,7 +1,7 @@
-//! Connection pool management for AimDB instances
+//! Persistent AimX clients, one per endpoint.
 //!
-//! Manages persistent connections to AimDB instances to avoid
-//! reconnecting on every tool call. Includes auto-reconnect logic.
+//! Every tool and resource reaches an AimDB instance through this pool, so an
+//! endpoint only ever has one connection.
 
 use aimdb_client::AimxConnection;
 use aimdb_client::ClientError;
@@ -10,28 +10,24 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-/// Connection entry with metadata
-#[derive(Debug)]
-struct ConnectionEntry {
-    /// Last successful connection time (for staleness detection)
-    last_used: std::time::Instant,
-}
+/// A persistent client. Lock it for the duration of one call.
+pub type SharedClient = Arc<Mutex<AimxConnection>>;
 
-/// Connection pool for managing AimDB connections
+/// An endpoint's client, or `None` before the first connect. Its lock is held
+/// across `connect` so an endpoint only ever has one attempt in flight.
+type ClientSlot = Arc<Mutex<Option<SharedClient>>>;
+
+/// Pool of persistent AimDB clients
 #[derive(Clone)]
 pub struct ConnectionPool {
-    /// Track which connections we've attempted (for logging/metrics)
-    connections: Arc<Mutex<HashMap<String, ConnectionEntry>>>,
-    /// Persistent drain clients — kept alive so drain readers accumulate values
-    /// Key: endpoint, Value: shared AimxConnection
-    drain_clients: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<AimxConnection>>>>>,
+    /// Key: endpoint
+    clients: Arc<Mutex<HashMap<String, ClientSlot>>>,
 }
 
 impl std::fmt::Debug for ConnectionPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionPool")
-            .field("connections", &"<...>")
-            .field("drain_clients", &"<...>")
+            .field("clients", &"<...>")
             .finish()
     }
 }
@@ -40,70 +36,34 @@ impl ConnectionPool {
     /// Create a new connection pool
     pub fn new() -> Self {
         Self {
-            connections: Arc::new(Mutex::new(HashMap::new())),
-            drain_clients: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Get or create a connection to an AimDB instance
-    ///
-    /// Note: since `AimxConnection` does not implement `Clone`, a fresh
-    /// connection is created each time. The pool tracks connection metadata for
-    /// monitoring and future optimization (e.g. persistent connections via
-    /// `Arc<Mutex<AimxConnection>>` if `AimxConnection` becomes `Sync`).
-    pub async fn get_connection(&self, endpoint: &str) -> Result<AimxConnection, ClientError> {
-        let mut pool = self.connections.lock().await;
-
-        // Update or insert connection metadata
-        let now = std::time::Instant::now();
-
-        if let Some(entry) = pool.get_mut(endpoint) {
-            debug!(
-                "♻️  Connection metadata exists for {}, reconnecting",
-                endpoint
-            );
-            entry.last_used = now;
-        } else {
-            debug!("🔌 First connection to {}", endpoint);
-            pool.insert(endpoint.to_string(), ConnectionEntry { last_used: now });
-        }
-
-        // Always create a new connection (until AimxConnection supports cloning/sharing)
-        drop(pool); // Release lock before async operation
-        AimxConnection::connect(endpoint).await
-    }
-
-    /// Remove a connection from the pool (called when operations fail)
-    pub async fn invalidate_connection(&self, endpoint: &str) {
-        let mut pool = self.connections.lock().await;
-        if pool.remove(endpoint).is_some() {
-            debug!("❌ Invalidated connection metadata for {}", endpoint);
+            clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Get or create the persistent client for an endpoint.
     ///
-    /// One connection per endpoint, kept across calls and shared by
-    /// `get_record` and `drain_record`; callers take its lock for each call.
-    /// Keeping it open matters twice: the server's drain cursor lives in the
-    /// session, so values accumulate between drains, and on serial a second
-    /// connection either fails (the tty is open) or sends a new `hello` that
-    /// resets the board's session and discards that cursor.
+    /// One connection per endpoint, kept across calls and shared by every tool;
+    /// callers take its lock for each call. Keeping it open matters twice: the
+    /// server's drain cursor lives in the session, so values accumulate between
+    /// drains, and on serial a second connection either fails (the tty is open)
+    /// or sends a new `hello` that resets the board's session and discards that
+    /// cursor. For the same reason concurrent first calls wait for one connect
+    /// instead of racing their own.
     ///
     /// The client is replaced only once its engine has stopped
     /// ([`AimxConnection::is_closed`]), never because a call returned an error:
-    /// `not_found`, `unsupported` and even `internal` are replies on a healthy
+    /// `not_found`, `denied` and even `internal` are replies on a healthy
     /// session. A client busy with a call is returned as is; if its engine has
     /// stopped, the next call replaces it.
-    pub async fn get_drain_client(
-        &self,
-        endpoint: &str,
-    ) -> Result<Arc<tokio::sync::Mutex<AimxConnection>>, ClientError> {
-        let mut drain_map = self.drain_clients.lock().await;
+    pub async fn get_client(&self, endpoint: &str) -> Result<SharedClient, ClientError> {
+        let slot = {
+            let mut clients = self.clients.lock().await;
+            Arc::clone(clients.entry(endpoint.to_string()).or_default())
+        };
+        let mut slot = slot.lock().await;
 
-        if let Some(client) = drain_map.get(endpoint) {
-            let closed = client.try_lock().is_ok_and(|c| c.is_closed());
-            if !closed {
+        if let Some(client) = slot.as_ref() {
+            if !client.try_lock().is_ok_and(|c| c.is_closed()) {
                 debug!("♻️  Reusing persistent client for {}", endpoint);
                 return Ok(Arc::clone(client));
             }
@@ -111,49 +71,24 @@ impl ConnectionPool {
                 "🔁 Persistent client for {} has stopped, reconnecting",
                 endpoint
             );
-            drain_map.remove(endpoint);
+            *slot = None;
         }
 
-        debug!("🔌 Creating persistent drain client for {}", endpoint);
-
-        // Drop lock before async connect
-        drop(drain_map);
-
-        let client = AimxConnection::connect(endpoint).await?;
-        let shared = Arc::new(tokio::sync::Mutex::new(client));
-
-        let mut drain_map = self.drain_clients.lock().await;
-        // Double-check: another task may have inserted while we were connecting
-        if let Some(existing) = drain_map.get(endpoint) {
-            if !existing.try_lock().is_ok_and(|c| c.is_closed()) {
-                return Ok(Arc::clone(existing));
-            }
-        }
-        drain_map.insert(endpoint.to_string(), Arc::clone(&shared));
-        Ok(shared)
+        debug!("🔌 Creating persistent client for {}", endpoint);
+        let client = Arc::new(Mutex::new(AimxConnection::connect(endpoint).await?));
+        *slot = Some(Arc::clone(&client));
+        Ok(client)
     }
 
-    /// Invalidate (remove) a persistent drain client, e.g. after connection error
-    pub async fn invalidate_drain_client(&self, endpoint: &str) {
-        let mut drain_map = self.drain_clients.lock().await;
-        if drain_map.remove(endpoint).is_some() {
-            debug!("❌ Invalidated drain client for {}", endpoint);
-        }
-    }
-
-    /// Clear all connections in the pool
+    /// Forget every client
     pub async fn clear(&self) {
-        let mut pool = self.connections.lock().await;
-        pool.clear();
-        let mut drain_map = self.drain_clients.lock().await;
-        drain_map.clear();
+        self.clients.lock().await.clear();
         debug!("🧹 Cleared connection pool");
     }
 
-    /// Get the number of tracked connections
+    /// Number of endpoints the pool has been asked to connect to
     pub async fn connection_count(&self) -> usize {
-        let pool = self.connections.lock().await;
-        pool.len()
+        self.clients.lock().await.len()
     }
 }
 
@@ -177,14 +112,6 @@ mod tests {
     async fn test_pool_clear() {
         let pool = ConnectionPool::new();
         pool.clear().await;
-        assert_eq!(pool.connection_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_invalidate_nonexistent_connection() {
-        let pool = ConnectionPool::new();
-        // Should not panic
-        pool.invalidate_connection("/tmp/nonexistent.sock").await;
         assert_eq!(pool.connection_count().await, 0);
     }
 }

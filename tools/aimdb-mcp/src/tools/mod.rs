@@ -33,6 +33,20 @@ pub(crate) fn connection_pool() -> Option<&'static ConnectionPool> {
     CONNECTION_POOL.get()
 }
 
+/// The persistent client for `endpoint`, the only way tools reach an instance.
+/// Callers hold its lock for the duration of one call, so requests on a session
+/// never overlap.
+pub(crate) async fn shared_client(
+    endpoint: &str,
+) -> crate::error::McpResult<crate::connection::SharedClient> {
+    let pool = connection_pool().ok_or_else(|| {
+        crate::error::McpError::Internal("Connection pool not initialized".to_string())
+    })?;
+    pool.get_client(endpoint)
+        .await
+        .map_err(crate::error::McpError::Client)
+}
+
 /// Resolve the endpoint from an explicit argument, the `--connect` flag, or the
 /// `AIMDB_CONNECT` env var (checked in that order). The value is a `scheme://`
 /// URL (`unix://PATH`, `serial://DEVICE?baud=N`) or a bare path.

@@ -1,9 +1,9 @@
-//! `get_record` and `drain_record` share one serial session (#450).
+//! Every `aimdb-mcp` tool shares one serial session (#451).
 //!
 //! A UART never closes, so a board learns of a new client only from a `hello`,
-//! and a `hello` resets its session, drain cursors included. If `get_record`
-//! opened a second connection, it would either fail (the tty is already open)
-//! or say `hello` again and lose the cursor `drain_record` reads.
+//! and a `hello` resets its session, drain cursors included. If a tool opened
+//! its own connection, it would either fail (the tty is already open) or say
+//! `hello` again and lose the cursor `drain_record` reads.
 //!
 //! The board is a `SerialServer` behind a pty; `aimdb-mcp` opens the other
 //! side as `serial://…`. A relay between the pty and the board counts the
@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aimdb_core::buffer::BufferCfg;
+use aimdb_core::remote::SecurityPolicy;
 use aimdb_core::AimDbBuilder;
 use aimdb_mcp::tools;
 use aimdb_serial_connector::framing::FrameAccumulator;
@@ -130,18 +131,26 @@ fn relay(master: File, board_line: tokio::io::DuplexStream, hellos: Arc<AtomicUs
     });
 }
 
-#[tokio::test]
-async fn get_record_shares_the_drain_session_over_serial() {
-    // The board: a ring of events and a state record, served over the line.
+type Board = aimdb_core::AimDb;
+
+/// A board behind a pty: a ring of events, a state record and a writable
+/// record. Returns the board, its `serial://` endpoint and the `hello` count.
+async fn start_board() -> (Board, String, Arc<AtomicUsize>) {
     let (board_end, line_end) = tokio::io::duplex(64 * 1024);
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
-        .with_connector(SerialServer::new(TokioByteStream(board_end)));
+        .with_connector(
+            SerialServer::new(TokioByteStream(board_end))
+                .security_policy(SecurityPolicy::read_write().with_writable_key("config")),
+        );
     builder.configure::<Reading>("events", |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
     builder.configure::<Reading>("state", |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    builder.configure::<Reading>("config", |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (board, runner) = builder.build().await.expect("build board");
@@ -154,9 +163,17 @@ async fn get_record_shares_the_drain_session_over_serial() {
     let pty = openpty();
     let hellos = Arc::new(AtomicUsize::new(0));
     relay(pty.master, line_end, hellos.clone());
+    // The relay threads keep their ends; the slave must outlive the test.
+    std::mem::forget(pty._slave);
 
     tools::init_connection_pool(aimdb_mcp::connection::ConnectionPool::new());
     let endpoint = format!("serial://{}?baud=115200", pty.path);
+    (board, endpoint, hellos)
+}
+
+#[tokio::test]
+async fn get_record_shares_the_drain_session_over_serial() {
+    let (board, endpoint, hellos) = start_board().await;
     let drain = || {
         tools::drain_record(Some(
             json!({ "endpoint": endpoint, "record_name": "events" }),
@@ -222,4 +239,119 @@ async fn get_record_shares_the_drain_session_over_serial() {
         1,
         "the board received exactly one hello"
     );
+}
+
+#[tokio::test]
+async fn every_tool_shares_the_drain_session_over_serial() {
+    let (board, endpoint, hellos) = start_board().await;
+    let at = |extra: Value| {
+        let mut args = json!({ "endpoint": endpoint });
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        Some(args)
+    };
+    let drain = || tools::drain_record(at(json!({ "record_name": "events" })));
+
+    // 1. Open the ring's drain cursor.
+    let first = drain().await.expect("first drain");
+    assert_eq!(first["count"], 0);
+
+    // 2. The board publishes events.
+    let events = board.producer::<Reading>("events").unwrap();
+    for n in 1..=3 {
+        events.produce(Reading { n });
+    }
+
+    // 3. Call each tool once on the same session.
+    let listed = tools::list_records(at(json!({})))
+        .await
+        .expect("list_records");
+    assert_eq!(listed.as_array().unwrap().len(), 3);
+    tools::set_record(at(json!({ "record_name": "config", "value": { "n": 7 } })))
+        .await
+        .expect("set_record");
+    let info = tools::get_instance_info(at(json!({})))
+        .await
+        .expect("get_instance_info");
+    assert_eq!(info["endpoint"], json!(endpoint));
+    tools::graph_nodes(at(json!({})))
+        .await
+        .expect("graph_nodes");
+    tools::graph_edges(at(json!({})))
+        .await
+        .expect("graph_edges");
+    tools::graph_topo_order(at(json!({})))
+        .await
+        .expect("graph_topo_order");
+    // This tool matches the record type name, not its key.
+    let metrics = tools::get_buffer_metrics(at(json!({ "record_key": "Reading" })))
+        .await
+        .expect("get_buffer_metrics");
+    assert_eq!(metrics["found"], true);
+    tools::reset_buffer_metrics(at(json!({})))
+        .await
+        .expect("reset_buffer_metrics");
+    let profiling = tools::get_stage_profiling(at(json!({ "record_key": "events" })))
+        .await
+        .expect("get_stage_profiling");
+    assert_eq!(profiling["found"], true);
+    tools::reset_stage_profiling(at(json!({})))
+        .await
+        .expect("reset_stage_profiling");
+    let got = tools::get_record(at(json!({ "record_name": "state" })))
+        .await
+        .expect("get_record");
+    assert_eq!(got["value"], json!({ "n": 42 }));
+
+    // Error replies keep the session too.
+    let err = tools::drain_record(at(json!({ "record_name": "missing" })))
+        .await
+        .expect_err("unknown record")
+        .to_string();
+    assert!(err.contains("not_found"), "{err}");
+    tools::set_record(at(json!({ "record_name": "state", "value": { "n": 0 } })))
+        .await
+        .expect_err("a record that is not writable");
+    // Let any deferred cleanup run before the session is used again.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 4. The cursor survived: the drain returns the queued events.
+    let mut ns = Vec::new();
+    for _ in 0..100 {
+        let page = drain().await.expect("drain");
+        ns.extend(
+            page["values"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["value"]["n"].clone()),
+        );
+        if ns.len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(ns, [1, 2, 3]);
+
+    // 5. One session the whole time.
+    assert_eq!(
+        hellos.load(SeqCst),
+        1,
+        "the board received exactly one hello"
+    );
+}
+
+/// Parallel first calls wait for one connect: racing their own would find the
+/// tty busy.
+#[tokio::test]
+async fn concurrent_first_calls_open_one_session() {
+    let (_board, endpoint, hellos) = start_board().await;
+    let list = || tools::list_records(Some(json!({ "endpoint": endpoint })));
+
+    let (a, b, c, d) = tokio::join!(list(), list(), list(), list());
+    for result in [a, b, c, d] {
+        result.expect("list_records");
+    }
+    assert_eq!(hellos.load(SeqCst), 1, "one connect, one hello");
 }

@@ -2,7 +2,6 @@
 
 use crate::error::McpResult;
 use aimdb_client::protocol::InstanceInfoReply;
-use aimdb_client::{self, AimxConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
@@ -111,13 +110,8 @@ pub async fn get_instance_info(args: Option<Value>) -> McpResult<Value> {
 
     debug!("🔍 Getting instance info for: {}", endpoint);
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint).await?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint).await?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // Get server info from the welcome message
     let server_info = client.server_info();
@@ -231,6 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_instance_info_invalid_socket() {
+        crate::tools::init_connection_pool(crate::connection::ConnectionPool::new());
         let params = serde_json::json!({
             "endpoint": "/tmp/nonexistent.sock"
         });
