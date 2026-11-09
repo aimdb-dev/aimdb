@@ -6,7 +6,6 @@
 //! on the server).
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxConnection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::debug;
@@ -24,18 +23,6 @@ struct ResetBufferMetricsParams {
     endpoint: Option<String>,
 }
 
-async fn connect(endpoint: &str) -> McpResult<AimxConnection> {
-    if let Some(pool) = super::connection_pool() {
-        pool.get_connection(endpoint)
-            .await
-            .map_err(McpError::Client)
-    } else {
-        AimxConnection::connect(endpoint)
-            .await
-            .map_err(McpError::Client)
-    }
-}
-
 /// Returns live buffer metrics for records whose name contains `record_key`.
 ///
 /// Session-agnostic: works in any phase.
@@ -45,7 +32,8 @@ pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("get_buffer_metrics: {e}")))?;
     let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&endpoint).await?;
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
     let raw = client.list_records().await.map_err(McpError::Client)?;
 
     let matching: Vec<_> = raw
@@ -75,7 +63,8 @@ pub async fn reset_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("reset_buffer_metrics: {e}")))?;
     let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&endpoint).await?;
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
     match client.reset_buffer_metrics().await {
         Ok(_) => Ok(json!({
             "reset": true,

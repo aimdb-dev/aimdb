@@ -8,7 +8,6 @@
 //! feature; without it, records simply carry no `stage_profiling` data.
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxConnection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::debug;
@@ -25,18 +24,6 @@ struct ResetStageProfilingParams {
     endpoint: Option<String>,
 }
 
-async fn connect(endpoint: &str) -> McpResult<AimxConnection> {
-    if let Some(pool) = super::connection_pool() {
-        pool.get_connection(endpoint)
-            .await
-            .map_err(McpError::Client)
-    } else {
-        AimxConnection::connect(endpoint)
-            .await
-            .map_err(McpError::Client)
-    }
-}
-
 fn ms(ns: u64) -> f64 {
     ns as f64 / 1_000_000.0
 }
@@ -49,7 +36,8 @@ pub async fn get_stage_profiling(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("get_stage_profiling: {e}")))?;
     let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&endpoint).await?;
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
     let records = client.list_records().await.map_err(McpError::Client)?;
 
     let mut out = Vec::new();
@@ -110,7 +98,8 @@ pub async fn reset_stage_profiling(args: Option<Value>) -> McpResult<Value> {
         .map_err(|e| McpError::InvalidParams(format!("reset_stage_profiling: {e}")))?;
     let endpoint = super::resolve_endpoint(params.endpoint)?;
 
-    let client = connect(&endpoint).await?;
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
     match client.reset_stage_profiling().await {
         Ok(_) => Ok(json!({
             "reset": true,

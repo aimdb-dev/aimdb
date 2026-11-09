@@ -1,7 +1,6 @@
 //! Record-related tools (list_records, get_record, set_record)
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::debug;
@@ -97,17 +96,8 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
     let endpoint = super::resolve_endpoint(params.endpoint)?;
     debug!("🔌 Connecting to {}", endpoint);
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // List records
     let records = client.list_records().await.map_err(McpError::Client)?;
@@ -165,17 +155,12 @@ pub async fn get_record(args: Option<Value>) -> McpResult<Value> {
     // fails (the tty is open) or says `hello` again, which resets the board's
     // session and its drain cursors. Sharing is safe because `record.get` never
     // touches the drain cursor (the server keeps them apart).
-    let pool = super::connection_pool()
-        .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
-    let client_arc = pool
-        .get_drain_client(&endpoint)
-        .await
-        .map_err(McpError::Client)?;
-    let client = client_arc.lock().await;
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // One `record.get`, no retry: `not_found` (no such record, or no value yet)
     // and `unsupported` (a ring) come back at once and leave the session as it
-    // is. A stopped engine is replaced by `get_drain_client` on the next call.
+    // is. A stopped engine is replaced by `get_client` on the next call.
     let sample = client
         .get_record(&params.record_name)
         .await
@@ -208,17 +193,8 @@ pub async fn set_record(args: Option<Value>) -> McpResult<Value> {
         endpoint, params.record_name
     );
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // Set record value
     let result = client
@@ -257,20 +233,13 @@ pub async fn drain_record(args: Option<Value>) -> McpResult<Value> {
         endpoint, params.record_name
     );
 
-    // The persistent client, shared with `get_record`: the server-side drain
-    // cursor lives in its session, so values accumulate between calls.
-    let pool = super::connection_pool()
-        .ok_or_else(|| McpError::Internal("Connection pool not initialized".to_string()))?;
-
-    let client_arc = pool
-        .get_drain_client(&endpoint)
-        .await
-        .map_err(McpError::Client)?;
-
-    let client = client_arc.lock().await;
+    // The server-side drain cursor lives in the persistent client's session,
+    // so values accumulate between calls.
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // An error reply keeps the session (and its cursors); a stopped engine is
-    // replaced by `get_drain_client` on the next call.
+    // replaced by `get_client` on the next call.
     let response = match params.limit {
         Some(limit) => client
             .drain_record_with_limit(&params.record_name, limit)
@@ -364,6 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_records_invalid_socket() {
+        crate::tools::init_connection_pool(crate::connection::ConnectionPool::new());
         // Should fail with non-existent socket
         let params = json!({
             "endpoint": "/tmp/nonexistent.sock"
@@ -412,6 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_record_invalid_socket() {
+        crate::tools::init_connection_pool(crate::connection::ConnectionPool::new());
         // Should fail with non-existent socket
         let params = json!({
             "endpoint": "/tmp/nonexistent.sock",

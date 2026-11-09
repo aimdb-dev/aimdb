@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `aimdb-mcp` tools share one session per endpoint (#451)
+
+- **No tool opens its own connection any more**, so over serial a tool call no
+  longer fails on a busy tty or resets the board's session and drain cursor. See
+  [aimdb-mcp](tools/aimdb-mcp/CHANGELOG.md).
+
 ### Fixed — `record.get` answers at once and no longer drains (#444)
 
 - **`record.get` is a single, non-destructive read.** `aimdb-mcp`'s

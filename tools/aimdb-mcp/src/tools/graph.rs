@@ -1,7 +1,6 @@
 //! Graph introspection tools (graph_nodes, graph_edges, graph_topo_order)
 
 use crate::error::{McpError, McpResult};
-use aimdb_client::AimxConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
@@ -56,17 +55,8 @@ pub async fn graph_nodes(args: Option<Value>) -> McpResult<Value> {
 
     debug!("🔌 Connecting to {}", endpoint);
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // Get graph nodes
     let nodes = client.graph_nodes().await.map_err(McpError::Client)?;
@@ -101,17 +91,8 @@ pub async fn graph_edges(args: Option<Value>) -> McpResult<Value> {
 
     debug!("🔌 Connecting to {}", endpoint);
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // Get graph edges
     let edges = client.graph_edges().await.map_err(McpError::Client)?;
@@ -144,17 +125,8 @@ pub async fn graph_topo_order(args: Option<Value>) -> McpResult<Value> {
 
     debug!("🔌 Connecting to {}", endpoint);
 
-    // Get or create connection from pool (if available)
-    let client = if let Some(pool) = super::connection_pool() {
-        pool.get_connection(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    } else {
-        // Fallback to direct connection if pool not initialized
-        AimxConnection::connect(&endpoint)
-            .await
-            .map_err(McpError::Client)?
-    };
+    let client = super::shared_client(&endpoint).await?;
+    let client = client.lock().await;
 
     // Get topological order
     let order = client.graph_topo_order().await.map_err(McpError::Client)?;

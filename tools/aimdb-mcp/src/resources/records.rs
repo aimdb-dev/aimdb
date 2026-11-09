@@ -5,7 +5,6 @@
 
 use crate::error::{McpError, McpResult};
 use crate::protocol::{Resource, ResourceContent, ResourceReadResult};
-use aimdb_client::AimxConnection;
 use serde_json::json;
 use std::path::Path;
 use tracing::debug;
@@ -81,8 +80,9 @@ pub async fn read_records_resource(socket_path: &str) -> McpResult<ResourceReadR
         )));
     }
 
-    // Connect to the instance
-    let client = AimxConnection::connect(socket_path).await?;
+    // The instance's persistent client, shared with the tools
+    let client = crate::tools::shared_client(socket_path).await?;
+    let client = client.lock().await;
 
     // List records
     let records = client.list_records().await?;
@@ -188,6 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_records_resource_invalid_socket() {
+        crate::tools::init_connection_pool(crate::connection::ConnectionPool::new());
         let result = read_records_resource("/tmp/nonexistent.sock").await;
         assert!(result.is_err());
     }
