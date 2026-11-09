@@ -65,6 +65,16 @@ log = ["dep:log"]
 # `critical-section` impl.
 observability = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
+# Interrupt-safe locking on no_std. Core keeps a ring's last value
+# (`LatestSlot`) behind a lock. On no_std that lock is a spin lock by default,
+# which deadlocks if an interrupt pushes to a ring while the code it
+# interrupted holds the lock. With this feature the lock is a
+# `critical_section::Mutex` instead, as in Embassy's own buffers, so pushing
+# from an interrupt is safe. The final binary must provide a `critical-section`
+# impl (every Embassy target does). The Embassy adapter enables it. No effect
+# with `std`.
+critical-section = ["dep:critical-section"]
+
 # Testing features
 test-utils = ["std"]
 # `AimDbBuilder::start_order_seed`: permute the record task start order per
@@ -122,6 +132,8 @@ log = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+# Interrupt-safe lock for `LatestSlot` on no_std (feature `critical-section`).
+critical-section = { workspace = true, optional = true }
 
 # Hash map for no_std (same implementation as std::collections::HashMap)
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
@@ -134,6 +146,8 @@ tracing = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 # For no_std testing
 heapless = "0.9.1"
+# Host impl so `--features critical-section` tests link.
+critical-section = { workspace = true, features = ["std"] }
 # For async testing (`sync` covers tokio::sync::mpsc in tests/session_engine.rs,
 # which previously leaked in from the optional [dependencies] entry)
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }

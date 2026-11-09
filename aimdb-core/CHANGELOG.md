@@ -18,7 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection's cursor is gone, so `record.get` no longer consumes values a
   later `record.drain` should return, and `not_found` now always means "no
   such record or no value yet". Cost: one clone and a short lock per push on
-  ring records.
+  ring records. On `no_std` the lock is a spin lock unless the new
+  `critical-section` feature is on, which makes it a `critical_section::Mutex`
+  so interrupt handlers can push to a ring; the Embassy adapter enables it.
+
+### Migration
+
+- **Declare the kind of a `buffer_raw()` buffer on remote-access records
+  (#450).** Core can only give a ring its readable latest value when it knows
+  the buffer is a ring, and `record.get` no longer drains a cursor to find one.
+  A record with `.with_remote_access()` and a raw buffer with no declared
+  `BufferCfg` now fails `build()`. Add `.buffer_cfg(BufferCfg::SpmcRing { .. })`
+  (or the matching kind) after `.buffer_raw(...)`, or use `buffer_with_cfg`.
 
 ### Removed (breaking)
 

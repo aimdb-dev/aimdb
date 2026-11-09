@@ -55,6 +55,9 @@ observability = ["aimdb-core/observability", "embassy-runtime"]
 # Core AimDB types - no_std for Embassy (requires alloc for typed APIs)
 aimdb-core = { version = "3.0.0", path = "../aimdb-core", default-features = false, features = [
     "alloc",
+    # Interrupt-safe lock for a ring's remembered last value (`LatestSlot`):
+    # rings may be pushed from interrupt handlers, as Embassy's own buffers allow.
+    "critical-section",
 ] }
 
 # Generic framed `Connection` over async UART halves (feature `connector-io`).

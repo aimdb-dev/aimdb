@@ -616,8 +616,18 @@ where
     /// - Runtime adapter implementations to provide convenient wrappers
     /// - Advanced use cases requiring custom buffer implementations
     ///
-    /// **Note:** For metadata tracking in std mode, call `buffer_with_cfg()` instead,
-    /// or call `buffer_cfg()` separately to set the configuration.
+    /// **Declare the buffer's kind** with [`buffer_cfg`](Self::buffer_cfg) after
+    /// this call (it resets any earlier declaration), or use
+    /// [`buffer_with_cfg`](Self::buffer_with_cfg). Core cannot see what kind of
+    /// buffer a raw one is, and relies on the declaration:
+    ///
+    /// - A buffer declared as [`SpmcRing`](crate::buffer::BufferCfg::SpmcRing)
+    ///   gets a remembered last value at build time, so `latest()` and AimX
+    ///   `record.get` return the last write. Without the declaration a ring with
+    ///   the default `peek()` has no readable latest value.
+    /// - A record with `.with_remote_access()` and an undeclared raw buffer
+    ///   fails `build()`, rather than answering `record.get` with `not_found`
+    ///   forever.
     pub fn buffer_raw(
         &mut self,
         buffer: Box<dyn crate::buffer::DynBuffer<crate::Stamped<T>>>,
@@ -637,7 +647,10 @@ where
         self
     }
 
-    /// Sets the buffer configuration for metadata tracking
+    /// Declares the kind of the buffer set with [`buffer_raw`](Self::buffer_raw).
+    ///
+    /// Used for metadata and to decide whether core keeps a ring's last value
+    /// for `latest()` / `record.get`. Call it after `buffer_raw()`.
     pub fn buffer_cfg(&mut self, cfg: crate::buffer::BufferCfg) -> &mut Self {
         self.rec.set_buffer_cfg(cfg);
         self

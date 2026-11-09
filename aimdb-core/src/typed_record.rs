@@ -1320,6 +1320,23 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
             ));
         }
 
+        // A buffer from `buffer_raw()` hides its kind. Core gives a ring its
+        // readable latest value (`LatestSlot`) only when it knows the buffer is
+        // a ring, and `record.get` no longer falls back to draining, so an
+        // undeclared raw ring would answer `not_found` forever. Require the
+        // kind to be declared instead of guessing.
+        #[cfg(feature = "remote")]
+        if self.remote_codec.is_some() && self.has_buffer() && self.buffer_cfg.is_none() {
+            errors.push(crate::error::ConfigError::new(
+                "",
+                None,
+                "record has .with_remote_access() and a buffer from .buffer_raw() \
+                 with no declared kind; declare it after .buffer_raw() with \
+                 .buffer_cfg(BufferCfg::SpmcRing { .. }) for a ring, or the matching \
+                 BufferCfg otherwise, so record.get reads the right value",
+            ));
+        }
+
         errors
     }
 

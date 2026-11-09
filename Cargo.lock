@@ -152,6 +152,7 @@ dependencies = [
  "aimdb-build-info",
  "aimdb-derive",
  "async-channel",
+ "critical-section",
  "defmt 1.1.1",
  "futures",
  "futures-channel",

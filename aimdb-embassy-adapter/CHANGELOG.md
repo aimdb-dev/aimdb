@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Rings stay interrupt-safe (#450).** The adapter enables `aimdb-core`'s
+  `critical-section` feature, so the last value core keeps for each ring (for
+  `latest()` / `record.get`) is guarded by a critical section, like the ring
+  itself. Pushing to a ring from an interrupt handler remains safe.
+
 ### Removed (breaking)
 
 - **The `std` feature (#419).** It existed only so `build.rs` could reject it:
