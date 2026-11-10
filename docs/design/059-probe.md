@@ -79,8 +79,12 @@ move a copy into the futures it creates. It gives the probe:
 
 - `deadline()` and `remaining()`, on the instance clock. A probe must return
   before the deadline; at the deadline core drops it (§5.2).
-- `db()`, read-only access to the instance (for example, to mark which
-  observed topics already have a configured link).
+- `db()`, a read-only view of the instance (for example, to mark which
+  observed topics already have a configured link). It returns a new
+  `ProbeDb` type, not the `AimDb` handle, because `AimDb` can produce and
+  set records. `ProbeDb` wraps the handle and exposes only reads: the
+  record metadata with each record's configured links, and a record's
+  latest value as JSON.
 - `clock()` and `time()`, the instance's clock and sleep, so probes are
   runtime-neutral.
 - `response_budget()`, the number of bytes the serialized `Output` may take
@@ -113,6 +117,7 @@ is needed:
 
 ```rust
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]   // a misspelled field is an error (§5.1)
 struct ScanParams {
     /// I²C bus to scan, 0 or 1.
     bus: u8,
@@ -238,6 +243,8 @@ probe and serializes the output.
 Connectors are built after the database exists: `AimDbBuilder::build()`
 calls each `ConnectorBuilder::build(&db)` with the shared `&AimDb`. So
 `register_probe(&self, …)` needs a registry with interior mutability. It
+lives in the instance's existing `Extensions`, behind a lock that also
+works on `no_std`, so `AimDbInner` does not change. It
 holds the builder's specs, accepts further specs while connectors build, and
 is **sealed when `build()` returns**. A later `register_probe` returns an
 error. A duplicate name fails `build()` whether it comes from the builder or
@@ -285,7 +292,9 @@ a large registry can never make listing unusable:
   response budget (§5.3), computed for the page reply, and sets `next` for
   the rest. `limit` can only shorten a page. On serial that is at least
   twelve entries per page; over TCP and UDS, normally all of them. A page
-  holds at least one entry, which always fits.
+  holds at least one entry, which always fits. Twelve worst-case entries
+  fill the serial payload exactly, with no byte to spare, so an entry that
+  gains a field brings the guaranteed page down to eleven.
 - A `probe.describe` reply body is at most `PROBE_DESCRIBE_MAX` (6 KB),
   enforced at registration (§3).
 - An error reply carries at most a 32-byte code and a 256-byte message
@@ -302,7 +311,9 @@ method itself, so the error alone cannot tell "no such probe" from "server
 too old". The client already receives the server's protocol version in the
 handshake reply. `aimdb-client::probe` checks that version first and reports
 "probes need AimX 4.1" without sending the call; after that, `not_found`
-always means an unknown probe name.
+always means an unknown probe name. The check compares major and minor;
+the existing `version_compatible` compares the major only, so it needs a
+second helper.
 
 **Error replies.** Today an AimX error reply carries only a code string,
 `{"t":"reply","id":…,"err":"not_found"}`, and `RpcError` is a set of
@@ -349,11 +360,15 @@ stream:
 fn call_deferred(
     &mut self,
     method: &str,
-    params: Payload,
+    params: &Payload,
 ) -> Option<BoxFut<'static, Result<Payload, RpcError>>> {
     None
 }
 ```
+
+It borrows the params. If it took them by value, a session that returns
+`None` would have consumed them, and the loop could not fall back to
+`call`.
 
 The AimX session returns `Some` for `probe.run`. The returned future does
 **not** run the probe. It only waits for the result of an invocation that
@@ -362,7 +377,9 @@ resources. The connection loop keeps it in a `FuturesUnordered` and encodes
 and sends the result when it resolves. Meanwhile the loop keeps reading
 frames, answering other calls and forwarding events. Other methods stay
 inline. A connection has at most one probe in flight; a second `probe.run`
-on the same connection gets `probe_busy`.
+on the same connection gets `probe_busy`. The connection's slot is free as
+soon as the waiting future resolves, before its reply is written, so a
+stalled writer does not keep the connection busy.
 
 **The probe driver runs outside the connection loop.** The connection loop
 cannot enforce a deadline on its own. It awaits each outbound `send`, and
@@ -420,7 +437,8 @@ inline call on the same connection:
   and the probe's `Drop` cleanup runs (§5.2). The probe gets no signal and
   no grace period.
 - The pending `probe.run` is thus answered with `probe_cancelled`, and
-  `probe.cancel` itself with `{ "cancelled": true }`. The connection can
+  `probe.cancel` itself with `{ "cancelled": true }`. The reply to the
+  cancel is sent first, then the `probe_cancelled`. The connection can
   start another probe as soon as the cancel is handled.
 - With no probe in flight the reply is `{ "cancelled": false }` and nothing
   else happens. This covers the race where the probe finishes while the
@@ -428,7 +446,9 @@ inline call on the same connection:
 
 `aimdb-client` sends the cancel for the caller. `probe::run` returns a
 future, and dropping that future before it resolves makes the client engine
-send `probe.cancel` on the connection. So a caller cancels by dropping the
+send `probe.cancel` on the connection. `ClientHandle` gets a
+fire-and-forget request for this, because a drop cannot await a call. So a
+caller cancels by dropping the
 call, which is how Ctrl-C in the CLI and an abandoned MCP tool call arrive
 (§4.2, §4.3). A caller whose connection closes needs no cancel; the close
 already drops the invocation.
@@ -446,7 +466,7 @@ aimdb probe run <name> [--params <json>]          # default {}
 one `probe.describe` reply. `--params` takes the params object as JSON and
 sends it unchanged; the CLI does not read the schema to build or convert
 parameters. serde checks the request on the instance (§5.1), and an error
-names the field. The output is the `output` JSON (pretty printed on a
+names the field that is wrong, missing or unknown. The output is the `output` JSON (pretty printed on a
 TTY). Exit codes: `0` success; `4` (the existing timeout
 code) for `probe_timeout`; `5` for any other probe error. The kind and
 message go to stderr. Codes 1–4 keep their meaning.
@@ -495,10 +515,21 @@ failure is `InvalidParams` with serde's message, and the probe never runs.
 Core does not validate against the schema, and neither does the CLI;
 deserialization is the check.
 
+serde ignores unknown fields unless told otherwise. A misspelled optional
+field would then be replaced by its default without a word, and a
+misspelled required field would be reported as the missing one, not as the
+typo. So a `Params` type should carry `#[serde(deny_unknown_fields)]`; the
+error then names the unknown field. The ready-made probes do this, and the
+`Probe` and `probe_fn` documentation says so. Core cannot enforce it.
+
 ### 5.2 Deadlines and cancellation
 
 - The effective deadline is `min(timeout_ms, max_duration)`. When the
   caller gives no timeout, it is `max_duration`.
+- `ctx.deadline()` is computed on the instance clock when the call is
+  accepted. The driver enforces it with the runtime's sleep, which is
+  relative and starts when the driver first polls the invocation. The two
+  differ by the time until that first poll.
 - The probe may return until the deadline. At the deadline core drops the
   future and replies `Timeout`. The probe itself gets no cancellation
   signal and no grace period in v1.
@@ -573,54 +604,65 @@ Core computes the budget once per invocation and exposes it as
 ```
 budget = min(probe max_response_bytes,      // registration, optional
              instance max_response_bytes,   // new: 256 KB std, 8 KB embedded
-             connection reply limit)        // from the transport
-         - framing overhead                 // from the transport
+             connection reply limit)        // transport and client, below
          - envelope reserve
 ```
 
 `max_response_bytes` is a new instance setting; nothing bounds reply size
-today apart from the transports' frame caps.
+today apart from the transports' frame caps. It and
+`max_concurrent_probes` are set on the builder
+(`AimDbBuilder::max_response_bytes`, `AimDbBuilder::max_concurrent_probes`).
 
-- **Connection reply limit:** the largest reply frame the client accepts.
-  A frame cap is a *receive* limit, so only the client knows it. AimX 4.1
-  therefore adds an optional `max_frame` field to the `hello` params: the
-  number of bytes the client's transport accepts in one frame, counted the
-  way that transport counts them (below). `aimdb-client` fills it from the
-  cap its transport is configured with. The server uses
-  `min(hello.max_frame, its own transport's default)` for the session, and
-  a new handshake sets it again. Without the field (a 4.0 client, or a
-  client that does not state one) the server uses its transport's default
-  alone and relies on the client using the same one; a client with a
-  smaller cap that does not state it gets the frame dropped. The discovery
-  replies (§4.1) are sized for the smallest default, serial's 8 KB, and do
-  not shrink further: a client that states less than that may not receive
-  them. The transports' defaults:
-  - Serial: `DEFAULT_MAX_FRAME` (8 KB) unless configured. The receiving
-    `FrameAccumulator` counts **COBS-encoded** bytes before the delimiter,
-    not the decoded payload. It drops a run only once it has buffered more
-    than the cap without seeing a delimiter. So a frame whose encoded length
-    is within the cap always arrives, however the reads are chunked. A
-    longer frame can still arrive when it comes in one read, but nothing
-    guarantees it. The budget therefore keeps the encoded length within the
-    cap.
-  - TCP: the length framer's `DEFAULT_MAX_FRAME` (64 KB) unless configured.
+- **Connection reply limit:** the largest reply the client accepts,
+  counted in **payload bytes**: the bytes of the reply frame before the
+  transport's framing is applied. Counting payload bytes on both sides
+  means the server only takes the smaller of two numbers and needs no
+  per-transport overhead rule for a number that came from the client.
+  - *What the transport states.* A frame cap is a receive limit, and the
+    server cannot see the client's, so each transport states the largest
+    payload its own default cap lets through and relies on the client
+    using the same default. There is no path for this today: `Framer` has
+    no size accessor and the AimX dispatch ignores the peer. So `Framer`
+    gains `max_payload() -> Option<usize>`, the connection copies it into
+    a new `PeerInfo::max_reply_payload` field, and `authenticate` passes
+    it to the session through `SessionCtx`.
+  - *What the client states.* AimX 4.1 adds an optional `max_frame` field
+    to the `hello` params: the largest payload the client accepts, taken
+    from its own transport's `max_payload()`. The server uses the smaller
+    of the two for the session, and a new handshake sets it again. Without
+    the field (a 4.0 client, or a client that does not state one) the
+    transport's number stands alone; a client with a smaller cap that does
+    not state it gets the frame dropped.
+  - The discovery replies (§4.1) are sized for the smallest default,
+    serial's, and do not shrink further: a client that states less than
+    that may not receive them.
+
+  The transports' numbers:
+  - Serial: 8 159 bytes with the default `DEFAULT_MAX_FRAME` (8 KB). The
+    receiving `FrameAccumulator` counts **COBS-encoded** bytes before the
+    delimiter, not the decoded payload, and COBS adds about one byte per
+    254. It drops a run only once it has buffered more than the cap
+    without seeing a delimiter, so a frame whose encoded length is within
+    the cap always arrives, however the reads are chunked. A longer frame
+    can still arrive when it comes in one read, but nothing guarantees it.
+    `max_payload()` is therefore the largest payload whose encoding fits
+    the cap (`cobs::max_encoding_length`); the delimiter is not counted.
+    Feeding the accumulator one byte at a time confirms 8 159 (§11).
+  - TCP: the length framer's `DEFAULT_MAX_FRAME` (64 KB) unless
+    configured. The length prefix is outside the counted payload.
   - UDS: none.
   - WebSocket: none set by the connector; each reply is one text message,
     and the WebSocket library's own message limit is far above any
     `max_response_bytes`. A browser client states no `max_frame`.
-- **Framing overhead:** what the transport adds to the reply bytes before
-  the receiver's cap applies. Serial: COBS adds about one byte per 254
-  bytes. Core computes the serial budget with
-  `cobs::max_encoding_length`, so that the encoded frame still fits: at
-  8 KB the largest payload is 8 159 bytes, 33 less. The delimiter is
-  not counted against the cap. TCP: the length prefix is outside the
-  counted payload, so nothing. UDS and WebSocket: nothing. The existing `instance_info_bounds` serial
-  test measures replies the same way: envelope with the longest request
-  id, COBS-encoded.
+
+  The existing `instance_info_bounds` serial test measures replies the
+  same way: envelope with the longest request id, COBS-encoded.
 - **Envelope reserve:** the bytes of the reply frame around `output`:
   `{"t":"reply","id":…,"ok":{"name":"…","started_ns":…,"elapsed_ms":…,"output":`
   and the closing braces. Numbers are counted at their maximum width, and
-  the name at its actual length. `output` is spliced into the frame
+  the name at its actual length. The outer part, `{"t":"reply","id":…,"ok":`
+  and its closing brace, is 45 bytes with the longest request id. `output`
+  is spliced into the frame
   verbatim (`RawValue`, as record values are today), so its bytes count
   one for one.
 
@@ -656,8 +698,11 @@ into. Custom probes can use `ctx.response_budget()` the same way. How core
 serializes depends on the target:
 
 - **`std`:** core serializes into a writer that stops at the limit
-  (`serde_json::Serializer` over a bounded `io::Write`), so an oversized
-  result is never held in full.
+  (`serde_json::to_writer` over a bounded `io::Write`), so an oversized
+  result is never held in full. `to_writer` and `Serializer` exist only
+  with `serde_json`'s own `std` feature, which the workspace does not
+  enable on any target today. Core's `std` feature therefore enables
+  `serde_json/std`.
 - **`no_std`:** the workspace builds `serde_json` with `alloc` only, which
   has `to_vec` but no streaming `Serializer` or `to_writer`. Core serializes
   with `to_vec`, checks the length and drops the buffer if it is over the
@@ -818,7 +863,9 @@ requirement of the mechanism.
 - **Only registered code runs.** The registry is sealed when `build()`
   returns (§3).
 - **Read-only from AimDB's point of view.** A probe has no record writers in
-  `ProbeCtx`. What it does in the environment is the developer's code; the
+  `ProbeCtx`: `ctx.db()` is the read-only `ProbeDb` view, not the `AimDb`
+  handle (§2). A probe that captures an `AimDb` handle of its own at
+  registration can still write; that is the developer's choice. What it does in the environment is the developer's code; the
   ready-made probes only listen. The MQTT probe sends only the frames of
   its own connection (connect, subscribe, keep-alive, disconnect). The KNX
   probe sends nothing.
@@ -833,10 +880,11 @@ requirement of the mechanism.
 ## 8. First release
 
 1. **Core** (`aimdb-core/src/probe/`): `Probe`, `probe_fn`, `ProbeCtx`
-   with `response_budget()`, `ProbeError`, `ProbeSpec`, the registry
+   with `response_budget()` and the read-only `ProbeDb` view, `ProbeError`, `ProbeSpec`, the registry
    (interior-mutable, sealed at the end of `build()`), type erasure, the
-   final size check (streaming on `std`, `to_vec` and a length check on
-   `no_std`), the instance's `max_response_bytes`, the registration limits
+   final size check (streaming on `std`, which enables `serde_json/std`;
+   `to_vec` and a length check on `no_std`), the instance's
+   `max_response_bytes` and `max_concurrent_probes` builder settings, the registration limits
    (`PROBE_NAME_MAX`, `PROBE_DESCRIPTION_MAX`, `PROBE_DESCRIBE_MAX`),
    message bounding (`PROBE_MSG_MAX`), the probe driver with deadline
    drop, and `probe.list` (paged) / `probe.describe` / `probe.run` /
@@ -847,7 +895,8 @@ requirement of the mechanism.
    the connection loop waits for while the probe driver runs the
    invocation, at most one probe in flight per connection (§4.1),
    `probe.cancel`, the optional `max_frame` field in `hello`, and each
-   transport's reply limit and framing overhead (§5.3).
+   transport's reply limit: `Framer::max_payload()`,
+   `PeerInfo::max_reply_payload` and its way into the session (§5.3).
 3. **Client, CLI, MCP:** `aimdb-client::probe::{list, describe, run}`
    with the version check from the handshake, page assembly, `max_frame`
    in `hello`, and `probe.cancel` sent when a `run` call is dropped,
@@ -865,7 +914,15 @@ requirement of the mechanism.
 
 **Testing:**
 
-- Core: params errors, `Busy`, the deadline (a probe that never returns is
+The deadline tests need a runtime whose sleep follows a clock the test
+controls. Core's existing test runtimes (`NoopRuntimeOps`,
+`ManualClockRuntimeOps`) complete every sleep at once, so they cannot show
+that a probe is dropped *at* its deadline. The first release adds a test
+`RuntimeOps` over Tokio's paused clock (Tokio's `test-util` feature as a
+dev-dependency), which the spike used (§11).
+
+- Core: params errors (a wrong type, a missing field, and an unknown field
+  on a `deny_unknown_fields` type, each named in the message), `Busy`, the deadline (a probe that never returns is
   dropped at the deadline and the reply is `Timeout`), the budget
   computation per transport (serial 8 KB measured COBS-encoded, TCP
   `max_frame`, UDS unbounded), `ResponseTooLarge` (without full buffering
@@ -895,7 +952,7 @@ requirement of the mechanism.
   that states none gets the transport default.
 - Stalled writer: a test connection whose `send` stops completing, after
   `probe.run` has been received, while a subscription keeps producing
-  events. Two cases run on a manually advanced clock:
+  events. Two cases run on the paused test clock:
   - a probe that never returns. Its future is dropped (a drop guard
     records when), and its per-probe and instance permits are free again,
     no later than the deadline. A
@@ -1036,27 +1093,29 @@ discovery probes.
 | `max_frame` in `hello` lowers the response budget (§5.3) | Yes. |
 | knx-pico exposes the telegram's source and APCI (§6.3) | Yes: `LDataFrame` has public `source` and `apci` fields. |
 
-### 11.3 Where the design needs to change
+### 11.3 Where the design had to change
+
+The sections named below have been updated to match.
 
 1. **Streaming serialization on `std` needs `serde_json`'s `std` feature
    (§5.3).** The workspace builds `serde_json` with `alloc` only, on every
    target, so `to_writer` and `Serializer` are missing on `std` as well.
-   Core's `std` feature has to enable `serde_json/std`. The spike did this
+   Core's `std` feature enables `serde_json/std`. The spike did this
    and the `no_std` check still passes.
 2. **`ProbeCtx::db()` is not read-only (§2, §7).** The only handle core has
    is `AimDb`, which can `produce` and `set_record_from_json`. The
    statement "a probe has no record writers" needs a new read-only view
-   type, or it has to be dropped.
+   type. §2 now defines `ProbeDb`.
 3. **No path exists from a transport to the session for the reply limit
    (§5.3).** `Framer` has no size accessor and `AimxDispatch` ignores the
    peer. The spike added a field to `PeerInfo` that reaches the session
-   through `SessionCtx`. Each transport must fill it, and the design should
-   name this path.
-4. **State both limits in decoded payload bytes (§5.3).** The text says
+   through `SessionCtx`. Each transport must fill it; §5.3 now names this
+   path.
+4. **State both limits in decoded payload bytes (§5.3).** The text said
    `hello.max_frame` is counted "the way that transport counts them". Then
    the server needs every transport's overhead function to compare it with
-   its own limit. If the client states the largest payload it accepts, and
-   the transport states the same, the server only takes the smaller one.
+   its own limit. Now the client states the largest payload it accepts,
+   the transport states the same, and the server takes the smaller one.
 5. **`call_deferred` should borrow the params (§4.1).** With
    `params: Payload` by value, a session that returns `None` has consumed
    them and the loop cannot fall back to `call`. The spike used `&Payload`.
@@ -1064,15 +1123,18 @@ discovery probes.
    unknown fields. A misspelled optional field is silently replaced by its
    default; a misspelled required field is reported as the *missing* one.
    "An error names the field" holds only for a wrong type. Params types
-   should use `deny_unknown_fields`, and the ready-made probes must.
+   should use `deny_unknown_fields`, and the ready-made probes must
+   (§5.1).
 7. **The existing test runtimes cannot test deadlines (§8).** Core's
    `NoopRuntimeOps` and `ManualClockRuntimeOps` complete every sleep at
    once, so "a manually advanced clock" does not exist yet. The spike used
    Tokio's paused clock behind a small `RuntimeOps` (this needs Tokio's
-   `test-util` feature as a dev-dependency). The first release needs such a
-   test runtime.
+   `test-util` feature as a dev-dependency). The first release adds such a
+   test runtime (§8).
 
-### 11.4 Details to state
+### 11.4 Details the spike settled
+
+Most of these are now stated in the sections they belong to.
 
 - **Reply order after a cancel.** The reply to `probe.cancel` arrives
   first, then `probe_cancelled` for the run.
@@ -1090,12 +1152,12 @@ discovery probes.
   `Extensions`, with a `spin::Mutex` inside, so `AimDbInner` does not
   change.
 - **Instance settings.** `max_concurrent_probes` and `max_response_bytes`
-  have no builder method in this design yet.
+  had no builder method in this design; §5.3 now names them.
 - **Build errors.** `DbError::InvalidConfiguration` carries `ConfigError`,
   which is keyed by record. Probe errors use an empty record key.
 - **Cancel on drop needs a task.** `ClientHandle::call` is async, so the
-  client's drop guard spawns a task to send `probe.cancel`. A
-  fire-and-forget request on `ClientHandle` would avoid the spawn.
+  spike's drop guard spawned a task to send `probe.cancel`. §4.1 now
+  gives `ClientHandle` a fire-and-forget request instead.
 - **Version check.** The client has only a major-version comparison; the
   probe check needs the minor as well. Raising `PROTOCOL_VERSION` to `4.1`
   breaks one unit test that asserts the string.
