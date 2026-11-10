@@ -993,3 +993,119 @@ it can ship separately.
 6. **Generating configuration from results:** turning a discovered,
    `linked: false` topic into a `link_from` declaration and a data contract
    draft is a natural next step for the CLI and the architecture agent.
+
+## 11. Spike findings
+
+A throwaway prototype of this design was built on the current code base
+(branch `spike/059-probe`, not for merging) to check the claims above
+against the real session engine. It covered the core mechanism, the AimX
+wire and session changes, and the client call. It did not cover the
+discovery probes.
+
+### 11.1 What was built
+
+- `aimdb-core`: `Probe`, `probe_fn`, `ProbeCtx`, `ProbeError`, `ProbeSpec`,
+  the registry with its registration limits, type erasure, bounded
+  serialization, the probe driver, `probe.list` / `probe.describe` /
+  `probe.run` / `probe.cancel`, `Session::call_deferred` and the change to
+  the connection loop, `msg` on error frames, `RpcError::Probe`, and
+  `max_frame` in `hello`. About 650 lines for the probe module and 250
+  lines of changes to existing files.
+- `aimdb-client`: `probe_run` with the version check and cancel on drop.
+- Tests: ten against the real `run_session`, `AimxCodec` and `AimxDispatch`
+  over an in-memory connection on a paused clock; one over the production
+  UDS server with the Tokio adapter in real time; one against the serial
+  `FrameAccumulator`.
+
+### 11.2 Confirmed
+
+| Claim | Result |
+|---|---|
+| The trait, `probe_fn` and the erasure compile; the erased future is `Send + 'static` (§2, §3) | Yes, for `probe_fn` and for a direct `impl Probe` that borrows `&self` and `&ctx` across an `.await`. Core also compiles for `thumbv7em-none-eabihf` with `alloc`, `remote` and `connector-session`. |
+| The connection stays live while a probe runs (§4.1) | Yes. `probe.list` and `record.list` are answered during a 60 s probe. The loop change is about 25 lines, and the 20 existing session-engine tests still pass. |
+| Three concurrency limits, each `probe_busy` (§5) | Yes, for the per-connection and per-probe limits, each with its own message. The instance limit uses the same code path as the per-probe limit and had no test of its own. |
+| The driver drops a probe at its deadline and frees its permits (§5.2) | Yes. A probe that never returns is dropped after exactly `timeout_ms`, or after `max_duration` when the caller asks for more. |
+| A closed connection and a new handshake drop the probe (§4.1) | Yes, both. No reply for the old request reaches the new session. |
+| A stalled writer does not delay the deadline (§4.1) | Yes. With the connection loop blocked in `send`, the probe is dropped on time and a second connection can run the same probe. Unblocking delivers the waiting `probe_timeout`. |
+| `probe.cancel` (§4.1) | Yes. The probe future is dropped, the permits are free, and the connection can run a probe at once. |
+| Dropping the client call cancels the probe (§4.1) | Yes, over UDS in real time. A probe with a 120 s limit is gone within 200 ms of the dropped call. |
+| A 4.0 client reads a 4.1 error frame as `Internal` (§4.1) | Yes. Checked against the unmodified 4.0 decoder with a `msg` that contains escaped quotes, a line break and a `\u` escape. |
+| Twelve worst-case `probe.list` entries fit a serial frame (§4.1) | Yes: a page of twelve is 8 159 bytes, which is exactly the largest payload the serial accumulator always delivers (8 159, measured byte by byte). There is no spare byte. |
+| An error reply is at most 604 bytes (§4.1) | Yes: 578 bytes with a message of quotes cut at 256 bytes. |
+| Registration limits and sealing (§3) | Yes: name, description length, control character, invalid schema JSON, describe reply over 6 KB and a duplicate name each fail `build()`; registration after `build()` is refused. |
+| `max_frame` in `hello` lowers the response budget (§5.3) | Yes. |
+| knx-pico exposes the telegram's source and APCI (§6.3) | Yes: `LDataFrame` has public `source` and `apci` fields. |
+
+### 11.3 Where the design needs to change
+
+1. **Streaming serialization on `std` needs `serde_json`'s `std` feature
+   (§5.3).** The workspace builds `serde_json` with `alloc` only, on every
+   target, so `to_writer` and `Serializer` are missing on `std` as well.
+   Core's `std` feature has to enable `serde_json/std`. The spike did this
+   and the `no_std` check still passes.
+2. **`ProbeCtx::db()` is not read-only (§2, §7).** The only handle core has
+   is `AimDb`, which can `produce` and `set_record_from_json`. The
+   statement "a probe has no record writers" needs a new read-only view
+   type, or it has to be dropped.
+3. **No path exists from a transport to the session for the reply limit
+   (§5.3).** `Framer` has no size accessor and `AimxDispatch` ignores the
+   peer. The spike added a field to `PeerInfo` that reaches the session
+   through `SessionCtx`. Each transport must fill it, and the design should
+   name this path.
+4. **State both limits in decoded payload bytes (§5.3).** The text says
+   `hello.max_frame` is counted "the way that transport counts them". Then
+   the server needs every transport's overhead function to compare it with
+   its own limit. If the client states the largest payload it accepts, and
+   the transport states the same, the server only takes the smaller one.
+5. **`call_deferred` should borrow the params (§4.1).** With
+   `params: Payload` by value, a session that returns `None` has consumed
+   them and the loop cannot fall back to `call`. The spike used `&Payload`.
+6. **A misspelled parameter is not reported (§4.2, §5.1).** serde ignores
+   unknown fields. A misspelled optional field is silently replaced by its
+   default; a misspelled required field is reported as the *missing* one.
+   "An error names the field" holds only for a wrong type. Params types
+   should use `deny_unknown_fields`, and the ready-made probes must.
+7. **The existing test runtimes cannot test deadlines (§8).** Core's
+   `NoopRuntimeOps` and `ManualClockRuntimeOps` complete every sleep at
+   once, so "a manually advanced clock" does not exist yet. The spike used
+   Tokio's paused clock behind a small `RuntimeOps` (this needs Tokio's
+   `test-util` feature as a dev-dependency). The first release needs such a
+   test runtime.
+
+### 11.4 Details to state
+
+- **Reply order after a cancel.** The reply to `probe.cancel` arrives
+  first, then `probe_cancelled` for the run.
+- **When the connection's slot is free.** As soon as the reply future
+  resolves, before the reply is written. A stalled writer does not keep the
+  connection `probe_busy`.
+- **The deadline timer.** `RuntimeOps` offers only a relative sleep. The
+  driver starts it when it first polls the invocation, while
+  `ctx.deadline()` is computed when the call is accepted. The two differ by
+  the time until the driver is polled.
+- **The reply envelope** around a body is 45 bytes with the longest request
+  id. A `probe.list` entry can gain no field without the serial page
+  dropping to eleven entries.
+- **Where the registry lives.** It fits in the instance's existing
+  `Extensions`, with a `spin::Mutex` inside, so `AimDbInner` does not
+  change.
+- **Instance settings.** `max_concurrent_probes` and `max_response_bytes`
+  have no builder method in this design yet.
+- **Build errors.** `DbError::InvalidConfiguration` carries `ConfigError`,
+  which is keyed by record. Probe errors use an empty record key.
+- **Cancel on drop needs a task.** `ClientHandle::call` is async, so the
+  client's drop guard spawns a task to send `probe.cancel`. A
+  fire-and-forget request on `ClientHandle` would avoid the spawn.
+- **Version check.** The client has only a major-version comparison; the
+  probe check needs the minor as well. Raising `PROTOCOL_VERSION` to `4.1`
+  breaks one unit test that asserts the string.
+
+### 11.5 Not covered
+
+- `MqttDiscover` and `KnxDiscover`, including the Embassy buffers and the
+  tunnel-engine observer. For KNX only the knx-pico fields were checked.
+- Running on Embassy. Core was compiled for a `no_std` target, not run.
+- Registration from a real connector's `build()`. The registry accepts
+  specs until it is sealed, but no connector did so in the spike.
+- The CLI and MCP commands, WebSocket, and a real serial link.
+- `schemars` schemas (§10.1).
