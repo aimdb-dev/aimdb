@@ -47,10 +47,10 @@ tokio = { version = "1", features = [
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 # Output formatting
-tabled = "0.20"
+tabled = "0.22"
 colored = "3"
 chrono = "0.4"
 

@@ -96,7 +96,7 @@ embedded-storage = { workspace = true }
 heapless = { workspace = true }
 micromath = { workspace = true }
 stm32-fmc = { workspace = true }
-embedded-alloc = { version = "0.6", features = ["llff"] }
+embedded-alloc = { version = "0.7", features = ["llff"] }
 
 # RNG for unique client IDs
 rand = { version = "0.10.1", default-features = false }
