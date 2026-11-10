@@ -5,7 +5,8 @@
 **Scope:** Named, developer-defined async inspection functions that are
 registered on an AimDB instance and invoked on demand through the CLI or MCP.
 This covers the `Probe` trait, registration with a description and schemas,
-invocation over AimX, concurrency, deadlines, error transport, result
+invocation and cancellation over AimX, concurrency, deadlines, error
+transport, result
 serialization and limits. It also covers the first ready-made probes: MQTT
 and KNX discovery.
 
@@ -98,6 +99,7 @@ pub enum ProbeErrorKind {
     Refused,            // e.g. broker refused the subscription, no free tunnel slot
     Timeout,            // core: the deadline passed
     Busy,               // core: concurrency limit reached
+    Cancelled,          // core: the caller cancelled the invocation (§4.1)
     ResponseTooLarge,   // core: serialized result exceeds the bound (§5.3)
     Internal,
 }
@@ -247,7 +249,7 @@ connector that serves AimX) does not matter.
 
 ### 4.1 AimX 4.1
 
-Three one-shot methods:
+Four one-shot methods:
 
 - **`probe.list`** takes `{ after, limit }`, both optional, and returns one
   page of compact entries: `{ probes: [{ name, description,
@@ -264,8 +266,13 @@ Three one-shot methods:
     example `probe_refused`) and a bounded `msg` (see *Error replies*
     below).
   - `not_found` means there is no probe by that name.
+- **`probe.cancel`** takes no parameters and returns `{ cancelled }`. It
+  cancels the probe in flight on this connection; a connection has at most
+  one, so no name or handle is needed. `cancelled` is `false` when no probe
+  was in flight, for example because it finished just before. See
+  *Cancellation* below.
 
-All three are allowed under the `ReadOnly` security policy (§7).
+All four are allowed under the `ReadOnly` security policy (§7).
 
 **Discovery replies have a fixed bound.** `instance.info` already
 guarantees its reply fits the smallest AimX frame (`INSTANCE_INFO_REPLY_MAX`,
@@ -401,6 +408,31 @@ With this, a long probe no longer holds a serial link either. The CLI still
 prints a "waiting up to N s" line, because its own call waits for the
 reply.
 
+**Cancellation.** A caller that no longer wants a result should not have to
+wait for the deadline, and the probe should not keep its permits until
+then. Because the connection stays live, `probe.cancel` is an ordinary
+inline call on the same connection:
+
+- The session tells the waiting future of its `probe.run` to stop. That
+  future drops its oneshot receiver and resolves with `Cancelled`. The
+  driver sees that the receiver has gone and drops the invocation at once,
+  exactly as at a deadline or a closed connection: the permits are released
+  and the probe's `Drop` cleanup runs (§5.2). The probe gets no signal and
+  no grace period.
+- The pending `probe.run` is thus answered with `probe_cancelled`, and
+  `probe.cancel` itself with `{ "cancelled": true }`. The connection can
+  start another probe as soon as the cancel is handled.
+- With no probe in flight the reply is `{ "cancelled": false }` and nothing
+  else happens. This covers the race where the probe finishes while the
+  cancel is on its way; the caller then receives the probe's normal reply.
+
+`aimdb-client` sends the cancel for the caller. `probe::run` returns a
+future, and dropping that future before it resolves makes the client engine
+send `probe.cancel` on the connection. So a caller cancels by dropping the
+call, which is how Ctrl-C in the CLI and an abandoned MCP tool call arrive
+(§4.2, §4.3). A caller whose connection closes needs no cancel; the close
+already drops the invocation.
+
 ### 4.2 CLI
 
 ```
@@ -419,6 +451,10 @@ TTY). Exit codes: `0` success; `4` (the existing timeout
 code) for `probe_timeout`; `5` for any other probe error. The kind and
 message go to stderr. Codes 1–4 keep their meaning.
 
+Ctrl-C during `probe run` cancels the probe: the CLI drops the call, the
+client sends `probe.cancel` (§4.1), and the CLI exits once the cancel is
+answered or after a short wait.
+
 ### 4.3 MCP
 
 - `probe_list` returns the whole list, with every page fetched, and
@@ -427,6 +463,14 @@ message go to stderr. Codes 1–4 keep their meaning.
   reply: the description and both schemas.
 - `probe_run` takes `{ name, params, timeout_s }` and returns the output
   JSON.
+
+The MCP server keeps one connection per endpoint and makes one call on it
+at a time. That is intended: a `probe_run` occupies the endpoint until it
+returns, and other tool calls on that endpoint wait for it. Probes that an
+agent runs should therefore be short, and `timeout_s` defaults to 30. When
+the MCP host cancels or abandons the tool call, the server drops the call,
+which sends `probe.cancel` (§4.1), so the endpoint is free again without
+waiting for the deadline.
 
 All three are read-only tools and available without `--allow-writes`. The tool
 description tells an agent to check what a result says about its scope and
@@ -437,9 +481,10 @@ window before drawing conclusions from an absence (§6.1).
 | Responsibility | How |
 |---|---|
 | Registration | Unique names, description, schemas, limits (§3). |
-| Invocation | `probe.list` / `probe.describe` / `probe.run`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
+| Invocation | `probe.list` / `probe.describe` / `probe.run` / `probe.cancel`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
 | Concurrency | Per probe: at most `concurrency` invocations at a time, otherwise `Busy`. Per instance: at most `max_concurrent_probes` (default 2), otherwise `Busy`. Per connection: at most one in flight (§4.1), otherwise `Busy`. No queueing; the caller retries. |
 | Deadlines | Enforced by the probe driver, independent of any connection, for probes that yield and do not block (§4.1, §5.2). |
+| Cancellation | `probe.cancel`, sent by the client when the caller drops the call. The driver drops the invocation as at a deadline (§4.1, §5.2). |
 | Error transport | `ProbeError` → AimX error reply `probe_<kind>` with `msg` (§4.1) → CLI exit code `4` or `5` and stderr, or an MCP tool error. |
 | Result serialization | `serde_json`, then a final size check against the budget (§5.3). |
 
@@ -455,11 +500,13 @@ deserialization is the check.
 - The effective deadline is `min(timeout_ms, max_duration)`. When the
   caller gives no timeout, it is `max_duration`.
 - The probe may return until the deadline. At the deadline core drops the
-  future and replies `Timeout`. There is no cancellation signal and no
-  grace period in v1.
-- A closed connection, or a new handshake on it, drops the invocation in
-  the same way (§4.1).
-- The probe driver enforces both (§4.1), independent of the connection
+  future and replies `Timeout`. The probe itself gets no cancellation
+  signal and no grace period in v1.
+- A `probe.cancel` from the caller drops the invocation in the same way
+  and replies `Cancelled` (§4.1).
+- A closed connection, or a new handshake on it, also drops the
+  invocation (§4.1).
+- The probe driver enforces all of these (§4.1), independent of the connection
   that started the invocation. A stalled or slow connection does not delay
   the drop.
 
@@ -480,11 +527,13 @@ this contract:
 Within that contract, an invocation is dropped and its permits are
 released at its deadline, plus the time until the executor next polls the
 driver. A probe that breaks it delays its own drop by as long as it blocks.
-Because one driver future polls all invocations, it also delays the
-deadlines of other probes on the instance. On a single-threaded executor
-such as Embassy's, it stalls every other task, connectors included. Core
-cannot detect or preempt this, so the contract is part of the `Probe` and
-`probe_fn` documentation. The ready-made probes meet it.
+It also stalls the rest of the instance, on every runtime: the runner
+drives all of an instance's futures (connectors, the AimX server, the probe
+driver) from one task, on Tokio as well as on Embassy. This is the same
+rule as for any other code in an async application, and keeping it is the
+probe author's responsibility. Core cannot detect or preempt a blocking
+probe, so the contract is part of the `Probe` and `probe_fn` documentation.
+The ready-made probes meet it.
 
 A probe that observes for a while plans its window so that it returns in
 time. The discovery probes observe for `min(duration_s, remaining - reserve)`,
@@ -532,12 +581,20 @@ budget = min(probe max_response_bytes,      // registration, optional
 `max_response_bytes` is a new instance setting; nothing bounds reply size
 today apart from the transports' frame caps.
 
-- **Connection reply limit:** each AimX transport states the largest reply
-  frame it assumes its peer accepts. A frame cap is a *receive* limit: the
-  server cannot see the client's, so it uses its own transport's default and
-  relies on the client using the same one. That holds for the CLI and MCP,
-  which connect with the transports' defaults; a client configured with a
-  smaller cap gets the frame dropped. The figures:
+- **Connection reply limit:** the largest reply frame the client accepts.
+  A frame cap is a *receive* limit, so only the client knows it. AimX 4.1
+  therefore adds an optional `max_frame` field to the `hello` params: the
+  number of bytes the client's transport accepts in one frame, counted the
+  way that transport counts them (below). `aimdb-client` fills it from the
+  cap its transport is configured with. The server uses
+  `min(hello.max_frame, its own transport's default)` for the session, and
+  a new handshake sets it again. Without the field (a 4.0 client, or a
+  client that does not state one) the server uses its transport's default
+  alone and relies on the client using the same one; a client with a
+  smaller cap that does not state it gets the frame dropped. The discovery
+  replies (§4.1) are sized for the smallest default, serial's 8 KB, and do
+  not shrink further: a client that states less than that may not receive
+  them. The transports' defaults:
   - Serial: `DEFAULT_MAX_FRAME` (8 KB) unless configured. The receiving
     `FrameAccumulator` counts **COBS-encoded** bytes before the delimiter,
     not the decoded payload. It drops a run only once it has buffered more
@@ -548,13 +605,16 @@ today apart from the transports' frame caps.
     cap.
   - TCP: the length framer's `DEFAULT_MAX_FRAME` (64 KB) unless configured.
   - UDS: none.
+  - WebSocket: none set by the connector; each reply is one text message,
+    and the WebSocket library's own message limit is far above any
+    `max_response_bytes`. A browser client states no `max_frame`.
 - **Framing overhead:** what the transport adds to the reply bytes before
   the receiver's cap applies. Serial: COBS adds about one byte per 254
   bytes. Core computes the serial budget with
   `cobs::max_encoding_length`, so that the encoded frame still fits: at
   8 KB the largest payload is 8 159 bytes, 33 less. The delimiter is
   not counted against the cap. TCP: the length prefix is outside the
-  counted payload, so nothing. The existing `instance_info_bounds` serial
+  counted payload, so nothing. UDS and WebSocket: nothing. The existing `instance_info_bounds` serial
   test measures replies the same way: envelope with the longest request
   id, COBS-encoded.
 - **Envelope reserve:** the bytes of the reply frame around `output`:
@@ -620,6 +680,12 @@ is spent on entries that would be trimmed anyway.
 
 These are the first probes. They answer what configured links cannot: which
 signals exist that the instance does not consume yet.
+
+They are reference implementations that ship in the connector crates, not
+part of the probe mechanism. Core knows nothing about them, and an
+application can register them, replace them with its own, or leave them
+out. How each one collects, bounds and trims its data is that probe's own
+business, as it is for any developer probe.
 
 ### 6.1 Describing what was observed
 
@@ -716,10 +782,16 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
   destination, before the write-only filter, it records the destination,
   the APCI kind (read, response, write), the source address and the data
   length on the wire (`0` for a 6-bit value). knx-pico's `LData` already
-  exposes `source` and `apci`, so nothing new is parsed. The observer slot
-  holds a
-  plain summary struct, not the raw frame. The path that delivers writes to
-  records is unchanged.
+  exposes `source` and `apci`, so nothing new is parsed. The path that
+  delivers writes to records is unchanged.
+
+  **What the connector provides.** The hook is the one part an application
+  cannot add from outside, so it is connector API: while an observer is
+  installed, the tunnel engine calls it once for every group telegram, in
+  arrival order, with a plain summary (destination, APCI kind, source,
+  data length), not the raw frame. The engine keeps no telegrams itself.
+  Counting and bounding them is the observer's job; `KnxDiscover` folds
+  each summary into its per-address table as it arrives.
 - Later: `KnxDiscover::dedicated(gateway)` opens its own tunnel for the
   window, for instances without a KNX connector. It is refused if the
   gateway has no free tunnel slot.
@@ -751,8 +823,11 @@ requirement of the mechanism.
   its own connection (connect, subscribe, keep-alive, disconnect). The KNX
   probe sends nothing.
 - **The developer controls exposure.** Registration sets the allowed filter
-  or prefix. A probe whose results are sensitive should not be registered on
-  an instance that untrusted agents can reach.
+  or prefix. Registration is per instance, not per transport: a registered
+  probe can be listed, run and cancelled by every client of every AimX
+  endpoint the instance serves (UDS, TCP, serial, WebSocket), including
+  read-only clients. A probe whose results are sensitive should not be
+  registered on an instance that untrusted clients can reach.
 - **Bounded:** deadline, concurrency, response size, metadata size (§3, §5).
 
 ## 8. First release
@@ -764,15 +839,18 @@ requirement of the mechanism.
    `no_std`), the instance's `max_response_bytes`, the registration limits
    (`PROBE_NAME_MAX`, `PROBE_DESCRIPTION_MAX`, `PROBE_DESCRIBE_MAX`),
    message bounding (`PROBE_MSG_MAX`), the probe driver with deadline
-   drop, and `probe.list` (paged) / `probe.describe` / `probe.run`.
+   drop, and `probe.list` (paged) / `probe.describe` / `probe.run` /
+   `probe.cancel`.
 2. **AimX 4.1 wire and session** (`aimdb-core/src/session/`): the optional
    `msg` field on error frames, `RpcError::Probe { kind, message }` and
    its `probe_<kind>` codes, `Session::call_deferred` with replies that
    the connection loop waits for while the probe driver runs the
-   invocation, at most one probe in flight per connection (§4.1), and each
+   invocation, at most one probe in flight per connection (§4.1),
+   `probe.cancel`, the optional `max_frame` field in `hello`, and each
    transport's reply limit and framing overhead (§5.3).
 3. **Client, CLI, MCP:** `aimdb-client::probe::{list, describe, run}`
-   with the version check from the handshake and page assembly,
+   with the version check from the handshake, page assembly, `max_frame`
+   in `hello`, and `probe.cancel` sent when a `run` call is dropped,
    `aimdb probe` with JSON `--params`, and the `probe_list` /
    `probe_describe` / `probe_run` tools.
 4. **`MqttDiscover::dedicated`** on Tokio and Embassy, with its own
@@ -806,6 +884,15 @@ requirement of the mechanism.
   `record.get` and keeps delivering subscription events without gaps; a
   second `probe.run` on it gets `probe_busy`; a new handshake or a closed
   connection cancels the probe.
+- Cancel: `probe.cancel` during a probe that never returns drops its
+  future (a drop guard records it), frees its permits, answers the pending
+  `probe.run` with `probe_cancelled` and the cancel with `cancelled: true`;
+  the same connection can then run a probe again. With no probe in flight
+  the reply is `cancelled: false`. Dropping the client's `run` future sends
+  the cancel.
+- Reply limit: a client that states `max_frame` in `hello` gets a budget
+  computed from the smaller of that and the transport default; a client
+  that states none gets the transport default.
 - Stalled writer: a test connection whose `send` stops completing, after
   `probe.run` has been received, while a subscription keeps producing
   events. Two cases run on a manually advanced clock:
@@ -836,7 +923,8 @@ requirement of the mechanism.
 - End to end: the CLI `probe run` with `--params` JSON, its exit codes
   (`4` on timeout, `5` on other probe errors, including a params error that
   names the field) and JSON output, including over a serial link at the
-  8 KB frame limit.
+  8 KB frame limit. Ctrl-C during `probe run` cancels the probe on the
+  instance.
 
 ## 9. Later: probes that use the running MQTT session
 
@@ -887,9 +975,10 @@ it can ship separately.
    at registration and in the call. Until then, a developer who needs them
    writes their own probe.
 4. **Deferred to later versions:**
-   - **Cooperative cancellation:** a `cancelled()` signal with a grace
-     period, if a concrete resource needs asynchronous cleanup that `Drop`
-     cannot do.
+   - **Cooperative cancellation:** a `cancelled()` signal to the probe
+     with a grace period, if a concrete resource needs asynchronous cleanup
+     that `Drop` cannot do. `probe.cancel`, a deadline and a closed
+     connection would all raise it.
    - **Large schemas:** schemas whose describe reply exceeds 6 KB, for
      example via chunked retrieval like `instance.post_link`, if real
      probes need them.
