@@ -79,12 +79,12 @@ move a copy into the futures it creates. It gives the probe:
 
 - `deadline()` and `remaining()`, on the instance clock. A probe must return
   before the deadline; at the deadline core drops it (§5.2).
-- `db()`, a read-only view of the instance (for example, to mark which
-  observed topics already have a configured link). It returns a new
-  `ProbeDb` type, not the `AimDb` handle, because `AimDb` can produce and
-  set records. `ProbeDb` wraps the handle and exposes only reads: the
-  record metadata with each record's configured links, and a record's
-  latest value as JSON.
+- `db()`, a read-only view of the instance. It returns a new `ProbeDb`
+  type, not the `AimDb` handle, because `AimDb` can produce and set
+  records. `ProbeDb` wraps the handle and exposes only reads: the record
+  metadata and a record's latest value as JSON. It does not list the
+  configured links; the instance has no such listing today. A probe that
+  marks results as linked gets the link topics from its connector (§6).
 - `clock()` and `time()`, the instance's clock and sleep, so probes are
   runtime-neutral.
 - `response_budget()`, the number of bytes the serialized `Output` may take
@@ -190,14 +190,19 @@ and a mistyped field both give `InvalidParams`, and the erased future is
 `Send`.
 With the `schemars` feature, the spec takes both schemas from `P` and `O`.
 Implementing `Probe` directly is for reusable probes that carry
-configuration, like the ready-made ones:
+configuration, like the ready-made ones. Those are registered by their
+connector, which knows the configured links and owns the tunnel or the
+broker settings (§6):
 
 ```rust
-builder.probe(
-    ProbeSpec::new("mqtt.discover", MqttDiscover::dedicated(mqtt_config))
-        .description("Topics seen on the broker during a window")
-        .max_duration(Duration::from_secs(120))
-        .concurrency(1),
+let mqtt = builder.connect(
+    MqttConnector::new(&broker_url)
+        .transport(session_dialer)
+        .with_discover_probe(probe_dialer),   // registers `mqtt.discover`
+);
+let knx = builder.connect(
+    KnxConnector::new(binder, delay, &gateway_url)
+        .with_discover_probe(),               // registers `knx.discover`
 );
 ```
 
@@ -683,9 +688,14 @@ report is up to the probe:
 - The `coverage` object's strings are cut to fixed maximum lengths, so it
   always fits next to at least an empty list.
 
-This is done in the MQTT and KNX probes themselves, with no shared core
-type. When both implementations exist and show what they actually share,
-that part can move into a helper.
+Both probes do this the same way, in one pass: order the entries, add
+them while the running serialized size fits the budget, and report what
+was left out. Core therefore provides this loop as a small helper
+(`probe::fit_to_budget`), which takes the entries in the probe's order and
+the budget and returns the entries kept and the count dropped. Ordering,
+the wording of the limit and the `coverage` object stay with the probe.
+The helper sizes each entry with `serde_json`, so it lives in core, which
+already depends on it.
 
 On an embedded target with the 8 KB default, this lists roughly 30–50
 topics or group addresses (about 160 bytes per typical entry), depending on
@@ -766,31 +776,50 @@ bytes: {min, max, last}, first_seen_ms, last_seen_ms, linked } ] }`.
 `linked` says whether a configured inbound link matches the topic. That is
 the bridge from discovery to configuration.
 
-**How it observes:** `MqttDiscover::dedicated(config)` opens its own
-client connection (own client ID, clean session, no will message),
-subscribes to `filter` at QoS 0 for the window, then disconnects. It is
-independent of the running session and can see everything its credentials
-allow. Nothing it receives reaches a record. It needs a second socket, and
-for `mqtts` a second TLS session, while it runs. It runs on Tokio and
-Embassy, and `coverage.connection` is `"dedicated"`.
+**How it observes:** the probe opens its own client connection (own
+client ID, clean session, no will message), subscribes to `filter` at
+QoS 0 for the window, then disconnects. It is independent of the running
+session and can see everything its credentials allow. Nothing it receives
+reaches a record. It needs a second socket while it runs, and
+`coverage.connection` is `"dedicated"`.
 
-On Embassy the dedicated connection cannot borrow anything from the running
-session, and its memory has to be provided at registration:
+**Registration.** `MqttConnector::with_discover_probe(dialer)` registers
+`mqtt.discover` from the connector's `build()`. The connector passes on
+what the probe needs and the instance cannot tell it: the broker address
+and credentials, and the topics of the configured inbound links, from
+which `linked` is computed. `dialer` is the probe's own transport, a
+`StreamDialer` like the one the embedded session uses (`TokioNet::tcp()`,
+`EmbassyNet::tcp(..)`), so one probe implementation serves Tokio and
+Embassy.
 
-- **Buffers:** its own MQTT packet buffer (the session uses 4 KB,
-  `BUFFER_SIZE`) and, for `mqtts`, its own TLS resources. The session's
-  `TlsOptions` hold `&'static mut` read and write buffers and a
-  `&'static mut` RNG, handed over once and not shareable. So
-  `MqttDiscover::dedicated` takes its own `TlsOptions`, with its own
-  buffers and RNG (or plain-TCP buffers). Only one invocation can use them
-  at a time, which matches its `concurrency(1)`.
+**Protocol.** The probe has its own minimal MQTT 3.1.1 client: CONNECT,
+SUBSCRIBE, DISCONNECT, and a reader for PUBLISH. It does not reuse the
+session's client code, which is built around the session's buffers and
+reconnect loop. Three points follow from that:
+
+- It reads the stream byte-wise and counts and discards payloads, so it
+  needs **no packet buffer**, whatever the message size.
+- It sends no keep-alive pings. It asks the broker for a keep-alive longer
+  than its window.
+- Retained messages can arrive before the SUBACK, so the reader accepts
+  both in any order. A refused subscription is `Refused`.
+
+On Embassy the dedicated connection borrows nothing from the running
+session, and its memory is provided at registration:
+
+- **Socket buffers:** the dialer's own receive and send buffers. The spike
+  ran with 1 024 and 512 bytes (§11.6).
 - **Socket:** one more TCP socket while the probe runs. The application
   sizes the `embassy-net` `StackResources<N>` (the demos use 4 or 5) and
   raises `N` by one.
-- **Connection settings:** the session leaks its client ID and
-  credentials to `'static` once at startup. The probe builds its settings
-  once at registration, with its own client ID, and reuses them on every
-  run, so repeated invocations do not leak.
+- **Release:** the Embassy dialer returns its socket to its slot when the
+  stream is dropped, so a probe dropped at a deadline or by a cancel
+  leaves the dialer ready for the next run.
+- **`mqtts`:** the probe needs its own TLS resources. The session's
+  `TlsOptions` hold `&'static mut` read and write buffers and a
+  `&'static mut` RNG, handed over once and not shareable, so the probe
+  takes a second set. Only one invocation can use them at a time, which
+  matches its `concurrency(1)`. This has not been tried (§10).
 
 The Embassy demo (§8) documents the RAM this costs.
 
@@ -809,11 +838,15 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
 
 **How it observes:**
 
-- `KnxConnector::discover_probe()` observes the **existing tunnel**. The
+- `KnxConnector::with_discover_probe()` registers `knx.discover` from the
+  connector's `build()`; the connector is moved into the builder before
+  its tunnel exists, so it cannot hand out a probe itself. The probe
+  observes the **existing tunnel**. The
   tunnel already receives every group telegram the gateway forwards. This
   needs no extra tunnel slot and sends nothing on the bus. It observes
   through an observer slot (§5.2) and changes nothing on the tunnel. This
-  is the first release's KNX probe.
+  is the first release's KNX probe. `linked` is computed from the
+  connector's own inbound routes.
 
   **Where the observer sits.** Today `parse_telegram` in `tunnel.rs`
   reduces each cEMI frame to a group address and a payload before anything
@@ -837,6 +870,14 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
   data length), not the raw frame. The engine keeps no telegrams itself.
   Counting and bounding them is the observer's job; `KnxDiscover` folds
   each summary into its per-address table as it arrives.
+
+  The slot also carries the tunnel's state: a `connected` flag that the
+  connection task keeps current. Without it, an empty result from a
+  tunnel that is down looks like a quiet bus. The probe returns
+  `Unavailable` when the tunnel is not connected at the start, and marks
+  the result incomplete when it is not connected at the end.
+
+  The report lists group addresses in address order, not as strings.
 - Later: `KnxDiscover::dedicated(gateway)` opens its own tunnel for the
   window, for instances without a KNX connector. It is refused if the
   gateway has no free tunnel slot.
@@ -886,7 +927,8 @@ requirement of the mechanism.
    `to_vec` and a length check on `no_std`), the instance's
    `max_response_bytes` and `max_concurrent_probes` builder settings, the registration limits
    (`PROBE_NAME_MAX`, `PROBE_DESCRIPTION_MAX`, `PROBE_DESCRIBE_MAX`),
-   message bounding (`PROBE_MSG_MAX`), the probe driver with deadline
+   message bounding (`PROBE_MSG_MAX`), the `fit_to_budget` helper
+   (§5.3), the probe driver with deadline
    drop, and `probe.list` (paged) / `probe.describe` / `probe.run` /
    `probe.cancel`.
 2. **AimX 4.1 wire and session** (`aimdb-core/src/session/`): the optional
@@ -902,13 +944,15 @@ requirement of the mechanism.
    in `hello`, and `probe.cancel` sent when a `run` call is dropped,
    `aimdb probe` with JSON `--params`, and the `probe_list` /
    `probe_describe` / `probe_run` tools.
-4. **`MqttDiscover::dedicated`** on Tokio and Embassy, with its own
-   buffers, TLS resources and connection settings on Embassy (§6.2), and
-   its own trimming to the response budget (§5.3).
-5. **`KnxConnector::discover_probe()`** on the existing tunnel, with an
-   observer slot in the tunnel engine that receives a summary of every
-   group telegram, before the write-only filter, only while a probe runs
-   (§6.3), and its own trimming to the response budget.
+4. **`MqttConnector::with_discover_probe(dialer)`** on Tokio and Embassy:
+   a dedicated connection over the given `StreamDialer`, its own minimal
+   MQTT client, the link topics from the connector (§6.2), and trimming
+   to the response budget with core's helper (§5.3).
+5. **`KnxConnector::with_discover_probe()`** on the existing tunnel, with
+   an observer slot in the tunnel engine that receives a summary of every
+   group telegram, before the write-only filter, only while a probe runs,
+   and carries the tunnel's connected state (§6.3); trimming with core's
+   helper.
 6. **Demos:** a `probe_fn` example (`board.info`) in an Embassy demo, with
    the RAM cost of a dedicated MQTT probe noted.
 
@@ -1041,8 +1085,6 @@ it can ship separately.
      probes need them.
    - **Schema-driven CLI parameters:** `--param k=v` typed by the params
      schema, if JSON `--params` proves too awkward.
-   - **A shared report-trimming helper,** once the MQTT and KNX probes show
-     what they share (§5.3).
 5. **Bounded serialization on `no_std`:** `serde_json` with `alloc` has no
    streaming serializer, so v1 checks the length after `to_vec` (§5.3).
    Options for a true bound: `serde-json-core` into a fixed buffer, or a
@@ -1050,6 +1092,17 @@ it can ship separately.
 6. **Generating configuration from results:** turning a discovered,
    `linked: false` topic into a `link_from` declaration and a data contract
    draft is a natural next step for the CLI and the architecture agent.
+7. **`mqtts` for the MQTT probe on Embassy:** a second set of TLS buffers
+   and a second RNG handle (§6.2). Not tried in either spike; it may be
+   left out of the first release.
+8. **Repeated KNX telegrams:** on a live bus many group addresses showed
+   exactly two writes in a window (§11.6). The tunnel engine does not
+   filter repeated sequence numbers, so a gateway retransmission would be
+   counted, and delivered to a record, twice. Whether that is what
+   happened is not known.
+9. **A link listing in core:** if developer probes need to know the
+   configured links, `ProbeDb` needs a listing that core does not have
+   today (§2).
 
 ## 11. Spike findings
 
@@ -1164,6 +1217,8 @@ Most of these are now stated in the sections they belong to.
 
 ### 11.5 Not covered
 
+The first three items were covered by a second spike; see §11.6.
+
 - `MqttDiscover` and `KnxDiscover`, including the Embassy buffers and the
   tunnel-engine observer. For KNX only the knx-pico fields were checked.
 - Running on Embassy. Core was compiled for a `no_std` target, not run.
@@ -1171,3 +1226,78 @@ Most of these are now stated in the sections they belong to.
   specs until it is sealed, but no connector did so in the spike.
 - The CLI and MCP commands, WebSocket, and a real serial link.
 - `schemars` schemas (§10.1).
+
+### 11.6 Second spike: the discovery probes, on a board
+
+A second prototype added `mqtt.discover` and `knx.discover` and ran them on
+a NUCLEO-H563ZI (Embassy), built from the two Embassy connector demos. The
+host talked to the board over the ST-LINK serial port with `aimdb-client`.
+The broker was the bench Mosquitto on the LAN; the KNX gateway was a real
+KNX/IP interface on a live installation.
+
+**Confirmed**
+
+| Claim | Result |
+|---|---|
+| A probe runs on Embassy (§2, §5.2) | Yes. `probe_fn` and both discovery probes run on the board. Their futures are `Send` through the adapter's existing transport wrappers; the probes add no `unsafe`. |
+| Liveness, busy, deadline and cancel on the board (§4.1, §5.2) | Yes, over serial. `record.list` is answered in 275 ms during a 4 s probe; a second `probe.run` gets `probe_busy`; a 1 500 ms deadline drops the probe future 1.50 s after it started, by the board's own log; dropping the client call frees a 60 s probe at once. |
+| `MqttDiscover::dedicated` on Tokio and Embassy (§6.2) | Yes, with one implementation over core's `StreamDialer`: `TokioNet::tcp()` on the host, `EmbassyNet::tcp(..)` on the board. On the board it runs next to the connector's own session, which keeps publishing and receiving. |
+| Dropping the probe releases the connection (§5.2) | Yes. The Embassy dialer already returns its socket to a slot when the stream is dropped. After a probe cancelled mid-window, the next run connects again. |
+| Registration from a connector's `build()` (§3) | Yes. The KNX connector registers `knx.discover` through `db.register_probe` while it builds. |
+| The KNX observer sits before the write-only filter (§6.3) | Yes. Reads, responses, writes, the source address and a data length of `0` for 6-bit values are reported; writes still reach their records; the probe sends nothing beyond the engine's ACKs. On the real bus a 90 s window listed 20 group addresses, two of them marked `linked`. |
+| Trimming to the serial budget (§5.3) | Yes, over the real serial link: 37 of 124 topics in a 7 458-byte reply, and 38 of 200 group addresses with four sources each on the host. The estimate of 30–50 entries holds. |
+| A window longer than the timeout is shortened (§5.2) | Yes; the reply arrives before the deadline and `coverage` says so. |
+| Error kinds (§2) | A wrong password gives `Refused`, an unreachable broker `Unavailable`, a KNX tunnel that is not connected `Unavailable`, and a misspelled parameter `InvalidParams` naming the field. |
+
+**Where the design had to change**
+
+The sections named below have been updated to match.
+
+1. **`linked` cannot be computed from the instance (§2, §6.2).** Nothing
+   lists the configured inbound links: `RecordMetadata` carries no link
+   topics. The KNX probe took them from its connector's own
+   `InboundDispatch`. The standalone `MqttDiscover::dedicated` had to be
+   given the filters by hand at registration. The design now has the MQTT
+   connector register its probe, as the KNX one does, and `ProbeDb` no
+   longer promises a link listing.
+2. **`KnxConnector::discover_probe()` cannot exist as written (§6.3).** The
+   connector is moved into the builder before the tunnel exists. The spike
+   used an opt-in on the connector, `KnxConnector::with_discover_probe()`,
+   which registers the probe from `build()`.
+3. **The observer needs the tunnel's state (§6.3).** With only a telegram
+   callback, an empty result from a disconnected tunnel looks like a quiet
+   bus. The spike's slot also carries a `connected` flag that the
+   connection task keeps current; the probe refuses with `Unavailable`
+   when it is not set and notes a tunnel lost during the window.
+4. **The Embassy MQTT probe needs less memory than §6.2 says.** It reads
+   the stream byte-wise and discards payloads, so it needs no 4 KB packet
+   buffer. On the board it used a 1 024-byte receive and a 512-byte send
+   socket buffer, one more `StackResources` slot, and its topic table.
+5. **The probe has its own MQTT client (§6.2).** The spike
+   wrote a minimal MQTT 3.1.1 client (CONNECT, SUBSCRIBE, DISCONNECT, about
+   120 lines) instead of reusing the session's `mountain-mqtt` v5 code,
+   which is built around the session's buffers. It sends no keep-alive
+   pings; it asks for a keep-alive longer than the window. Retained
+   messages can arrive before the SUBACK, so the window loop must accept
+   both.
+6. **A shared trimming helper is already justified (§5.3, §10.4).** Both
+   probes ended up with the same loop: sort, add entries while the running
+   size fits, report what was left out. Both connector crates also need
+   `serde_json` to size an entry. Core now provides the helper.
+
+**Open after this spike**
+
+- **Duplicate KNX telegrams.** Many group addresses on the real bus showed
+  exactly two writes in the window. The observer counts every tunnelling
+  request, and the engine does not filter repeated sequence numbers. It was
+  not determined whether the bus carries these telegrams twice or the
+  gateway retransmits them (§10).
+- **Ordering.** The spike sorted group addresses as strings (`1/0/12`
+  before `1/0/6`); §6.3 now asks for address order.
+- **Caps at registration** for `max_topics` and `max_addresses`, and the
+  `allowed_filter`, were not built.
+
+**Still not covered:** `mqtts` for the probe on Embassy (its own TLS
+buffers and RNG), observing the running MQTT session, the CLI and MCP
+commands, WebSocket, and `schemars` schemas.
+
