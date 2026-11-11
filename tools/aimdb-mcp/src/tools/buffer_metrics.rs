@@ -14,7 +14,7 @@ use tracing::debug;
 struct GetBufferMetricsParams {
     /// Endpoint of the AimDB instance: a `scheme://` URL or bare path (falls back to AIMDB_CONNECT env).
     endpoint: Option<String>,
-    /// Substring matched against record names (e.g. `"Temperature"`).
+    /// Substring matched against record keys and names (e.g. `"Temperature"`).
     record_key: String,
 }
 
@@ -23,7 +23,7 @@ struct ResetBufferMetricsParams {
     endpoint: Option<String>,
 }
 
-/// Returns live buffer metrics for records whose name contains `record_key`.
+/// Returns live buffer metrics for records whose key or name contains `record_key`.
 ///
 /// Session-agnostic: works in any phase.
 pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
@@ -38,7 +38,9 @@ pub async fn get_buffer_metrics(args: Option<Value>) -> McpResult<Value> {
 
     let matching: Vec<_> = raw
         .into_iter()
-        .filter(|r| r.name.contains(&params.record_key))
+        .filter(|r| {
+            r.record_key.contains(&params.record_key) || r.name.contains(&params.record_key)
+        })
         .collect();
 
     if matching.is_empty() {
