@@ -4,9 +4,6 @@
 //! Pure functions over strings and bytes, `no_std + alloc`, so a ROS node on
 //! an MCU can reuse them unchanged.
 
-// Used by the ROS 2 connector, which builds on this module.
-#![cfg_attr(not(feature = "std"), allow(dead_code))]
-
 mod attachment;
 mod gid;
 mod keys;

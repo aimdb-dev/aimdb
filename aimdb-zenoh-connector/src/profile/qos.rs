@@ -5,11 +5,13 @@ use alloc::string::String;
 use core::fmt;
 
 /// rmw_zenoh's own default depth: a token leaves the depth empty for it.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 const RMW_ZENOH_DEFAULT_DEPTH: u32 = 42;
 
 /// The QoS a `ros2://` link advertises. Deadline, lifespan and liveliness
 /// always take the ROS defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) struct Qos {
     pub reliability: Reliability,
     pub durability: Durability,
@@ -28,6 +30,7 @@ pub enum Reliability {
 
 impl Reliability {
     /// The link config value.
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Reliable => "reliable",
@@ -36,6 +39,7 @@ impl Reliability {
     }
 
     /// The inverse of [`as_str`](Self::as_str).
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "reliable" => Some(Self::Reliable),
@@ -46,6 +50,7 @@ impl Reliability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) enum Durability {
     Volatile,
     #[allow(dead_code)]
@@ -53,6 +58,7 @@ pub(crate) enum Durability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) enum History {
     KeepLast,
     #[allow(dead_code)]

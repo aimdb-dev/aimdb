@@ -2,6 +2,7 @@
 
 /// The GID rmw_zenoh derives from an entity's liveliness token: XXH3-128 of
 /// the token, the low 64 bits then the high 64 bits, each little-endian.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn gid(token: &str) -> [u8; 16] {
     let hash = twox_hash::XxHash3_128::oneshot(token.as_bytes());
     let mut out = [0; 16];

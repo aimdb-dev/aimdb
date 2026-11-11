@@ -7,6 +7,7 @@ use super::Qos;
 
 /// A ROS 2 node's identity in liveliness tokens.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) struct Node<'a> {
     pub domain: u32,
     /// The Zenoh session id, as Zenoh prints it.
@@ -21,6 +22,7 @@ pub(crate) struct Node<'a> {
 
 /// Whether an entity publishes or subscribes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) enum EntityKind {
     Publisher,
     Subscription,
@@ -28,10 +30,12 @@ pub(crate) enum EntityKind {
 
 /// A name as a single token chunk: every `/` becomes `%`, and an empty name
 /// is `%`. Written straight into the token, with no string of its own.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn mangle(name: &str) -> Mangled<'_> {
     Mangled(name)
 }
 
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) struct Mangled<'a>(&'a str);
 
 impl fmt::Display for Mangled<'_> {
@@ -51,12 +55,14 @@ impl fmt::Display for Mangled<'_> {
 
 /// `<domain>/<topic>/<type>/<hash>`, the topic without its slashes at either
 /// end: `0/cell4/temperature/sensor_msgs::msg::dds_::Temperature_/RIHS01_…`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn data_key(domain: u32, topic: &str, type_name: &str, type_hash: &str) -> String {
     let topic = topic.trim_matches('/');
     alloc::format!("{domain}/{topic}/{type_name}/{type_hash}")
 }
 
 /// `@ros2_lv/<domain>/<zid>/<node id>/<node id>/NN/<enclave>/<namespace>/<name>`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn node_token(node: &Node<'_>) -> String {
     alloc::format!(
         "@ros2_lv/{}/{}/{}/{}/NN/{}/{}/{}",
@@ -71,6 +77,7 @@ pub(crate) fn node_token(node: &Node<'_>) -> String {
 }
 
 /// `@ros2_lv/<domain>/<zid>/<node id>/<entity id>/MP|MS/<enclave>/<namespace>/<name>/<topic>/<type>/<hash>/<qos>`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn entity_token(
     node: &Node<'_>,
     entity_id: u32,

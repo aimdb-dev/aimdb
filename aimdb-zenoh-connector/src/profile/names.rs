@@ -3,14 +3,18 @@
 use core::fmt;
 
 /// The longest fully qualified topic name (`RMW_TOPIC_MAX_NAME_LENGTH`).
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 const TOPIC_MAX: usize = 255 - 8;
 /// The longest namespace (`RMW_NAMESPACE_MAX_LENGTH`).
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 const NAMESPACE_MAX: usize = TOPIC_MAX - 2;
 /// The longest node name (`RMW_NODE_NAME_MAX_NAME_LENGTH`).
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 const NODE_NAME_MAX: usize = 255;
 
 /// Why a topic, namespace or node name breaks the ROS rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) enum NameError {
     Empty,
     NotAbsolute,
@@ -36,11 +40,13 @@ impl fmt::Display for NameError {
 }
 
 /// A fully qualified topic name: `/cell4/temperature`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn validate_topic(name: &str) -> Result<(), NameError> {
     absolute(name, TOPIC_MAX)
 }
 
 /// A namespace: `/` or `/cell4`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn validate_namespace(name: &str) -> Result<(), NameError> {
     if name == "/" {
         return Ok(());
@@ -49,6 +55,7 @@ pub(crate) fn validate_namespace(name: &str) -> Result<(), NameError> {
 }
 
 /// A node name: `cell4_gateway`.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn validate_node_name(name: &str) -> Result<(), NameError> {
     let Some(first) = name.bytes().next() else {
         return Err(NameError::Empty);
@@ -65,6 +72,7 @@ pub(crate) fn validate_node_name(name: &str) -> Result<(), NameError> {
     Ok(())
 }
 
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 fn absolute(name: &str, max: usize) -> Result<(), NameError> {
     if name.is_empty() {
         return Err(NameError::Empty);
