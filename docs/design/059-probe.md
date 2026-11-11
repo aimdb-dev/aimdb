@@ -5,7 +5,8 @@
 **Scope:** Named, developer-defined async inspection functions that are
 registered on an AimDB instance and invoked on demand through the CLI or MCP.
 This covers the `Probe` trait, registration with a description and schemas,
-invocation over AimX, concurrency, deadlines, error transport, result
+invocation and cancellation over AimX, concurrency, deadlines, error
+transport, result
 serialization and limits. It also covers the first ready-made probes: MQTT
 and KNX discovery.
 
@@ -78,8 +79,14 @@ move a copy into the futures it creates. It gives the probe:
 
 - `deadline()` and `remaining()`, on the instance clock. A probe must return
   before the deadline; at the deadline core drops it (§5.2).
-- `db()`, read-only access to the instance (for example, to mark which
-  observed topics already have a configured link).
+- `db()`, a read-only view of the instance. It returns a new `ProbeDb`
+  type, not the `AimDb` handle, because `AimDb` can produce and set
+  records. `ProbeDb` wraps the handle and exposes only reads: the record
+  metadata, a record's latest value as JSON, and
+  `inbound_links(scheme)`, the topics and patterns of the configured
+  inbound links of one connector scheme. The discovery probes use the
+  last to mark results as `linked`. Core has no such listing today; it is
+  new, and built from the same link declarations the connectors read.
 - `clock()` and `time()`, the instance's clock and sleep, so probes are
   runtime-neutral.
 - `response_budget()`, the number of bytes the serialized `Output` may take
@@ -98,6 +105,7 @@ pub enum ProbeErrorKind {
     Refused,            // e.g. broker refused the subscription, no free tunnel slot
     Timeout,            // core: the deadline passed
     Busy,               // core: concurrency limit reached
+    Cancelled,          // core: the caller cancelled the invocation (§4.1)
     ResponseTooLarge,   // core: serialized result exceeds the bound (§5.3)
     Internal,
 }
@@ -111,6 +119,7 @@ is needed:
 
 ```rust
 #[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]   // a misspelled field is an error (§5.1)
 struct ScanParams {
     /// I²C bus to scan, 0 or 1.
     bus: u8,
@@ -183,16 +192,32 @@ and a mistyped field both give `InvalidParams`, and the erased future is
 `Send`.
 With the `schemars` feature, the spec takes both schemas from `P` and `O`.
 Implementing `Probe` directly is for reusable probes that carry
-configuration, like the ready-made ones:
+configuration, like the ready-made ones. The application registers those
+too, and gives them a name, a description and limits like any other
+probe:
 
 ```rust
+// MQTT: the probe dials its own connection (§6.2).
 builder.probe(
-    ProbeSpec::new("mqtt.discover", MqttDiscover::dedicated(mqtt_config))
+    ProbeSpec::new("mqtt.discover", MqttDiscover::dedicated(probe_dialer, &broker_url))
         .description("Topics seen on the broker during a window")
-        .max_duration(Duration::from_secs(120))
-        .concurrency(1),
+        .max_duration(Duration::from_secs(120)),
+);
+
+// KNX: the connector hands out a tap on its tunnel before it is moved
+// into the builder; the probe is built on the tap (§6.3).
+let knx_connector = KnxConnector::new(binder, delay, &gateway_url);
+let tap = knx_connector.tap();
+let knx = builder.connect(knx_connector);
+builder.probe(
+    ProbeSpec::new("knx.discover", KnxDiscover::new(tap))
+        .description("Group addresses seen on the bus during a window")
+        .max_duration(Duration::from_secs(300)),
 );
 ```
+
+A connector never registers a probe. It exposes what only it can provide,
+such as the tap, and the application decides which probes exist.
 
 - **Name:** unique per instance (a duplicate fails `build()`). At most
   `PROBE_NAME_MAX` (64) bytes of `[a-z0-9._-]`, so it never needs JSON
@@ -227,27 +252,23 @@ description. Typical schemas are far below the bound: the full
 `mqtt.discover` describe reply, with schemars-style schemas for its params
 and output, is about 2 KB.
 
-Registration can happen on the builder, or from a connector's `build()`
-through `db.register_probe(spec)` when the probe needs handles that only the
-built connector has, such as its running KNX tunnel (§6.3). Core erases the types
-behind the spec: it keeps a closure that deserializes the params, runs the
-probe and serializes the output.
+Registration happens on the builder only, before `build()`. Core erases
+the types behind the spec: it keeps a closure that deserializes the
+params, runs the probe and serializes the output.
 
-Connectors are built after the database exists: `AimDbBuilder::build()`
-calls each `ConnectorBuilder::build(&db)` with the shared `&AimDb`. So
-`register_probe(&self, …)` needs a registry with interior mutability. It
-holds the builder's specs, accepts further specs while connectors build, and
-is **sealed when `build()` returns**. A later `register_probe` returns an
-error. A duplicate name fails `build()` whether it comes from the builder or
-from a connector. `probe.list` and `probe.run` read the sealed registry on
-every call, so the order in which connectors are built (including the
-connector that serves AimX) does not matter.
+`build()` checks the specs and puts them into the registry, which is
+immutable from then on. It lives in the instance's existing `Extensions`,
+so `AimDbInner` does not change, and it needs no lock for lookups and no
+sealing step. A duplicate name fails `build()`. A probe that needs
+something from a connector gets it as a handle the connector builder
+hands out before `build()`, like the KNX tap. Such a handle must work
+before the connector runs: until then it simply reports nothing.
 
 ## 4. Invocation
 
 ### 4.1 AimX 4.1
 
-Three one-shot methods:
+Four one-shot methods:
 
 - **`probe.list`** takes `{ after, limit }`, both optional, and returns one
   page of compact entries: `{ probes: [{ name, description,
@@ -264,8 +285,13 @@ Three one-shot methods:
     example `probe_refused`) and a bounded `msg` (see *Error replies*
     below).
   - `not_found` means there is no probe by that name.
+- **`probe.cancel`** takes no parameters and returns `{ cancelled }`. It
+  cancels the probe in flight on this connection; a connection has at most
+  one, so no name or handle is needed. `cancelled` is `false` when no probe
+  was in flight, for example because it finished just before. See
+  *Cancellation* below.
 
-All three are allowed under the `ReadOnly` security policy (§7).
+All four are allowed under the `ReadOnly` security policy (§7).
 
 **Discovery replies have a fixed bound.** `instance.info` already
 guarantees its reply fits the smallest AimX frame (`INSTANCE_INFO_REPLY_MAX`,
@@ -278,7 +304,9 @@ a large registry can never make listing unusable:
   response budget (§5.3), computed for the page reply, and sets `next` for
   the rest. `limit` can only shorten a page. On serial that is at least
   twelve entries per page; over TCP and UDS, normally all of them. A page
-  holds at least one entry, which always fits.
+  holds at least one entry, which always fits. Twelve worst-case entries
+  fill the serial payload exactly, with no byte to spare, so an entry that
+  gains a field brings the guaranteed page down to eleven.
 - A `probe.describe` reply body is at most `PROBE_DESCRIBE_MAX` (6 KB),
   enforced at registration (§3).
 - An error reply carries at most a 32-byte code and a 256-byte message
@@ -295,7 +323,9 @@ method itself, so the error alone cannot tell "no such probe" from "server
 too old". The client already receives the server's protocol version in the
 handshake reply. `aimdb-client::probe` checks that version first and reports
 "probes need AimX 4.1" without sending the call; after that, `not_found`
-always means an unknown probe name.
+always means an unknown probe name. The check compares major and minor;
+the existing `version_compatible` compares the major only, so it needs a
+second helper.
 
 **Error replies.** Today an AimX error reply carries only a code string,
 `{"t":"reply","id":…,"err":"not_found"}`, and `RpcError` is a set of
@@ -342,11 +372,15 @@ stream:
 fn call_deferred(
     &mut self,
     method: &str,
-    params: Payload,
+    params: &Payload,
 ) -> Option<BoxFut<'static, Result<Payload, RpcError>>> {
     None
 }
 ```
+
+It borrows the params. If it took them by value, a session that returns
+`None` would have consumed them, and the loop could not fall back to
+`call`.
 
 The AimX session returns `Some` for `probe.run`. The returned future does
 **not** run the probe. It only waits for the result of an invocation that
@@ -355,14 +389,16 @@ resources. The connection loop keeps it in a `FuturesUnordered` and encodes
 and sends the result when it resolves. Meanwhile the loop keeps reading
 frames, answering other calls and forwarding events. Other methods stay
 inline. A connection has at most one probe in flight; a second `probe.run`
-on the same connection gets `probe_busy`.
+on the same connection gets `probe_busy`. The connection's slot is free as
+soon as the waiting future resolves, before its reply is written, so a
+stalled writer does not keep the connection busy.
 
 **The probe driver runs outside the connection loop.** The connection loop
 cannot enforce a deadline on its own. It awaits each outbound `send`, and
 the transports' `send` awaits `write_all` and `flush`. When a client stops
 reading, for example during a busy subscription, a send blocks, and nothing
 else the loop owns is polled. A probe future driven there would miss its
-deadline and keep its permits and its connection or observer for as long as
+deadline and keep its permits and its connection or tap subscription for as long as
 the writer is stalled. Polling it from one more arm of the same loop does
 not help.
 
@@ -401,6 +437,34 @@ With this, a long probe no longer holds a serial link either. The CLI still
 prints a "waiting up to N s" line, because its own call waits for the
 reply.
 
+**Cancellation.** A caller that no longer wants a result should not have to
+wait for the deadline, and the probe should not keep its permits until
+then. Because the connection stays live, `probe.cancel` is an ordinary
+inline call on the same connection:
+
+- The session tells the waiting future of its `probe.run` to stop. That
+  future drops its oneshot receiver and resolves with `Cancelled`. The
+  driver sees that the receiver has gone and drops the invocation at once,
+  exactly as at a deadline or a closed connection: the permits are released
+  and the probe's `Drop` cleanup runs (§5.2). The probe gets no signal and
+  no grace period.
+- The pending `probe.run` is thus answered with `probe_cancelled`, and
+  `probe.cancel` itself with `{ "cancelled": true }`. The reply to the
+  cancel is sent first, then the `probe_cancelled`. The connection can
+  start another probe as soon as the cancel is handled.
+- With no probe in flight the reply is `{ "cancelled": false }` and nothing
+  else happens. This covers the race where the probe finishes while the
+  cancel is on its way; the caller then receives the probe's normal reply.
+
+`aimdb-client` sends the cancel for the caller. `probe::run` returns a
+future, and dropping that future before it resolves makes the client engine
+send `probe.cancel` on the connection. `ClientHandle` gets a
+fire-and-forget request for this, because a drop cannot await a call. So a
+caller cancels by dropping the
+call, which is how Ctrl-C in the CLI and an abandoned MCP tool call arrive
+(§4.2, §4.3). A caller whose connection closes needs no cancel; the close
+already drops the invocation.
+
 ### 4.2 CLI
 
 ```
@@ -414,10 +478,14 @@ aimdb probe run <name> [--params <json>]          # default {}
 one `probe.describe` reply. `--params` takes the params object as JSON and
 sends it unchanged; the CLI does not read the schema to build or convert
 parameters. serde checks the request on the instance (§5.1), and an error
-names the field. The output is the `output` JSON (pretty printed on a
+names the field that is wrong, missing or unknown. The output is the `output` JSON (pretty printed on a
 TTY). Exit codes: `0` success; `4` (the existing timeout
 code) for `probe_timeout`; `5` for any other probe error. The kind and
 message go to stderr. Codes 1–4 keep their meaning.
+
+Ctrl-C during `probe run` cancels the probe: the CLI drops the call, the
+client sends `probe.cancel` (§4.1), and the CLI exits once the cancel is
+answered or after a short wait.
 
 ### 4.3 MCP
 
@@ -428,6 +496,14 @@ message go to stderr. Codes 1–4 keep their meaning.
 - `probe_run` takes `{ name, params, timeout_s }` and returns the output
   JSON.
 
+The MCP server keeps one connection per endpoint and makes one call on it
+at a time. That is intended: a `probe_run` occupies the endpoint until it
+returns, and other tool calls on that endpoint wait for it. Probes that an
+agent runs should therefore be short, and `timeout_s` defaults to 30. When
+the MCP host cancels or abandons the tool call, the server drops the call,
+which sends `probe.cancel` (§4.1), so the endpoint is free again without
+waiting for the deadline.
+
 All three are read-only tools and available without `--allow-writes`. The tool
 description tells an agent to check what a result says about its scope and
 window before drawing conclusions from an absence (§6.1).
@@ -437,9 +513,10 @@ window before drawing conclusions from an absence (§6.1).
 | Responsibility | How |
 |---|---|
 | Registration | Unique names, description, schemas, limits (§3). |
-| Invocation | `probe.list` / `probe.describe` / `probe.run`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
+| Invocation | `probe.list` / `probe.describe` / `probe.run` / `probe.cancel`, CLI, MCP (§4). Every discovery reply within the smallest frame (§4.1). |
 | Concurrency | Per probe: at most `concurrency` invocations at a time, otherwise `Busy`. Per instance: at most `max_concurrent_probes` (default 2), otherwise `Busy`. Per connection: at most one in flight (§4.1), otherwise `Busy`. No queueing; the caller retries. |
 | Deadlines | Enforced by the probe driver, independent of any connection, for probes that yield and do not block (§4.1, §5.2). |
+| Cancellation | `probe.cancel`, sent by the client when the caller drops the call. The driver drops the invocation as at a deadline (§4.1, §5.2). |
 | Error transport | `ProbeError` → AimX error reply `probe_<kind>` with `msg` (§4.1) → CLI exit code `4` or `5` and stderr, or an MCP tool error. |
 | Result serialization | `serde_json`, then a final size check against the budget (§5.3). |
 
@@ -450,16 +527,29 @@ failure is `InvalidParams` with serde's message, and the probe never runs.
 Core does not validate against the schema, and neither does the CLI;
 deserialization is the check.
 
+serde ignores unknown fields unless told otherwise. A misspelled optional
+field would then be replaced by its default without a word, and a
+misspelled required field would be reported as the missing one, not as the
+typo. So a `Params` type should carry `#[serde(deny_unknown_fields)]`; the
+error then names the unknown field. The ready-made probes do this, and the
+`Probe` and `probe_fn` documentation says so. Core cannot enforce it.
+
 ### 5.2 Deadlines and cancellation
 
 - The effective deadline is `min(timeout_ms, max_duration)`. When the
   caller gives no timeout, it is `max_duration`.
+- `ctx.deadline()` is computed on the instance clock when the call is
+  accepted. The driver enforces it with the runtime's sleep, which is
+  relative and starts when the driver first polls the invocation. The two
+  differ by the time until that first poll.
 - The probe may return until the deadline. At the deadline core drops the
-  future and replies `Timeout`. There is no cancellation signal and no
-  grace period in v1.
-- A closed connection, or a new handshake on it, drops the invocation in
-  the same way (§4.1).
-- The probe driver enforces both (§4.1), independent of the connection
+  future and replies `Timeout`. The probe itself gets no cancellation
+  signal and no grace period in v1.
+- A `probe.cancel` from the caller drops the invocation in the same way
+  and replies `Cancelled` (§4.1).
+- A closed connection, or a new handshake on it, also drops the
+  invocation (§4.1).
+- The probe driver enforces all of these (§4.1), independent of the connection
   that started the invocation. A stalled or slow connection does not delay
   the drop.
 
@@ -480,11 +570,13 @@ this contract:
 Within that contract, an invocation is dropped and its permits are
 released at its deadline, plus the time until the executor next polls the
 driver. A probe that breaks it delays its own drop by as long as it blocks.
-Because one driver future polls all invocations, it also delays the
-deadlines of other probes on the instance. On a single-threaded executor
-such as Embassy's, it stalls every other task, connectors included. Core
-cannot detect or preempt this, so the contract is part of the `Probe` and
-`probe_fn` documentation. The ready-made probes meet it.
+It also stalls the rest of the instance, on every runtime: the runner
+drives all of an instance's futures (connectors, the AimX server, the probe
+driver) from one task, on Tokio as well as on Embassy. This is the same
+rule as for any other code in an async application, and keeping it is the
+probe author's responsibility. Core cannot detect or preempt a blocking
+probe, so the contract is part of the `Probe` and `probe_fn` documentation.
+The ready-made probes meet it.
 
 A probe that observes for a while plans its window so that it returns in
 time. The discovery probes observe for `min(duration_s, remaining - reserve)`,
@@ -501,10 +593,10 @@ can fail:
 - A dedicated connection is owned by the probe's future. Dropping it closes
   the socket; the broker or gateway ends the session on its side. Nothing of
   the running instance is involved.
-- An observer on a running session (the KNX tunnel engine, §6.3) is a slot
-  the session reads on each telegram. Dropping the observer empties the slot.
-  This is a plain store, with no queue that could be full and nothing to
-  undo on the session.
+- A subscription to a tap on a running session (the KNX tunnel, §6.3) is
+  owned by the probe's future. Dropping it removes the subscription and
+  frees its queue. This is a plain store with nothing to undo on the
+  session, and the session never waits for a subscriber.
 
 The first release has no probe that changes a running session. Changing
 live subscriptions needs a cleanup mechanism that this pattern cannot
@@ -524,43 +616,65 @@ Core computes the budget once per invocation and exposes it as
 ```
 budget = min(probe max_response_bytes,      // registration, optional
              instance max_response_bytes,   // new: 256 KB std, 8 KB embedded
-             connection reply limit)        // from the transport
-         - framing overhead                 // from the transport
+             connection reply limit)        // transport and client, below
          - envelope reserve
 ```
 
 `max_response_bytes` is a new instance setting; nothing bounds reply size
-today apart from the transports' frame caps.
+today apart from the transports' frame caps. It and
+`max_concurrent_probes` are set on the builder
+(`AimDbBuilder::max_response_bytes`, `AimDbBuilder::max_concurrent_probes`).
 
-- **Connection reply limit:** each AimX transport states the largest reply
-  frame it assumes its peer accepts. A frame cap is a *receive* limit: the
-  server cannot see the client's, so it uses its own transport's default and
-  relies on the client using the same one. That holds for the CLI and MCP,
-  which connect with the transports' defaults; a client configured with a
-  smaller cap gets the frame dropped. The figures:
-  - Serial: `DEFAULT_MAX_FRAME` (8 KB) unless configured. The receiving
-    `FrameAccumulator` counts **COBS-encoded** bytes before the delimiter,
-    not the decoded payload. It drops a run only once it has buffered more
-    than the cap without seeing a delimiter. So a frame whose encoded length
-    is within the cap always arrives, however the reads are chunked. A
-    longer frame can still arrive when it comes in one read, but nothing
-    guarantees it. The budget therefore keeps the encoded length within the
-    cap.
-  - TCP: the length framer's `DEFAULT_MAX_FRAME` (64 KB) unless configured.
+- **Connection reply limit:** the largest reply the client accepts,
+  counted in **payload bytes**: the bytes of the reply frame before the
+  transport's framing is applied. Counting payload bytes on both sides
+  means the server only takes the smaller of two numbers and needs no
+  per-transport overhead rule for a number that came from the client.
+  - *What the transport states.* A frame cap is a receive limit, and the
+    server cannot see the client's, so each transport states the largest
+    payload its own default cap lets through and relies on the client
+    using the same default. There is no path for this today: `Framer` has
+    no size accessor and the AimX dispatch ignores the peer. So `Framer`
+    gains `max_payload() -> Option<usize>`, the connection copies it into
+    a new `PeerInfo::max_reply_payload` field, and `authenticate` passes
+    it to the session through `SessionCtx`.
+  - *What the client states.* AimX 4.1 adds an optional `max_frame` field
+    to the `hello` params: the largest payload the client accepts, taken
+    from its own transport's `max_payload()`. The server uses the smaller
+    of the two for the session, and a new handshake sets it again. Without
+    the field (a 4.0 client, or a client that does not state one) the
+    transport's number stands alone; a client with a smaller cap that does
+    not state it gets the frame dropped.
+  - The discovery replies (§4.1) are sized for the smallest default,
+    serial's, and do not shrink further: a client that states less than
+    that may not receive them.
+
+  The transports' numbers:
+  - Serial: 8 159 bytes with the default `DEFAULT_MAX_FRAME` (8 KB). The
+    receiving `FrameAccumulator` counts **COBS-encoded** bytes before the
+    delimiter, not the decoded payload, and COBS adds about one byte per
+    254. It drops a run only once it has buffered more than the cap
+    without seeing a delimiter, so a frame whose encoded length is within
+    the cap always arrives, however the reads are chunked. A longer frame
+    can still arrive when it comes in one read, but nothing guarantees it.
+    `max_payload()` is therefore the largest payload whose encoding fits
+    the cap (`cobs::max_encoding_length`); the delimiter is not counted.
+    Feeding the accumulator one byte at a time confirms 8 159 (§11).
+  - TCP: the length framer's `DEFAULT_MAX_FRAME` (64 KB) unless
+    configured. The length prefix is outside the counted payload.
   - UDS: none.
-- **Framing overhead:** what the transport adds to the reply bytes before
-  the receiver's cap applies. Serial: COBS adds about one byte per 254
-  bytes. Core computes the serial budget with
-  `cobs::max_encoding_length`, so that the encoded frame still fits: at
-  8 KB the largest payload is 8 159 bytes, 33 less. The delimiter is
-  not counted against the cap. TCP: the length prefix is outside the
-  counted payload, so nothing. The existing `instance_info_bounds` serial
-  test measures replies the same way: envelope with the longest request
-  id, COBS-encoded.
+  - WebSocket: none set by the connector; each reply is one text message,
+    and the WebSocket library's own message limit is far above any
+    `max_response_bytes`. A browser client states no `max_frame`.
+
+  The existing `instance_info_bounds` serial test measures replies the
+  same way: envelope with the longest request id, COBS-encoded.
 - **Envelope reserve:** the bytes of the reply frame around `output`:
   `{"t":"reply","id":…,"ok":{"name":"…","started_ns":…,"elapsed_ms":…,"output":`
   and the closing braces. Numbers are counted at their maximum width, and
-  the name at its actual length. `output` is spliced into the frame
+  the name at its actual length. The outer part, `{"t":"reply","id":…,"ok":`
+  and its closing brace, is 45 bytes with the longest request id. `output`
+  is spliced into the frame
   verbatim (`RawValue`, as record values are today), so its bytes count
   one for one.
 
@@ -581,9 +695,14 @@ report is up to the probe:
 - The `coverage` object's strings are cut to fixed maximum lengths, so it
   always fits next to at least an empty list.
 
-This is done in the MQTT and KNX probes themselves, with no shared core
-type. When both implementations exist and show what they actually share,
-that part can move into a helper.
+Both probes do this the same way, in one pass: order the entries, add
+them while the running serialized size fits the budget, and report what
+was left out. Core therefore provides this loop as a small helper
+(`probe::fit_to_budget`), which takes the entries in the probe's order and
+the budget and returns the entries kept and the count dropped. Ordering,
+the wording of the limit and the `coverage` object stay with the probe.
+The helper sizes each entry with `serde_json`, so it lives in core, which
+already depends on it.
 
 On an embedded target with the 8 KB default, this lists roughly 30–50
 topics or group addresses (about 160 bytes per typical entry), depending on
@@ -596,8 +715,11 @@ into. Custom probes can use `ctx.response_budget()` the same way. How core
 serializes depends on the target:
 
 - **`std`:** core serializes into a writer that stops at the limit
-  (`serde_json::Serializer` over a bounded `io::Write`), so an oversized
-  result is never held in full.
+  (`serde_json::to_writer` over a bounded `io::Write`), so an oversized
+  result is never held in full. `to_writer` and `Serializer` exist only
+  with `serde_json`'s own `std` feature, which the workspace does not
+  enable on any target today. Core's `std` feature therefore enables
+  `serde_json/std`.
 - **`no_std`:** the workspace builds `serde_json` with `alloc` only, which
   has `to_vec` but no streaming `Serializer` or `to_writer`. Core serializes
   with `to_vec`, checks the length and drops the buffer if it is over the
@@ -620,6 +742,12 @@ is spent on entries that would be trimmed anyway.
 
 These are the first probes. They answer what configured links cannot: which
 signals exist that the instance does not consume yet.
+
+They are reference implementations that ship in the connector crates, not
+part of the probe mechanism. Core knows nothing about them, and an
+application can register them, replace them with its own, or leave them
+out. How each one collects, bounds and trims its data is that probe's own
+business, as it is for any developer probe.
 
 ### 6.1 Describing what was observed
 
@@ -655,31 +783,50 @@ bytes: {min, max, last}, first_seen_ms, last_seen_ms, linked } ] }`.
 `linked` says whether a configured inbound link matches the topic. That is
 the bridge from discovery to configuration.
 
-**How it observes:** `MqttDiscover::dedicated(config)` opens its own
-client connection (own client ID, clean session, no will message),
-subscribes to `filter` at QoS 0 for the window, then disconnects. It is
-independent of the running session and can see everything its credentials
-allow. Nothing it receives reaches a record. It needs a second socket, and
-for `mqtts` a second TLS session, while it runs. It runs on Tokio and
-Embassy, and `coverage.connection` is `"dedicated"`.
+**How it observes:** the probe opens its own client connection (own
+client ID, clean session, no will message), subscribes to `filter` at
+QoS 0 for the window, then disconnects. It is independent of the running
+session and can see everything its credentials allow. Nothing it receives
+reaches a record. It needs a second socket while it runs, and
+`coverage.connection` is `"dedicated"`.
 
-On Embassy the dedicated connection cannot borrow anything from the running
-session, and its memory has to be provided at registration:
+**Registration.** The application registers
+`MqttDiscover::dedicated(dialer, &broker_url)` on the builder (§3). The
+probe needs nothing from the MQTT connector: it has its own broker address
+and credentials, and it computes `linked` from
+`ctx.db().inbound_links("mqtt")` (§2). `dialer` is the probe's own
+transport, a `StreamDialer` like the one the embedded session uses
+(`TokioNet::tcp()`, `EmbassyNet::tcp(..)`), so one probe implementation
+serves Tokio and Embassy.
 
-- **Buffers:** its own MQTT packet buffer (the session uses 4 KB,
-  `BUFFER_SIZE`) and, for `mqtts`, its own TLS resources. The session's
-  `TlsOptions` hold `&'static mut` read and write buffers and a
-  `&'static mut` RNG, handed over once and not shareable. So
-  `MqttDiscover::dedicated` takes its own `TlsOptions`, with its own
-  buffers and RNG (or plain-TCP buffers). Only one invocation can use them
-  at a time, which matches its `concurrency(1)`.
+**Protocol.** The probe has its own minimal MQTT 3.1.1 client: CONNECT,
+SUBSCRIBE, DISCONNECT, and a reader for PUBLISH. It does not reuse the
+session's client code, which is built around the session's buffers and
+reconnect loop. Three points follow from that:
+
+- It reads the stream byte-wise and counts and discards payloads, so it
+  needs **no packet buffer**, whatever the message size.
+- It sends no keep-alive pings. It asks the broker for a keep-alive longer
+  than its window.
+- Retained messages can arrive before the SUBACK, so the reader accepts
+  both in any order. A refused subscription is `Refused`.
+
+On Embassy the dedicated connection borrows nothing from the running
+session, and its memory is provided at registration:
+
+- **Socket buffers:** the dialer's own receive and send buffers. The spike
+  ran with 1 024 and 512 bytes (§11.6).
 - **Socket:** one more TCP socket while the probe runs. The application
   sizes the `embassy-net` `StackResources<N>` (the demos use 4 or 5) and
   raises `N` by one.
-- **Connection settings:** the session leaks its client ID and
-  credentials to `'static` once at startup. The probe builds its settings
-  once at registration, with its own client ID, and reuses them on every
-  run, so repeated invocations do not leak.
+- **Release:** the Embassy dialer returns its socket to its slot when the
+  stream is dropped, so a probe dropped at a deadline or by a cancel
+  leaves the dialer ready for the next run.
+- **`mqtts`:** the probe needs its own TLS resources. The session's
+  `TlsOptions` hold `&'static mut` read and write buffers and a
+  `&'static mut` RNG, handed over once and not shareable, so the probe
+  takes a second set. Only one invocation can use them at a time, which
+  matches its `concurrency(1)`. This has not been tried (§10).
 
 The Embassy demo (§8) documents the RAM this costs.
 
@@ -698,28 +845,57 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
 
 **How it observes:**
 
-- `KnxConnector::discover_probe()` observes the **existing tunnel**. The
-  tunnel already receives every group telegram the gateway forwards. This
-  needs no extra tunnel slot and sends nothing on the bus. It observes
-  through an observer slot (§5.2) and changes nothing on the tunnel. This
-  is the first release's KNX probe.
+- `KnxDiscover::new(tap)` observes the **existing tunnel** through a tap
+  that the connector hands out (`KnxConnector::tap()`, §3). The tunnel
+  already receives every group telegram the gateway forwards, so this
+  needs no extra tunnel slot and sends nothing on the bus. This is the
+  first release's KNX probe. `KnxDiscover` ships in the connector crate
+  as a reference implementation with one tested report shape; an
+  application registers it with one line, or builds its own probe on the
+  same tap, for example one that watches a single group address. The
+  connector itself carries no caps, no trimming and no report format.
+  `linked` is computed from `ctx.db().inbound_links("knx")` (§2).
 
-  **Where the observer sits.** Today `parse_telegram` in `tunnel.rs`
+  **Where the tap is fed.** Today `parse_telegram` in `tunnel.rs`
   reduces each cEMI frame to a group address and a payload before anything
   else sees it. It keeps only `GroupValue_Write`, so reads and responses
   are dropped. It discards the source individual address. A 6-bit value
   becomes a one-byte payload. The probe's `telegrams: {write, response,
   read}`, `sources` and `data_len` cannot be computed from what comes out
-  of it, so the observer cannot sit at `TunnelIo::forward` or at the
+  of it, so the tap cannot be fed at `TunnelIo::forward` or at the
   `InboundDispatch` either. It sits in the tunnel engine, where the
   `TunnellingRequest` is handled. For every `L_Data` frame with a group
   destination, before the write-only filter, it records the destination,
   the APCI kind (read, response, write), the source address and the data
   length on the wire (`0` for a 6-bit value). knx-pico's `LData` already
-  exposes `source` and `apci`, so nothing new is parsed. The observer slot
-  holds a
-  plain summary struct, not the raw frame. The path that delivers writes to
-  records is unchanged.
+  exposes `source` and `apci`, so nothing new is parsed. The path that
+  delivers writes to records is unchanged.
+
+  **The tap's contract.** The tap is the one part an application cannot
+  add from outside, so it is connector API:
+
+  - `tap.subscribe(capacity)` returns a subscription with its own bounded
+    queue of telegram summaries (destination, APCI kind, source, data
+    length), not raw frames. The probe reads it with `next().await`.
+  - The tunnel engine feeds every subscription for every group telegram,
+    in arrival order, with a push that never waits. It runs no user code.
+    A slow or stalled probe therefore cannot delay the acknowledgements
+    to the gateway.
+  - When a queue is full the telegram is not queued for that subscription
+    and its `dropped()` count goes up. A probe reports that count, so a
+    burst that outran it is visible in the result.
+  - With no subscription the engine does nothing extra.
+  - `tap.connected()` gives the tunnel's state, which the connection task
+    keeps current. Without it, an empty result from a tunnel that is down
+    looks like a quiet bus.
+  - Dropping the subscription removes it (§5.2). A tap taken from a
+    connector that is not running yet reports not connected.
+
+  `KnxDiscover` folds each summary into its per-address table as it
+  reads it. It returns `Unavailable` when the tunnel is not connected at
+  the start, marks the result incomplete when the tunnel is not connected
+  at the end or when telegrams were dropped, and lists group addresses in
+  address order, not as strings.
 - Later: `KnxDiscover::dedicated(gateway)` opens its own tunnel for the
   window, for instances without a KNX connector. It is refused if the
   gateway has no free tunnel slot.
@@ -743,55 +919,77 @@ requirement of the mechanism.
 
 ## 7. Safety
 
-- **Only registered code runs.** The registry is sealed when `build()`
-  returns (§3).
+- **Only registered code runs.** Probes are registered on the builder, and
+  the registry does not change after `build()` (§3).
 - **Read-only from AimDB's point of view.** A probe has no record writers in
-  `ProbeCtx`. What it does in the environment is the developer's code; the
+  `ProbeCtx`: `ctx.db()` is the read-only `ProbeDb` view, not the `AimDb`
+  handle (§2). A probe that captures an `AimDb` handle of its own at
+  registration can still write; that is the developer's choice. What it does in the environment is the developer's code; the
   ready-made probes only listen. The MQTT probe sends only the frames of
   its own connection (connect, subscribe, keep-alive, disconnect). The KNX
   probe sends nothing.
 - **The developer controls exposure.** Registration sets the allowed filter
-  or prefix. A probe whose results are sensitive should not be registered on
-  an instance that untrusted agents can reach.
+  or prefix. Registration is per instance, not per transport: a registered
+  probe can be listed, run and cancelled by every client of every AimX
+  endpoint the instance serves (UDS, TCP, serial, WebSocket), including
+  read-only clients. A probe whose results are sensitive should not be
+  registered on an instance that untrusted clients can reach.
 - **Bounded:** deadline, concurrency, response size, metadata size (§3, §5).
 
 ## 8. First release
 
 1. **Core** (`aimdb-core/src/probe/`): `Probe`, `probe_fn`, `ProbeCtx`
-   with `response_budget()`, `ProbeError`, `ProbeSpec`, the registry
-   (interior-mutable, sealed at the end of `build()`), type erasure, the
-   final size check (streaming on `std`, `to_vec` and a length check on
-   `no_std`), the instance's `max_response_bytes`, the registration limits
+   with `response_budget()` and the read-only `ProbeDb` view, `ProbeError`, `ProbeSpec`, the registry
+   (filled by `build()`, immutable afterwards), `ProbeDb::inbound_links`,
+   type erasure, the
+   final size check (streaming on `std`, which enables `serde_json/std`;
+   `to_vec` and a length check on `no_std`), the instance's
+   `max_response_bytes` and `max_concurrent_probes` builder settings, the registration limits
    (`PROBE_NAME_MAX`, `PROBE_DESCRIPTION_MAX`, `PROBE_DESCRIBE_MAX`),
-   message bounding (`PROBE_MSG_MAX`), the probe driver with deadline
-   drop, and `probe.list` (paged) / `probe.describe` / `probe.run`.
+   message bounding (`PROBE_MSG_MAX`), the `fit_to_budget` helper
+   (§5.3), the probe driver with deadline
+   drop, and `probe.list` (paged) / `probe.describe` / `probe.run` /
+   `probe.cancel`.
 2. **AimX 4.1 wire and session** (`aimdb-core/src/session/`): the optional
    `msg` field on error frames, `RpcError::Probe { kind, message }` and
    its `probe_<kind>` codes, `Session::call_deferred` with replies that
    the connection loop waits for while the probe driver runs the
-   invocation, at most one probe in flight per connection (§4.1), and each
-   transport's reply limit and framing overhead (§5.3).
+   invocation, at most one probe in flight per connection (§4.1),
+   `probe.cancel`, the optional `max_frame` field in `hello`, and each
+   transport's reply limit: `Framer::max_payload()`,
+   `PeerInfo::max_reply_payload` and its way into the session (§5.3).
 3. **Client, CLI, MCP:** `aimdb-client::probe::{list, describe, run}`
-   with the version check from the handshake and page assembly,
+   with the version check from the handshake, page assembly, `max_frame`
+   in `hello`, and `probe.cancel` sent when a `run` call is dropped,
    `aimdb probe` with JSON `--params`, and the `probe_list` /
    `probe_describe` / `probe_run` tools.
-4. **`MqttDiscover::dedicated`** on Tokio and Embassy, with its own
-   buffers, TLS resources and connection settings on Embassy (§6.2), and
-   its own trimming to the response budget (§5.3).
-5. **`KnxConnector::discover_probe()`** on the existing tunnel, with an
-   observer slot in the tunnel engine that receives a summary of every
-   group telegram, before the write-only filter, only while a probe runs
-   (§6.3), and its own trimming to the response budget.
+4. **`MqttDiscover::dedicated(dialer, url)`** on Tokio and Embassy: a
+   dedicated connection over the given `StreamDialer`, its own minimal
+   MQTT client, `linked` from `ProbeDb::inbound_links` (§6.2), and
+   trimming to the response budget with core's helper (§5.3).
+5. **`KnxConnector::tap()`** and **`KnxDiscover::new(tap)`**: a tap on the
+   tunnel engine, fed before the write-only filter, with a bounded queue
+   per subscription, a drop count and the tunnel's connected state
+   (§6.3); `KnxDiscover` as the reference probe on it, trimming with
+   core's helper.
 6. **Demos:** a `probe_fn` example (`board.info`) in an Embassy demo, with
    the RAM cost of a dedicated MQTT probe noted.
 
 **Testing:**
 
-- Core: params errors, `Busy`, the deadline (a probe that never returns is
+The deadline tests need a runtime whose sleep follows a clock the test
+controls. Core's existing test runtimes (`NoopRuntimeOps`,
+`ManualClockRuntimeOps`) complete every sleep at once, so they cannot show
+that a probe is dropped *at* its deadline. The first release adds a test
+`RuntimeOps` over Tokio's paused clock (Tokio's `test-util` feature as a
+dev-dependency), which the spike used (§11).
+
+- Core: params errors (a wrong type, a missing field, and an unknown field
+  on a `deny_unknown_fields` type, each named in the message), `Busy`, the deadline (a probe that never returns is
   dropped at the deadline and the reply is `Timeout`), the budget
   computation per transport (serial 8 KB measured COBS-encoded, TCP
   `max_frame`, UDS unbounded), `ResponseTooLarge` (without full buffering
-  on `std`), registration after `build()` refused, and registration limits
+  on `std`), `inbound_links` per scheme, and registration limits
   (an over-long name or description, a control character in the
   description, invalid schema JSON, or a describe reply over 6 KB fails
   `build()` with the probe and its size named).
@@ -806,9 +1004,18 @@ requirement of the mechanism.
   `record.get` and keeps delivering subscription events without gaps; a
   second `probe.run` on it gets `probe_busy`; a new handshake or a closed
   connection cancels the probe.
+- Cancel: `probe.cancel` during a probe that never returns drops its
+  future (a drop guard records it), frees its permits, answers the pending
+  `probe.run` with `probe_cancelled` and the cancel with `cancelled: true`;
+  the same connection can then run a probe again. With no probe in flight
+  the reply is `cancelled: false`. Dropping the client's `run` future sends
+  the cancel.
+- Reply limit: a client that states `max_frame` in `hello` gets a budget
+  computed from the smaller of that and the transport default; a client
+  that states none gets the transport default.
 - Stalled writer: a test connection whose `send` stops completing, after
   `probe.run` has been received, while a subscription keeps producing
-  events. Two cases run on a manually advanced clock:
+  events. Two cases run on the paused test clock:
   - a probe that never returns. Its future is dropped (a drop guard
     records when), and its per-probe and instance permits are free again,
     no later than the deadline. A
@@ -828,20 +1035,24 @@ requirement of the mechanism.
   incomplete that fits the budget; a window longer than the timeout is
   shortened and still returns before the deadline; nothing reaches a
   record.
-- KNX: the tunnel-engine observer against the fake gateway used by the
+- KNX: the tap against the fake gateway used by the
   current client tests, fed group reads, responses, writes and 6-bit
   values from several sources; nothing is sent; writes still reach their
   records; many addresses with four sources each are trimmed to fit an
-  8 KB budget; dropping the probe mid-window leaves the tunnel unchanged.
+  8 KB budget; dropping the probe mid-window leaves the tunnel unchanged;
+  a subscription that is not read fills its queue, counts the drops, and
+  the tunnel's ACKs go out on time; a second probe on the same tap sees
+  the same telegrams.
 - End to end: the CLI `probe run` with `--params` JSON, its exit codes
   (`4` on timeout, `5` on other probe errors, including a params error that
   names the field) and JSON output, including over a serial link at the
-  8 KB frame limit.
+  8 KB frame limit. Ctrl-C during `probe run` cancels the probe on the
+  instance.
 
 ## 9. Later: probes that use the running MQTT session
 
 Not in the first release. Observing the running session **passively**
-(topics it already receives) needs only an observer slot, like KNX, and can
+(topics it already receives) needs only a tap, like KNX, and can
 follow soon.
 
 Adding a **temporary subscription** to the running session is different. A
@@ -887,16 +1098,15 @@ it can ship separately.
    at registration and in the call. Until then, a developer who needs them
    writes their own probe.
 4. **Deferred to later versions:**
-   - **Cooperative cancellation:** a `cancelled()` signal with a grace
-     period, if a concrete resource needs asynchronous cleanup that `Drop`
-     cannot do.
+   - **Cooperative cancellation:** a `cancelled()` signal to the probe
+     with a grace period, if a concrete resource needs asynchronous cleanup
+     that `Drop` cannot do. `probe.cancel`, a deadline and a closed
+     connection would all raise it.
    - **Large schemas:** schemas whose describe reply exceeds 6 KB, for
      example via chunked retrieval like `instance.post_link`, if real
      probes need them.
    - **Schema-driven CLI parameters:** `--param k=v` typed by the params
      schema, if JSON `--params` proves too awkward.
-   - **A shared report-trimming helper,** once the MQTT and KNX probes show
-     what they share (§5.3).
 5. **Bounded serialization on `no_std`:** `serde_json` with `alloc` has no
    streaming serializer, so v1 checks the length after `to_vec` (§5.3).
    Options for a true bound: `serde-json-core` into a fixed buffer, or a
@@ -904,3 +1114,224 @@ it can ship separately.
 6. **Generating configuration from results:** turning a discovered,
    `linked: false` topic into a `link_from` declaration and a data contract
    draft is a natural next step for the CLI and the architecture agent.
+7. **`mqtts` for the MQTT probe on Embassy:** a second set of TLS buffers
+   and a second RNG handle (§6.2). Not tried in either spike; it may be
+   left out of the first release.
+8. **Repeated KNX telegrams:** on a live bus many group addresses showed
+   exactly two writes in a window (§11.6). The tunnel engine does not
+   filter repeated sequence numbers, so a gateway retransmission would be
+   counted, and delivered to a record, twice. Whether that is what
+   happened is not known.
+
+## 11. Spike findings
+
+A throwaway prototype of this design was built on the current code base
+(branch `spike/059-probe`, not for merging) to check the claims above
+against the real session engine. It covered the core mechanism, the AimX
+wire and session changes, and the client call. It did not cover the
+discovery probes.
+
+### 11.1 What was built
+
+- `aimdb-core`: `Probe`, `probe_fn`, `ProbeCtx`, `ProbeError`, `ProbeSpec`,
+  the registry with its registration limits, type erasure, bounded
+  serialization, the probe driver, `probe.list` / `probe.describe` /
+  `probe.run` / `probe.cancel`, `Session::call_deferred` and the change to
+  the connection loop, `msg` on error frames, `RpcError::Probe`, and
+  `max_frame` in `hello`. About 650 lines for the probe module and 250
+  lines of changes to existing files.
+- `aimdb-client`: `probe_run` with the version check and cancel on drop.
+- Tests: ten against the real `run_session`, `AimxCodec` and `AimxDispatch`
+  over an in-memory connection on a paused clock; one over the production
+  UDS server with the Tokio adapter in real time; one against the serial
+  `FrameAccumulator`.
+
+### 11.2 Confirmed
+
+| Claim | Result |
+|---|---|
+| The trait, `probe_fn` and the erasure compile; the erased future is `Send + 'static` (§2, §3) | Yes, for `probe_fn` and for a direct `impl Probe` that borrows `&self` and `&ctx` across an `.await`. Core also compiles for `thumbv7em-none-eabihf` with `alloc`, `remote` and `connector-session`. |
+| The connection stays live while a probe runs (§4.1) | Yes. `probe.list` and `record.list` are answered during a 60 s probe. The loop change is about 25 lines, and the 20 existing session-engine tests still pass. |
+| Three concurrency limits, each `probe_busy` (§5) | Yes, for the per-connection and per-probe limits, each with its own message. The instance limit uses the same code path as the per-probe limit and had no test of its own. |
+| The driver drops a probe at its deadline and frees its permits (§5.2) | Yes. A probe that never returns is dropped after exactly `timeout_ms`, or after `max_duration` when the caller asks for more. |
+| A closed connection and a new handshake drop the probe (§4.1) | Yes, both. No reply for the old request reaches the new session. |
+| A stalled writer does not delay the deadline (§4.1) | Yes. With the connection loop blocked in `send`, the probe is dropped on time and a second connection can run the same probe. Unblocking delivers the waiting `probe_timeout`. |
+| `probe.cancel` (§4.1) | Yes. The probe future is dropped, the permits are free, and the connection can run a probe at once. |
+| Dropping the client call cancels the probe (§4.1) | Yes, over UDS in real time. A probe with a 120 s limit is gone within 200 ms of the dropped call. |
+| A 4.0 client reads a 4.1 error frame as `Internal` (§4.1) | Yes. Checked against the unmodified 4.0 decoder with a `msg` that contains escaped quotes, a line break and a `\u` escape. |
+| Twelve worst-case `probe.list` entries fit a serial frame (§4.1) | Yes: a page of twelve is 8 159 bytes, which is exactly the largest payload the serial accumulator always delivers (8 159, measured byte by byte). There is no spare byte. |
+| An error reply is at most 604 bytes (§4.1) | Yes: 578 bytes with a message of quotes cut at 256 bytes. |
+| Registration limits and sealing (§3) | Yes: name, description length, control character, invalid schema JSON, describe reply over 6 KB and a duplicate name each fail `build()`; registration after `build()` is refused. |
+| `max_frame` in `hello` lowers the response budget (§5.3) | Yes. |
+| knx-pico exposes the telegram's source and APCI (§6.3) | Yes: `LDataFrame` has public `source` and `apci` fields. |
+
+### 11.3 Where the design had to change
+
+The sections named below have been updated to match.
+
+1. **Streaming serialization on `std` needs `serde_json`'s `std` feature
+   (§5.3).** The workspace builds `serde_json` with `alloc` only, on every
+   target, so `to_writer` and `Serializer` are missing on `std` as well.
+   Core's `std` feature enables `serde_json/std`. The spike did this
+   and the `no_std` check still passes.
+2. **`ProbeCtx::db()` is not read-only (§2, §7).** The only handle core has
+   is `AimDb`, which can `produce` and `set_record_from_json`. The
+   statement "a probe has no record writers" needs a new read-only view
+   type. §2 now defines `ProbeDb`.
+3. **No path exists from a transport to the session for the reply limit
+   (§5.3).** `Framer` has no size accessor and `AimxDispatch` ignores the
+   peer. The spike added a field to `PeerInfo` that reaches the session
+   through `SessionCtx`. Each transport must fill it; §5.3 now names this
+   path.
+4. **State both limits in decoded payload bytes (§5.3).** The text said
+   `hello.max_frame` is counted "the way that transport counts them". Then
+   the server needs every transport's overhead function to compare it with
+   its own limit. Now the client states the largest payload it accepts,
+   the transport states the same, and the server takes the smaller one.
+5. **`call_deferred` should borrow the params (§4.1).** With
+   `params: Payload` by value, a session that returns `None` has consumed
+   them and the loop cannot fall back to `call`. The spike used `&Payload`.
+6. **A misspelled parameter is not reported (§4.2, §5.1).** serde ignores
+   unknown fields. A misspelled optional field is silently replaced by its
+   default; a misspelled required field is reported as the *missing* one.
+   "An error names the field" holds only for a wrong type. Params types
+   should use `deny_unknown_fields`, and the ready-made probes must
+   (§5.1).
+7. **The existing test runtimes cannot test deadlines (§8).** Core's
+   `NoopRuntimeOps` and `ManualClockRuntimeOps` complete every sleep at
+   once, so "a manually advanced clock" does not exist yet. The spike used
+   Tokio's paused clock behind a small `RuntimeOps` (this needs Tokio's
+   `test-util` feature as a dev-dependency). The first release adds such a
+   test runtime (§8).
+
+### 11.4 Details the spike settled
+
+Most of these are now stated in the sections they belong to.
+
+- **Reply order after a cancel.** The reply to `probe.cancel` arrives
+  first, then `probe_cancelled` for the run.
+- **When the connection's slot is free.** As soon as the reply future
+  resolves, before the reply is written. A stalled writer does not keep the
+  connection `probe_busy`.
+- **The deadline timer.** `RuntimeOps` offers only a relative sleep. The
+  driver starts it when it first polls the invocation, while
+  `ctx.deadline()` is computed when the call is accepted. The two differ by
+  the time until the driver is polled.
+- **The reply envelope** around a body is 45 bytes with the longest request
+  id. A `probe.list` entry can gain no field without the serial page
+  dropping to eleven entries.
+- **Where the registry lives.** It fits in the instance's existing
+  `Extensions`, with a `spin::Mutex` inside, so `AimDbInner` does not
+  change.
+- **Instance settings.** `max_concurrent_probes` and `max_response_bytes`
+  had no builder method in this design; §5.3 now names them.
+- **Build errors.** `DbError::InvalidConfiguration` carries `ConfigError`,
+  which is keyed by record. Probe errors use an empty record key.
+- **Cancel on drop needs a task.** `ClientHandle::call` is async, so the
+  spike's drop guard spawned a task to send `probe.cancel`. §4.1 now
+  gives `ClientHandle` a fire-and-forget request instead.
+- **Version check.** The client has only a major-version comparison; the
+  probe check needs the minor as well. Raising `PROTOCOL_VERSION` to `4.1`
+  breaks one unit test that asserts the string.
+
+### 11.5 Not covered
+
+The first three items were covered by a second spike; see §11.6.
+
+- `MqttDiscover` and `KnxDiscover`, including the Embassy buffers and the
+  tunnel-engine observer. For KNX only the knx-pico fields were checked.
+- Running on Embassy. Core was compiled for a `no_std` target, not run.
+- Registration from a real connector's `build()`. The registry accepts
+  specs until it is sealed, but no connector did so in the spike.
+- The CLI and MCP commands, WebSocket, and a real serial link.
+- `schemars` schemas (§10.1).
+
+### 11.6 Second spike: the discovery probes, on a board
+
+A second prototype added `mqtt.discover` and `knx.discover` and ran them on
+a NUCLEO-H563ZI (Embassy), built from the two Embassy connector demos. The
+host talked to the board over the ST-LINK serial port with `aimdb-client`.
+The broker was the bench Mosquitto on the LAN; the KNX gateway was a real
+KNX/IP interface on a live installation.
+
+**Confirmed**
+
+| Claim | Result |
+|---|---|
+| A probe runs on Embassy (§2, §5.2) | Yes. `probe_fn` and both discovery probes run on the board. Their futures are `Send` through the adapter's existing transport wrappers; the probes add no `unsafe`. |
+| Liveness, busy, deadline and cancel on the board (§4.1, §5.2) | Yes, over serial. `record.list` is answered in 275 ms during a 4 s probe; a second `probe.run` gets `probe_busy`; a 1 500 ms deadline drops the probe future 1.50 s after it started, by the board's own log; dropping the client call frees a 60 s probe at once. |
+| `MqttDiscover::dedicated` on Tokio and Embassy (§6.2) | Yes, with one implementation over core's `StreamDialer`: `TokioNet::tcp()` on the host, `EmbassyNet::tcp(..)` on the board. On the board it runs next to the connector's own session, which keeps publishing and receiving. |
+| Dropping the probe releases the connection (§5.2) | Yes. The Embassy dialer already returns its socket to a slot when the stream is dropped. After a probe cancelled mid-window, the next run connects again. |
+| Registration from a connector's `build()` (§3) | Yes. The KNX connector registers `knx.discover` through `db.register_probe` while it builds. |
+| The KNX observer sits before the write-only filter (§6.3) | Yes. Reads, responses, writes, the source address and a data length of `0` for 6-bit values are reported; writes still reach their records; the probe sends nothing beyond the engine's ACKs. On the real bus a 90 s window listed 20 group addresses, two of them marked `linked`. |
+| Trimming to the serial budget (§5.3) | Yes, over the real serial link: 37 of 124 topics in a 7 458-byte reply, and 38 of 200 group addresses with four sources each on the host. The estimate of 30–50 entries holds. |
+| A window longer than the timeout is shortened (§5.2) | Yes; the reply arrives before the deadline and `coverage` says so. |
+| Error kinds (§2) | A wrong password gives `Refused`, an unreachable broker `Unavailable`, a KNX tunnel that is not connected `Unavailable`, and a misspelled parameter `InvalidParams` naming the field. |
+
+**Where the design had to change**
+
+The sections named below have been updated to match.
+
+1. **`linked` cannot be computed from the instance (§2, §6.2).** Nothing
+   lists the configured inbound links: `RecordMetadata` carries no link
+   topics. The KNX probe took them from its connector's own
+   `InboundDispatch`. The standalone `MqttDiscover::dedicated` had to be
+   given the filters by hand at registration. After review, core gains
+   `ProbeDb::inbound_links` instead (see the end of this section).
+2. **`KnxConnector::discover_probe()` cannot exist as written (§6.3).** The
+   connector is moved into the builder before the tunnel exists. The spike
+   used an opt-in on the connector, `KnxConnector::with_discover_probe()`,
+   which registers the probe from `build()`. After review, the connector
+   hands out a tap instead (see the end of this section).
+3. **The observer needs the tunnel's state (§6.3).** With only a telegram
+   callback, an empty result from a disconnected tunnel looks like a quiet
+   bus. The spike's slot also carries a `connected` flag that the
+   connection task keeps current; the probe refuses with `Unavailable`
+   when it is not set and notes a tunnel lost during the window.
+4. **The Embassy MQTT probe needs less memory than §6.2 says.** It reads
+   the stream byte-wise and discards payloads, so it needs no 4 KB packet
+   buffer. On the board it used a 1 024-byte receive and a 512-byte send
+   socket buffer, one more `StackResources` slot, and its topic table.
+5. **The probe has its own MQTT client (§6.2).** The spike
+   wrote a minimal MQTT 3.1.1 client (CONNECT, SUBSCRIBE, DISCONNECT, about
+   120 lines) instead of reusing the session's `mountain-mqtt` v5 code,
+   which is built around the session's buffers. It sends no keep-alive
+   pings; it asks for a keep-alive longer than the window. Retained
+   messages can arrive before the SUBACK, so the window loop must accept
+   both.
+6. **A shared trimming helper is already justified (§5.3, §10.4).** Both
+   probes ended up with the same loop: sort, add entries while the running
+   size fits, report what was left out. Both connector crates also need
+   `serde_json` to size an entry. Core now provides the helper.
+
+**Open after this spike**
+
+- **Duplicate KNX telegrams.** Many group addresses on the real bus showed
+  exactly two writes in the window. The observer counts every tunnelling
+  request, and the engine does not filter repeated sequence numbers. It was
+  not determined whether the bus carries these telegrams twice or the
+  gateway retransmits them (§10).
+- **Ordering.** The spike sorted group addresses as strings (`1/0/12`
+  before `1/0/6`); §6.3 now asks for address order.
+- **Caps at registration** for `max_topics` and `max_addresses`, and the
+  `allowed_filter`, were not built.
+
+**Changed after review, not prototyped.** The spike registered
+`knx.discover` from the connector's `build()` and fed a callback inside
+the tunnel engine; it gave the MQTT probe its link topics by hand. A
+review after the spike changed three things, and the sections above
+describe the result:
+
+- Probes are registered on the builder only. The KNX connector hands out
+  a tap before `build()`; `db.register_probe` and the sealed registry are
+  gone (§3). The spike's slot was already a handle that does not depend on
+  the tunnel, so this is expected to work, but it was not run.
+- The tap is a bounded queue per subscription with a drop count, not a
+  callback, so user code never runs inside the tunnel engine (§6.3).
+- `ProbeDb::inbound_links(scheme)` is new in core and replaces the link
+  topics handed over by a connector (§2).
+
+**Still not covered:** `mqtts` for the probe on Embassy (its own TLS
+buffers and RNG), observing the running MQTT session, the CLI and MCP
+commands, WebSocket, and `schemars` schemas.
+
