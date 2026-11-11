@@ -100,7 +100,6 @@ impl McpServer {
     }
 
     /// Set server state (internal use)
-    #[allow(dead_code)]
     pub(crate) async fn set_state(&self, new_state: ServerState) {
         *self.state.lock().await = new_state;
     }

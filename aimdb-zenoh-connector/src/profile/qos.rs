@@ -1,5 +1,6 @@
 //! The QoS field of a liveliness token.
 
+#[cfg(test)]
 use alloc::string::String;
 use core::fmt;
 
@@ -47,12 +48,14 @@ impl Reliability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Durability {
     Volatile,
+    #[allow(dead_code)]
     TransientLocal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum History {
     KeepLast,
+    #[allow(dead_code)]
     KeepAll,
 }
 
@@ -71,6 +74,7 @@ impl Default for Qos {
 
 impl Qos {
     /// The token's QoS field; see the [`Display`](fmt::Display) impl.
+    #[cfg(test)]
     pub(crate) fn encode(&self) -> String {
         alloc::format!("{self}")
     }

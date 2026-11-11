@@ -25,6 +25,7 @@ impl Attachment {
     }
 
     /// `None` unless `bytes` has exactly this layout.
+    #[cfg(test)]
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes: &[u8; ATTACHMENT_LEN] = bytes.try_into().ok()?;
         if bytes[16] != 16 {

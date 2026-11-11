@@ -20,7 +20,6 @@ pub const EXIT_TIMEOUT: i32 = 4;
 
 /// CLI-specific errors with helpful messages and hints
 #[derive(Debug, Error)]
-#[allow(dead_code)] // Some variants are for future use
 pub enum CliError {
     /// Failed to connect to AimDB instance
     #[error("Connection failed: {endpoint}\n  Reason: {reason}\n  Hint: Check if AimDB instance is running")]
@@ -35,14 +34,17 @@ pub enum CliError {
     NoInstancesFound,
 
     /// Requested record does not exist
+    #[allow(dead_code)]
     #[error("Record '{name}' not found\n  Use 'aimdb record list' to see available records")]
     RecordNotFound { name: String },
 
     /// Attempted write operation on read-only record
+    #[allow(dead_code)]
     #[error("Permission denied: {operation}\n  Record '{name}' is not writable\n  Hint: Check 'writable' column in 'aimdb record list'")]
     WriteProtected { operation: String, name: String },
 
     /// Protocol version mismatch between client and server
+    #[allow(dead_code)]
     #[error("Protocol error: {message}\n  Server version: {server_version}\n  Client version: {client_version}")]
     ProtocolMismatch {
         message: String,
@@ -138,7 +140,6 @@ impl CliError {
     }
 }
 
-#[allow(dead_code)] // Helper methods for future use
 impl CliError {
     /// Create a connection failed error
     pub fn connection_failed(endpoint: impl Into<String>, reason: impl Into<String>) -> Self {
@@ -148,6 +149,17 @@ impl CliError {
         }
     }
 
+    /// Create an invalid JSON error
+    pub fn invalid_json(input: impl Into<String>, error: impl fmt::Display) -> Self {
+        Self::InvalidJson {
+            input: input.into(),
+            error: error.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl CliError {
     /// Create a record not found error
     pub fn record_not_found(name: impl Into<String>) -> Self {
         Self::RecordNotFound { name: name.into() }
@@ -171,14 +183,6 @@ impl CliError {
             message: message.into(),
             server_version: server_version.into(),
             client_version: client_version.into(),
-        }
-    }
-
-    /// Create an invalid JSON error
-    pub fn invalid_json(input: impl Into<String>, error: impl fmt::Display) -> Self {
-        Self::InvalidJson {
-            input: input.into(),
-            error: error.to_string(),
         }
     }
 
