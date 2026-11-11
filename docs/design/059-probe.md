@@ -82,9 +82,11 @@ move a copy into the futures it creates. It gives the probe:
 - `db()`, a read-only view of the instance. It returns a new `ProbeDb`
   type, not the `AimDb` handle, because `AimDb` can produce and set
   records. `ProbeDb` wraps the handle and exposes only reads: the record
-  metadata and a record's latest value as JSON. It does not list the
-  configured links; the instance has no such listing today. A probe that
-  marks results as linked gets the link topics from its connector (§6).
+  metadata, a record's latest value as JSON, and
+  `inbound_links(scheme)`, the topics and patterns of the configured
+  inbound links of one connector scheme. The discovery probes use the
+  last to mark results as `linked`. Core has no such listing today; it is
+  new, and built from the same link declarations the connectors read.
 - `clock()` and `time()`, the instance's clock and sleep, so probes are
   runtime-neutral.
 - `response_budget()`, the number of bytes the serialized `Output` may take
@@ -190,21 +192,32 @@ and a mistyped field both give `InvalidParams`, and the erased future is
 `Send`.
 With the `schemars` feature, the spec takes both schemas from `P` and `O`.
 Implementing `Probe` directly is for reusable probes that carry
-configuration, like the ready-made ones. Those are registered by their
-connector, which knows the configured links and owns the tunnel or the
-broker settings (§6):
+configuration, like the ready-made ones. The application registers those
+too, and gives them a name, a description and limits like any other
+probe:
 
 ```rust
-let mqtt = builder.connect(
-    MqttConnector::new(&broker_url)
-        .transport(session_dialer)
-        .with_discover_probe(probe_dialer),   // registers `mqtt.discover`
+// MQTT: the probe dials its own connection (§6.2).
+builder.probe(
+    ProbeSpec::new("mqtt.discover", MqttDiscover::dedicated(probe_dialer, &broker_url))
+        .description("Topics seen on the broker during a window")
+        .max_duration(Duration::from_secs(120)),
 );
-let knx = builder.connect(
-    KnxConnector::new(binder, delay, &gateway_url)
-        .with_discover_probe(),               // registers `knx.discover`
+
+// KNX: the connector hands out a tap on its tunnel before it is moved
+// into the builder; the probe is built on the tap (§6.3).
+let knx_connector = KnxConnector::new(binder, delay, &gateway_url);
+let tap = knx_connector.tap();
+let knx = builder.connect(knx_connector);
+builder.probe(
+    ProbeSpec::new("knx.discover", KnxDiscover::new(tap))
+        .description("Group addresses seen on the bus during a window")
+        .max_duration(Duration::from_secs(300)),
 );
 ```
+
+A connector never registers a probe. It exposes what only it can provide,
+such as the tap, and the application decides which probes exist.
 
 - **Name:** unique per instance (a duplicate fails `build()`). At most
   `PROBE_NAME_MAX` (64) bytes of `[a-z0-9._-]`, so it never needs JSON
@@ -239,23 +252,17 @@ description. Typical schemas are far below the bound: the full
 `mqtt.discover` describe reply, with schemars-style schemas for its params
 and output, is about 2 KB.
 
-Registration can happen on the builder, or from a connector's `build()`
-through `db.register_probe(spec)` when the probe needs handles that only the
-built connector has, such as its running KNX tunnel (§6.3). Core erases the types
-behind the spec: it keeps a closure that deserializes the params, runs the
-probe and serializes the output.
+Registration happens on the builder only, before `build()`. Core erases
+the types behind the spec: it keeps a closure that deserializes the
+params, runs the probe and serializes the output.
 
-Connectors are built after the database exists: `AimDbBuilder::build()`
-calls each `ConnectorBuilder::build(&db)` with the shared `&AimDb`. So
-`register_probe(&self, …)` needs a registry with interior mutability. It
-lives in the instance's existing `Extensions`, behind a lock that also
-works on `no_std`, so `AimDbInner` does not change. It
-holds the builder's specs, accepts further specs while connectors build, and
-is **sealed when `build()` returns**. A later `register_probe` returns an
-error. A duplicate name fails `build()` whether it comes from the builder or
-from a connector. `probe.list` and `probe.run` read the sealed registry on
-every call, so the order in which connectors are built (including the
-connector that serves AimX) does not matter.
+`build()` checks the specs and puts them into the registry, which is
+immutable from then on. It lives in the instance's existing `Extensions`,
+so `AimDbInner` does not change, and it needs no lock for lookups and no
+sealing step. A duplicate name fails `build()`. A probe that needs
+something from a connector gets it as a handle the connector builder
+hands out before `build()`, like the KNX tap. Such a handle must work
+before the connector runs: until then it simply reports nothing.
 
 ## 4. Invocation
 
@@ -391,7 +398,7 @@ cannot enforce a deadline on its own. It awaits each outbound `send`, and
 the transports' `send` awaits `write_all` and `flush`. When a client stops
 reading, for example during a busy subscription, a send blocks, and nothing
 else the loop owns is polled. A probe future driven there would miss its
-deadline and keep its permits and its connection or observer for as long as
+deadline and keep its permits and its connection or tap subscription for as long as
 the writer is stalled. Polling it from one more arm of the same loop does
 not help.
 
@@ -586,10 +593,10 @@ can fail:
 - A dedicated connection is owned by the probe's future. Dropping it closes
   the socket; the broker or gateway ends the session on its side. Nothing of
   the running instance is involved.
-- An observer on a running session (the KNX tunnel engine, §6.3) is a slot
-  the session reads on each telegram. Dropping the observer empties the slot.
-  This is a plain store, with no queue that could be full and nothing to
-  undo on the session.
+- A subscription to a tap on a running session (the KNX tunnel, §6.3) is
+  owned by the probe's future. Dropping it removes the subscription and
+  frees its queue. This is a plain store with nothing to undo on the
+  session, and the session never waits for a subscriber.
 
 The first release has no probe that changes a running session. Changing
 live subscriptions needs a cleanup mechanism that this pattern cannot
@@ -783,14 +790,14 @@ session and can see everything its credentials allow. Nothing it receives
 reaches a record. It needs a second socket while it runs, and
 `coverage.connection` is `"dedicated"`.
 
-**Registration.** `MqttConnector::with_discover_probe(dialer)` registers
-`mqtt.discover` from the connector's `build()`. The connector passes on
-what the probe needs and the instance cannot tell it: the broker address
-and credentials, and the topics of the configured inbound links, from
-which `linked` is computed. `dialer` is the probe's own transport, a
-`StreamDialer` like the one the embedded session uses (`TokioNet::tcp()`,
-`EmbassyNet::tcp(..)`), so one probe implementation serves Tokio and
-Embassy.
+**Registration.** The application registers
+`MqttDiscover::dedicated(dialer, &broker_url)` on the builder (§3). The
+probe needs nothing from the MQTT connector: it has its own broker address
+and credentials, and it computes `linked` from
+`ctx.db().inbound_links("mqtt")` (§2). `dialer` is the probe's own
+transport, a `StreamDialer` like the one the embedded session uses
+(`TokioNet::tcp()`, `EmbassyNet::tcp(..)`), so one probe implementation
+serves Tokio and Embassy.
 
 **Protocol.** The probe has its own minimal MQTT 3.1.1 client: CONNECT,
 SUBSCRIBE, DISCONNECT, and a reader for PUBLISH. It does not reuse the
@@ -838,23 +845,24 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
 
 **How it observes:**
 
-- `KnxConnector::with_discover_probe()` registers `knx.discover` from the
-  connector's `build()`; the connector is moved into the builder before
-  its tunnel exists, so it cannot hand out a probe itself. The probe
-  observes the **existing tunnel**. The
-  tunnel already receives every group telegram the gateway forwards. This
-  needs no extra tunnel slot and sends nothing on the bus. It observes
-  through an observer slot (§5.2) and changes nothing on the tunnel. This
-  is the first release's KNX probe. `linked` is computed from the
-  connector's own inbound routes.
+- `KnxDiscover::new(tap)` observes the **existing tunnel** through a tap
+  that the connector hands out (`KnxConnector::tap()`, §3). The tunnel
+  already receives every group telegram the gateway forwards, so this
+  needs no extra tunnel slot and sends nothing on the bus. This is the
+  first release's KNX probe. `KnxDiscover` ships in the connector crate
+  as a reference implementation with one tested report shape; an
+  application registers it with one line, or builds its own probe on the
+  same tap, for example one that watches a single group address. The
+  connector itself carries no caps, no trimming and no report format.
+  `linked` is computed from `ctx.db().inbound_links("knx")` (§2).
 
-  **Where the observer sits.** Today `parse_telegram` in `tunnel.rs`
+  **Where the tap is fed.** Today `parse_telegram` in `tunnel.rs`
   reduces each cEMI frame to a group address and a payload before anything
   else sees it. It keeps only `GroupValue_Write`, so reads and responses
   are dropped. It discards the source individual address. A 6-bit value
   becomes a one-byte payload. The probe's `telegrams: {write, response,
   read}`, `sources` and `data_len` cannot be computed from what comes out
-  of it, so the observer cannot sit at `TunnelIo::forward` or at the
+  of it, so the tap cannot be fed at `TunnelIo::forward` or at the
   `InboundDispatch` either. It sits in the tunnel engine, where the
   `TunnellingRequest` is handled. For every `L_Data` frame with a group
   destination, before the write-only filter, it records the destination,
@@ -863,21 +871,31 @@ max}, first_seen_ms, last_seen_ms, linked } ] }`.
   exposes `source` and `apci`, so nothing new is parsed. The path that
   delivers writes to records is unchanged.
 
-  **What the connector provides.** The hook is the one part an application
-  cannot add from outside, so it is connector API: while an observer is
-  installed, the tunnel engine calls it once for every group telegram, in
-  arrival order, with a plain summary (destination, APCI kind, source,
-  data length), not the raw frame. The engine keeps no telegrams itself.
-  Counting and bounding them is the observer's job; `KnxDiscover` folds
-  each summary into its per-address table as it arrives.
+  **The tap's contract.** The tap is the one part an application cannot
+  add from outside, so it is connector API:
 
-  The slot also carries the tunnel's state: a `connected` flag that the
-  connection task keeps current. Without it, an empty result from a
-  tunnel that is down looks like a quiet bus. The probe returns
-  `Unavailable` when the tunnel is not connected at the start, and marks
-  the result incomplete when it is not connected at the end.
+  - `tap.subscribe(capacity)` returns a subscription with its own bounded
+    queue of telegram summaries (destination, APCI kind, source, data
+    length), not raw frames. The probe reads it with `next().await`.
+  - The tunnel engine feeds every subscription for every group telegram,
+    in arrival order, with a push that never waits. It runs no user code.
+    A slow or stalled probe therefore cannot delay the acknowledgements
+    to the gateway.
+  - When a queue is full the telegram is not queued for that subscription
+    and its `dropped()` count goes up. A probe reports that count, so a
+    burst that outran it is visible in the result.
+  - With no subscription the engine does nothing extra.
+  - `tap.connected()` gives the tunnel's state, which the connection task
+    keeps current. Without it, an empty result from a tunnel that is down
+    looks like a quiet bus.
+  - Dropping the subscription removes it (§5.2). A tap taken from a
+    connector that is not running yet reports not connected.
 
-  The report lists group addresses in address order, not as strings.
+  `KnxDiscover` folds each summary into its per-address table as it
+  reads it. It returns `Unavailable` when the tunnel is not connected at
+  the start, marks the result incomplete when the tunnel is not connected
+  at the end or when telegrams were dropped, and lists group addresses in
+  address order, not as strings.
 - Later: `KnxDiscover::dedicated(gateway)` opens its own tunnel for the
   window, for instances without a KNX connector. It is refused if the
   gateway has no free tunnel slot.
@@ -901,8 +919,8 @@ requirement of the mechanism.
 
 ## 7. Safety
 
-- **Only registered code runs.** The registry is sealed when `build()`
-  returns (§3).
+- **Only registered code runs.** Probes are registered on the builder, and
+  the registry does not change after `build()` (§3).
 - **Read-only from AimDB's point of view.** A probe has no record writers in
   `ProbeCtx`: `ctx.db()` is the read-only `ProbeDb` view, not the `AimDb`
   handle (§2). A probe that captures an `AimDb` handle of its own at
@@ -922,7 +940,8 @@ requirement of the mechanism.
 
 1. **Core** (`aimdb-core/src/probe/`): `Probe`, `probe_fn`, `ProbeCtx`
    with `response_budget()` and the read-only `ProbeDb` view, `ProbeError`, `ProbeSpec`, the registry
-   (interior-mutable, sealed at the end of `build()`), type erasure, the
+   (filled by `build()`, immutable afterwards), `ProbeDb::inbound_links`,
+   type erasure, the
    final size check (streaming on `std`, which enables `serde_json/std`;
    `to_vec` and a length check on `no_std`), the instance's
    `max_response_bytes` and `max_concurrent_probes` builder settings, the registration limits
@@ -944,15 +963,15 @@ requirement of the mechanism.
    in `hello`, and `probe.cancel` sent when a `run` call is dropped,
    `aimdb probe` with JSON `--params`, and the `probe_list` /
    `probe_describe` / `probe_run` tools.
-4. **`MqttConnector::with_discover_probe(dialer)`** on Tokio and Embassy:
-   a dedicated connection over the given `StreamDialer`, its own minimal
-   MQTT client, the link topics from the connector (§6.2), and trimming
-   to the response budget with core's helper (§5.3).
-5. **`KnxConnector::with_discover_probe()`** on the existing tunnel, with
-   an observer slot in the tunnel engine that receives a summary of every
-   group telegram, before the write-only filter, only while a probe runs,
-   and carries the tunnel's connected state (§6.3); trimming with core's
-   helper.
+4. **`MqttDiscover::dedicated(dialer, url)`** on Tokio and Embassy: a
+   dedicated connection over the given `StreamDialer`, its own minimal
+   MQTT client, `linked` from `ProbeDb::inbound_links` (§6.2), and
+   trimming to the response budget with core's helper (§5.3).
+5. **`KnxConnector::tap()`** and **`KnxDiscover::new(tap)`**: a tap on the
+   tunnel engine, fed before the write-only filter, with a bounded queue
+   per subscription, a drop count and the tunnel's connected state
+   (§6.3); `KnxDiscover` as the reference probe on it, trimming with
+   core's helper.
 6. **Demos:** a `probe_fn` example (`board.info`) in an Embassy demo, with
    the RAM cost of a dedicated MQTT probe noted.
 
@@ -970,7 +989,7 @@ dev-dependency), which the spike used (§11).
   dropped at the deadline and the reply is `Timeout`), the budget
   computation per transport (serial 8 KB measured COBS-encoded, TCP
   `max_frame`, UDS unbounded), `ResponseTooLarge` (without full buffering
-  on `std`), registration after `build()` refused, and registration limits
+  on `std`), `inbound_links` per scheme, and registration limits
   (an over-long name or description, a control character in the
   description, invalid schema JSON, or a describe reply over 6 KB fails
   `build()` with the probe and its size named).
@@ -1016,11 +1035,14 @@ dev-dependency), which the spike used (§11).
   incomplete that fits the budget; a window longer than the timeout is
   shortened and still returns before the deadline; nothing reaches a
   record.
-- KNX: the tunnel-engine observer against the fake gateway used by the
+- KNX: the tap against the fake gateway used by the
   current client tests, fed group reads, responses, writes and 6-bit
   values from several sources; nothing is sent; writes still reach their
   records; many addresses with four sources each are trimmed to fit an
-  8 KB budget; dropping the probe mid-window leaves the tunnel unchanged.
+  8 KB budget; dropping the probe mid-window leaves the tunnel unchanged;
+  a subscription that is not read fills its queue, counts the drops, and
+  the tunnel's ACKs go out on time; a second probe on the same tap sees
+  the same telegrams.
 - End to end: the CLI `probe run` with `--params` JSON, its exit codes
   (`4` on timeout, `5` on other probe errors, including a params error that
   names the field) and JSON output, including over a serial link at the
@@ -1030,7 +1052,7 @@ dev-dependency), which the spike used (§11).
 ## 9. Later: probes that use the running MQTT session
 
 Not in the first release. Observing the running session **passively**
-(topics it already receives) needs only an observer slot, like KNX, and can
+(topics it already receives) needs only a tap, like KNX, and can
 follow soon.
 
 Adding a **temporary subscription** to the running session is different. A
@@ -1100,9 +1122,6 @@ it can ship separately.
    filter repeated sequence numbers, so a gateway retransmission would be
    counted, and delivered to a record, twice. Whether that is what
    happened is not known.
-9. **A link listing in core:** if developer probes need to know the
-   configured links, `ProbeDb` needs a listing that core does not have
-   today (§2).
 
 ## 11. Spike findings
 
@@ -1257,13 +1276,13 @@ The sections named below have been updated to match.
    lists the configured inbound links: `RecordMetadata` carries no link
    topics. The KNX probe took them from its connector's own
    `InboundDispatch`. The standalone `MqttDiscover::dedicated` had to be
-   given the filters by hand at registration. The design now has the MQTT
-   connector register its probe, as the KNX one does, and `ProbeDb` no
-   longer promises a link listing.
+   given the filters by hand at registration. After review, core gains
+   `ProbeDb::inbound_links` instead (see the end of this section).
 2. **`KnxConnector::discover_probe()` cannot exist as written (§6.3).** The
    connector is moved into the builder before the tunnel exists. The spike
    used an opt-in on the connector, `KnxConnector::with_discover_probe()`,
-   which registers the probe from `build()`.
+   which registers the probe from `build()`. After review, the connector
+   hands out a tap instead (see the end of this section).
 3. **The observer needs the tunnel's state (§6.3).** With only a telegram
    callback, an empty result from a disconnected tunnel looks like a quiet
    bus. The spike's slot also carries a `connected` flag that the
@@ -1296,6 +1315,21 @@ The sections named below have been updated to match.
   before `1/0/6`); §6.3 now asks for address order.
 - **Caps at registration** for `max_topics` and `max_addresses`, and the
   `allowed_filter`, were not built.
+
+**Changed after review, not prototyped.** The spike registered
+`knx.discover` from the connector's `build()` and fed a callback inside
+the tunnel engine; it gave the MQTT probe its link topics by hand. A
+review after the spike changed three things, and the sections above
+describe the result:
+
+- Probes are registered on the builder only. The KNX connector hands out
+  a tap before `build()`; `db.register_probe` and the sealed registry are
+  gone (§3). The spike's slot was already a handle that does not depend on
+  the tunnel, so this is expected to work, but it was not run.
+- The tap is a bounded queue per subscription with a drop count, not a
+  callback, so user code never runs inside the tunnel engine (§6.3).
+- `ProbeDb::inbound_links(scheme)` is new in core and replaces the link
+  topics handed over by a connector (§2).
 
 **Still not covered:** `mqtts` for the probe on Embassy (its own TLS
 buffers and RNG), observing the running MQTT session, the CLI and MCP
