@@ -7,7 +7,7 @@ trace ID, the write's own span ID, its parent's span ID, and a depth. It is
 carried in `WriteMetadata` (058) and propagated along derivations and across
 connectors that can carry it. Propagation goes through the existing
 transform, join and producer APIs, plus one new transform body for
-single-input async derivations. Rerun taps get exact causal chains, and
+single-input async derivations. Rerun taps get exact parent chains, and
 agents can follow them through the writes they captured or can still read
 (§6). Breaking for Rust APIs (join handlers, `WriteMetadata`, session
 engine, `AimDbBuilder`); additive on the wire (the graph shapes do not
@@ -67,8 +67,8 @@ through a `DerivedProducer<O>`:
 builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .transform::<Temperature, _>(TempKey::Calibrated, |t| {
-            t.on_values(|ctx, mut rx, producer| async move {
-                while let Some(temp) = rx.recv().await {      // Stamped<Temperature>
+            t.on_stream(|ctx, mut rx, producer| async move {
+                while let Ok(temp) = rx.recv().await {        // Stamped<Temperature>
                     if temp.value.celsius > 80.0 {
                         producer.produce_from(Alarm::Overheat, temp.metadata());
                     }
@@ -84,21 +84,28 @@ builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
 - In the graph it is the existing `RecordOrigin::Transform { input }`, so
   the graph shapes on the wire do not change.
 - The receiver is typed: no boxing, no downcast.
-- `rx.recv()` returns `Some(Stamped<I>)` for each value and `None` only when
-  the input closes. A lagging receiver skips the values it missed, reports
+- The name is `on_stream`, not `on_values`: `with_state(…).on_value(…)`
+  already exists as the synchronous per-value closure, and one letter is too
+  small a difference for a body that runs its own loop.
+- The handler has the same shape as a join's (§2.3): `|ctx, rx, producer|`,
+  and `rx.recv()` returns `Ok(Stamped<I>)` for each value and `Err` only when
+  the input closes, as `JoinEventRx::recv` does. A lagging receiver skips the values it missed, reports
   them (`TransformEvent::Lagged`, as `map` and `with_state` do) and
   continues, so a burst cannot stop the transform.
 
 ### 2.3 Joins
 
 `on_triggers` handlers receive a `DerivedProducer<O>` instead of a
-`Producer<O>`. `JoinTrigger` already carries the input's `WriteMetadata`:
+`Producer<O>`, and the runtime context as a new first argument, so that a
+join can use timers (the case `produce_origin` exists for) and has the same
+shape as `on_stream`. `JoinTrigger` already carries the input's
+`WriteMetadata`:
 
 ```rust
 reg.transform_join(|b| b
     .input::<Temperature>(TempKey::Gamma)
     .input::<Humidity>(HumidityKey::Gamma)
-    .on_triggers(|mut rx, producer| async move {
+    .on_triggers(|ctx, mut rx, producer| async move {
         while let Ok(trigger) = rx.recv().await {
             // … update state …
             producer.produce_from(dew_point(&t, &h), trigger.metadata());
@@ -116,6 +123,14 @@ impl<O> DerivedProducer<O> {
 `DerivedProducer` has no plain `produce`, so a join or an async transform
 cannot forget its cause.
 
+**A write has one parent.** A join output names the write that triggered
+it. The other inputs' values, which the handler kept as state, are not
+recorded: in the example above, a dew point triggered by a temperature
+continues the temperature's trace and does not mention the humidity write
+it was computed with. When the inputs come from different origins, the
+other input's trace ends at the join. Recording several causes per write
+(OTEL "links") is not part of this design (§6).
+
 ### 2.4 Producers
 
 `Producer<T>` keeps `produce`, which starts a trace, and gains
@@ -123,6 +138,10 @@ cannot forget its cause.
 example a task that bridges an external system. Such writes have an exact
 parent, but the graph has no edge for them (the record stays `Passive`).
 Derivations from another record should use a transform (§2.2).
+
+`aimdb-sync` is unchanged: `SyncProducer::set` and `set_value` start a
+trace, like `produce`. Synchronous code sits outside the graph and has no
+cause to pass; a sync `produce_from` can follow if a user needs it.
 
 ### 2.5 Reading
 
@@ -231,12 +250,13 @@ continues `c` with `parent = c.span`. Only
 | `map`, `with_state` | the input |
 | `Producer::produce_from`, `DerivedProducer::produce_from` | the given metadata |
 | inbound connector with a trace on the wire | the wire trace |
-| AimX `write` from a peer's outbound mirror, with a trace | the wire trace (§5.1) |
-| inbound connector or AimX `write` without one, AimX `record.set`, persistence restore | `None` |
+| AimX `write` or `record.set` with a trace | the wire trace (§5.1) |
+| inbound connector, AimX `write` or `record.set` without one, persistence restore | `None` |
 
 An inbound value without a trace therefore gets a new ID when, and only
-when, it is inserted into a local record. Every AimX `record.set` starts a
-trace: a remote client cannot continue one.
+when, it is inserted into a local record. A peer that writes can name a
+cause on either path, a mirror `write` or a `record.set`; the trace is
+advisory and is not authenticated on either.
 
 ### 4.2 IDs
 
@@ -282,6 +302,16 @@ ID or the runtime: a tag the user chose is distinct by construction, can be
 read in a trace, and stays the same across restarts. Tags are `NonZero`, so
 a span is never all zero, including at the counter wrap. The `test_support`
 builders set a fixed tag, so tests that do not care about it need no change.
+
+**Instances without provisioning.** Browser tabs running the WASM adapter,
+scaled replicas and short-lived tools have no table to take a tag from. The
+application still supplies the tag, and may draw it at random when the
+instance starts (`crypto.getRandomValues` in a browser, the OS RNG on a
+host). That is the application's choice and the application's risk: random
+tags are distinct only with high probability (100 instances collide with
+probability about 1 in 860,000), and §4.2.1 reports a collision when it can
+see one. The framework never draws a tag itself, so core and the adapters
+need no entropy source.
 
 **Guarantee: spans.** Within one trace, two writes have different span IDs
 if
@@ -331,24 +361,38 @@ Two instances with the same tag break condition 1 silently in general. The
 framework reports what it can see, without changing any write:
 
 - **An inbound span carries the instance's own tag**
-  (`TraceEvent::OwnTagInbound`, counted with `observability`). It means
-  either another instance uses the same tag, or the instance's own write
-  from before a restart has come back (a retained message after a reboot).
-  It is a diagnostic, not an error: the second cause is normal operation.
+  (`TraceEvent::OwnTagInbound`, counted with `observability`). It means one
+  of three things: another instance uses the same tag; the instance's own
+  write from before a restart has come back (a retained message after a
+  reboot); or the instance receives its own publishes (it subscribes to a
+  topic it also publishes on). It is a diagnostic, not an error: the last
+  two are normal operation. Every occurrence is counted; it is logged once
+  per inbound route per connection, so an echoing topic does not fill the
+  log.
 - **An AimX peer announces the same tag** (`TraceEvent::DuplicateTag`).
   `hello` and `welcome` gain an optional `instance_tag` field, sent by
   instances with `trace-context` enabled (a CLI or MCP client sends none).
   Whichever side sees its own tag reports it and keeps the connection: the
-  trace is advisory and never costs a link. The WebSocket server does not
-  read `hello`, so over WebSocket only the client side checks.
+  trace is advisory and never costs a link.
+- **Over WebSocket there is no `hello` and no `welcome`** (the client runs
+  `sends_hello: false`, the server `reads_hello: false`), so the tag travels
+  in the upgrade URL, next to the version: `…/ws?v=4.2&tag=0000a1f3`.
+  `ws_url_with_version`, which every first-party dialer already uses, adds
+  it when `trace-context` is enabled. Only the server checks, at the
+  upgrade; it reports `DuplicateTag` and accepts the connection. A browser
+  cannot read the upgrade response, so the client side learns of a
+  duplicate only through `OwnTagInbound`.
 
 MQTT and Zenoh peers announce nothing, so a duplicate tag behind a broker
 shows up only as `OwnTagInbound`.
 
 ### 4.2.2 Counter
 
-The counter is a 64-bit atomic where the target has one, and a
-`critical-section` lock elsewhere (Cortex-M has no native 64-bit atomics).
+The counter is a `portable_atomic::AtomicU64`: a native 64-bit atomic where
+the target has one, and a `critical-section` lock elsewhere (Cortex-M has
+no native 64-bit atomics). `trace-context` enables `portable-atomic`'s
+`fallback` and `critical-section` features, exactly as the `observability`
+feature already does, so no new dependency or lock type is needed.
 It must be a critical section, not a spin lock: a record written from an
 interrupt handler while the main context holds a spin lock would deadlock a
 single-core MCU. (The prototype used a spin lock; it is not acceptable for
@@ -388,8 +432,9 @@ origins and continued writes alike, since every write now draws a span.
 | `produce` + `try_recv` | 112.8 ns | 125.2 ns |
 
 No allocation is added on the produce, consume and connector paths
-(`aimdb-bench` B0 suites), nor on AimX subscription events. `record.get`
-gains one allocation per call (§5). The Embassy benchmark
+(`aimdb-bench` B0 suites), nor on AimX subscription events. In the
+prototype `record.get` gained one allocation per call; the implementation
+must not (§5). The Embassy benchmark
 (`embassy-bench-stm32h5`) runs in phase 1, with the feature enabled, to
 document the MCU cost for applications that opt in.
 
@@ -405,7 +450,8 @@ One carrier value everywhere:
 | AimX over TCP, UDS, WebSocket | optional `trace` field next to `ts` on every value |
 | AimX over Serial | off by default; a client turns it on for its session in `hello` (§5.0), the server's configuration can change the default |
 | MQTT v5 (both backends, §5.3) | user property `aimdb-trace` |
-| Zenoh | attachment key `aimdb-trace` |
+| Zenoh, `zenoh://` | the publication's attachment (§5.4) |
+| Zenoh, `ros2://` | not carried (§5.4) |
 | KNX | not carried |
 
 ```json
@@ -413,9 +459,15 @@ One carrier value everywhere:
  "trace":"5a07b3f1000000000000000000000002/3/9c41e2d000000a1f/5a07b3f100000004","data":{"celsius":21.5}}
 ```
 
+- **The carrier can grow.** A decoder reads the first four `/`-separated
+  fields and ignores any that follow, so a later version can append fields
+  (flags, for example) without older peers treating the value as malformed.
 - The field is optional: an older peer or a link with tracing off sends
-  none. AimX decoders ignore unknown fields, so this is the next minor
-  version after 059's 4.1. Nothing else on the wire changes.
+  none. AimX decoders ignore unknown fields, so this is a minor version.
+  `PROTOCOL_VERSION` is 4.0 today and 059, which claims 4.1, is not merged:
+  060 takes the next free minor when it lands, 4.2 after 059 or 4.1 before
+  it (059 then takes 4.2). This document writes 4.2. Nothing else on the
+  wire changes.
 - Absence means different things on the two paths, with the same frame:
   - **observing** (client `get`, `watch`, `drain`): the value has no trace,
     `trace()` is `None`;
@@ -493,8 +545,12 @@ receiving dispatch passes only the value to `set_record_from_json`.
   through to the record write, which continues it or, without one, starts a
   trace.
 
-A user-issued `record.set` is not a mirror write and always starts a trace
-(§4.1).
+`record.set` takes the same optional field in its parameters:
+`{"name":…,"value":…,"trace":"…"}`. A client that sets a record because of
+a value it read passes that value's trace and the write continues it;
+without the field the write starts a trace. This is what lets an agent's
+action stay in the chain that prompted it (§7). A session with tracing off
+(§5.0) ignores the field on both frames.
 
 ### 5.2 Session engine
 
@@ -563,6 +619,24 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
   connector reports it as an MQTT version error naming the broker. Mosquitto
   1.6+, EMQX, HiveMQ and AWS IoT Core speak MQTT 5.
 
+### 5.4 Zenoh
+
+Not prototyped; phase 3 starts with a prototype of this section.
+
+- **`zenoh://`:** a Zenoh 1.x publication has one attachment, an opaque
+  byte string with no keys. The connector sets it to the carrier value as
+  ASCII bytes (68 to 70 bytes). Inbound, an attachment that does not parse
+  as a carrier is treated as absent, like any malformed trace (§5): the
+  value is kept. Publications from non-AimDB peers that use the attachment
+  for something else are therefore ingested untraced.
+- **`ros2://`:** not carried. The attachment belongs to rmw_zenoh, which
+  requires its fixed 33-byte layout (sequence number, source timestamp,
+  GID) on every publication, and ROS 2 peers reject any other. A value
+  ingested from ROS 2 starts a trace; a value published to ROS 2 ends its
+  trace there.
+- **Embedded backend:** the `zenoh-nostd` backend does not exist yet; it
+  carries the trace the same way once it does.
+
 ## 6. Rerun taps and agents
 
 A Rerun tap is a read-only `tap` on a Tokio instance. For each value it logs
@@ -571,10 +645,11 @@ that instance's own timeline. Each instance also logs its dependency graph
 once. MCUs run no Rerun taps; their values show up at the hub with their
 trace intact.
 
-**Parents are exact.** A write's parent is the write in the same trace whose
-span equals its `parent`. That holds in the diamond case (`Raw → A`,
+**Parents are exact, and there is one per write.** A write's parent is the
+write in the same trace whose span equals its `parent`. That holds in the diamond case (`Raw → A`,
 `Raw → B`, `A + B → C`): each write of `C` names the write of `A` or `B`
-that triggered it.
+that triggered it. It does not name the other one: a chain shows what
+triggered each write, not every value that went into it (§2.3).
 
 **Walking parents.** A consumer that follows parent links stops when the
 next write's depth is not lower than the current one's (below 255), or when
@@ -607,12 +682,15 @@ layout) is a separate design.
   trace ID, span, parent and depth, or `no trace` for a value the peer sent
   without one.
 - MCP `get_record` includes the trace, or `null`.
+- `aimdb set <record> … --cause <trace>` and MCP `set_record` with an
+  optional `cause` pass a trace to `record.set` (§5.1), so a write made in
+  response to a value continues that value's trace.
 
 ## 8. What breaks
 
 | Area | Change |
 |---|---|
-| Join handlers | `on_triggers` receives `DerivedProducer<O>` instead of `Producer<O>` |
+| Join handlers | `on_triggers` receives `(ctx, rx, DerivedProducer<O>)` instead of `(rx, Producer<O>)` |
 | `WriteMetadata` | 48 bytes; `trace() -> Option<TraceContext>`; `from_wire_stamp` becomes `from_wire(stamp, Option<TraceContext>)` |
 | Session engine | new fields and parameters (§5.2); every `Session` and `EnvelopeCodec` implementation updates |
 | WebSocket connector | its public `Snapshot` type gains the trace; its fan-out carries it (§5.2) |
@@ -620,16 +698,19 @@ layout) is a separate design.
 | `AimDbBuilder` | `instance_tag(NonZeroU32)`; with `trace-context` enabled, `build()` fails without it (§4.2) |
 | Cargo features | `trace-context` on `aimdb-core`, off by default; every crate that depends on core forwards it (§2.6) |
 | `InboundDispatch` | `dispatch` takes `Option<TraceContext>`; no untraced variant (§5.2) |
-| AimX handshake | `hello` and `welcome` gain an optional `instance_tag` (§4.2.1) and `trace` (§5.0) |
+| AimX handshake | `hello` and `welcome` gain an optional `instance_tag` (§4.2.1) and `trace` (§5.0); the WebSocket upgrade URL gains an optional `tag` parameter |
+| AimX `record.set` | optional `trace` parameter (§5.1) |
+| Zenoh connector | `zenoh://` publications carry the trace as their attachment (§5.4) |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
-| `TransformBuilder`, `Producer<T>`, `TopicMatch` | additive: `on_values`, `produce_from`, `trace()` |
+| `TransformBuilder`, `Producer<T>`, `TopicMatch` | additive: `on_stream`, `produce_from`, `trace()` |
 | `aimdb-client` | `RecordUpdate` gains `trace` |
 | AimX | optional `trace` field, minor version; graph shapes unchanged |
 
 In the prototype, the user code that had to change was the join handlers
 (three weather-mesh stations, the Tokio and WASM join tests:
 `produce` → `produce_from(…, trigger.metadata())`) and the codegen join stub
-(`Producer<O>` → `DerivedProducer<O>`). An application that enables
+(`Producer<O>` → `DerivedProducer<O>`). The `ctx` argument adds one name to
+each of those closures. An application that enables
 `trace-context` also adds one `instance_tag(…)` line to its builder; the
 prototype derived tags from a seed and did not measure that.
 
@@ -640,30 +721,39 @@ prototype derived tags from a seed and did not measure that.
 - `aimdb-core`: 4.0.0. The adapter and connector crates take their next
   major version with it.
 - `aimdb-client`: 0.9.0 (a breaking bump for a 0.x crate).
-- AimX protocol: 4.2, the next minor after 059's 4.1. The wire change is
-  additive; the protocol version is independent of the crate version.
+- AimX protocol: the next free minor, 4.2 if 059 has landed (§5). The wire
+  change is additive; the protocol version is independent of the crate
+  version.
+- **One release for all three phases.** The phases of §9 are a merge order,
+  not releases: the session engine and `InboundDispatch` changes land in
+  phase 2 and the MQTT change in phase 3, and all of them are breaking. 4.0.0
+  is published only after phase 3 is merged, so no second major release is
+  needed.
 
 The CHANGELOG lists every row of the table above under "Breaking changes".
 
 ## 9. Phases
 
+The phases are merged in this order and released together (§8.1).
+
 1. **Core:** envelope with span and parent, IDs and the required instance tag, automatic
-   propagation in `map` / `with_state`, the single-input `on_values` body,
+   propagation in `map` / `with_state`, the single-input `on_stream` body,
    `DerivedProducer` in joins, `Producer::produce_from`, the epoch from
    `unix_time()`, the `trace-context` feature, off by default, and its
    forwarding feature in every dependent crate (§2.6), tests on Tokio,
    Embassy and WASM. Enough for Rerun taps on one instance.
 2. **AimX:** `trace` field on values and on mirror `write` frames, session
    engine (WebSocket fan-out included), client, CLI, MCP; Serial off by
-   default with the per-session request in `hello` (§5.0); the `record.get` reply without an added allocation; tags in the
-   handshake. Enough for
+   default with the per-session request in `hello` (§5.0); the `record.get`
+   reply without an added allocation; `record.set` with a cause; tags in the
+   handshake and in the WebSocket upgrade URL. Enough for
    chains across AimX-linked instances in both directions.
 3. **MQTT v5** on both backends, with the Tokio oversize check, and
-   **Zenoh**.
+   **Zenoh**, starting with a prototype of §5.4.
 
 ## 10. Tests
 
-- Source → `map` → `with_state` → `on_values` → join keeps one trace ID; depth
+- Source → `map` → `with_state` → `on_stream` → join keeps one trace ID; depth
   grows by one per write; each write's `parent` is its cause's `span`.
 - Every write gets a new span; within one run and the §4.2 bound (2³²
   writes) spans in one instance do not repeat, and they are never zero.
@@ -695,15 +785,18 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   tag and aligned counters store no `span == parent` and report
   `OwnTagInbound`.
 - **Duplicate tag over AimX:** two instances with the same tag connect; both
-  sides (client side only over WebSocket) report `DuplicateTag`, and values
-  still flow. A CLI client without a tag triggers nothing.
+  sides report `DuplicateTag`, and values still flow. Over WebSocket the
+  client's upgrade URL carries `tag`, and only the server reports it. A CLI
+  client without a tag triggers nothing.
+- **Own publishes:** an instance subscribed to a topic it publishes on
+  counts `OwnTagInbound` for every message and logs it once.
 - `produce_origin` and `Producer::produce` start new traces with no parent;
   `Producer::produce_from` continues one.
-- `on_values`: typed receiver; zero, one and several writes per input; the graph
+- `on_stream`: typed receiver; zero, one and several writes per input; the graph
   shows `Transform { input }`.
-- **`on_values` after lag:** a burst larger than the input ring makes the
+- **`on_stream` after lag:** a burst larger than the input ring makes the
   receiver lag; it reports `Lagged`, continues, and a later overheat still
-  emits an alarm. `recv()` returns `None` only when the input closes.
+  emits an alarm. `recv()` returns `Err` only when the input closes.
 - With `trace-context` enabled, every locally written value has `trace()` =
   `Some`.
 - The same tag, the same writes and a clock without wall time (or a fixed
@@ -728,14 +821,24 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
   `"trace":true`; the next client's `hello` without the field is untraced
   again. Over UDS, `"trace":false` turns tracing off for that session only.
   A server built with `trace-context` off answers `"trace":false`.
-- `record.set` always starts a trace.
+- `record.set` without `trace` starts a trace; with one, the write continues
+  it with the given span as parent; a malformed one is treated as absent.
+- **Carrier growth:** a carrier with a fifth field decodes to the same trace
+  as the first four alone.
+- **Join, one parent:** a dew point triggered by a temperature write has the
+  temperature's trace ID and span as parent, and nothing of the humidity
+  write.
+- **Zenoh:** a `zenoh://` publication carries the carrier as its attachment
+  and the receiver continues the trace; a foreign attachment is ingested
+  untraced; a `ros2://` publication keeps rmw_zenoh's attachment and the
+  receiver starts a trace.
 - **MQTT v5:** a publish carries `aimdb-trace`; a receiving instance continues
   the trace; a publish without the property starts one. A publish that fits
   the broker's maximum packet size without the property but not with it is
   delivered untraced and counted as `trace_omitted`; one that does not fit
   without the property is rejected as oversize.
 - `graph.nodes` and `graph.edges` replies are byte-identical to AimX 4.1 for a
-  fixture with a transform, an `on_values` transform and a join.
+  fixture with a transform, an `on_stream` transform and a join.
 - A value that is migrated on the inbound path keeps its trace.
 - **Exact parents:** in the diamond `Raw → A, Raw → B, A + B → C`, each write
   of `C` names the span of the write of `A` or `B` that triggered it; with
@@ -763,7 +866,7 @@ The CHANGELOG lists every row of the table above under "Breaking changes".
 1. **Merge `transform` and `transform_join` into one builder.** Changes the
    graph shapes on the wire and every transform call, and makes a
    single-input caller downcast its own declared type through the boxed join
-   path. Rejected: a typed `on_values` body on the existing single-input builder
+   path. Rejected: a typed `on_stream` body on the existing single-input builder
    (§2.2).
 2. **Parent candidates from the graph instead of stored parents.** Costs
    nothing per slot, but is ambiguous in diamonds, which some pipelines
@@ -829,16 +932,21 @@ All earlier open questions are settled:
 |---|---|
 | Tokio MQTT backend | moves to MQTT 5 and requires it; no 3.1.1 mode |
 | Serial links | trace off by default; a client turns it on per session in `hello`, the server's configuration changes the default (§5.0) |
-| `record.set` | every remote set starts a trace |
-| Single-input async transform | ships now, as `on_values` (§2.2) |
+| `record.set` | continues a trace when the caller passes one, otherwise starts one (§5.1) |
+| Single-input async transform | ships now, as `on_stream`, with the join handler's shape (§2.2) |
+| Causes per write | one: the triggering write; a join's other inputs are not recorded (§2.3) |
+| Zenoh | `zenoh://` carries the trace as the attachment; `ros2://` does not (§5.4) |
+| WebSocket tag check | tag in the upgrade URL, checked by the server only (§4.2.1) |
 | Parent identity | exact, across instances: 64-bit span ID = instance tag ‖ counter (§4.2) |
 | Instance tag | assigned by the application, required with `trace-context`; no seed, no entropy source |
 | Restarts | trace IDs carry a wall-clock epoch and do not repeat across a restart when the instance has a wall clock; span IDs may repeat; `span == parent` is prevented and parent walks are bounded |
 | Default | `trace-context` is off by default; every crate that depends on core forwards the feature (§2.6) |
-| Release | `aimdb-core` 4.0.0; AimX 4.2 |
+| Release | `aimdb-core` 4.0.0, published once after all three phases; AimX takes the next free minor (4.2 after 059) |
 | Envelope size | 48 bytes for applications that enable `trace-context`; 8 bytes otherwise |
 
-No open questions remain.
+No open questions remain. Two parts are decided but not prototyped, and
+their phases start by checking them: the tag exchange in the handshake and
+the upgrade URL (§4.2.1), and the Zenoh attachment (§5.4).
 
 ## 13. Prototype results
 
@@ -846,11 +954,14 @@ The second throwaway prototype implemented §2 to §5 except Zenoh and the
 CLI/MCP display. It was not merged. It derived tags from a per-boot seed and
 had `counter_start` for restarts; both have since been replaced (§4.2,
 alternatives 12 and 14), and the rows below for them are kept as history.
-The handshake tag exchange (§4.2.1) was not prototyped.
+The handshake tag exchange (§4.2.1) was not prototyped, nor were the
+wall-clock epoch (§4.2), `record.set` with a cause (§5.1) and the `ctx`
+argument of join handlers (§2.3); the prototype's single-input body was
+called `on_values` and returned `Option` from `recv`.
 
 | Claim | Result |
 |---|---|
-| Propagation through `map`, `with_state`, `on_values` and joins; parent = cause's span | holds |
+| Propagation through `map`, `with_state`, `on_stream` and joins; parent = cause's span | holds |
 | Exact parents in the diamond | holds, over 20 diamonds |
 | Cross-instance parents over AimX (UDS), both directions | holds |
 | Cross-instance parents over MQTT 5, both backends, real broker | holds |
@@ -858,7 +969,7 @@ The handshake tag exchange (§4.2.1) was not prototyped.
 | Same tag, aligned counters | collision reported, no self-parent |
 | Retained value after reboot | collision reported, no self-parent |
 | Counter wrap, tag zero | no zero span |
-| `on_values` after lag | skips, reports, a later value still produces |
+| `on_stream` after lag | skips, reports, a later value still produces |
 | Tracing off without an ID source | builds; no_std suites pass with tracing on and off |
 | 48 / 8 bytes | asserted on host, Cortex-M, wasm32 |
 | Wire cost | AimX +79 bytes, MQTT +84 bytes |
