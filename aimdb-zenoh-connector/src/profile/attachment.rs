@@ -2,10 +2,12 @@
 
 /// Its length: sequence number, source timestamp, the `0x10` length of the
 /// GID array, and the GID.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) const ATTACHMENT_LEN: usize = 8 + 8 + 1 + 16;
 
 /// A publication's attachment, as zenoh-cpp's `ext::Serializer` writes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) struct Attachment {
     /// Per publisher, starting at 1.
     pub sequence: i64,
@@ -15,6 +17,7 @@ pub(crate) struct Attachment {
 }
 
 impl Attachment {
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     pub(crate) fn encode(&self) -> [u8; ATTACHMENT_LEN] {
         let mut out = [0; ATTACHMENT_LEN];
         out[..8].copy_from_slice(&self.sequence.to_le_bytes());
@@ -25,6 +28,7 @@ impl Attachment {
     }
 
     /// `None` unless `bytes` has exactly this layout.
+    #[cfg(test)]
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let bytes: &[u8; ATTACHMENT_LEN] = bytes.try_into().ok()?;
         if bytes[16] != 16 {

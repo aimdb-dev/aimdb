@@ -4,21 +4,28 @@
 //! Pure functions over strings and bytes, `no_std + alloc`, so a ROS node on
 //! an MCU can reuse them unchanged.
 
-// Used by the ROS 2 connector, which builds on this module.
-#![allow(dead_code, unused_imports)]
-
 mod attachment;
 mod gid;
 mod keys;
 mod names;
 mod qos;
 
-pub(crate) use attachment::{Attachment, ATTACHMENT_LEN};
+#[cfg(any(feature = "std", test))]
+pub(crate) use attachment::Attachment;
+#[cfg(test)]
+pub(crate) use attachment::ATTACHMENT_LEN;
+#[cfg(any(feature = "std", test))]
 pub(crate) use gid::gid;
-pub(crate) use keys::{data_key, entity_token, mangle, node_token, EntityKind, Node};
-pub(crate) use names::{validate_namespace, validate_node_name, validate_topic, NameError};
+#[cfg(test)]
+pub(crate) use keys::mangle;
+#[cfg(any(feature = "std", test))]
+pub(crate) use keys::{data_key, entity_token, node_token, EntityKind, Node};
+#[cfg(feature = "std")]
+pub(crate) use names::{validate_namespace, validate_node_name, validate_topic};
+pub(crate) use qos::Qos;
 pub use qos::Reliability;
-pub(crate) use qos::{Durability, History, Qos};
+#[cfg(any(feature = "std", test))]
+pub(crate) use qos::{Durability, History};
 
 #[cfg(test)]
 mod golden;
