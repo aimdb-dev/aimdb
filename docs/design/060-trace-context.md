@@ -14,9 +14,12 @@ engine, `AimDbBuilder`); additive on the wire (the graph shapes do not
 change). Ships as `aimdb-core` 4.0 (§8.1). Tracing is off by default and
 enabled with the `trace-context` feature (§2.6).
 
-Two throwaway prototypes tested this design. The second implements all of
-it except Zenoh, the CLI/MCP display and Rerun; §13 lists what it showed, and
-its measurements are quoted in §4.3, §5 and §5.3.
+Two throwaway prototypes and one spike tested this design. The second
+prototype implements all of it except Zenoh, the CLI/MCP display and Rerun;
+its measurements are quoted in §4.3, §5 and §5.3. The spike tested what
+changed after it: the opt-in feature, the epoch, `on_stream`, `ctx` in join
+handlers, `record.set` with a cause, the handshake tags and the Zenoh
+attachment. §13 lists what both showed.
 
 ---
 
@@ -84,6 +87,9 @@ builder.configure::<Alarm>(AlarmKey::Overheat, |reg| {
 - In the graph it is the existing `RecordOrigin::Transform { input }`, so
   the graph shapes on the wire do not change.
 - The receiver is typed: no boxing, no downcast.
+- The handler must be `Send + Sync`, like `map` and `with_state` closures:
+  the single-input pipeline stores it in a `Send + Sync` factory. A join
+  handler only needs `Send`.
 - The name is `on_stream`, not `on_values`: `with_state(…).on_value(…)`
   already exists as the synchronous per-value closure, and one letter is too
   small a difference for a body that runs its own loop.
@@ -300,8 +306,18 @@ With `trace-context` enabled, `build()` fails with a configuration error if
 no tag is set. The framework does not derive tags from randomness, the chip
 ID or the runtime: a tag the user chose is distinct by construction, can be
 read in a trace, and stays the same across restarts. Tags are `NonZero`, so
-a span is never all zero, including at the counter wrap. The `test_support`
-builders set a fixed tag, so tests that do not care about it need no change.
+a span is never all zero, including at the counter wrap.
+
+**Tags in tests.** Most tests build through `AimDbBuilder::new()` directly,
+not through a `test_support` builder. In the spike, with `trace-context`
+enabled and the tag mandatory, 41 of 299 `aimdb-core` unit tests, 52 of 102
+Tokio adapter tests and all 11 Zenoh `native_session` tests failed at
+`build()`, every one on the missing tag. So in test builds a missing tag
+falls back to a fixed one: in core's own tests, and in any crate that
+enables core's `test-utils` feature. With that fallback the same core (299)
+and Tokio adapter (110) suites pass with tracing on. A crate that tests
+with tracing on enables `test-utils` or sets a tag; the Zenoh suite, which
+does neither, still failed. Outside test builds there is no fallback.
 
 **Instances without provisioning.** Browser tabs running the WASM adapter,
 scaled replicas and short-lived tools have no table to take a tag from. The
@@ -343,9 +359,11 @@ responsibility; §4.2.1 lists what the framework detects when it is not.
   restart. A trace from before a restart can still reach the instance (a
   retained MQTT message, an AimX late-join snapshot, a peer's buffered
   mirror write) and be continued by new writes; such a trace may then
-  contain two writes with the same span, and in rare cases a parent chain
-  that returns to a span it already passed. Consumers that walk parents
-  must therefore bound the walk (§6).
+  contain two writes with the same span, and a parent chain that returns
+  to a span it already passed. This is not exotic: in the spike a retained
+  value with span `7‖3`, continued by three derived writes after the
+  restart, was enough, because the third of them is `7‖3` again. Consumers
+  that walk parents must therefore bound the walk (§6).
 
 One case is prevented in the writer, because it would make a write its own
 parent:
@@ -372,14 +390,21 @@ framework reports what it can see, without changing any write:
 - **An AimX peer announces the same tag** (`TraceEvent::DuplicateTag`).
   `hello` and `welcome` gain an optional `instance_tag` field, sent by
   instances with `trace-context` enabled (a CLI or MCP client sends none).
+  The tag is written as 8 hex digits everywhere it appears in text
+  (`"instance_tag":"0000a1f3"`, `tag=0000a1f3`), the form it has inside a
+  span.
   Whichever side sees its own tag reports it and keeps the connection: the
   trace is advisory and never costs a link.
 - **Over WebSocket there is no `hello` and no `welcome`** (the client runs
   `sends_hello: false`, the server `reads_hello: false`), so the tag travels
   in the upgrade URL, next to the version: `…/ws?v=4.2&tag=0000a1f3`.
-  `ws_url_with_version`, which every first-party dialer already uses, adds
-  it when `trace-context` is enabled. Only the server checks, at the
-  upgrade; it reports `DuplicateTag` and accepts the connection. A browser
+  `ws_url_with_version` is a free function that knows no instance, so it
+  takes the tag as a new argument. The connector's `WsDialer` is built
+  where the database is at hand and passes its tag; the WASM bridge does
+  the same. The server's upgrade handler holds only a type-erased
+  `Dispatch`, so its `ServerState` gains the instance's tag. Only the server
+  checks, at the upgrade; it reports `DuplicateTag` and accepts the
+  connection. A browser
   cannot read the upgrade response, so the client side learns of a
   duplicate only through `OwnTagInbound`.
 
@@ -392,7 +417,11 @@ The counter is a `portable_atomic::AtomicU64`: a native 64-bit atomic where
 the target has one, and a `critical-section` lock elsewhere (Cortex-M has
 no native 64-bit atomics). `trace-context` enables `portable-atomic`'s
 `fallback` and `critical-section` features, exactly as the `observability`
-feature already does, so no new dependency or lock type is needed.
+feature already does, so no new dependency or lock type is needed. The
+counter and the rest of the ID source are compiled only with
+`trace-context`: without the fallback, `portable_atomic::AtomicU64` does not
+exist on `thumbv7em-none-eabihf`, and the spike's first feature-off build
+for that target failed on it.
 It must be a critical section, not a spin lock: a record written from an
 interrupt handler while the main context holds a spin lock would deadlock a
 single-core MCU. (The prototype used a spin lock; it is not acceptable for
@@ -430,6 +459,19 @@ origins and continued writes alike, since every write now draws a span.
 | `produce` (origin) | 104.7 ns | 116.2 ns |
 | `produce_from` | n/a | 115.0 ns |
 | `produce` + `try_recv` | 112.8 ns | 125.2 ns |
+
+The spike measured more, with the epoch and a different harness (Tokio
+adapter, 16-slot `f32` ring with one subscriber, 5 million writes, best of
+7, one shared machine): 16 to 20 ns per write.
+
+| Operation | feature off | feature on |
+|---|---|---|
+| `produce` (origin) | 91.9 ns | 111.7 ns |
+| `produce_from` | 90.4 ns | 107.7 ns |
+
+The two harnesses are not comparable to each other; `aimdb-bench` decides
+the number in phase 1. The spike did not compare its feature-off build
+with `main`.
 
 No allocation is added on the produce, consume and connector paths
 (`aimdb-bench` B0 suites), nor on AimX subscription events. In the
@@ -549,7 +591,14 @@ receiving dispatch passes only the value to `set_record_from_json`.
 `{"name":…,"value":…,"trace":"…"}`. A client that sets a record because of
 a value it read passes that value's trace and the write continues it;
 without the field the write starts a trace. This is what lets an agent's
-action stay in the chain that prompted it (§7). A session with tracing off
+action stay in the chain that prompted it (§7). The reply carries the new
+write's `trace` next to `ts`, so the caller can pass it on.
+
+A `record.set` reaches the buffer through `JsonRecordAccess::set_from_json`,
+a public trait. The cause is a new parameter of that method, not a second,
+defaulted method: the spike used a default that falls back to the untraced
+write, and an implementation that does not override it loses the cause
+without notice (the same reason as §5.2). A session with tracing off
 (§5.0) ignores the field on both frames.
 
 ### 5.2 Session engine
@@ -621,7 +670,14 @@ Both MQTT backends speak MQTT 5 and carry the trace as one user property.
 
 ### 5.4 Zenoh
 
-Not prototyped; phase 3 starts with a prototype of this section.
+The outbound half was tested in the spike against an in-process Zenoh
+router: the connector's publication arrived with a 68-byte attachment that
+parsed to the write's trace. Of three publications from another session, the
+one with a carrier parsed, and the one with no attachment and the one with
+rmw_zenoh's 33-byte layout both read as untraced. Passing an inbound trace
+on to the record write needs `dispatch` with a trace (§5.2) and was not
+part of the spike. The spike allocates the attachment per publish; the
+implementation has to meet the connector allocation gate.
 
 - **`zenoh://`:** a Zenoh 1.x publication has one attachment, an opaque
   byte string with no keys. The connector sets it to the carrier value as
@@ -651,11 +707,14 @@ write in the same trace whose span equals its `parent`. That holds in the diamon
 that triggered it. It does not name the other one: a chain shows what
 triggered each write, not every value that went into it (§2.3).
 
-**Walking parents.** A consumer that follows parent links stops when the
-next write's depth is not lower than the current one's (below 255), or when
-it meets a span it has already visited. Span IDs can repeat across a restart
-(§4.2), so a chain is not guaranteed to be free of cycles; with this rule a
-walk always ends.
+**Walking parents.** A write found by its span is accepted as the parent
+only if it has the same trace ID and its depth is exactly one lower (at
+depth 255: 254 or 255), and only if it was not visited before. Otherwise
+the walk stops and the hop is reported as not available. Span IDs can
+repeat across a restart (§4.2), so a span lookup can return a different
+write than the one meant, and a chain can close on itself; the trace ID and
+depth check rejects the wrong write, and the visited check ends a cycle. In
+the spike's three-write cycle the walk stopped after the three writes.
 
 When the parent was not captured (a record without a Rerun tap, a tap that
 skipped values, or an instance without one), Rerun still knows that the
@@ -699,7 +758,9 @@ layout) is a separate design.
 | Cargo features | `trace-context` on `aimdb-core`, off by default; every crate that depends on core forwards it (§2.6) |
 | `InboundDispatch` | `dispatch` takes `Option<TraceContext>`; no untraced variant (§5.2) |
 | AimX handshake | `hello` and `welcome` gain an optional `instance_tag` (§4.2.1) and `trace` (§5.0); the WebSocket upgrade URL gains an optional `tag` parameter |
-| AimX `record.set` | optional `trace` parameter (§5.1) |
+| AimX `record.set` | optional `trace` parameter; the reply carries the new write's `trace` (§5.1) |
+| `JsonRecordAccess` | `set_from_json` takes the cause (§5.1) |
+| `ws_url_with_version` | takes the instance tag (§4.2.1) |
 | Zenoh connector | `zenoh://` publications carry the trace as their attachment (§5.4) |
 | MQTT, Tokio backend | MQTT 5 instead of 3.1.1; 3.1.1-only brokers are no longer supported (§5.3) |
 | `TransformBuilder`, `Producer<T>`, `TopicMatch` | additive: `on_stream`, `produce_from`, `trace()` |
@@ -710,7 +771,9 @@ In the prototype, the user code that had to change was the join handlers
 (three weather-mesh stations, the Tokio and WASM join tests:
 `produce` → `produce_from(…, trigger.metadata())`) and the codegen join stub
 (`Producer<O>` → `DerivedProducer<O>`). The `ctx` argument adds one name to
-each of those closures. An application that enables
+each of those closures. In the spike the five join handlers of the Tokio
+adapter's tests took 15 changed lines in three files, and the compiler
+named every `produce` that had to become `produce_from`. An application that enables
 `trace-context` also adds one `instance_tag(…)` line to its builder; the
 prototype derived tags from a seed and did not measure that.
 
@@ -762,7 +825,8 @@ The phases are merged in this order and released together (§8.1).
   is the zero span.
 - **Tag required:** with `trace-context` enabled, `build()` without
   `instance_tag` fails; with it off, it succeeds, and `instance_tag(…)` is
-  accepted and ignored. The `test_support` builders build without one.
+  accepted and ignored. In a test build (core's tests, or core's
+  `test-utils` feature) a builder without a tag gets the fixed fallback tag.
 - **Origin trace ID:** without a wall clock, an origin write with tag 7 and
   counter 5 has trace ID `00000007 00000000 0000000000000005`; with
   `unix_time()` at 1 700 000 000 s it has `00000007 6553f100 0000000000000005`.
@@ -944,9 +1008,10 @@ All earlier open questions are settled:
 | Release | `aimdb-core` 4.0.0, published once after all three phases; AimX takes the next free minor (4.2 after 059) |
 | Envelope size | 48 bytes for applications that enable `trace-context`; 8 bytes otherwise |
 
-No open questions remain. Two parts are decided but not prototyped, and
-their phases start by checking them: the tag exchange in the handshake and
-the upgrade URL (§4.2.1), and the Zenoh attachment (§5.4).
+No open questions remain. Three parts are decided but not run, and their
+phases start by checking them: the tag in the WebSocket upgrade URL
+(§4.2.1), the per-session trace request (§5.0), and ingesting a trace from a
+Zenoh attachment (§5.4).
 
 ## 13. Prototype results
 
@@ -982,3 +1047,45 @@ Findings that changed this document: tracing's reach through
 the counter (§4.2.2); the `record.get` allocation (§5); the WebSocket fan-out
 and snapshot cache (§5.2); the Tokio MQTT oversize check (§5.3); the
 adapter and connector API changes (§8).
+
+### 13.1 Spike
+
+A third throwaway branch tested what changed after the second prototype.
+It was written from scratch on `main` (the prototypes were not merged) and
+covers core, the Tokio adapter and the Zenoh connector's outbound path. It
+does not cover the AimX value field, mirror `write` frames, the session
+engine or MQTT, which the second prototype covered, nor the per-session
+trace request, the WebSocket upgrade URL, the CLI/MCP display, Rerun or an
+on-target Embassy run.
+
+| Claim | Result |
+|---|---|
+| Off by default: same graph code builds and runs untraced, with or without a tag; `trace()` is `None` | holds |
+| Forwarding: `trace-context` on the Tokio adapter alone, or on the Zenoh connector alone, turns it on in core | holds |
+| 48 / 8 bytes, as compile-time assertions | hold on the host, `thumbv7em-none-eabihf` and `wasm32-unknown-unknown`; `Stamped<f32>` 56 / 16 |
+| Feature off on Cortex-M | failed first: the ID source needs a 64-bit atomic; fixed by compiling it only with the feature (§4.2.2) |
+| Origin IDs `tag ‖ epoch ‖ counter`; epoch stored once; a run that gains a clock keeps distinct IDs | holds |
+| Restart with a later wall clock: no trace ID of the first run repeats; without a clock, or in the same second, they repeat | holds |
+| Tokio clock: the epoch in a real trace ID is the current Unix time | holds |
+| No wall clock: the same tag and writes give identical IDs in two runs | holds |
+| Counter wrap; retained value after reboot; tags `0x10` and `0x13` | no zero span, no self-parent, distinct spans |
+| Source → `map` / `with_state` → join and `on_stream`: one trace ID, depth + 1, parent = cause's span | holds |
+| Exact parents in the diamond, 20 origins and 40 join outputs; every span distinct | holds |
+| `on_stream`: 0, 1 and 3 writes per input; a burst of 300 into a 64-slot ring, then a later value still produces | holds |
+| Join handler with `ctx`: sleeps on the runtime, then `produce_origin` starts a trace | holds |
+| `Producer::produce_from` continues; with untraced metadata it starts a trace | holds |
+| Carrier: 68 / 69 / 70 bytes; round trip; trailing fields ignored; ten malformed forms rejected | holds |
+| Parent walk on a cycle after a restart | ends; rule tightened to trace ID and exact depth (§6) |
+| `record.set` with a cause continues it; without or with a malformed one starts a trace; a cause with the instance's tag is counted | holds |
+| `hello` with a tag: `welcome` returns the server's; an equal tag is counted, a different or absent one is not | holds |
+| Zenoh attachment, outbound, real router | holds; inbound parsing of carrier, absent and rmw_zenoh attachments holds (§5.4) |
+| Mandatory tag against the existing suites | 41 of 299 core, 52 of 102 Tokio adapter and 11 of 11 Zenoh `native_session` tests fail on the missing tag; with the test fallback, core and the adapter pass with tracing on (§4.2) |
+| Write time | +16 to 20 ns per write in the spike's harness (§4.3) |
+
+Findings that changed this document: the fallback tag in test builds
+(§4.2); the ID source compiled only with the feature (§4.2.2); the second
+cost measurement (§4.3); the stricter parent walk and how easily a cycle
+forms (§4.2, §6); the cause as a parameter of `JsonRecordAccess` and the
+`trace` in the `record.set` reply (§5.1); the text form of the tag and the
+tag as an argument of `ws_url_with_version` (§4.2.1); the `Sync` bound on
+`on_stream` handlers (§2.2); the Zenoh result (§5.4).
