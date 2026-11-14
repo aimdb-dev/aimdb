@@ -18,6 +18,9 @@ attachment format proposed in 060 before 060 ships.
 (per-link codecs), 054 (zero-allocation connector boundary), 057 (build
 identity), 058 (write timestamps, `Stamped`/`WriteMetadata`), 060 (trace
 context), `aimdb.lock` (`aimdb-data-contracts/src/lock.rs`).
+**Declaration half:** [063](063-typed-record-keys.md). 063 says what a
+record accepts (typed keys, per-link accepted versions); this design says
+what a value is, so the receiver can compare the two at ingress.
 
 ---
 
@@ -277,7 +280,8 @@ registrar.linked_to_with("ros2://cell/reading", Cdr::<128>)
 Inbound, the connector builds the envelope from the binding (contract,
 version, codec) and passes it through the same decision procedure as any
 other. Without `with_contract`, the binding defaults to the record's own
-`T::NAME@T::VERSION`, which is today's implicit behaviour. Static binding is
+`T::NAME@T::VERSION`, which is today's implicit behaviour. The accepted
+range of an inbound link is declared with `accepts_from::<V>()` (063 §6). Static binding is
 how foreign producers stay first-class: nothing they send changes.
 
 ## 7. Receiving: one decision procedure
@@ -359,7 +363,7 @@ One decode per value, of the right type: the probe parse disappears, and
 ### 7.3 Sending to an older peer
 
 An outbound link that declares an older contract version
-(`.with_contract::<SensorV1>()`, or `with_contract_version(1)`) encodes with
+(`.sends_as::<1>()`, 063 §6) encodes with
 `migrate_into(1, …)` and writes `version = 1` in the header. The choice is
 made once at registration; there is no per-message lookup (045's rule).
 
