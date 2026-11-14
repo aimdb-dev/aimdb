@@ -48,6 +48,18 @@ pub(crate) type TransformProfiling = Option<(Arc<StageMetrics>, Clock)>;
 #[cfg(not(feature = "observability"))]
 pub(crate) type TransformProfiling = ();
 
+/// One-shot builder closure invoked during `build()` to materialize a
+/// transform's runtime futures.
+pub(crate) type TransformBuildFn<T> = Box<
+    dyn FnOnce(
+            crate::Producer<T>,
+            Arc<crate::AimDb>,
+            &str,
+            TransformProfiling,
+        ) -> CollectedTransform
+        + Send,
+>;
+
 pub(crate) struct TransformDescriptor<T>
 where
     T: Send + 'static + Debug + Clone,
@@ -68,14 +80,5 @@ where
     ///   task can include it in tracing messages even though `Producer<T>` no
     ///   longer carries a `.key()` accessor. Important when
     ///   multiple records share type `T` under different keys.
-    #[allow(clippy::type_complexity)]
-    pub build_fn: Box<
-        dyn FnOnce(
-                crate::Producer<T>,
-                Arc<crate::AimDb>,
-                &str,
-                TransformProfiling,
-            ) -> CollectedTransform
-            + Send,
-    >,
+    pub build_fn: TransformBuildFn<T>,
 }

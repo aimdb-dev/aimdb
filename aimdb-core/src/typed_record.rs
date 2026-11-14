@@ -533,6 +533,13 @@ where
     }
 }
 
+/// Static transform metadata retained after `build()` consumes the one-shot
+/// build closure.
+struct TransformMeta {
+    input_keys: Vec<String>,
+    input_types: Vec<(core::any::TypeId, &'static str)>,
+}
+
 /// Typed record storage with producer/consumer functions
 ///
 /// Stores type-safe producer and consumer functions with optional buffering for async dispatch.
@@ -543,15 +550,26 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// Wrapped in Mutex for interior mutability (needed to take() during spawning)
     producer: Mutex<Option<ProducerServiceFn<T>>>,
 
+    /// Whether a `.source()` producer was registered. Retained after `build()`
+    /// takes `producer` so runtime introspection and write guards keep seeing it.
+    has_producer: bool,
+
     /// List of consumer/tap tasks - wrapped in Mutex for Sync + taking out during spawn
     /// Each is spawned as an independent background task that subscribes to the buffer
     /// Using Mutex provides the Sync bound required by AnyRecord trait
     consumers: Mutex<Vec<ConsumerServiceFn<T>>>,
 
-    /// Transform descriptor — mutually exclusive with producer.
-    /// If set, this record is a reactive derivation from one or more input records.
-    /// Uses the same Mutex pattern for take()-during-spawn.
-    transform: Mutex<Option<crate::transform::TransformDescriptor<T>>>,
+    /// Number of registered `.tap()` consumers. Retained after `build()` drains
+    /// `consumers` so runtime introspection keeps reporting the configured count.
+    consumer_count: usize,
+
+    /// Transform build closure — mutually exclusive with producer.
+    /// Taken once during `build()` to materialize the transform futures.
+    transform: Mutex<Option<crate::transform::TransformBuildFn<T>>>,
+
+    /// Static input metadata for the registered transform, retained after
+    /// `build()` takes `transform`.
+    transform_meta: Option<TransformMeta>,
 
     /// Optional buffer for async dispatch
     /// When present, produce() enqueues to buffer instead of direct call
@@ -614,8 +632,11 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     pub fn new() -> Self {
         Self {
             producer: Mutex::new(None),
+            has_producer: false,
             consumers: Mutex::new(Vec::new()),
+            consumer_count: 0,
             transform: Mutex::new(None),
+            transform_meta: None,
             buffer: None,
             clock: None,
             buffer_cfg: None,
@@ -697,7 +718,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         // Same-stage duplicate: a second .source() would silently overwrite
         // the first. Cross-stage exclusivity (.source()/.transform()/
         // .link_from()) is validated once, in build().
-        if lock(&self.producer).is_some() {
+        if self.has_producer {
             self.push_config_error(crate::error::ConfigError::new(
                 "",
                 None,
@@ -713,7 +734,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
                   -> BoxFuture<'static, ()> { Box::pin(f(ctx, producer)) },
         );
 
-        // Store it in the mutex
+        self.has_producer = true;
         *lock(&self.producer) = Some(boxed_fn);
     }
 
@@ -737,6 +758,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
                   -> BoxFuture<'static, ()> { Box::pin(f(ctx, consumer)) },
         );
 
+        self.consumer_count += 1;
         lock(&self.consumers).push(boxed);
     }
 
@@ -751,7 +773,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         // Same-stage duplicate: only one transform per record. Cross-stage
         // exclusivity (.source()/.transform()/.link_from()) is validated
         // once, in build().
-        if lock(&self.transform).is_some() {
+        if self.transform_meta.is_some() {
             self.push_config_error(crate::error::ConfigError::new(
                 "",
                 None,
@@ -759,12 +781,21 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             ));
             return;
         }
-        *lock(&self.transform) = Some(descriptor);
+        let crate::transform::TransformDescriptor {
+            input_keys,
+            input_types,
+            build_fn,
+        } = descriptor;
+        self.transform_meta = Some(TransformMeta {
+            input_keys,
+            input_types,
+        });
+        *lock(&self.transform) = Some(build_fn);
     }
 
     /// Returns whether a transform is registered for this record.
     pub fn has_transform(&self) -> bool {
-        lock(&self.transform).is_some()
+        self.transform_meta.is_some()
     }
 
     /// Returns how this record gets its values.
@@ -776,16 +807,21 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// - `Passive` otherwise
     pub fn record_origin(&self) -> crate::graph::RecordOrigin {
         // Check for transform first (most specific)
-        let transform_keys = lock(&self.transform).as_ref().map(|t| t.input_keys.clone());
-
-        if let Some(input_keys) = transform_keys {
+        if let Some(meta) = &self.transform_meta {
             // Asked of the iterator, not of `len()`: a pattern, not a trusted
             // invariant.
-            let mut inputs = input_keys.into_iter();
+            let mut inputs = meta.input_keys.iter();
             return match (inputs.next(), inputs.next()) {
-                (Some(input), None) => crate::graph::RecordOrigin::Transform { input },
+                (Some(input), None) => crate::graph::RecordOrigin::Transform {
+                    input: input.clone(),
+                },
                 (first, second) => crate::graph::RecordOrigin::TransformJoin {
-                    inputs: first.into_iter().chain(second).chain(inputs).collect(),
+                    inputs: first
+                        .into_iter()
+                        .chain(second)
+                        .chain(inputs)
+                        .cloned()
+                        .collect(),
                 },
             };
         }
@@ -799,7 +835,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         }
 
         // Check for producer service (source)
-        if lock(&self.producer).is_some() {
+        if self.has_producer {
             return crate::graph::RecordOrigin::Source;
         }
 
@@ -811,7 +847,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     ///
     /// Used during build-time validation to check that all input records exist.
     pub fn transform_input_keys(&self) -> Option<Vec<String>> {
-        lock(&self.transform).as_ref().map(|t| t.input_keys.clone())
+        self.transform_meta.as_ref().map(|m| m.input_keys.clone())
     }
 
     /// Returns each transform input's key and the type it is read as.
@@ -819,12 +855,12 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Used during build-time validation to check that every input record
     /// holds the type the transform reads. Empty if no transform is registered.
     pub fn transform_input_types(&self) -> Vec<(String, core::any::TypeId, &'static str)> {
-        lock(&self.transform)
+        self.transform_meta
             .as_ref()
-            .map(|t| {
-                t.input_keys
+            .map(|m| {
+                m.input_keys
                     .iter()
-                    .zip(&t.input_types)
+                    .zip(&m.input_types)
                     .map(|(key, &(type_id, type_name))| (key.clone(), type_id, type_name))
                     .collect()
             })
@@ -844,14 +880,20 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     where
         T: Sync,
     {
-        // Take the transform descriptor (can only collect once)
-        let descriptor = lock(&self.transform).take();
+        // Take the transform build closure (can only collect once)
+        let build_fn = lock(&self.transform).take();
 
-        if let Some(desc) = descriptor {
+        if let Some(build_fn) = build_fn {
+            let input_keys = self
+                .transform_meta
+                .as_ref()
+                .map(|m| m.input_keys.as_slice())
+                .unwrap_or(&[]);
+
             log_info!(
                 "🔄 Collecting transform futures for '{}' (inputs: {:?})",
                 record_key,
-                desc.input_keys
+                input_keys
             );
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
@@ -860,7 +902,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
             #[cfg(feature = "observability")]
             let profiling_arg = {
-                let is_single_input = desc.input_keys.len() == 1;
+                let is_single_input = input_keys.len() == 1;
 
                 let profiling_entry = self.profiling.transforms().first();
 
@@ -881,7 +923,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             #[cfg(not(feature = "observability"))]
             let profiling_arg: crate::transform::TransformProfiling = ();
 
-            let collected = (desc.build_fn)(producer, db.clone(), record_key, profiling_arg);
+            let collected = build_fn(producer, db.clone(), record_key, profiling_arg);
 
             let mut out = Vec::with_capacity(1 + collected.fanin_futures.len());
             out.push(collected.task_future);
@@ -1115,7 +1157,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// # Returns
     /// The count of consumers
     pub fn consumer_count(&self) -> usize {
-        lock(&self.consumers).len()
+        self.consumer_count
     }
 
     /// Collects all registered consumer (`.tap()`) futures.
@@ -1135,14 +1177,17 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         #[cfg(not(feature = "std"))]
         let _ = record_key;
 
+        // Take all consumers from the Mutex (can only collect once).
+        let consumers = core::mem::take(&mut *lock(&self.consumers));
+        if consumers.is_empty() {
+            return Ok(Vec::new());
+        }
+
         log_debug!(
             "Collecting {} consumer futures for record type {}",
-            self.consumer_count(),
+            consumers.len(),
             core::any::type_name::<T>()
         );
-
-        // Take all consumers from the Mutex
-        let consumers = core::mem::take(&mut *lock(&self.consumers));
 
         // Invariant: taps are pushed to `profiling` in the same order consumers are
         // added (both happen in `RecordRegistrar::tap`), so index `i` lines up.
@@ -1216,7 +1261,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
     /// Returns whether a producer service is registered
     pub fn has_producer(&self) -> bool {
-        lock(&self.producer).is_some()
+        self.has_producer
     }
 
     /// Marks this record as writable for remote access

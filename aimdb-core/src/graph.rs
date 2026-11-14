@@ -21,7 +21,7 @@ use alloc::{
 // ============================================================================
 
 /// How a record gets its values — part of the dependency graph.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum RecordOrigin {
