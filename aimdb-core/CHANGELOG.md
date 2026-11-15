@@ -13,8 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codec-independent header, with forward-compatible stamp/extension parsing.
 - Ingest errors carry countable rejection reasons. Registered inbound links
   expose shared admission and upgrade counters through metadata/metrics; accepted
-  values receive local write stamps. Raw deserializers now return `IngestError`
-  instead of `String` (`.into()` preserves ordinary decode errors).
+  values receive local write stamps. Counters are lock-free 64-bit atomics; on
+  targets without native ones (e.g. thumbv7em) the binary must provide a
+  `critical-section` impl, now even without `observability`. Raw deserializers
+  now return `IngestError` instead of `String` (`.into()` preserves ordinary
+  decode errors).
 - Link builders can finalize envelope strategies during registration. Transports
   retain their existing byte-oriented SPI, and bare payloads remain the default.
 

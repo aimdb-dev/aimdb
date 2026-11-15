@@ -1,6 +1,7 @@
 //! Countable ingress outcomes and shared, per-link statistics.
 
-use alloc::{borrow::Cow, string::String, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
+use portable_atomic::{AtomicU64, Ordering::Relaxed};
 
 /// Stable rejection categories, in admission precedence order (design 062 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,74 +163,90 @@ pub struct InboundRouteMetrics {
 }
 
 /// Lifetime follows the registered link, not a connection or dispatcher.
-/// A short lock keeps 64-bit counters coherent on embedded targets too.
-/// No method calls user code or allocates while holding it, snapshots included.
+///
+/// Lock-free: one 64-bit atomic per counter, recorded with relaxed ordering.
+/// Recording never allocates, locks, or calls user code, so dispatch from
+/// executors of any priority cannot block on it. On targets without native
+/// 64-bit atomics (e.g. thumbv7em), `portable-atomic` falls back to a
+/// `critical-section` the embedded binary supplies.
+///
+/// A snapshot reads each counter independently: during concurrent dispatch it
+/// may already count a message in `accepted` but not yet in its upgrade
+/// counter. Once dispatch is idle, a snapshot is exact.
 pub(crate) struct InboundStats {
-    stats: spin::Mutex<InboundRouteStats>,
-    /// Length of `stats.upgraded`, fixed at registration.
-    versions: usize,
+    accepted: AtomicU64,
+    /// Indexed by [`rejection_index`].
+    rejected: [AtomicU64; REJECTIONS],
+    untracked_upgrades: AtomicU64,
+    /// Sorted by source version, fixed at registration.
+    upgraded: Box<[(u32, AtomicU64)]>,
 }
+
+const REJECTIONS: usize = 8;
+
+const fn rejection_index(reason: Rejection) -> usize {
+    match reason {
+        Rejection::Malformed => 0,
+        Rejection::UnsupportedFormat => 1,
+        Rejection::ContractMismatch => 2,
+        Rejection::TooNew => 3,
+        Rejection::TooOld => 4,
+        Rejection::ShapeMismatch => 5,
+        Rejection::CodecMismatch => 6,
+        Rejection::DecodeError => 7,
+    }
+}
+
 impl InboundStats {
     pub(crate) fn new(versions: &[u32]) -> Self {
-        let mut upgraded: Vec<_> = versions
-            .iter()
-            .map(|&from| UpgradeCount { from, count: 0 })
-            .collect();
-        upgraded.sort_unstable_by_key(|c| c.from);
-        upgraded.dedup_by_key(|c| c.from);
+        let mut sorted: Vec<u32> = versions.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
         Self {
-            versions: upgraded.len(),
-            stats: spin::Mutex::new(InboundRouteStats {
-                upgraded,
-                ..Default::default()
-            }),
+            accepted: AtomicU64::new(0),
+            rejected: Default::default(),
+            untracked_upgrades: AtomicU64::new(0),
+            upgraded: sorted
+                .into_iter()
+                .map(|from| (from, AtomicU64::new(0)))
+                .collect(),
         }
     }
-    /// Allocates before taking the lock, so dispatch never waits on the
-    /// allocator; under the lock it only copies.
     pub(crate) fn snapshot(&self) -> InboundRouteStats {
-        let mut upgraded = Vec::with_capacity(self.versions);
-        let stats = self.stats.lock();
-        upgraded.extend_from_slice(&stats.upgraded);
-        // No `..`: a new counter must be copied here explicitly.
+        let rejected = |reason| self.rejected[rejection_index(reason)].load(Relaxed);
+        // No `..`: a new counter must be read here explicitly.
         InboundRouteStats {
-            accepted: stats.accepted,
-            malformed: stats.malformed,
-            unsupported_format: stats.unsupported_format,
-            contract_mismatch: stats.contract_mismatch,
-            too_new: stats.too_new,
-            too_old: stats.too_old,
-            shape_mismatch: stats.shape_mismatch,
-            codec_mismatch: stats.codec_mismatch,
-            decode_error: stats.decode_error,
-            upgraded,
-            untracked_upgrades: stats.untracked_upgrades,
+            accepted: self.accepted.load(Relaxed),
+            malformed: rejected(Rejection::Malformed),
+            unsupported_format: rejected(Rejection::UnsupportedFormat),
+            contract_mismatch: rejected(Rejection::ContractMismatch),
+            too_new: rejected(Rejection::TooNew),
+            too_old: rejected(Rejection::TooOld),
+            shape_mismatch: rejected(Rejection::ShapeMismatch),
+            codec_mismatch: rejected(Rejection::CodecMismatch),
+            decode_error: rejected(Rejection::DecodeError),
+            upgraded: self
+                .upgraded
+                .iter()
+                .map(|(from, count)| UpgradeCount {
+                    from: *from,
+                    count: count.load(Relaxed),
+                })
+                .collect(),
+            untracked_upgrades: self.untracked_upgrades.load(Relaxed),
         }
     }
     pub(crate) fn accept(&self, outcome: IngestOutcome) {
-        let mut stats = self.stats.lock();
-        stats.accepted = stats.accepted.saturating_add(1);
+        self.accepted.fetch_add(1, Relaxed);
         if let Some(from) = outcome.upgraded_from() {
-            if let Some(counter) = stats.upgraded.iter_mut().find(|c| c.from == from) {
-                counter.count = counter.count.saturating_add(1);
-            } else {
-                stats.untracked_upgrades = stats.untracked_upgrades.saturating_add(1);
-            }
+            match self.upgraded.binary_search_by_key(&from, |(v, _)| *v) {
+                Ok(i) => self.upgraded[i].1.fetch_add(1, Relaxed),
+                Err(_) => self.untracked_upgrades.fetch_add(1, Relaxed),
+            };
         }
     }
     pub(crate) fn reject(&self, reason: Rejection) {
-        let mut stats = self.stats.lock();
-        let counter = match reason {
-            Rejection::Malformed => &mut stats.malformed,
-            Rejection::UnsupportedFormat => &mut stats.unsupported_format,
-            Rejection::ContractMismatch => &mut stats.contract_mismatch,
-            Rejection::TooNew => &mut stats.too_new,
-            Rejection::TooOld => &mut stats.too_old,
-            Rejection::ShapeMismatch => &mut stats.shape_mismatch,
-            Rejection::CodecMismatch => &mut stats.codec_mismatch,
-            Rejection::DecodeError => &mut stats.decode_error,
-        };
-        *counter = counter.saturating_add(1);
+        self.rejected[rejection_index(reason)].fetch_add(1, Relaxed);
     }
 }
 
