@@ -176,7 +176,7 @@ impl Router {
                         report(RouterEvent::IngestFailed {
                             topic: resource_id,
                             record: route.record_key.as_deref().unwrap_or(""),
-                            reason: _e.message(),
+                            reason: _e.detail(),
                             rejection: _e.reason(),
                         });
                     }
@@ -548,7 +548,10 @@ mod tests {
                     ..
                 } = event;
                 assert_eq!(*rejection, crate::Rejection::DecodeError);
-                assert_eq!((*topic, *reason), ("broken", "decode failed"));
+                assert_eq!(
+                    (*topic, reason.to_string().as_str()),
+                    ("broken", "decode failed")
+                );
                 seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
         };

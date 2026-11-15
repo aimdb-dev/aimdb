@@ -80,10 +80,10 @@ fn metadata_failures_follow_the_specified_precedence() {
         Rejection::ContractMismatch,
     );
     assert!(err
-        .message()
+        .to_string()
         .contains(&format!("{:#010x}", name_id("humidity"))));
     assert!(err
-        .message()
+        .to_string()
         .contains(&format!("{:#010x}", name_id("temperature"))));
     let err = assert_reason(
         admit_frame(
@@ -97,8 +97,12 @@ fn metadata_failures_follow_the_specified_precedence() {
         Rejection::TooNew,
     );
     assert!(err
-        .message()
+        .to_string()
         .contains("received temperature@3, accepts temperature@2..=2"));
+    // Metadata rejections carry data and a static message: nothing is
+    // formatted until the error is displayed.
+    assert_eq!(err.message(), "downgrade on ingest is not permitted");
+    assert_eq!(err.admission().unwrap().received.unwrap().version(), 3);
     let err = assert_reason(
         admit_frame(
             &frame(
@@ -111,7 +115,7 @@ fn metadata_failures_follow_the_specified_precedence() {
         Rejection::TooOld,
     );
     assert!(err
-        .message()
+        .to_string()
         .contains("received temperature@1, accepts temperature@2..=2"));
     let link = LinkContract::<V2, _>::inline_from::<1>(PayloadCodec::Postcard, NeverDecode);
     for version in [1, 2] {
@@ -120,9 +124,9 @@ fn metadata_failures_follow_the_specified_precedence() {
             admit_frame(&frame(bad_shape, PayloadCodec::Cdr, b"bad"), &link),
             Rejection::ShapeMismatch,
         );
-        assert!(err.message().contains("0x000000000000ffff"));
+        assert!(err.to_string().contains("0x000000000000ffff"));
         assert!(err
-            .message()
+            .to_string()
             .contains(&format!("{:#018x}", V2::shape_of(version).unwrap())));
         assert_reason(
             admit_frame(&frame(identity(version), PayloadCodec::Cdr, b"bad"), &link),

@@ -4,11 +4,14 @@
 //! callback produces it, stamps it on the local instance clock, and then counts
 //! its outcome. Admission itself neither reads a clock nor trusts a wire stamp.
 
-use alloc::{format, string::String};
+use alloc::{
+    borrow::Cow,
+    string::{String, ToString},
+};
 use core::{cell::Cell, marker::PhantomData};
 
 use aimdb_core::envelope::{ContractRef, Envelope, EnvelopeError, PayloadCodec};
-use aimdb_core::{IngestError, IngestValue, Rejection};
+use aimdb_core::{AdmissionContext, AdmissionDetail, IngestError, IngestValue, Rejection};
 
 use crate::{ContractShape, MigrationChain, PayloadDecoder, Reaches, SchemaType, VersionOf};
 
@@ -122,43 +125,37 @@ impl<T: MigrationChain, D: PayloadDecoder> LinkContract<T, D> {
                     EnvelopeError::UnsupportedFormat => Rejection::UnsupportedFormat,
                     _ => Rejection::Malformed,
                 };
-                IngestError::new(
+                IngestError::rejected(
                     reason,
-                    format!(
-                        "invalid envelope header ({error}), accepts {}@{}..={}",
-                        T::NAME,
-                        self.accepted_min,
-                        self.accepted_max,
-                    ),
+                    self.context(None, AdmissionDetail::Header(error)),
+                    "",
                 )
             }),
         }
     }
 
+    fn context(&self, received: Option<ContractRef>, detail: AdmissionDetail) -> AdmissionContext {
+        AdmissionContext {
+            received,
+            accepted_name: T::NAME,
+            accepted_name_id: self.current.name_id(),
+            accepted_min: self.accepted_min,
+            accepted_max: self.accepted_max,
+            detail,
+        }
+    }
+
+    /// Carries what was received and accepted as data: the text is formatted
+    /// only when the error is displayed, so a rejection with a static or
+    /// empty `message` does not allocate.
     fn reject(
         &self,
         env: &Envelope<'_>,
         reason: Rejection,
-        detail: impl core::fmt::Display,
+        detail: AdmissionDetail,
+        message: impl Into<Cow<'static, str>>,
     ) -> IngestError {
-        let received = env.contract();
-        let identity = if received.name_id() == self.current.name_id() {
-            String::from(T::NAME)
-        } else {
-            format!("name_id {:#010x}", received.name_id())
-        };
-        IngestError::new(
-            reason,
-            format!(
-                "received {}@{}, accepts {}@{}..={}: {}",
-                identity,
-                received.version(),
-                T::NAME,
-                self.accepted_min,
-                self.accepted_max,
-                detail,
-            ),
-        )
+        IngestError::rejected(reason, self.context(Some(env.contract()), detail), message)
     }
 }
 
@@ -184,16 +181,13 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
 ) -> Admit<T> {
     let received = env.contract();
     if received.name_id() != link.current.name_id() {
-        return Err(link.reject(
-            env,
-            Rejection::ContractMismatch,
-            format_args!("expected name_id {:#010x}", link.current.name_id()),
-        ));
+        return Err(link.reject(env, Rejection::ContractMismatch, AdmissionDetail::Name, ""));
     }
     if received.version() > T::VERSION || received.version() > link.accepted_max {
         return Err(link.reject(
             env,
             Rejection::TooNew,
+            AdmissionDetail::Message,
             "downgrade on ingest is not permitted",
         ));
     }
@@ -201,6 +195,7 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
         return Err(link.reject(
             env,
             Rejection::TooOld,
+            AdmissionDetail::Message,
             "version below the link's accepted minimum",
         ));
     }
@@ -209,7 +204,11 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
             return Err(link.reject(
                 env,
                 Rejection::ShapeMismatch,
-                format_args!("received shape {actual:#018x}, expected {expected:#018x}"),
+                AdmissionDetail::Shape {
+                    received: actual,
+                    expected,
+                },
+                "",
             ));
         }
     }
@@ -217,11 +216,11 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
         return Err(link.reject(
             env,
             Rejection::CodecMismatch,
-            format_args!(
-                "received codec {:?}, expected {:?}",
-                env.codec(),
-                link.codec
-            ),
+            AdmissionDetail::Codec {
+                received: env.codec(),
+                expected: link.codec,
+            },
+            "",
         ));
     }
 
@@ -236,26 +235,41 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
         decoder
             .decode_payload::<T>(env.payload())
             .map(|(value, _)| value)
-            .map_err(|error| link.reject(env, Rejection::DecodeError, error))?
+            .map_err(|error| decode_error(link, env, error))?
     } else {
         T::migrate_from(received.version(), env.payload(), &decoder)
-            .map_err(|error| link.reject(env, Rejection::DecodeError, error))?
+            .map_err(|error| decode_error(link, env, error.to_string()))?
     };
     let Some(used) = decoder.used.get() else {
         return Err(link.reject(
             env,
             Rejection::DecodeError,
+            AdmissionDetail::Message,
             "migration did not decode its payload",
         ));
     };
     if let Err(detail) = crate::payload_codec::check_consumed(used, env.payload().len()) {
-        return Err(link.reject(env, Rejection::DecodeError, detail));
+        return Err(decode_error(link, env, detail));
     }
     if received.version() == T::VERSION {
         Ok(IngestValue::current(value))
     } else {
         Ok(IngestValue::upgraded(value, received.version()))
     }
+}
+
+/// A decoder's own message, moved into the error without reformatting.
+fn decode_error<T: MigrationChain, D: PayloadDecoder>(
+    link: &LinkContract<T, D>,
+    env: &Envelope<'_>,
+    message: String,
+) -> IngestError {
+    link.reject(
+        env,
+        Rejection::DecodeError,
+        AdmissionDetail::Message,
+        message,
+    )
 }
 
 struct TrackedDecoder<'a, D> {

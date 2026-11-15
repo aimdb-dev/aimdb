@@ -1,5 +1,6 @@
 //! Countable ingress outcomes and shared, per-link statistics.
 
+use crate::envelope::{ContractRef, EnvelopeError, PayloadCodec};
 use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -37,26 +38,143 @@ impl core::fmt::Display for Rejection {
     }
 }
 
+/// What a rejected frame claimed and what its link accepts.
+///
+/// Plain data: [`IngestError`] formats the diagnostic text only when it is
+/// displayed, so rejecting a frame on an admitting link does not allocate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmissionContext {
+    /// The frame's contract; `None` when its header did not parse.
+    pub received: Option<ContractRef>,
+    pub accepted_name: &'static str,
+    pub accepted_name_id: u32,
+    pub accepted_min: u32,
+    pub accepted_max: u32,
+    pub detail: AdmissionDetail,
+}
+
+/// The specific finding of an admission rejection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AdmissionDetail {
+    /// The error's [`message`](IngestError::message) says the rest.
+    Message,
+    /// The envelope header did not parse.
+    Header(EnvelopeError),
+    /// The frame names another contract.
+    Name,
+    Shape {
+        received: u64,
+        expected: u64,
+    },
+    Codec {
+        received: PayloadCodec,
+        expected: PayloadCodec,
+    },
+}
+
 /// A deserialization/admission failure with a countable reason and diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IngestError {
     reason: Rejection,
     message: Cow<'static, str>,
+    admission: Option<AdmissionContext>,
 }
 impl IngestError {
     pub fn new(reason: Rejection, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             reason,
             message: message.into(),
+            admission: None,
+        }
+    }
+    /// A rejection by an admitting link. A `&'static str` message, or none
+    /// with a structured [`AdmissionDetail`], keeps this allocation-free.
+    pub fn rejected(
+        reason: Rejection,
+        admission: AdmissionContext,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+            admission: Some(admission),
         }
     }
     pub const fn reason(&self) -> Rejection {
         self.reason
     }
+    /// The free-text part of the diagnostic. [`detail`](Self::detail) and
+    /// `Display` add the admission context, when there is one.
     pub fn message(&self) -> &str {
         &self.message
     }
+    pub const fn admission(&self) -> Option<&AdmissionContext> {
+        self.admission.as_ref()
+    }
+    /// The full diagnostic without the reason, formatted on display.
+    pub const fn detail(&self) -> IngestDetail<'_> {
+        IngestDetail(self)
+    }
 }
+
+/// Displays an [`IngestError`]'s diagnostic; see [`IngestError::detail`].
+#[derive(Clone, Copy, Debug)]
+pub struct IngestDetail<'a>(&'a IngestError);
+
+impl core::fmt::Display for IngestDetail<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Some(admission) = &self.0.admission else {
+            return f.write_str(&self.0.message);
+        };
+        let accepts = |f: &mut core::fmt::Formatter<'_>| {
+            write!(
+                f,
+                "accepts {}@{}..={}",
+                admission.accepted_name, admission.accepted_min, admission.accepted_max
+            )
+        };
+        let Some(received) = admission.received else {
+            match admission.detail {
+                AdmissionDetail::Header(error) => write!(f, "invalid envelope header ({error}), ")?,
+                _ => f.write_str("no contract received, ")?,
+            }
+            return accepts(f);
+        };
+        if received.name_id() == admission.accepted_name_id {
+            write!(f, "received {}", admission.accepted_name)?;
+        } else {
+            write!(f, "received name_id {:#010x}", received.name_id())?;
+        }
+        write!(f, "@{}, ", received.version())?;
+        accepts(f)?;
+        f.write_str(": ")?;
+        match admission.detail {
+            AdmissionDetail::Message => f.write_str(&self.0.message),
+            AdmissionDetail::Header(error) => write!(f, "invalid envelope header ({error})"),
+            AdmissionDetail::Name => {
+                write!(f, "expected name_id {:#010x}", admission.accepted_name_id)
+            }
+            AdmissionDetail::Shape { received, expected } => {
+                write!(
+                    f,
+                    "received shape {received:#018x}, expected {expected:#018x}"
+                )
+            }
+            AdmissionDetail::Codec { received, expected } => {
+                write!(f, "received codec {received:?}, expected {expected:?}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for IngestDetail<'_> {
+    fn format(&self, f: defmt::Formatter<'_>) {
+        defmt::write!(f, "{}", defmt::Display2Format(self));
+    }
+}
+
 impl From<String> for IngestError {
     fn from(message: String) -> Self {
         Self::new(Rejection::DecodeError, message)
@@ -69,7 +187,7 @@ impl From<&'static str> for IngestError {
 }
 impl core::fmt::Display for IngestError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}: {}", self.reason, self.message)
+        write!(f, "{}: {}", self.reason, self.detail())
     }
 }
 impl core::error::Error for IngestError {}
@@ -294,6 +412,49 @@ impl InboundStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_admission_rejection_formats_its_context_on_display() {
+        let admission = AdmissionContext {
+            received: Some(ContractRef::new(7, 3, None)),
+            accepted_name: "temperature",
+            accepted_name_id: 7,
+            accepted_min: 1,
+            accepted_max: 2,
+            detail: AdmissionDetail::Message,
+        };
+        let error = IngestError::rejected(Rejection::TooNew, admission, "no downgrade");
+        assert_eq!(error.message(), "no downgrade");
+        assert_eq!(
+            error.to_string(),
+            "too_new: received temperature@3, accepts temperature@1..=2: no downgrade"
+        );
+        let other = AdmissionContext {
+            received: Some(ContractRef::new(9, 1, None)),
+            detail: AdmissionDetail::Name,
+            ..admission
+        };
+        assert_eq!(
+            IngestError::rejected(Rejection::ContractMismatch, other, "")
+                .detail()
+                .to_string(),
+            "received name_id 0x00000009@1, accepts temperature@1..=2: \
+             expected name_id 0x00000007"
+        );
+        let header = AdmissionContext {
+            received: None,
+            detail: AdmissionDetail::Header(EnvelopeError::Malformed),
+            ..admission
+        };
+        assert_eq!(
+            IngestError::rejected(Rejection::Malformed, header, "")
+                .detail()
+                .to_string(),
+            "invalid envelope header (Malformed), accepts temperature@1..=2"
+        );
+        // Without a context the message is the whole diagnostic.
+        assert_eq!(IngestError::from("bad").to_string(), "decode_error: bad");
+    }
 
     #[test]
     fn the_narrow_counter_stops_at_its_maximum() {

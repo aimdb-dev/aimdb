@@ -14,7 +14,8 @@ pub(crate) enum RouterEvent<'a> {
     IngestFailed {
         topic: &'a str,
         record: &'a str,
-        reason: &'a str,
+        /// Formatted only if a logger prints it.
+        reason: crate::IngestDetail<'a>,
         rejection: crate::Rejection,
     },
 }
