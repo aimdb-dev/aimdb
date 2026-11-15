@@ -73,7 +73,7 @@ fn build_db(
                 core::str::from_utf8(data)
                     .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
-                    .ok_or_else(|| String::from("bad payload"))
+                    .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
             })
             .finish();
     });
@@ -184,11 +184,11 @@ async fn both_backends_round_trip_against_one_broker() {
     );
 }
 
-fn parse(data: &[u8]) -> Result<u64, String> {
+fn parse(data: &[u8]) -> Result<u64, aimdb_core::IngestError> {
     core::str::from_utf8(data)
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
-        .ok_or_else(|| String::from("bad payload"))
+        .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
 }
 
 /// Deserializer calls per record.
@@ -216,7 +216,7 @@ fn build_pattern_db(
                 pattern_calls.pattern.fetch_add(1, Ordering::SeqCst);
                 match (m.get("device"), m.key().map(|k| k.index())) {
                     (Some("kitchen"), Some(0)) => parse(data),
-                    other => Err(format!("unexpected match {other:?}")),
+                    other => Err(format!("unexpected match {other:?}").into()),
                 }
             })
             .finish();
@@ -755,3 +755,145 @@ async fn a_configured_scheme_routes_on_both_backends() {
     assert_eq!(native, expected, "native");
     assert_eq!(embedded, expected, "embedded");
 }
+
+#[path = "../../aimdb-data-contracts/tests/fixtures/admission_contracts.rs"]
+mod envelope_contracts;
+
+/// The transport treats the inline header as opaque bytes on both backends.
+/// End-to-end forwarding from an MCU producer is covered by the rolling fixture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inline_envelopes_upgrade_and_downgrade_on_both_backends() {
+    use aimdb_core::envelope::{ContractRef, Envelope, HeaderWriter, PayloadCodec};
+    use aimdb_data_contracts::{
+        link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+        MigrationChain, VersionedInboundExt, VersionedOutboundExt,
+    };
+    use envelope_contracts::V2;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("mqtt://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let mut input = [0; 19];
+    let header = HeaderWriter::new(&mut input)
+        .contract(ContractRef::new(
+            aimdb_data_contracts::name_id("temperature"),
+            1,
+            V2::shape_of(1),
+        ))
+        .codec(PayloadCodec::Postcard)
+        .finish()
+        .unwrap();
+    input[header..].copy_from_slice(&21.5_f32.to_le_bytes());
+    // The concurrent broker spawns independent tasks and requires a static push.
+    let input = Box::leak(Box::new(input));
+
+    async fn database(
+        connector: impl aimdb_core::ConnectorBuilder + 'static,
+        celsius: f32,
+    ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+        let mut b = AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter))
+            .with_connector(connector);
+        b.configure::<V2>("in", |r| {
+            r.buffer(BufferCfg::SingleLatest)
+                .link_from("mqtt://parity/envelope/in")
+                .with_qos(1)
+                .accepts_from::<1>()
+                .with_link_codec(Postcard::<64>)
+                .with_envelope(EnvelopeCarrier::Inline)
+                .finish();
+        });
+        b.configure::<V2>("out", |r| {
+            r.buffer(BufferCfg::SingleLatest)
+                .source(move |_, tx| async move {
+                    loop {
+                        tx.produce(V2 {
+                            celsius,
+                            quality: 300,
+                        });
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .link_to("mqtt://parity/envelope/out")
+                .with_link_codec(Postcard::<64>)
+                .with_envelope(EnvelopeCarrier::Inline)
+                .sends_as::<1>()
+                .with_qos(1)
+                .finish();
+        });
+        b.build().await.unwrap()
+    }
+    let (native, native_runner) = database(
+        MqttConnector::new(url.clone()).with_client_id("envelope-native"),
+        25.0,
+    )
+    .await;
+    let (embedded, embedded_runner) = database(
+        MqttConnector::new(url)
+            .transport(TokioNet::tcp())
+            .with_client_id("envelope-embedded"),
+        26.0,
+    )
+    .await;
+    let mut a = native.consumer::<V2>("in").unwrap().subscribe();
+    let mut b = embedded.consumer::<V2>("in").unwrap().subscribe();
+    let broker =
+        fake_broker_concurrent(listener, seen.clone(), Some(("parity/envelope/in", input)));
+    let values = tokio::select! {
+        _ = native_runner.run() => panic!("native runner stopped"),
+        _ = embedded_runner.run() => panic!("embedded runner stopped"),
+        _ = broker => panic!("broker stopped"),
+        values = async {
+            let values = (a.recv().await.unwrap(), b.recv().await.unwrap());
+            loop {
+                let both_sent = {
+                    let seen = seen.lock().unwrap();
+                    [25.0_f32, 26.0_f32].iter().all(|value| seen.published.iter().any(|(_, bytes)| {
+                        Envelope::parse(bytes).is_ok_and(|env| env.payload() == value.to_le_bytes())
+                    }))
+                };
+                if both_sent { break; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            values
+        } => values,
+        _ = tokio::time::sleep(Duration::from_secs(15)) => panic!("envelope parity watchdog"),
+    };
+    for value in [values.0, values.1] {
+        assert_eq!(
+            value.value,
+            V2 {
+                celsius: 21.5,
+                quality: 1
+            }
+        );
+        assert!(value.stamp().as_nanos() > 0);
+    }
+    for db in [&native, &embedded] {
+        let routes =
+            aimdb_core::InboundDispatch::new(db, "mqtt", &aimdb_mqtt_connector::MqttGrammar)
+                .unwrap();
+        let stats = routes.stats(0).unwrap();
+        assert_eq!(stats.accepted, 1);
+        assert_eq!(stats.upgraded[0].count, 1);
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.connects, 2);
+    let mut sent_values = Vec::new();
+    for (topic, bytes) in &seen.published {
+        assert_eq!(topic, "parity/envelope/out");
+        let env = Envelope::parse(bytes).unwrap();
+        assert_eq!(bytes.len(), 19);
+        assert_eq!(env.contract().version(), 1);
+        assert_eq!(env.contract().shape(), V2::shape_of(1));
+        sent_values.push(f32::from_le_bytes(env.payload().try_into().unwrap()));
+    }
+    sent_values.sort_by(f32::total_cmp);
+    sent_values.dedup();
+    assert_eq!(
+        sent_values,
+        [25.0, 26.0],
+        "both backends must send their own downgraded value"
+    );
+}
+
+mod rolling_upgrade;

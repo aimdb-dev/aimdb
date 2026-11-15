@@ -1,0 +1,10 @@
+error[E0080]: evaluation panicked: every type in a migration chain must share the current type's SchemaType::NAME
+  --> tests/compile-fail/chain_name_mismatch.rs:36:1
+   |
+36 | / migration_chain! {
+37 | |     type Current = OtherNameCurrent;
+38 | |     steps {
+39 | |         OtherNameStep: OtherNameV1 => OtherNameCurrent,
+40 | |     }
+41 | | }
+   | |_^ evaluation of `_` failed here

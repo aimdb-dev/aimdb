@@ -130,7 +130,7 @@ async fn main(spawner: Spawner) {
            .finish()
            // Inbound: Subscribe from MQTT
            .link_from("mqtt://commands/sensor")
-           .with_deserializer(|data| SensorCommand::from_bytes(data))
+           .with_deserializer(|_ctx, data| SensorCommand::from_bytes(data).map_err(Into::into))
            .finish();
     });
     
@@ -306,7 +306,7 @@ publish and subscribe QoS:
 ```rust
 reg.link_from("mqtt://sensors/{room}/temp")
    .with_qos(0)          // high-rate telemetry: no acknowledgements
-   .with_deserializer(|_ctx, data: &[u8]| parse(data))
+   .with_deserializer(|_ctx, data: &[u8]| parse(data).map_err(Into::into))
    .finish();
 ```
 

@@ -1,0 +1,22 @@
+error[E0277]: `Humidity` is not a version of contract `Sensor`
+ --> tests/compile-fail/unrelated_binding.rs:9:20
+  |
+9 | fn main() { bind::<Humidity>(); }
+  |                    ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `VersionOf<Sensor>` is not implemented for `Humidity`
+ --> tests/compile-fail/unrelated_binding.rs:6:1
+  |
+6 | struct Humidity;
+  | ^^^^^^^^^^^^^^^
+help: the trait `VersionOf<Sensor>` is implemented for `Sensor`
+ --> tests/compile-fail/unrelated_binding.rs:7:1
+  |
+7 | migration_chain! { type Current = Sensor; steps {} }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `bind`
+ --> tests/compile-fail/unrelated_binding.rs:8:12
+  |
+8 | fn bind<U: VersionOf<Sensor>>() {}
+  |            ^^^^^^^^^^^^^^^^^ required by this bound in `bind`
+  = note: this error originates in the macro `migration_chain` (in Nightly builds, run with -Z macro-backtrace for more info)

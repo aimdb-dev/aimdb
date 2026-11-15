@@ -11,15 +11,26 @@ mod target {
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum RouterEvent<'a> {
-    IngestFailed { topic: &'a str, reason: &'a str },
+    IngestFailed {
+        topic: &'a str,
+        record: &'a str,
+        /// Formatted only if a logger prints it.
+        reason: crate::IngestDetail<'a>,
+        rejection: crate::Rejection,
+    },
 }
 
 pub(crate) fn report(event: RouterEvent<'_>) {
     #[cfg(test)]
     capture::record(&event);
     match event {
-        RouterEvent::IngestFailed { topic, reason } => {
-            log_warn!(target: target::ROUTER, "Failed to ingest message on '{}': {}", topic, reason)
+        RouterEvent::IngestFailed {
+            topic,
+            record,
+            reason,
+            rejection,
+        } => {
+            log_warn!(target: target::ROUTER, "Failed to ingest message on '{}' for record '{}': {} ({})", topic, record, reason, rejection)
         }
     }
 }

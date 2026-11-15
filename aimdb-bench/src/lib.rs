@@ -27,7 +27,7 @@
 //! | `benches/b1_b2_embassy.rs`        | B1+B2 | Latency (time/iter) + throughput (Embassy)|
 //! | `benches/b_alloc_pipeline.rs`     | info  | Per-message allocation (runner pipeline) |
 //! | `benches/b_runner_pipeline.rs`    | info  | Runner pipeline throughput (Criterion)   |
-//! | `benches/b0_alloc_migration.rs`   | B0    | Per-call allocation (migrate_from_bytes) |
+//! | `benches/b0_alloc_migration.rs`   | B0    | Per-call allocation (migrate_from) |
 //! | `benches/b0_alloc_fanout_encode.rs`| B0   | Fan-out event-encode allocation          |
 //! | `benches/b1_b2_fanout_encode.rs`  | B1+B2 | Fan-out event-encode latency             |
 //!

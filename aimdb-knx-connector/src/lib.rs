@@ -109,7 +109,7 @@
 //!            .source(sensor_producer)
 //!            // Inbound: Monitor KNX bus
 //!            .link_from("knx://1/0/10")
-//!            .with_deserializer(|_ctx, data| SensorData::from_knx(data))
+//!            .with_deserializer(|_ctx, data| SensorData::from_knx(data).map_err(Into::into))
 //!            .finish()
 //!            // Outbound: Send to KNX
 //!            .link_to("knx://1/0/11")

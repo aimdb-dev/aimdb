@@ -1,0 +1,28 @@
+error[E0277]: migration chain of `V2` does not reach version 0
+ --> tests/compile-fail/link_uncovered_outbound.rs:5:85
+  |
+5 |     let _ = aimdb_core::OutboundLink::<contracts::V2>::new("mqtt://out").sends_as::<0>();
+  |                                                                                     ^ unsatisfied trait bound
+  |
+help: the trait `Reaches<0>` is not implemented for `V2`
+ --> tests/compile-fail/../fixtures/admission_contracts.rs
+  |
+  | pub struct V2 {
+  | ^^^^^^^^^^^^^
+help: `V2` implements trait `Reaches<V>`
+ --> tests/compile-fail/../fixtures/admission_contracts.rs
+  |
+  | migration_chain! { type Current = V2; steps { Step: V1 => V2 } }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | `Reaches<1>`
+  | `Reaches<2>`
+note: required by a bound in `sends_as`
+ --> src/versioned_links.rs
+  |
+  |     fn sends_as<const V: u32>(self) -> Self
+  |        -------- required by a bound in this associated function
+  |     where
+  |         T: Reaches<V>;
+  |            ^^^^^^^^^^ required by this bound in `VersionedOutboundExt::sends_as`
+  = note: this error originates in the macro `migration_chain` (in Nightly builds, run with -Z macro-backtrace for more info)

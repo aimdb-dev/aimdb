@@ -1,0 +1,28 @@
+error[E0277]: migration chain of `V2` does not reach version 0
+ --> tests/compile-fail/admission_uncovered_version.rs:8:83
+  |
+8 |     let _ = aimdb_data_contracts::LinkContract::<contracts::V2, _>::inline_from::<0>(
+  |                                                                                   ^ unsatisfied trait bound
+  |
+help: the trait `Reaches<0>` is not implemented for `V2`
+ --> tests/compile-fail/../fixtures/admission_contracts.rs
+  |
+  | pub struct V2 {
+  | ^^^^^^^^^^^^^
+help: `V2` implements trait `Reaches<V>`
+ --> tests/compile-fail/../fixtures/admission_contracts.rs
+  |
+  | migration_chain! { type Current = V2; steps { Step: V1 => V2 } }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | `Reaches<1>`
+  | `Reaches<2>`
+note: required by a bound in `LinkContract::<T, D>::inline_from`
+ --> src/admission.rs
+  |
+  |     pub fn inline_from<const V: u32>(codec: PayloadCodec, decoder: D) -> Self
+  |            ----------- required by a bound in this associated function
+  |     where
+  |         T: Reaches<V>,
+  |            ^^^^^^^^^^ required by this bound in `LinkContract::<T, D>::inline_from`
+  = note: this error originates in the macro `migration_chain` (in Nightly builds, run with -Z macro-backtrace for more info)

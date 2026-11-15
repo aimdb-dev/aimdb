@@ -120,3 +120,68 @@ mod sim {
         }
     }
 }
+
+/// Build-only proof: the same envelope admission compiles on Cortex-M.
+/// In an application this policy is created once while registering the link.
+pub fn temperature_admission(
+) -> aimdb_data_contracts::LinkContract<Temperature, aimdb_data_contracts::link_codecs::Json> {
+    aimdb_data_contracts::LinkContract::inline_from::<3>(
+        aimdb_core::envelope::PayloadCodec::Json,
+        aimdb_data_contracts::link_codecs::Json,
+    )
+}
+
+pub fn admit_temperature_frame(
+    frame: &[u8],
+    link: &aimdb_data_contracts::LinkContract<Temperature, aimdb_data_contracts::link_codecs::Json>,
+) -> aimdb_data_contracts::Admit<Temperature> {
+    aimdb_data_contracts::admit_frame(frame, link)
+}
+
+/// Registration-time envelope strategies compile on the MCU too. Called by a
+/// build-only fixture; a real application registers its MQTT connector first.
+pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
+    use aimdb_data_contracts::{
+        link_codecs::Json, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+        VersionedInboundExt, VersionedOutboundExt,
+    };
+    builder.configure::<Temperature>("fixture.versioned.input", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
+            .link_from("mqtt://fixture/upgrade")
+            .with_link_codec(Json)
+            .with_envelope(EnvelopeCarrier::Inline)
+            .accepts_from::<3>()
+            .finish();
+    });
+    builder.configure::<Temperature>("fixture.versioned.output", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
+            .link_to("mqtt://fixture/legacy")
+            .with_link_codec(Json)
+            .with_envelope(EnvelopeCarrier::Inline)
+            .sends_as::<3>()
+            .finish();
+    });
+}
+
+/// Monomorphize the rolling fixture's exact firmware/hub declarations on MCU.
+pub fn configure_rolling_fixture(builder: &mut AimDbBuilder) {
+    use aimdb_data_contracts::link_codecs::{Cdr, Postcard};
+    use rolling_contracts_n as firmware;
+    use rolling_contracts_n1 as hub;
+    builder.configure::<firmware::Temperature>("rolling.firmware.out", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        firmware::publish(r, Postcard::<64>);
+    });
+    builder.configure::<firmware::Temperature>("rolling.firmware.in", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        firmware::receive(r, Postcard::<64>);
+    });
+    builder.configure::<hub::Temperature>("rolling.hub.in", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        hub::receive(r, Cdr::<64>);
+    });
+    builder.configure::<hub::Temperature>("rolling.hub.out", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        hub::send_to_firmware(r, Cdr::<64>);
+    });
+}

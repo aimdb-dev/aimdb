@@ -26,6 +26,8 @@ pub struct InboundDispatch {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct InboundRouteInfo {
+    /// Dense index in this dispatcher, for querying statistics.
+    pub id: usize,
     /// The resolved topic or pattern, after any topic resolver.
     pub topic: Arc<str>,
     /// `TypeId` of the record the link belongs to.
@@ -64,7 +66,7 @@ impl InboundDispatch {
     /// Matches `topic`, deserializes `payload` and produces into every
     /// matching record.
     ///
-    /// Synchronous and never blocks. Ingest failures, unmatched topics, full
+    /// Synchronous, with no await points. Ingest failures, unmatched topics, full
     /// buffers and full key tables are logged, not returned.
     pub fn dispatch(&self, topic: &str, payload: &[u8]) {
         // `Router::route` only ever returns `Ok`.
@@ -81,6 +83,12 @@ impl InboundDispatch {
     /// at build.
     pub fn routes(&self) -> &[InboundRouteInfo] {
         &self.routes
+    }
+
+    /// Snapshot of route counters. Clones and newly built dispatchers over the
+    /// same registered link share the counters; reconnecting does not reset them.
+    pub fn stats(&self, id: usize) -> Option<crate::InboundRouteStats> {
+        self.router.stats(id)
     }
 
     /// Number of inbound routes.

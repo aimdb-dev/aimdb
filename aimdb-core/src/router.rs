@@ -59,6 +59,8 @@ pub(crate) struct CompiledRoute {
     /// Key table and the capture number whose value is keyed.
     key: Option<(Arc<KeyTable>, usize)>,
     ingest: IngestFn,
+    stats: Arc<crate::ingest::InboundStats>,
+    record_key: Option<Arc<str>>,
 }
 
 impl CompiledRoute {
@@ -84,7 +86,19 @@ impl CompiledRoute {
             names,
             key,
             ingest,
+            stats: Arc::new(crate::ingest::InboundStats::new(&[])),
+            record_key: None,
         }
+    }
+
+    pub(crate) fn with_stats(
+        mut self,
+        stats: Arc<crate::ingest::InboundStats>,
+        record_key: &str,
+    ) -> Self {
+        self.record_key = Some(Arc::from(record_key));
+        self.stats = stats;
+        self
     }
 
     fn matches(&self, topic: &str, spans: &mut Spans) -> bool {
@@ -151,15 +165,19 @@ impl Router {
                 };
                 let m = TopicMatch::new(resource_id, &route.names, &spans, key);
                 match (route.ingest)(ctx, &m, payload) {
-                    Ok(()) => {
+                    Ok(outcome) => {
+                        route.stats.accept(outcome);
                         routed = true;
 
                         log_debug!("Routed message on '{}' to producer", resource_id);
                     }
                     Err(_e) => {
+                        route.stats.reject(_e.reason());
                         report(RouterEvent::IngestFailed {
                             topic: resource_id,
-                            reason: &_e,
+                            record: route.record_key.as_deref().unwrap_or(""),
+                            reason: _e.detail(),
+                            rejection: _e.reason(),
                         });
                     }
                 }
@@ -211,6 +229,11 @@ impl Router {
             .collect()
     }
 
+    /// Snapshot of the counters for a dense route index.
+    pub fn stats(&self, id: usize) -> Option<crate::InboundRouteStats> {
+        self.routes.get(id).map(|route| route.stats.snapshot())
+    }
+
     /// Get the number of routes in this router
     pub fn route_count(&self) -> usize {
         self.routes.len()
@@ -234,7 +257,7 @@ mod tests {
     fn counting_ingest(call_count: Arc<AtomicUsize>) -> IngestFn {
         Arc::new(move |_ctx, _m, _payload| {
             call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(crate::IngestOutcome::current())
         })
     }
 
@@ -252,7 +275,7 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .push((m.topic().to_string(), caps, m.key().map(|k| k.index())));
-            Ok(())
+            Ok(crate::IngestOutcome::current())
         })
     }
 
@@ -299,7 +322,7 @@ mod tests {
                     "r",
                     Arc::new(move |_ctx, _m, payload| {
                         len.store(payload.len(), Ordering::SeqCst);
-                        Ok(())
+                        Ok(crate::IngestOutcome::current())
                     }),
                 ),
                 route("r", Arc::new(|_ctx, _m, _payload| Err("bad".into()))),
@@ -307,6 +330,83 @@ mod tests {
         );
         router.route("r", b"dummy", &test_ctx()).unwrap();
         assert_eq!(seen_len.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn rejection_counters_are_per_route_and_do_not_stop_delivery() {
+        use crate::{IngestError, IngestOutcome, Rejection};
+        let reasons = [
+            Rejection::Malformed,
+            Rejection::UnsupportedFormat,
+            Rejection::ContractMismatch,
+            Rejection::TooNew,
+            Rejection::TooOld,
+            Rejection::ShapeMismatch,
+            Rejection::CodecMismatch,
+            Rejection::DecodeError,
+        ];
+        let routes = reasons
+            .iter()
+            .map(|&reason| {
+                route(
+                    "r",
+                    Arc::new(move |_, _, payload| {
+                        if payload.is_empty() {
+                            Err(IngestError::new(reason, "rejected"))
+                        } else {
+                            Ok(IngestOutcome::current())
+                        }
+                    }),
+                )
+            })
+            .chain(core::iter::once(route("r", noop())))
+            .collect();
+        let router = Router::new(&Plus, routes);
+        router.route("r", b"", &test_ctx()).unwrap();
+        router.route("r", b"good", &test_ctx()).unwrap();
+        for id in 0..8 {
+            let stats = router.stats(id).unwrap();
+            let counters = [
+                stats.malformed,
+                stats.unsupported_format,
+                stats.contract_mismatch,
+                stats.too_new,
+                stats.too_old,
+                stats.shape_mismatch,
+                stats.codec_mismatch,
+                stats.decode_error,
+            ];
+            assert_eq!(stats.accepted, 1);
+            assert_eq!(counters.iter().sum::<u64>(), 1);
+            assert_eq!(counters[id], 1);
+        }
+        assert_eq!(router.stats(8).unwrap().accepted, 2);
+        assert_eq!(router.stats(9), None);
+    }
+
+    #[test]
+    fn wildcard_routes_keep_independent_upgrade_counters() {
+        let stats = Arc::new(crate::ingest::InboundStats::new(&[2, 1, 2]));
+        let upgrade = route(
+            "s/{device}/t",
+            Arc::new(|_, _, _| Ok(crate::IngestOutcome::upgraded(1))),
+        )
+        .with_stats(stats.clone(), "reading");
+        let router = Router::new(&Plus, vec![upgrade, route("s/a/t", noop())]);
+        router.route("s/a/t", b"", &test_ctx()).unwrap();
+        router.route("s/b/t", b"", &test_ctx()).unwrap();
+        router.route("other", b"", &test_ctx()).unwrap();
+        let snapshot = router.stats(0).unwrap();
+        assert_eq!(snapshot.accepted, 2);
+        assert_eq!(
+            snapshot.upgraded,
+            vec![
+                crate::UpgradeCount { from: 1, count: 2 },
+                crate::UpgradeCount { from: 2, count: 0 }
+            ]
+        );
+        assert_eq!(router.stats(1).unwrap().accepted, 1);
+        assert_eq!(stats.snapshot(), snapshot);
     }
 
     #[test]
@@ -441,8 +541,17 @@ mod tests {
         let observer = {
             let seen = seen.clone();
             Arc::new(move |event: &RouterEvent<'_>| {
-                let RouterEvent::IngestFailed { topic, reason } = event;
-                assert_eq!((*topic, *reason), ("broken", "decode failed"));
+                let RouterEvent::IngestFailed {
+                    topic,
+                    reason,
+                    rejection,
+                    ..
+                } = event;
+                assert_eq!(*rejection, crate::Rejection::DecodeError);
+                assert_eq!(
+                    (*topic, reason.to_string().as_str()),
+                    ("broken", "decode failed")
+                );
                 seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
         };

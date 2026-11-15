@@ -229,7 +229,7 @@ async fn a_custom_deserializer_builds() {
             reg.link_from("ros2://cell4/spindle_cmd")
                 .with_deserializer(move |_ctx, bytes: &[u8]| {
                     c.fetch_add(1, Ordering::SeqCst);
-                    Command::from_bytes(bytes)
+                    Command::from_bytes(bytes).map_err(Into::into)
                 })
                 .finish();
         },

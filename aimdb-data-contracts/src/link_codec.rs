@@ -61,6 +61,29 @@ impl WireFormat {
         }
     }
 
+    /// The corresponding codec ID in an inline envelope.
+    pub const fn payload_codec(self) -> aimdb_core::envelope::PayloadCodec {
+        use aimdb_core::envelope::PayloadCodec;
+        match self {
+            Self::Unspecified => PayloadCodec::Unspecified,
+            Self::Json => PayloadCodec::Json,
+            Self::Postcard => PayloadCodec::Postcard,
+            Self::Cdr => PayloadCodec::Cdr,
+        }
+    }
+
+    /// The format of an envelope codec ID; `Unspecified` for IDs without a
+    /// builtin format.
+    pub const fn from_payload_codec(codec: aimdb_core::envelope::PayloadCodec) -> Self {
+        use aimdb_core::envelope::PayloadCodec;
+        match codec {
+            PayloadCodec::Json => Self::Json,
+            PayloadCodec::Postcard => Self::Postcard,
+            PayloadCodec::Cdr => Self::Cdr,
+            _ => Self::Unspecified,
+        }
+    }
+
     /// Reads the format recorded in a link config; `Unspecified` if absent or
     /// unknown.
     pub fn recorded_in(config: &[(String, String)]) -> Self {
@@ -101,6 +124,27 @@ pub trait LinkCodec<T>: Clone + Send + Sync + 'static {
 
     /// Decode one connector payload into a record.
     fn decode(&self, bytes: &[u8]) -> Result<T, String>;
+
+    /// Decode one value and report how many bytes it consumed.
+    ///
+    /// Every inbound link installed with `with_link_codec` uses this and
+    /// rejects a frame with unconsumed bytes as `decode_error`: one frame
+    /// carries exactly one value. Count bytes the format itself declares, such
+    /// as CDR's trailing padding, as consumed.
+    ///
+    /// The default reports the whole input as consumed. That is right for a
+    /// `decode` that already rejects trailing data; a codec whose `decode`
+    /// tolerates it should override this, or leftover bytes go undetected.
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        self.decode(bytes).map(|value| (value, bytes.len()))
+    }
+
+    /// Registration-only builtin descriptor. Custom codecs use the explicit
+    /// `with_versioned_codec` path rather than claiming a builtin implementation.
+    #[doc(hidden)]
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        None
+    }
 
     /// Encode a record into owned bytes.
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError>;
@@ -157,12 +201,30 @@ where
         T::from_bytes(bytes)
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        T::from_bytes_with_consumed(bytes)
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         value.to_bytes().map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
         value.encode_into(out)
+    }
+}
+
+/// What a builtin codec marker reports to core: its format and scratch size.
+#[cfg(any(
+    feature = "linkable-json",
+    feature = "linkable-postcard",
+    feature = "linkable-cdr"
+))]
+fn builtin_wire_codec_info<T, C: LinkCodec<T>>() -> aimdb_core::link_wire::WireCodecInfo {
+    aimdb_core::link_wire::WireCodecInfo {
+        codec: C::WIRE_FORMAT.payload_codec(),
+        capacity: C::ENCODE_BUFFER_CAPACITY,
+        custom: false,
     }
 }
 
@@ -177,17 +239,19 @@ where
         serde_json::from_slice(bytes).map_err(|error| error.to_string())
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(builtin_wire_codec_info::<T, Self>())
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         serde_json::to_vec(value).map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        let encoded = self.encode(value)?;
-        let destination = out
-            .get_mut(..encoded.len())
-            .ok_or(SerializeError::BufferTooSmall)?;
-        destination.copy_from_slice(&encoded);
-        Ok(encoded.len())
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
@@ -203,16 +267,19 @@ where
         postcard::from_bytes(bytes).map_err(|error| error.to_string())
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(builtin_wire_codec_info::<T, Self>())
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         postcard::to_allocvec(value).map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        match postcard::to_slice(value, out) {
-            Ok(used) => Ok(used.len()),
-            Err(postcard::Error::SerializeBufferFull) => Err(SerializeError::BufferTooSmall),
-            Err(_) => Err(SerializeError::InvalidData),
-        }
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
@@ -228,16 +295,19 @@ where
         aimdb_cdr::from_bytes(bytes).map_err(|error| error.to_string())
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(builtin_wire_codec_info::<T, Self>())
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         aimdb_cdr::to_vec(value).map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        match aimdb_cdr::to_slice(value, out) {
-            Ok(used) => Ok(used),
-            Err(aimdb_cdr::Error::BufferTooSmall) => Err(SerializeError::BufferTooSmall),
-            Err(_) => Err(SerializeError::InvalidData),
-        }
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
@@ -268,6 +338,7 @@ where
     where
         C: LinkCodec<T>,
     {
+        let info = codec.wire_codec_info();
         let builder = match C::ENCODE_BUFFER_CAPACITY {
             Some(capacity) => {
                 let scratch_codec = codec.clone();
@@ -280,6 +351,7 @@ where
                 .with_serializer(move |_ctx, value| codec.encode(value))
                 .clear_serializer_into(),
         };
+        let builder = builder.with_wire_codec_info(info);
         // After the setters, which clear any earlier record.
         match C::WIRE_FORMAT.as_str() {
             Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
@@ -296,7 +368,17 @@ where
     where
         C: LinkCodec<T>,
     {
-        let builder = self.with_deserializer(move |_ctx, bytes| codec.decode(bytes));
+        let info = codec.wire_codec_info();
+        let builder = self
+            .with_deserializer(move |_ctx, bytes| {
+                let (value, used) = codec
+                    .decode_with_consumed(bytes)
+                    .map_err(aimdb_core::IngestError::from)?;
+                crate::payload_codec::check_consumed(used, bytes.len())
+                    .map_err(aimdb_core::IngestError::from)?;
+                Ok(value)
+            })
+            .with_wire_codec_info(info);
         match C::WIRE_FORMAT.as_str() {
             Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
             None => builder,

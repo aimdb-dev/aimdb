@@ -204,7 +204,13 @@ tokio-test = "0.4"
 serde = { workspace = true }
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
     "linkable-postcard",
+    "migratable",
+    "linkable-cdr",
+    "linkable-json",
 ] }
+rolling-contracts-n = { path = "../tools/rolling-upgrade-fixture/contracts_n" }
+rolling-contracts-n1 = { path = "../tools/rolling-upgrade-fixture/contracts_n1" }
+rolling-contracts-changed = { path = "../tools/rolling-upgrade-fixture/contracts_changed" }
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",
     "net",

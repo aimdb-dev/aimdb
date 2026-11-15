@@ -1,0 +1,5 @@
+error: version_field was removed; pass the envelope version to migrate_from (design 062 §9: docs/design/062-value-envelope.md#9-what-breaks)
+ --> tests/compile-fail/removed_version_field.rs:4:5
+  |
+4 |     version_field = "schema_version";
+  |     ^^^^^^^^^^^^^

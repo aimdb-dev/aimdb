@@ -18,78 +18,61 @@
 //! The `migration_chain!` macro generates, for a chain of any length:
 //! 1. **Const assertions** — version sequence validated at compile time
 //! 2. **Type-checked dispatch** — compiler rejects mismatched type chains
-//! 3. **`MigrationChain` impl** — runtime upgrade/downgrade with version detection, `O(N)`
+//! 3. **`MigrationChain` impl** — runtime upgrade/downgrade from explicit versions, `O(N)`
 //!    in generated code size (one helper function per step, not one per historical version
 //!    reachable from every other version)
 //!
 //! # Example
 //!
+//! Enable `migratable` and `linkable-postcard` for this example. Contracts in
+//! a `catalog!` get `ContractShape` automatically; these standalone types use
+//! its `None` default.
+//!
 //! ```rust
-//! use aimdb_data_contracts::{SchemaType, MigrationStep, MigrationChain, MigrationError};
-//! use aimdb_data_contracts::migration_chain;
+//! # #[cfg(feature = "linkable-postcard")]
+//! # fn example() {
+//! use aimdb_data_contracts::{migration_chain, link_codecs::Postcard,
+//!     ContractShape, MigrationChain, MigrationError, MigrationStep, SchemaType};
 //! use serde::{Deserialize, Serialize};
 //!
-//! // v1 schema
 //! #[derive(Clone, Debug, Serialize, Deserialize)]
-//! struct SensorV1 {
-//!     schema_version: u32,
-//!     temp: f32,
-//!     timestamp: u64,
-//! }
-//! impl SchemaType for SensorV1 {
-//!     const NAME: &'static str = "sensor_v1";
-//!     const VERSION: u32 = 1;
-//! }
+//! struct SensorV1 { temp: f32 }
+//! impl SchemaType for SensorV1 { const NAME: &'static str = "sensor"; }
+//! impl ContractShape for SensorV1 {}
 //!
-//! // v2 schema (current)
 //! #[derive(Clone, Debug, Serialize, Deserialize)]
-//! struct Sensor {
-//!     schema_version: u32,
-//!     celsius: f32,
-//!     timestamp: u64,
-//! }
+//! struct Sensor { celsius: f32 }
 //! impl SchemaType for Sensor {
 //!     const NAME: &'static str = "sensor";
 //!     const VERSION: u32 = 2;
 //! }
-//!
-//! // Migration step: v1 -> v2
+//! impl ContractShape for Sensor {}
 //! struct SensorV1ToV2;
 //! impl MigrationStep for SensorV1ToV2 {
 //!     type Older = SensorV1;
 //!     type Newer = Sensor;
 //!     const FROM_VERSION: u32 = 1;
 //!     const TO_VERSION: u32 = 2;
-//!
-//!     fn up(v1: SensorV1) -> Result<Sensor, MigrationError> {
-//!         Ok(Sensor { schema_version: 2, celsius: v1.temp, timestamp: v1.timestamp })
-//!     }
-//!     fn down(v2: Sensor) -> Result<SensorV1, MigrationError> {
-//!         Ok(SensorV1 { schema_version: 1, temp: v2.celsius, timestamp: v2.timestamp })
-//!     }
+//!     fn up(v: SensorV1) -> Result<Sensor, MigrationError> { Ok(Sensor { celsius: v.temp }) }
+//!     fn down(v: Sensor) -> Result<SensorV1, MigrationError> { Ok(SensorV1 { temp: v.celsius }) }
 //! }
-//!
-//! // Wire up the chain
 //! migration_chain! {
 //!     type Current = Sensor;
-//!     version_field = "schema_version";
-//!     steps {
-//!         SensorV1ToV2: SensorV1 => Sensor,
-//!     }
+//!     steps { SensorV1ToV2: SensorV1 => Sensor }
 //! }
-//!
-//! // Upgrade from v1 bytes
-//! let v1_json = r#"{"schema_version":1,"temp":22.5,"timestamp":100}"#;
-//! let sensor = Sensor::migrate_from_bytes(v1_json.as_bytes()).unwrap();
+//! let codec = Postcard::<64>;
+//! let v1_payload = 22.5_f32.to_le_bytes();
+//! let sensor = Sensor::migrate_from(1, &v1_payload, &codec).unwrap();
 //! assert_eq!(sensor.celsius, 22.5);
-//!
-//! // Downgrade to v1 bytes
-//! let v1_bytes = sensor.migrate_to_version(1).unwrap();
-//! let v1_roundtrip: serde_json::Value = serde_json::from_slice(&v1_bytes).unwrap();
-//! assert_eq!(v1_roundtrip["temp"], 22.5);
+//! let mut out = [0; 64];
+//! let n = sensor.migrate_into(1, &codec, &mut out).unwrap();
+//! assert_eq!(&out[..n], &v1_payload);
+//! # }
+//! # #[cfg(feature = "linkable-postcard")]
+//! # example();
 //! ```
 
-use crate::SchemaType;
+use crate::{PayloadDecoder, PayloadEncoder, SchemaType};
 
 /// Error returned when schema migration fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,14 +81,18 @@ pub enum MigrationError {
     VersionTooNew { source: u32, current: u32 },
     /// The target downgrade version is below the minimum supported
     VersionTooOld { target: u32, minimum: u32 },
-    /// Deserialization of a versioned payload failed
-    DeserializationFailed(&'static str),
+    /// Decoding a payload as the historical or current type `target` failed;
+    /// `reason` is the payload decoder's own message.
+    DeserializationFailed {
+        target: &'static str,
+        reason: alloc::string::String,
+    },
     /// Serialization during downgrade failed
     SerializationFailed(&'static str),
     /// A domain-specific conversion error in a MigrationStep
     ConversionFailed(&'static str),
-    /// Payload is missing the version field
-    MissingVersion,
+    /// Caller storage cannot hold the encoded payload.
+    BufferTooSmall,
 }
 
 impl core::fmt::Display for MigrationError {
@@ -125,13 +112,32 @@ impl core::fmt::Display for MigrationError {
                     target, minimum
                 )
             }
-            Self::DeserializationFailed(msg) => write!(f, "deserialization failed: {}", msg),
+            Self::DeserializationFailed { target, reason } => {
+                write!(f, "failed to parse as {}: {}", target, reason)
+            }
             Self::SerializationFailed(msg) => write!(f, "serialization failed: {}", msg),
             Self::ConversionFailed(msg) => write!(f, "conversion failed: {}", msg),
-            Self::MissingVersion => write!(f, "payload missing version field"),
+            Self::BufferTooSmall => write!(f, "migration output buffer too small"),
         }
     }
 }
+
+impl From<aimdb_core::connector::SerializeError> for MigrationError {
+    fn from(error: aimdb_core::connector::SerializeError) -> Self {
+        match error {
+            aimdb_core::connector::SerializeError::BufferTooSmall => Self::BufferTooSmall,
+            _ => Self::SerializationFailed("payload encoding failed"),
+        }
+    }
+}
+
+/// Compile-time proof that a migration chain covers version `V`.
+#[diagnostic::on_unimplemented(message = "migration chain of `{Self}` does not reach version {V}")]
+pub trait Reaches<const V: u32> {}
+
+/// Compile-time proof that a payload type is a version of the current contract.
+#[diagnostic::on_unimplemented(message = "`{Self}` is not a version of contract `{Current}`")]
+pub trait VersionOf<Current> {}
 
 /// A single, typed, bidirectional migration step between two schema versions.
 ///
@@ -142,8 +148,8 @@ impl core::fmt::Display for MigrationError {
 ///
 /// ```rust
 /// # use aimdb_data_contracts::{MigrationError, MigrationStep};
-/// # struct TemperatureV1 { schema_version: u32, temp: f64, timestamp: u64, unit: String }
-/// # struct TemperatureV2 { schema_version: u32, celsius: f64, timestamp: u64 }
+/// # struct TemperatureV1 { temp: f64, timestamp: u64, unit: String }
+/// # struct TemperatureV2 { celsius: f64, timestamp: u64 }
 /// struct TemperatureV1ToV2;
 /// impl MigrationStep for TemperatureV1ToV2 {
 ///     type Older = TemperatureV1;
@@ -157,10 +163,10 @@ impl core::fmt::Display for MigrationError {
 ///             "K" => v1.temp - 273.15,
 ///             _ => v1.temp,
 ///         };
-///         Ok(TemperatureV2 { schema_version: 2, celsius, timestamp: v1.timestamp })
+///         Ok(TemperatureV2 { celsius, timestamp: v1.timestamp })
 ///     }
 ///     fn down(v2: TemperatureV2) -> Result<TemperatureV1, MigrationError> {
-///         Ok(TemperatureV1 { schema_version: 1, temp: v2.celsius, timestamp: v2.timestamp, unit: "C".into() })
+///         Ok(TemperatureV1 { temp: v2.celsius, timestamp: v2.timestamp, unit: "C".into() })
 ///     }
 /// }
 /// ```
@@ -192,20 +198,26 @@ pub trait MigrationChain: SchemaType + serde::de::DeserializeOwned + serde::Seri
     /// The minimum version this chain can upgrade from.
     const MIN_VERSION: u32;
 
-    /// Deserialize from bytes, auto-detecting version and upgrading to current.
-    ///
-    /// Reads the version field from the JSON payload and walks the migration
-    /// chain upward to produce the current schema version.
-    fn migrate_from_bytes(data: &[u8]) -> Result<Self, MigrationError>;
+    /// Locked shape for any covered version, or `None` when not locked.
+    fn shape_of(version: u32) -> Option<u64>;
 
-    /// Downgrade to a target version and serialize to bytes.
-    ///
-    /// Walks the migration chain downward from the current version to produce
-    /// the serialized representation of an older schema version.
-    fn migrate_to_version(
+    /// Decode the explicitly selected version once, then walk the upgrade chain.
+    /// The caller obtains the version from an envelope or static link binding.
+    /// Remainder validation belongs to admission; the decoder reports consumption.
+    fn migrate_from<D: PayloadDecoder>(
+        version: u32,
+        payload: &[u8],
+        decoder: &D,
+    ) -> Result<Self, MigrationError>;
+
+    /// Downgrade and encode into caller storage. Historical sends clone `self`
+    /// before invoking by-value `down` steps; current-version sends do not clone.
+    fn migrate_into<E: PayloadEncoder>(
         &self,
-        target_version: u32,
-    ) -> Result<alloc::vec::Vec<u8>, MigrationError>;
+        version: u32,
+        encoder: &E,
+        out: &mut [u8],
+    ) -> Result<usize, MigrationError>;
 }
 
 /// Compile-only proof that `migration_chain!` arity is unbounded — a 4-step
@@ -225,9 +237,9 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V1 {
-        schema_version: u32,
         n: u32,
     }
+    impl aimdb_data_contracts::ContractShape for V1 {}
     impl SchemaType for V1 {
         const NAME: &'static str = "arity_check";
         const VERSION: u32 = 1;
@@ -235,9 +247,9 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V2 {
-        schema_version: u32,
         n: u32,
     }
+    impl aimdb_data_contracts::ContractShape for V2 {}
     impl SchemaType for V2 {
         const NAME: &'static str = "arity_check";
         const VERSION: u32 = 2;
@@ -245,9 +257,9 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V3 {
-        schema_version: u32,
         n: u32,
     }
+    impl aimdb_data_contracts::ContractShape for V3 {}
     impl SchemaType for V3 {
         const NAME: &'static str = "arity_check";
         const VERSION: u32 = 3;
@@ -255,9 +267,9 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V4 {
-        schema_version: u32,
         n: u32,
     }
+    impl aimdb_data_contracts::ContractShape for V4 {}
     impl SchemaType for V4 {
         const NAME: &'static str = "arity_check";
         const VERSION: u32 = 4;
@@ -265,9 +277,9 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V5 {
-        schema_version: u32,
         n: u32,
     }
+    impl aimdb_data_contracts::ContractShape for V5 {}
     impl SchemaType for V5 {
         const NAME: &'static str = "arity_check";
         const VERSION: u32 = 5;
@@ -280,16 +292,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 1;
         const TO_VERSION: u32 = 2;
         fn up(v: V1) -> Result<V2, MigrationError> {
-            Ok(V2 {
-                schema_version: 2,
-                n: v.n,
-            })
+            Ok(V2 { n: v.n })
         }
         fn down(v: V2) -> Result<V1, MigrationError> {
-            Ok(V1 {
-                schema_version: 1,
-                n: v.n,
-            })
+            Ok(V1 { n: v.n })
         }
     }
 
@@ -300,16 +306,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 2;
         const TO_VERSION: u32 = 3;
         fn up(v: V2) -> Result<V3, MigrationError> {
-            Ok(V3 {
-                schema_version: 3,
-                n: v.n,
-            })
+            Ok(V3 { n: v.n })
         }
         fn down(v: V3) -> Result<V2, MigrationError> {
-            Ok(V2 {
-                schema_version: 2,
-                n: v.n,
-            })
+            Ok(V2 { n: v.n })
         }
     }
 
@@ -320,16 +320,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 3;
         const TO_VERSION: u32 = 4;
         fn up(v: V3) -> Result<V4, MigrationError> {
-            Ok(V4 {
-                schema_version: 4,
-                n: v.n,
-            })
+            Ok(V4 { n: v.n })
         }
         fn down(v: V4) -> Result<V3, MigrationError> {
-            Ok(V3 {
-                schema_version: 3,
-                n: v.n,
-            })
+            Ok(V3 { n: v.n })
         }
     }
 
@@ -340,22 +334,15 @@ mod arity_check {
         const FROM_VERSION: u32 = 4;
         const TO_VERSION: u32 = 5;
         fn up(v: V4) -> Result<V5, MigrationError> {
-            Ok(V5 {
-                schema_version: 5,
-                n: v.n,
-            })
+            Ok(V5 { n: v.n })
         }
         fn down(v: V5) -> Result<V4, MigrationError> {
-            Ok(V4 {
-                schema_version: 4,
-                n: v.n,
-            })
+            Ok(V4 { n: v.n })
         }
     }
 
     crate::migration_chain! {
         type Current = V5;
-        version_field = "schema_version";
         steps {
             Step1: V1 => V2,
             Step2: V2 => V3,

@@ -55,7 +55,6 @@ One `no_std` crate holds every contract and record key. Stations, hub and dashbo
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TemperatureV2 {
-    pub schema_version: u32,
     pub celsius: f32,
     pub timestamp: u64,
 }
@@ -94,7 +93,7 @@ impl MigrationStep for TemperatureV1ToV2 {
             "K" => v1.temp - 273.15,
             _ => v1.temp,
         };
-        Ok(TemperatureV2 { schema_version: 2, celsius, timestamp: v1.timestamp })
+        Ok(TemperatureV2 { celsius, timestamp: v1.timestamp })
     }
 
     fn down(v2: TemperatureV2) -> Result<TemperatureV1, MigrationError> {
@@ -104,7 +103,6 @@ impl MigrationStep for TemperatureV1ToV2 {
 
 migration_chain! {
     type Current = TemperatureV2;
-    version_field = "schema_version";
     steps { TemperatureV1ToV2: TemperatureV1 => TemperatureV2 }
 }
 ```

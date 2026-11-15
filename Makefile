@@ -61,7 +61,7 @@ help:
 	@printf "    test-wasm            Test WASM cross-compilation compatibility\n"
 	@printf "    readme-check         Verify the README quickstart matches its compiled example\n"
 	@printf "    ros2-interop         ros2:// against a ROS 2 distribution in Docker (DISTRO=lyrical)\n"
-	@printf "    bench-gate           Assert connector allocation counts (b0_alloc_connector)\n"
+	@printf "    bench-gate           Assert connector allocations and single-decode migration\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Security & Quality:$(NC)\n"
 	@printf "    deny                 Check dependencies (licenses, advisories, bans)\n"
@@ -235,6 +235,7 @@ test: test-operational-events test-build-info-link
 	cargo test --package mqtt-connector-demo-common --features std
 	@printf "$(YELLOW)  → Testing embedded-check-fixture (contracts against aimdb.lock, migration chain)$(NC)\n"
 	cargo test --package embedded-check-fixture
+	cargo test -p rolling-contracts-n -p rolling-contracts-n1 -p rolling-contracts-changed
 	@printf "$(YELLOW)  → Testing sync wrapper (data-contracts: set_value family)$(NC)\n"
 	cargo test --package aimdb-sync --features data-contracts
 	@printf "$(YELLOW)  → Testing CLI tools$(NC)\n"
@@ -298,7 +299,7 @@ test: test-operational-events test-build-info-link
 
 fmt:
 	@printf "$(GREEN)Formatting code (workspace members only)...$(NC)\n"
-	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	@for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture rolling-contracts-n rolling-contracts-n1 rolling-contracts-changed hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Formatting $$pkg$(NC)\n"; \
 		cargo fmt -p $$pkg 2>/dev/null || true; \
 	done
@@ -307,7 +308,7 @@ fmt:
 fmt-check:
 	@printf "$(GREEN)Checking code formatting (workspace members only)...$(NC)\n"
 	@FAILED=0; \
-	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
+	for pkg in aimdb-derive aimdb-build-info aimdb-cdr aimdb-data-contracts aimdb-core aimdb-client aimdb-embassy-adapter aimdb-tokio-adapter aimdb-wasm-adapter aimdb-sync aimdb-persistence aimdb-persistence-sqlite aimdb-mqtt-connector aimdb-zenoh-connector aimdb-knx-connector aimdb-websocket-connector aimdb-uds-connector aimdb-serial-connector aimdb-tcp-connector aimdb-cli aimdb-mcp sync-api-demo tokio-mqtt-connector-demo embassy-mqtt-connector-demo tokio-knx-connector-demo embassy-knx-connector-demo embassy-serial-connector-demo embassy-bench-stm32h5 embedded-check-fixture rolling-contracts-n rolling-contracts-n1 rolling-contracts-changed hello-mailbox hello-mailbox-async hello-single-latest hello-single-latest-async hello-spmc-ring hello-spmc-ring-async aimdb-bench; do \
 		printf "$(YELLOW)  → Checking $$pkg$(NC)\n"; \
 		if ! cargo fmt -p $$pkg -- --check 2>&1; then \
 			printf "$(RED)❌ Formatting check failed for $$pkg$(NC)\n"; \
@@ -375,6 +376,7 @@ clippy: clippy-operational-events
 	@printf "$(YELLOW)  → Clippy on embedded-check-fixture (production and sim builds)$(NC)\n"
 	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf -- -D warnings
 	cargo clippy --package embedded-check-fixture --target thumbv7em-none-eabihf --features sim -- -D warnings
+	cargo clippy -p rolling-contracts-n -p rolling-contracts-n1 -p rolling-contracts-changed --all-targets -- -D warnings
 	cargo clippy --package embedded-check-fixture --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on sync wrapper$(NC)\n"
 	cargo clippy --package aimdb-sync --all-targets -- -D warnings
@@ -854,12 +856,13 @@ publish:
 	@printf "$(BLUE)🎉 AimDB v$(shell grep '^version' Cargo.toml | head -1 | cut -d '"' -f 2) is now live on crates.io!$(NC)\n"
 
 ## Benchmark gates
-# Runs the counting-allocator connector bench, which asserts its EXPECTED
+# Runs connector and migration allocation benches. The connector bench asserts its EXPECTED
 # allocations per message and fails on any difference.
 # Deterministic, so it gates CI without a quiet runner.
 bench-gate:
 	@printf "$(GREEN)Checking connector allocation counts...$(NC)\n"
 	cargo bench --package aimdb-bench --bench b0_alloc_connector
+	cargo bench --package aimdb-bench --bench b0_alloc_migration
 
 ## Interop
 # ros2:// against a real ROS 2 distribution (rmw_zenohd and the ros2 CLI in

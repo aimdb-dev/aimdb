@@ -289,7 +289,7 @@ fn write_container<'a>(
                 // variant and a one-element tuple variant differently.
                 match &variant.value {
                     VariantFormat::Variable(_) => {
-                        return Err(format!("variant `{}` was left untraced", variant.name))
+                        return Err(format!("variant `{}` was left untraced", variant.name));
                     }
                     VariantFormat::Unit => {}
                     VariantFormat::NewType(inner) => {
@@ -358,7 +358,7 @@ mod tests {
 
     #[derive(Serialize, Deserialize)]
     struct Plain {
-        schema_version: u32,
+        sequence_number: u32,
         celsius: f64,
         timestamp: u64,
     }
@@ -367,14 +367,14 @@ mod tests {
     fn struct_fields_in_wire_order() {
         assert_eq!(
             shape::<Plain>().unwrap(),
-            r#"struct { "schema_version": u32, "celsius": f64, "timestamp": u64 }"#
+            r#"struct { "sequence_number": u32, "celsius": f64, "timestamp": u64 }"#
         );
     }
 
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Renamed {
-        schema_version: u32,
+        sequence_number: u32,
         #[serde(rename = "c")]
         celsius: f64,
     }
@@ -383,7 +383,7 @@ mod tests {
     fn wire_names_after_symmetric_rename() {
         assert_eq!(
             shape::<Renamed>().unwrap(),
-            r#"struct { "schemaVersion": u32, "c": f64 }"#
+            r#"struct { "sequenceNumber": u32, "c": f64 }"#
         );
     }
 
@@ -409,14 +409,14 @@ mod tests {
 
     #[derive(Serialize, Deserialize)]
     struct Compatible {
-        schema_version: u32,
+        sequence_number: u32,
         #[serde(default)]
         celsius: Option<f64>,
     }
 
     #[derive(Serialize, Deserialize)]
     struct CompatibleBare {
-        schema_version: u32,
+        sequence_number: u32,
         celsius: Option<f64>,
     }
 
@@ -484,7 +484,7 @@ mod tests {
             format!(
                 concat!(
                     r#"struct {{ "mode": {MODE}, "#,
-                    r#""inner": struct {{ "schema_version": u32, "celsius": f64, "timestamp": u64 }}, "#,
+                    r#""inner": struct {{ "sequence_number": u32, "celsius": f64, "timestamp": u64 }}, "#,
                     r#""unit": unit_struct, "id": newtype(u32), "at": tuple_struct(i16, i16), "#,
                     r#""label": option<str>, "samples": seq<f32>, "tags": map<str, bool>, "#,
                     r#""pair": tuple(u8, char), "raw": array<u8; 4>, "any": unit, "boxed": i64 }}"#,

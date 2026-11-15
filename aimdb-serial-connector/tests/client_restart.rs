@@ -73,7 +73,8 @@ async fn start_host(
             .with_remote_access()
             .link_from("serial://temp")
             .with_deserializer(|_ctx, d: &[u8]| {
-                serde_json::from_slice::<Temp>(d).map_err(|e| e.to_string())
+                serde_json::from_slice::<Temp>(d)
+                    .map_err(|e| aimdb_core::IngestError::from(e.to_string()))
             })
             .finish();
     });
@@ -241,7 +242,8 @@ async fn start_fake_host(stream: DuplexStream) -> (Arc<AimDb>, JoinHandle<()>) {
             .with_remote_access()
             .link_from("serial://temp")
             .with_deserializer(|_ctx, d: &[u8]| {
-                serde_json::from_slice::<Temp>(d).map_err(|e| e.to_string())
+                serde_json::from_slice::<Temp>(d)
+                    .map_err(|e| aimdb_core::IngestError::from(e.to_string()))
             })
             .finish();
     });

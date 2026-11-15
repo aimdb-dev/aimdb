@@ -66,12 +66,17 @@ pub mod __private {
     pub use aimdb_cdr;
     #[cfg(feature = "ros2")]
     pub use aimdb_core::connector::SerializeError;
-    #[cfg(any(feature = "linkable-json", feature = "migratable"))]
+    #[cfg(feature = "linkable-json")]
     pub use serde_json;
 }
 
 mod streamable;
 pub use streamable::Streamable;
+
+mod contract_identity;
+#[doc(hidden)]
+pub use contract_identity::{has_name_id_collision, locked_shape};
+pub use contract_identity::{name_id, ContractShape};
 
 mod catalog;
 pub use catalog::ContractId;
@@ -89,6 +94,12 @@ pub use contract_schema::SchemaRegistrarExt;
 
 #[cfg(feature = "linkable")]
 mod link_codec;
+
+#[cfg(feature = "linkable")]
+mod payload_codec;
+
+#[cfg(feature = "linkable")]
+pub use payload_codec::{PayloadDecoder, PayloadEncoder};
 
 #[cfg(feature = "linkable")]
 mod linkable;
@@ -130,11 +141,27 @@ mod simulatable;
 #[cfg(feature = "migratable")]
 mod migratable;
 
+#[cfg(feature = "migratable")]
+mod admission;
+
+#[cfg(feature = "migratable")]
+mod versioned_links;
+
+#[cfg(feature = "migratable")]
+pub use aimdb_core::EnvelopeCarrier;
+#[cfg(feature = "migratable")]
+pub use versioned_links::{
+    EnvelopeLinkExt, VersionedCodecBuilderExt, VersionedInboundExt, VersionedOutboundExt,
+};
+
+#[cfg(feature = "migratable")]
+pub use admission::{admit, admit_frame, Admit, LinkContract};
+
 #[cfg(feature = "simulatable")]
 pub use simulatable::{RandomWalkParams, SimProfile, Simulatable, SimulatableRegistrarExt};
 
 #[cfg(feature = "migratable")]
-pub use migratable::{MigrationChain, MigrationError, MigrationStep};
+pub use migratable::{MigrationChain, MigrationError, MigrationStep, Reaches, VersionOf};
 
 #[cfg(feature = "migratable")]
 pub use aimdb_derive::migration_chain;
@@ -296,6 +323,17 @@ pub trait Observable: SchemaType {
     note = "`publish`, `subscribe` and the `linked_*` verbs encode with the record's own codec: derive or implement `Linkable` for `{Self}`"
 )]
 pub trait Linkable: SchemaType + Sized {
+    /// Decode one value and report how many bytes it consumed.
+    ///
+    /// Inbound links reject a frame with unconsumed bytes as `decode_error`.
+    /// The default reports the whole input, which is right when `from_bytes`
+    /// already rejects trailing data (as `serde_json::from_slice` does). A
+    /// `from_bytes` that tolerates trailing bytes should override this with
+    /// the real count, as `#[derive(RosMessage)]` does for CDR.
+    fn from_bytes_with_consumed(data: &[u8]) -> Result<(Self, usize), alloc::string::String> {
+        Self::from_bytes(data).map(|value| (value, data.len()))
+    }
+
     /// Preferred reusable scratch capacity for [`encode_into`](Self::encode_into).
     ///
     /// `None` keeps outbound links on the existing owned-`Vec` serializer.

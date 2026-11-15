@@ -87,6 +87,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                     .map_err(|e| #p::alloc::string::ToString::to_string(&e))
             }
 
+            // `from_bytes` ignores trailing bytes; report the real count (header
+            // and declared padding included) so inbound links reject leftovers.
+            fn from_bytes_with_consumed(
+                data: &[u8],
+            ) -> ::core::result::Result<(Self, usize), #p::alloc::string::String> {
+                #p::aimdb_cdr::from_bytes_with_consumed(data)
+                    .map_err(|e| #p::alloc::string::ToString::to_string(&e))
+            }
+
             fn to_bytes(
                 &self,
             ) -> ::core::result::Result<#p::alloc::vec::Vec<u8>, #p::alloc::string::String> {

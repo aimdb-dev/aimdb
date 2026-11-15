@@ -72,6 +72,8 @@ tracing = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-tungstenite = "0.26"
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter" }
+# `tests/inline_envelope_refused.rs`: a versioned contract on a `ws-client://` link.
+aimdb-data-contracts = { path = "../aimdb-data-contracts", features = ["linkable-json", "migratable"] }
 
 # Runnable demos — see their headers for the two-terminal workflow.
 [[example]]

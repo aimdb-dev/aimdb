@@ -1,0 +1,18 @@
+error[E0277]: migration chain of `Sensor` does not reach version 1
+ --> tests/compile-fail/uncovered_version.rs:8:27
+  |
+8 | fn main() { requires_v1::<Sensor>(); }
+  |                           ^^^^^^ unsatisfied trait bound
+  |
+help: the trait `Reaches<1>` is not implemented for `Sensor`
+      but trait `Reaches<2>` is implemented for it
+ --> tests/compile-fail/uncovered_version.rs:6:1
+  |
+6 | migration_chain! { type Current = Sensor; steps {} }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `requires_v1`
+ --> tests/compile-fail/uncovered_version.rs:7:19
+  |
+7 | fn requires_v1<T: Reaches<1>>() {}
+  |                   ^^^^^^^^^^ required by this bound in `requires_v1`
+  = note: this error originates in the macro `migration_chain` (in Nightly builds, run with -Z macro-backtrace for more info)

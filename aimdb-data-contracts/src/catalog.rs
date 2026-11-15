@@ -8,6 +8,26 @@ pub struct ContractId {
     pub name: &'static str,
     /// [`SchemaType::VERSION`](crate::SchemaType::VERSION)
     pub version: u32,
+    /// First eight bytes of the locked SHA-256, interpreted as big-endian.
+    pub shape: Option<u64>,
+}
+
+impl ContractId {
+    /// Stable FNV-1a 32 identifier of the contract name.
+    pub const fn name_id(self) -> u32 {
+        crate::name_id(self.name)
+    }
+    /// Locked hash prefix for this version, when present in the lock.
+    pub const fn shape(self) -> Option<u64> {
+        self.shape
+    }
+}
+
+#[cfg(feature = "aimdb-core")]
+impl From<ContractId> for aimdb_core::envelope::ContractRef {
+    fn from(id: ContractId) -> Self {
+        Self::new(id.name_id(), id.version, id.shape())
+    }
 }
 
 /// List a contracts crate's contracts, and lock the wire shape of each
@@ -27,6 +47,11 @@ pub struct ContractId {
 ///
 /// Without helpers, the contracts can be listed alone:
 /// `catalog! { Temperature, ButtonPress }`.
+///
+/// Requires a committed `aimdb.lock` at the crate root. Bootstrap a new crate
+/// with a file containing `version = 1`, then run `AIMDB_UPDATE_LOCK=1 cargo test`.
+/// Run the lock test in every firmware and hub CI build: a transmitted shape
+/// is read from the lock, not calculated from the compiled struct.
 ///
 /// Generates `pub const CATALOG: &[ContractId]` (contracts only, `no_std`)
 /// and a test in the crate's own unit tests that checks the catalog against
@@ -67,13 +92,27 @@ macro_rules! catalog {
         $(, helpers: [$($helper:ty),* $(,)?])?
         $(,)?
     ) => {
+        $(impl $crate::ContractShape for $ty {
+            const SHAPE: ::core::option::Option<u64> = $crate::locked_shape(
+                ::core::include_str!(::core::concat!($dir, "/aimdb.lock")),
+                <$ty as $crate::SchemaType>::NAME,
+                <$ty as $crate::SchemaType>::VERSION,
+            );
+        })+
+
         /// This crate's contracts, as listed in `catalog!`.
         pub const CATALOG: &[$crate::ContractId] = &[
             $($crate::ContractId {
                 name: <$ty as $crate::SchemaType>::NAME,
                 version: <$ty as $crate::SchemaType>::VERSION,
+                shape: <$ty as $crate::ContractShape>::SHAPE,
             }),+
         ];
+
+        const _: () = ::core::assert!(
+            !$crate::has_name_id_collision(CATALOG),
+            "catalog!: distinct contract names have the same FNV-1a name_id"
+        );
 
         // `cfg(test)` of the calling crate: the invocation is gone before it
         // expands, so only the crate's own tests see it. The test is

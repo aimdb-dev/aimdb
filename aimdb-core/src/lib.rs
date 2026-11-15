@@ -99,11 +99,20 @@ pub mod clock;
 pub mod codec;
 pub mod connector;
 pub mod context;
+pub mod envelope;
 mod error;
 pub mod executor;
 pub mod extensions;
 pub mod graph;
 pub mod identity;
+#[doc(hidden)]
+pub mod link_wire;
+pub use link_wire::EnvelopeCarrier;
+mod ingest;
+pub use ingest::{
+    AdmissionContext, AdmissionDetail, InboundRouteMetrics, InboundRouteStats, IngestDetail,
+    IngestError, IngestOutcome, IngestValue, Rejection, UpgradeCount,
+};
 mod inbound_dispatch;
 mod inbound_key;
 mod outbound;

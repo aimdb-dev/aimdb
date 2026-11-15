@@ -51,10 +51,14 @@ const KEY_CAPACITY: u16 = 4096;
 /// `data/baselines/b0_alloc_connector.json`.
 const EXPECTED: &[(&str, u64)] = &[
     ("inbound_dispatch", 0),
+    ("inbound_dispatch_upgraded", 0),
+    ("inbound_admit_inline", 0),
+    ("inbound_admit_bound", 0),
     ("inbound_dispatch_pattern", 0),
     ("inbound_dispatch_keyed_known", 0),
     ("inbound_dispatch_keyed_new", 1),
     ("outbound_next_static_topic", 0),
+    ("outbound_next_enveloped", 0),
     ("outbound_next_written_topic", 0),
     ("outbound_next_owned", 1),
     ("outbound_next_round_robin", 0),
@@ -64,11 +68,50 @@ const EXPECTED: &[(&str, u64)] = &[
 /// Routes in the `outbound_next_round_robin` row.
 const ROUND_ROBIN_ROUTES: usize = 8;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Reading {
     id: u32,
     value: f32,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyReading {
+    value: f32,
+    id: u32,
+}
+impl aimdb_data_contracts::SchemaType for LegacyReading {
+    const NAME: &'static str = "bench.reading";
+}
+impl aimdb_data_contracts::ContractShape for LegacyReading {
+    const SHAPE: Option<u64> = Some(0x1234);
+}
+impl aimdb_data_contracts::SchemaType for Reading {
+    const NAME: &'static str = "bench.reading";
+    const VERSION: u32 = 2;
+}
+impl aimdb_data_contracts::ContractShape for Reading {
+    const SHAPE: Option<u64> = Some(0x5678);
+}
+struct UpgradeReading;
+impl aimdb_data_contracts::MigrationStep for UpgradeReading {
+    type Older = LegacyReading;
+    type Newer = Reading;
+    const FROM_VERSION: u32 = 1;
+    const TO_VERSION: u32 = 2;
+    fn up(v: LegacyReading) -> Result<Reading, aimdb_data_contracts::MigrationError> {
+        Ok(Reading {
+            id: v.id,
+            value: v.value,
+        })
+    }
+    fn down(v: Reading) -> Result<LegacyReading, aimdb_data_contracts::MigrationError> {
+        Ok(LegacyReading {
+            id: v.id,
+            value: v.value,
+        })
+    }
+}
+aimdb_data_contracts::migration_chain! { type Current = Reading; steps { UpgradeReading: LegacyReading => Reading } }
 
 fn reading(i: usize) -> Reading {
     Reading {
@@ -136,13 +179,24 @@ fn add_decoys(b: &mut AimDbBuilder) {
 }
 
 /// One linked record plus the decoys.
-async fn inbound_db() -> AimDb {
+async fn inbound_db(upgraded: bool) -> AimDb {
     build_db(|b| {
         b.configure::<Reading>("in.target", |reg| {
-            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
-                .link_from("bench://in/target")
-                .with_deserializer(|_ctx, bytes| Ok(reading(bytes[0] as usize)))
+            let link = reg
+                .buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_from("bench://in/target");
+            if upgraded {
+                link.with_admitting_deserializer(&[1], |_ctx, _m, bytes| {
+                    Ok(aimdb_core::IngestValue::upgraded(
+                        reading(bytes[0] as usize),
+                        1,
+                    ))
+                })
                 .finish();
+            } else {
+                link.with_deserializer(|_ctx, bytes| Ok(reading(bytes[0] as usize)))
+                    .finish();
+            }
         });
         add_decoys(b);
     })
@@ -184,8 +238,8 @@ fn pattern_topics(n: usize, first_device: usize, distinct: bool) -> Vec<String> 
 }
 
 /// One exact topic among the decoys.
-async fn measure_dispatch() -> (u64, u64) {
-    let db = inbound_db().await;
+async fn measure_dispatch(upgraded: bool) -> (u64, u64) {
+    let db = inbound_db(upgraded).await;
     let inbound = InboundDispatch::new(&db, SCHEME, &ExactGrammar).unwrap();
     let payload = [1u8; 8];
     for _ in 0..WARMUP_ITERS {
@@ -195,7 +249,77 @@ async fn measure_dispatch() -> (u64, u64) {
     for _ in 0..MEASURE_ITERS {
         inbound.dispatch("in/target", black_box(&payload));
     }
-    snapshot()
+    let measured = snapshot();
+    if upgraded {
+        let stats = inbound.stats(0).unwrap();
+        assert_eq!(
+            stats.upgraded[0].count,
+            (WARMUP_ITERS + MEASURE_ITERS) as u64
+        );
+    }
+    measured
+}
+
+/// Full admission of a historical binary payload, including identity/shape checks.
+async fn measure_admission(inline: bool) -> (u64, u64) {
+    use aimdb_core::envelope::{ContractRef, HeaderWriter, PayloadCodec};
+    use aimdb_data_contracts::{
+        link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+        PayloadEncoder, VersionedInboundExt,
+    };
+    let codec = Postcard::<64>;
+    let mut payload = [0; 32];
+    let header = if inline {
+        HeaderWriter::new(&mut payload)
+            .contract(ContractRef::new(
+                aimdb_data_contracts::name_id("bench.reading"),
+                1,
+                Some(0x1234),
+            ))
+            .codec(PayloadCodec::Postcard)
+            .finish()
+            .unwrap()
+    } else {
+        0
+    };
+    let len = codec
+        .encode_payload(
+            &LegacyReading { id: 1, value: 21.5 },
+            &mut payload[header..],
+        )
+        .unwrap()
+        + header;
+    let db = build_db(|b| {
+        b.configure::<Reading>("admission", |reg| {
+            let link = reg
+                .buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_from("bench://admission")
+                .with_link_codec(codec);
+            if inline {
+                link.with_envelope(EnvelopeCarrier::Inline)
+                    .accepts_from::<1>()
+                    .finish();
+            } else {
+                link.with_contract::<LegacyReading>().finish();
+            }
+        });
+        add_decoys(b);
+    })
+    .await;
+    let inbound = InboundDispatch::new(&db, SCHEME, &ExactGrammar).unwrap();
+    for _ in 0..WARMUP_ITERS {
+        inbound.dispatch("admission", &payload[..len]);
+    }
+    reset();
+    for _ in 0..MEASURE_ITERS {
+        inbound.dispatch("admission", black_box(&payload[..len]));
+    }
+    let measured = snapshot();
+    assert_eq!(
+        inbound.stats(0).unwrap().upgraded[0].count,
+        (WARMUP_ITERS + MEASURE_ITERS) as u64
+    );
+    measured
 }
 
 /// Dispatches `warmup` then `measured`, counting only the second.
@@ -277,6 +401,35 @@ async fn measure_next(serializer: Serializer, topic: Topic) -> (u64, u64) {
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
     let producer = db.producer::<Reading>("out.record").expect("producer");
 
+    for i in 0..WARMUP_ITERS {
+        producer.produce(reading(i));
+        pull_one(&mut outbound).await;
+    }
+    reset();
+    for i in 0..MEASURE_ITERS {
+        producer.produce(reading(i));
+        pull_one(&mut outbound).await;
+    }
+    snapshot()
+}
+
+/// Public link API, current-version inline header plus reusable payload scratch.
+async fn measure_next_enveloped() -> (u64, u64) {
+    use aimdb_data_contracts::{
+        link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+    };
+    let db = build_db(|b| {
+        b.configure::<Reading>("out.enveloped", |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_to("bench://out/enveloped")
+                .with_link_codec(Postcard::<64>)
+                .with_envelope(EnvelopeCarrier::Inline)
+                .finish();
+        });
+    })
+    .await;
+    let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
+    let producer = db.producer::<Reading>("out.enveloped").unwrap();
     for i in 0..WARMUP_ITERS {
         producer.produce(reading(i));
         pull_one(&mut outbound).await;
@@ -384,7 +537,26 @@ fn main() {
 
     let measured: Vec<(&str, &str, (u64, u64))> = runtime.block_on(async {
         vec![
-            ("inbound_dispatch", "SpmcRing", measure_dispatch().await),
+            (
+                "inbound_dispatch",
+                "SpmcRing",
+                measure_dispatch(false).await,
+            ),
+            (
+                "inbound_dispatch_upgraded",
+                "SpmcRing",
+                measure_dispatch(true).await,
+            ),
+            (
+                "inbound_admit_inline",
+                "SpmcRing",
+                measure_admission(true).await,
+            ),
+            (
+                "inbound_admit_bound",
+                "SpmcRing",
+                measure_admission(false).await,
+            ),
             (
                 "inbound_dispatch_pattern",
                 "SpmcRing",
@@ -419,6 +591,11 @@ fn main() {
                 "outbound_next_static_topic",
                 "SpmcRing",
                 measure_next(Serializer::Scratch, Topic::Static).await,
+            ),
+            (
+                "outbound_next_enveloped",
+                "SpmcRing",
+                measure_next_enveloped().await,
             ),
             (
                 "outbound_next_written_topic",

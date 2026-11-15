@@ -285,6 +285,7 @@ fn link(
             format!("ros2://{resource}: the record's type is not registered with Ros2Connector")
         })?;
     let unchecked_codec = codec_is_unchecked(resource, options)?;
+    framing_is_plain(resource, options)?;
     let qos = qos(options).map_err(|e| format!("ros2://{resource}: {e}"))?;
     let key = KeyExpr::try_from(profile::data_key(domain, &topic, ty.dds_name, ty.hash))
         .map_err(|e| format!("ros2://{resource}: {e}"))?;
@@ -309,6 +310,32 @@ fn codec_is_unchecked(resource: &str, options: &[(String, String)]) -> Result<bo
             "ros2://{resource} encodes as {other:?}; a ROS topic needs CDR"
         )),
     }
+}
+
+/// A ROS peer reads the payload as bare CDR of the topic's one type: an
+/// inline envelope header, or another contract version under the current
+/// type hash, would not decode.
+fn framing_is_plain(resource: &str, options: &[(String, String)]) -> Result<(), String> {
+    use aimdb_core::connector::{WIRE_ENVELOPE_KEY, WIRE_VERSION_KEY};
+    let recorded = |wanted: &str| {
+        options
+            .iter()
+            .rev()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value.as_str())
+    };
+    if let Some(carrier) = recorded(WIRE_ENVELOPE_KEY) {
+        return Err(format!(
+            "ros2://{resource} frames payloads in an {carrier} envelope; a ROS topic carries bare CDR"
+        ));
+    }
+    if let Some(version) = recorded(WIRE_VERSION_KEY) {
+        return Err(format!(
+            "ros2://{resource} carries contract version {version}, not the current one; \
+             a ROS topic has one type"
+        ));
+    }
+    Ok(())
 }
 
 /// A ROS topic has one type: every link on a topic, publisher or
@@ -618,6 +645,20 @@ mod tests {
         assert_eq!(codec_is_unchecked("t", &[]), Ok(true));
         let error = codec_is_unchecked("t", &format("json")).unwrap_err();
         assert!(error.contains("Json"), "{error}");
+    }
+
+    #[test]
+    fn an_envelope_or_another_version_fails() {
+        use aimdb_core::connector::{WIRE_ENVELOPE_KEY, WIRE_FORMAT_KEY, WIRE_VERSION_KEY};
+        let opt = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let cdr = opt(WIRE_FORMAT_KEY, "cdr");
+        assert_eq!(framing_is_plain("t", std::slice::from_ref(&cdr)), Ok(()));
+        let inline = [cdr.clone(), opt(WIRE_ENVELOPE_KEY, "inline")];
+        let error = framing_is_plain("t", &inline).unwrap_err();
+        assert!(error.contains("inline envelope"), "{error}");
+        let older = [cdr, opt(WIRE_VERSION_KEY, "1")];
+        let error = framing_is_plain("t", &older).unwrap_err();
+        assert!(error.contains("contract version 1"), "{error}");
     }
 
     #[test]

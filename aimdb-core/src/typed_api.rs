@@ -897,6 +897,9 @@ pub type OutboundConnectorBuilder<'r, 'a, T> =
 /// [`OutboundLink::new`] and registered by [`RecordRegistrar::output`].
 pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 
+type OutboundWireFinalizer<T> =
+    Arc<dyn Fn(OutboundLink<T>) -> Result<OutboundLink<T>, String> + Send + Sync>;
+
 /// Builder for configuring outbound connector links (AimDB → External)
 ///
 /// `R` is what the builder is attached to. [`RecordRegistrar::link_to`]
@@ -915,6 +918,9 @@ pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 /// work on both forms.
 #[must_use = "a link does nothing until it is passed to `.output()` or finished with `.finish()`"]
 pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    wire: crate::link_wire::WireOptions,
+    wire_codec: Option<crate::link_wire::WireCodecInfo>,
+    wire_finalizer: Option<OutboundWireFinalizer<T>>,
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
@@ -948,6 +954,9 @@ where
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
+            wire: Default::default(),
+            wire_codec: None,
+            wire_finalizer: None,
             url: url.to_string(),
             connector: None,
             schema: None,
@@ -961,6 +970,9 @@ where
     fn attach<R>(self, at: R) -> OutboundLinkBuilder<T, R> {
         OutboundLinkBuilder {
             at,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -976,9 +988,41 @@ impl<T, R> OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    #[doc(hidden)]
+    pub fn wire_options(&self) -> crate::link_wire::WireOptions {
+        self.wire
+    }
+    #[doc(hidden)]
+    pub fn with_wire_options(mut self, options: crate::link_wire::WireOptions) -> Self {
+        self.wire = options;
+        self
+    }
+    #[doc(hidden)]
+    pub fn wire_codec_info(&self) -> Option<crate::link_wire::WireCodecInfo> {
+        self.wire_codec
+    }
+    #[doc(hidden)]
+    pub fn with_wire_codec_info(mut self, info: Option<crate::link_wire::WireCodecInfo>) -> Self {
+        self.wire_codec = info;
+        self
+    }
+    #[doc(hidden)]
+    pub fn with_wire_finalizer<F>(mut self, replace: bool, finalize: F) -> Self
+    where
+        F: Fn(OutboundLink<T>) -> Result<OutboundLink<T>, String> + Send + Sync + 'static,
+    {
+        if replace || self.wire_finalizer.is_none() {
+            self.wire_finalizer = Some(Arc::new(finalize));
+        }
+        self
+    }
+
     fn detach(self) -> (R, OutboundLink<T>) {
         let link = OutboundLinkBuilder {
             at: Detached,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -1012,6 +1056,7 @@ where
     /// a newly installed codec closure has no known format until a codec verb
     /// records one.
     fn clear_wire_format(mut self) -> Self {
+        self.wire_codec = None;
         self.config
             .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
         self
@@ -1188,8 +1233,9 @@ where
         let deser = deser.clone();
         Arc::new(
             move |ctx: &crate::RuntimeContext, m: &crate::TopicMatch<'_>, payload: &[u8]| {
-                producer.produce(deser(ctx, m, payload)?);
-                Ok(())
+                let admitted = deser(ctx, m, payload)?;
+                producer.produce(admitted.value);
+                Ok(admitted.outcome)
             },
         ) as crate::connector::IngestFn
     })
@@ -1199,16 +1245,27 @@ where
 ///
 /// Stays typed until registration fuses it with the producer — no
 /// per-message erasure.
-type TypedContextDeserializerFn<T> =
-    Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
-
-/// Like [`TypedContextDeserializerFn`], also receiving the topic match.
-type TypedMatchDeserializerFn<T> = Arc<
-    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+type TypedContextDeserializerFn<T> = Arc<
+    dyn Fn(crate::RuntimeContext, &[u8]) -> Result<crate::IngestValue<T>, crate::IngestError>
         + Send
         + Sync
         + 'static,
 >;
+
+/// Like [`TypedContextDeserializerFn`], also receiving the topic match.
+type TypedMatchDeserializerFn<T> = Arc<
+    dyn Fn(
+            &crate::RuntimeContext,
+            &crate::TopicMatch<'_>,
+            &[u8],
+        ) -> Result<crate::IngestValue<T>, crate::IngestError>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+type InboundWireFinalizer<T> =
+    Arc<dyn Fn(InboundLink<T>) -> Result<InboundLink<T>, String> + Send + Sync>;
 
 /// Inbound link builder attached to a record: what
 /// [`RecordRegistrar::link_from`] returns.
@@ -1239,6 +1296,9 @@ pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
 /// work on both forms.
 #[must_use = "a link does nothing until it is passed to `.input()` or finished with `.finish()`"]
 pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    wire: crate::link_wire::WireOptions,
+    wire_codec: Option<crate::link_wire::WireCodecInfo>,
+    wire_finalizer: Option<InboundWireFinalizer<T>>,
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
@@ -1246,6 +1306,7 @@ pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
+    upgrade_versions: Vec<u32>,
     key: Option<(String, u16)>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
@@ -1273,12 +1334,16 @@ where
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
+            wire: Default::default(),
+            wire_codec: None,
+            wire_finalizer: None,
             url: url.to_string(),
             connector: None,
             schema: None,
             config: Vec::new(),
             context_deserializer: None,
             match_deserializer: None,
+            upgrade_versions: Vec::new(),
             key: None,
             topic_resolver: None,
         }
@@ -1287,12 +1352,16 @@ where
     fn attach<R>(self, at: R) -> InboundLinkBuilder<T, R> {
         InboundLinkBuilder {
             at,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
+            upgrade_versions: self.upgrade_versions,
             key: self.key,
             topic_resolver: self.topic_resolver,
         }
@@ -1303,15 +1372,48 @@ impl<T, R> InboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    #[doc(hidden)]
+    pub fn wire_options(&self) -> crate::link_wire::WireOptions {
+        self.wire
+    }
+    #[doc(hidden)]
+    pub fn with_wire_options(mut self, options: crate::link_wire::WireOptions) -> Self {
+        self.wire = options;
+        self
+    }
+    #[doc(hidden)]
+    pub fn wire_codec_info(&self) -> Option<crate::link_wire::WireCodecInfo> {
+        self.wire_codec
+    }
+    #[doc(hidden)]
+    pub fn with_wire_codec_info(mut self, info: Option<crate::link_wire::WireCodecInfo>) -> Self {
+        self.wire_codec = info;
+        self
+    }
+    #[doc(hidden)]
+    pub fn with_wire_finalizer<F>(mut self, replace: bool, finalize: F) -> Self
+    where
+        F: Fn(InboundLink<T>) -> Result<InboundLink<T>, String> + Send + Sync + 'static,
+    {
+        if replace || self.wire_finalizer.is_none() {
+            self.wire_finalizer = Some(Arc::new(finalize));
+        }
+        self
+    }
+
     fn detach(self) -> (R, InboundLink<T>) {
         let link = InboundLinkBuilder {
             at: Detached,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
+            upgrade_versions: self.upgrade_versions,
             key: self.key,
             topic_resolver: self.topic_resolver,
         };
@@ -1340,6 +1442,7 @@ where
     /// a newly installed codec closure has no known format until a codec verb
     /// records one.
     fn clear_wire_format(mut self) -> Self {
+        self.wire_codec = None;
         self.config
             .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
         self
@@ -1354,9 +1457,15 @@ where
     /// [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
+        F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, crate::IngestError>
+            + Send
+            + Sync
+            + 'static,
     {
-        self.context_deserializer = Some(Arc::new(f));
+        self.context_deserializer = Some(Arc::new(move |ctx, bytes| {
+            f(ctx, bytes).map(crate::IngestValue::current)
+        }));
+        self.upgrade_versions.clear();
         self.clear_wire_format()
     }
 
@@ -1366,13 +1475,47 @@ where
     /// recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_match_deserializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+        F: Fn(
+                &crate::RuntimeContext,
+                &crate::TopicMatch<'_>,
+                &[u8],
+            ) -> Result<T, crate::IngestError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.match_deserializer = Some(Arc::new(move |ctx, m, bytes| {
+            f(ctx, m, bytes).map(crate::IngestValue::current)
+        }));
+        self.upgrade_versions.clear();
+        self.clear_wire_format()
+    }
+
+    /// Installs contract admission with success metadata and declared source
+    /// versions. Counters are allocated once at registration. Like the match
+    /// deserializer, this borrows the context and receives wildcard captures.
+    pub fn with_admitting_deserializer<F>(mut self, versions: &[u32], f: F) -> Self
+    where
+        F: Fn(
+                &crate::RuntimeContext,
+                &crate::TopicMatch<'_>,
+                &[u8],
+            ) -> Result<crate::IngestValue<T>, crate::IngestError>
             + Send
             + Sync
             + 'static,
     {
         self.match_deserializer = Some(Arc::new(f));
+        self.upgrade_versions = versions.to_vec();
         self.clear_wire_format()
+    }
+
+    /// Clear both inbound callback slots before installing a complete strategy.
+    #[doc(hidden)]
+    pub fn clear_deserializers(mut self) -> Self {
+        self.context_deserializer = None;
+        self.match_deserializer = None;
+        self
     }
 
     /// Assigns each value of capture `name` a [`KeyId`](crate::KeyId), up to
@@ -1445,12 +1588,89 @@ where
 // Link registration - the one validation path for attached and detached links
 // ============================================================================
 
+/// The wire state a detached link of either direction carries into
+/// registration.
+trait WireLink: Sized {
+    fn wire_url(&self) -> &str;
+    fn wire_parts(
+        &mut self,
+    ) -> (
+        &mut crate::link_wire::WireOptions,
+        &mut Vec<(String, String)>,
+    );
+    #[allow(clippy::type_complexity)]
+    fn take_wire_finalizer(
+        &mut self,
+    ) -> Option<Arc<dyn Fn(Self) -> Result<Self, String> + Send + Sync>>;
+}
+
+macro_rules! wire_link {
+    ($link:ident) => {
+        impl<T: Send + Sync + 'static + Debug + Clone> WireLink for $link<T> {
+            fn wire_url(&self) -> &str {
+                &self.url
+            }
+            fn wire_parts(
+                &mut self,
+            ) -> (
+                &mut crate::link_wire::WireOptions,
+                &mut Vec<(String, String)>,
+            ) {
+                (&mut self.wire, &mut self.config)
+            }
+            fn take_wire_finalizer(
+                &mut self,
+            ) -> Option<Arc<dyn Fn(Self) -> Result<Self, String> + Send + Sync>> {
+                self.wire_finalizer.take()
+            }
+        }
+    };
+}
+wire_link!(OutboundLink);
+wire_link!(InboundLink);
+
 impl<'a, T> RecordRegistrar<'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Resolves the carrier and runs the link's wire finalizer: the one path
+    /// for both directions. Records a config error and returns `None` if the
+    /// link is refused.
+    fn finalize_wire<L: WireLink>(&mut self, mut link: L) -> Option<L> {
+        let url = link.wire_url().to_string();
+        let finalized = (|| {
+            let (wire, config) = link.wire_parts();
+            wire.take_carrier(config)?;
+            if let Some(finalize) = link.take_wire_finalizer() {
+                link = finalize(link)?;
+            } else if link.wire_parts().0.carrier == crate::EnvelopeCarrier::Inline {
+                return Err(
+                    "inline envelopes require with_envelope or with_versioned_codec".into(),
+                );
+            }
+            let (wire, config) = link.wire_parts();
+            wire.record_carrier(config);
+            Ok::<L, String>(link)
+        })();
+        match finalized {
+            Ok(link) => Some(link),
+            Err(message) => {
+                self.rec.push_config_error(crate::ConfigError::new(
+                    self.record_key.clone(),
+                    Some(url),
+                    message,
+                ));
+                None
+            }
+        }
+    }
+
     /// Validates and registers an outbound link, or records why not.
-    fn push_outbound(&mut self, mut link: OutboundLink<T>) {
+    fn push_outbound(&mut self, link: OutboundLink<T>) {
+        let Some(mut link) = self.finalize_wire(link) else {
+            return;
+        };
+
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
 
@@ -1681,7 +1901,11 @@ where
     }
 
     /// Validates and registers an inbound link, or records why not.
-    fn push_inbound(&mut self, mut link: InboundLink<T>) {
+    fn push_inbound(&mut self, link: InboundLink<T>) {
+        let Some(mut link) = self.finalize_wire(link) else {
+            return;
+        };
+
         if let Some((name, version)) = link.schema.take() {
             self.schema(&name, version);
         }
@@ -1773,7 +1997,8 @@ where
         }
 
         // Named `inbound`, not `link`, for the same reason as in `push_outbound`.
-        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
+        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser))
+            .with_upgrade_versions(&link.upgrade_versions);
         inbound.config = core::mem::take(&mut link.config);
         inbound.key = key;
         inbound.topic_resolver = link.topic_resolver.take();
@@ -1973,7 +2198,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord {
             value: m.topic().len() as i32,
         })
@@ -2155,6 +2380,48 @@ mod tests {
         assert!(drain_errors(&mut rec).is_empty());
     }
 
+    #[test]
+    fn envelope_config_is_consumed_by_core_and_never_reaches_connectors() {
+        use crate::link_wire::ENVELOPE_KEY;
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.push_outbound(
+            OutboundLink::new("mqtt://out")
+                .with_config(ENVELOPE_KEY, "inline")
+                .with_config("qos", "1")
+                .with_config(ENVELOPE_KEY, "bound")
+                .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec())),
+        );
+        reg.push_inbound(
+            InboundLink::new("mqtt://in")
+                .with_config(ENVELOPE_KEY, "bound")
+                .with_config("qos", "2")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+        // Still read first: the last entry wins, and inline needs a finalizer.
+        reg.push_inbound(
+            InboundLink::new("mqtt://inline")
+                .with_config(ENVELOPE_KEY, "inline")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+
+        let expected = [("qos".to_string(), "1".to_string())];
+        assert_eq!(rec.outbound_connectors()[0].config, expected);
+        let expected = [("qos".to_string(), "2".to_string())];
+        assert_eq!(rec.inbound_connectors()[0].config, expected);
+        assert_eq!(rec.inbound_connectors().len(), 1);
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("inline envelopes require"));
+    }
+
     // ====================================================================
     // Detached links via .input() / .output()
     // ====================================================================
@@ -2179,7 +2446,7 @@ mod tests {
         Ok(r.value.to_le_bytes().to_vec())
     }
 
-    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, String> {
+    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord { value: 0 })
     }
 
@@ -2187,7 +2454,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         _m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord { value: 0 })
     }
 
@@ -2987,7 +3254,7 @@ mod tests {
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
                     if bytes.is_empty() {
-                        return Err("empty payload".to_string());
+                        return Err("empty payload".into());
                     }
                     Ok(TestRecord {
                         value: bytes.len() as i32,
@@ -3079,7 +3346,7 @@ mod tests {
             reg.buffer_raw(Box::new(StampRecordingBuffer(buf_stamp)));
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
-                    Ok::<_, String>(TestRecord {
+                    Ok::<_, crate::IngestError>(TestRecord {
                         value: bytes.len() as i32,
                     })
                 })
@@ -3097,7 +3364,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord {
             value: m.key().map_or(-1, |k| k.index() as i32),
         })
@@ -3226,6 +3493,60 @@ mod tests {
         clone.dispatch("cmd/in", b"abcd");
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(last.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn admission_outcomes_are_counted_after_production_and_survive_reconnect() {
+        let (db, last, count) = inbound_db(|reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_admitting_deserializer(&[1], |_ctx, _m, bytes| {
+                    if bytes.is_empty() {
+                        return Err(crate::IngestError::new(
+                            crate::Rejection::TooOld,
+                            "received v0, accepts v1..=2",
+                        ));
+                    }
+                    Ok(crate::IngestValue::upgraded(TestRecord { value: 42 }, 1))
+                })
+                .finish();
+        })
+        .await;
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        let clone = inbound.clone();
+        assert_eq!(inbound.routes()[0].id, 0);
+        clone.dispatch("cmd/in", b"v1");
+        assert_eq!(last.load(Ordering::SeqCst), 42);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        inbound.dispatch("cmd/in", b"");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let snapshot = clone.stats(0).unwrap();
+        assert_eq!(snapshot.accepted, 1);
+        assert_eq!(snapshot.too_old, 1);
+        assert_eq!(
+            snapshot.upgraded[0],
+            crate::UpgradeCount { from: 1, count: 1 }
+        );
+        assert_eq!(inbound.stats(0).unwrap(), snapshot);
+        drop(inbound);
+        drop(clone);
+        let reconnected = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        assert_eq!(reconnected.stats(0).unwrap(), snapshot);
+        reconnected.dispatch("cmd/in", b"v1");
+        assert_eq!(reconnected.stats(0).unwrap().upgraded[0].count, 2);
+        #[cfg(all(feature = "remote", feature = "observability"))]
+        {
+            let records = db.list_records();
+            let metrics = &records
+                .iter()
+                .find(|r| r.record_key == "rec.in")
+                .unwrap()
+                .inbound_routes;
+            assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0].link, "mqtt://cmd/in");
+            assert_eq!(metrics[0].stats, reconnected.stats(0).unwrap());
+            let json = serde_json::to_value(&records).unwrap();
+            assert!(json.to_string().contains("too_old"));
+        }
     }
 
     // ====================================================================

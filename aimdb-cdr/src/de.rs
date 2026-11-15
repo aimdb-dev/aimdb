@@ -31,6 +31,10 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    pub(crate) fn position(&self) -> usize {
+        self.pos
+    }
+
     fn remaining(&self) -> usize {
         self.input.len() - self.pos
     }

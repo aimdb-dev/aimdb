@@ -146,6 +146,9 @@ pub struct ClientHandle {
     /// JSON-safe — and [`ClientHandle::next_id`] refuses rather than wraps at
     /// the ceiling.
     next_id: Arc<AtomicUsize>,
+    /// The codec's [`EnvelopeCodec::carries_inline_envelopes`], for
+    /// [`pump_client`]'s build-time link check.
+    inline_envelopes: bool,
 }
 
 /// Commands the [`ClientHandle`] funnels to the engine. The caller allocates the
@@ -366,6 +369,7 @@ where
         // Ids start at 1: `0` stays free as a "no correlation" sentinel for
         // protocols that want one.
         next_id: Arc::new(AtomicUsize::new(1)),
+        inline_envelopes: codec.carries_inline_envelopes(),
     };
     let fut = Box::pin(client_loop(dialer, codec, config, cmd_rx, prune_rx, ctx));
     (handle, fut)
@@ -950,6 +954,12 @@ pub fn pump_client(
     // Skips, lag and closed routes are handled and counted inside
     // `OutboundRoutes`; `next` ends once every route has closed.
     let mut outbound = crate::OutboundRoutes::new(db, scheme)?;
+
+    // The codec cannot carry an inline envelope header: refuse such a link
+    // here, not as an encode failure that drops the session for every link.
+    if !handle.inline_envelopes {
+        refuse_inline_envelopes(scheme, &outbound, &inbound)?;
+    }
     if !outbound.routes().is_empty() {
         let handle = handle.clone();
         pumps.push(Box::pin(async move {
@@ -973,6 +983,49 @@ pub fn pump_client(
     }
 
     Ok(pumps)
+}
+
+/// Fails if a link of `scheme` frames its payloads in an inline envelope
+/// (it is recorded with
+/// [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY)), naming the
+/// first such link, outbound before inbound.
+///
+/// For a connector whose [`EnvelopeCodec`] reports
+/// [`carries_inline_envelopes`](EnvelopeCodec::carries_inline_envelopes) as
+/// `false`, such as one speaking AimX: call it from `build()`, once the routes
+/// are collected. [`pump_client`] already does for client connectors.
+pub fn refuse_inline_envelopes(
+    scheme: &str,
+    outbound: &crate::OutboundRoutes,
+    inbound: &crate::InboundDispatch,
+) -> crate::DbResult<()> {
+    let inline = |config: &crate::transport::ConnectorConfig| {
+        config
+            .protocol_options
+            .iter()
+            .any(|(key, _)| key == crate::connector::WIRE_ENVELOPE_KEY)
+    };
+    let refused = outbound
+        .routes()
+        .iter()
+        .find(|route| inline(&route.config))
+        .map(|route| route.default_topic.clone())
+        .or_else(|| {
+            inbound
+                .routes()
+                .iter()
+                .find(|route| inline(&route.config))
+                .map(|route| route.topic.clone())
+        });
+    match refused {
+        None => Ok(()),
+        Some(topic) => Err(crate::DbError::InvalidOperation {
+            operation: alloc::format!("link {scheme}://{topic}"),
+            reason: "this connector's codec carries bare payloads only; \
+                     an inline envelope cannot be sent or received on it"
+                .into(),
+        }),
+    }
 }
 
 /// Drive one inbound mirror: subscribe to remote topic `id` and produce every
@@ -1066,6 +1119,7 @@ mod tests {
                 cmd_tx,
                 prune_tx,
                 next_id: Arc::new(AtomicUsize::new(1)),
+                inline_envelopes: true,
             },
             cmd_rx,
             prune_rx,
@@ -1213,6 +1267,7 @@ mod tests {
             cmd_tx,
             prune_tx,
             next_id: Arc::new(AtomicUsize::new(usize::MAX)),
+            inline_envelopes: true,
         };
 
         // Bounded at zero: the refusal happens before the id is queued, so it
@@ -1623,7 +1678,7 @@ mod tests {
         let recorder = seen.clone();
         let ingest: crate::connector::IngestFn = Arc::new(move |_ctx, _m, bytes: &[u8]| {
             recorder.lock().push(bytes.to_vec());
-            Ok(())
+            Ok(crate::IngestOutcome::current())
         });
         let route = crate::router::CompiledRoute::exact("tele", ingest);
         let router = crate::router::Router::new(&crate::ExactGrammar, alloc::vec![route]);

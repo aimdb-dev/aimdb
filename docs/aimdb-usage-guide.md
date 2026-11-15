@@ -464,6 +464,168 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
 See [AimDB and ROS 2](aimdb-and-ros2.md) for message types, domains, QoS and
 the gateway pattern.
 
+### Generic payload codecs
+
+The built-in `Json`, `Postcard<N>`, and `Cdr<N>` markers also implement
+`PayloadDecoder` and `PayloadEncoder`. These traits operate on any serde
+type, so a migration chain can select a historical payload type before
+calling the codec. `decode_payload::<T>(bytes)` returns `(value, consumed)`;
+`encode_payload(&value, out)` writes into caller storage. The built-in implementations require the
+corresponding `linkable-json`, `linkable-postcard`, or `linkable-cdr` feature.
+
+The consumed count excludes trailing data and includes CDR encapsulation
+and alignment bytes. JSON whitespace after the value counts as consumed.
+These operations expose a remainder for admission to check; they do not
+change `LinkCodec::decode` behavior. Postcard and CDR encoding into caller
+storage remains allocation-free on success; JSON uses its owned encoding
+path. A custom codec implements the generic traits explicitly. Implementing
+`LinkCodec<T>` for one type, or using the `Default` marker that delegates to
+that type's `Linkable`, does not provide generic historical decoding.
+
+### Inbound errors and counters
+
+`with_deserializer` and `with_match_deserializer` return `Result<T, IngestError>`.
+Use `IngestError::new(Rejection::DecodeError, message)` for a decode failure,
+or convert an existing string error with `.map_err(IngestError::from)`.
+The reason identifies the counter; the diagnostic explains the failed value.
+Each matching route counts its own result and continues after a rejection.
+
+`InboundDispatch::stats(route.id)` returns a snapshot with `accepted`, the
+rejection counters, and upgrades grouped by source version. Counters belong
+to the registered link and survive dispatcher clones and reconnects. With
+`observability` enabled they also appear in each record's `inbound_routes`
+metrics in `record.list` and `record.get`.
+
+Contract admission uses `with_admitting_deserializer(versions, callback)`:
+the callback returns `IngestValue::current(value)` or
+`IngestValue::upgraded(value, from)`. Core produces the value before
+reporting the successful outcome. Source-version counters are preallocated
+at registration; custom callbacks reporting undeclared versions increment
+`untracked_upgrades`. Recording outcomes does not allocate; snapshotting
+an upgrade list can allocate. Custom fused `IngestFn` callbacks likewise
+return `IngestOutcome` on success and `IngestError` on failure.
+
+### Explicit-version migration
+
+Enable `migratable` plus the selected codec feature. `migration_chain!` takes
+`type Current = T; steps { Step: Old => New, ... }`; it no longer takes
+`version_field`. Call `T::migrate_from(version, payload, &codec)` with the
+version from the envelope or static binding. It decodes the selected type
+once and applies `up` steps. `value.migrate_into(version, &codec, out)`
+downgrades and encodes into caller storage, returning its length.
+`MigrationError::BufferTooSmall` requests a larger output buffer.
+
+Each version must implement `ContractShape`, normally through `catalog!`.
+`T::shape_of(version)` returns that version's locked shape. The chain
+also generates `Reaches<V>` and `VersionOf<T>` proofs for link declarations.
+An empty `steps {}` defines a current-only chain whose minimum version is
+`T::VERSION`; it does not require `Clone`. Historical sends clone the
+current value before running by-value downgrade steps. A payload field
+named `schema_version` is ordinary data and is never inspected for dispatch.
+
+New contract payloads need no `schema_version` field: `SchemaType::VERSION`
+and the envelope or static binding identify the version. Removing an existing
+field changes the wire shape, including on binary codecs. For a locked contract,
+add a new version and migration step; keep historical layouts unchanged when
+supporting deployed senders. `AIMDB_UPDATE_LOCK=1` accepts new versions but
+cannot overwrite a changed shape under an existing `NAME@VERSION`.
+The embedded fixture keeps its frozen v1/v2 payload layouts and migrates to
+field-free v3/v4 layouts as an example. Bare legacy JSON with an extra version
+field can also be read by a field-free type through an explicit static binding:
+serde ignores that extra field; it never selects a migration.
+
+`migratable` does not enable JSON. Custom codecs implement `PayloadDecoder`
+and `PayloadEncoder`; the built-in codec features provide them too.
+
+The [rolling-upgrade fixture](../tools/rolling-upgrade-fixture/README.md) runs
+separately locked firmware and hub contracts through both MQTT backends and
+builds their shared link declarations for Cortex-M.
+
+### Envelope admission
+
+With `migratable` enabled, `LinkContract<T, D>` holds a registration-time
+admission policy and its concrete `PayloadDecoder`. `inline(codec, decoder)`
+accepts only the current version; `inline_from::<V>(codec, decoder)` accepts
+`V..=T::VERSION` and requires the chain's `Reaches<V>` proof.
+`bound_current(codec, decoder)` is a bare current-version policy;
+`bound::<U>(codec, decoder)` binds a bare payload to exactly `U::VERSION`
+and requires `U: VersionOf<T>`. The codec ID must describe the decoder.
+
+`admit_frame(bytes, &policy)` parses the configured inline carrier or builds
+a static envelope, then calls `admit(&envelope, &policy)`. It checks name,
+version, the locked shape of the received version, and codec before decoding
+once. Missing locked shapes skip the shape comparison. An unspecified
+header codec uses the link's decoder. Bound payloads must be consumed in
+full, including JSON whitespace; trailing values or bytes are rejected.
+
+`Admit<T>` is `Result<IngestValue<T>, IngestError>`, directly usable with
+`with_admitting_deserializer`. Success carries the upgraded source version;
+core stamps the value locally when producing it and then counts the outcome.
+Received wire stamps are ignored. Rejections include the received identity
+and expected version range; core's router adds the record key and topic to
+its diagnostic. Decoder and migration conversion failures are `decode_error`.
+Neither admission nor its successful result allocates beyond allocations
+required by the chosen decoder or the contract's own conversion steps.
+
+### Envelope and version declarations on links
+
+Bare payloads remain the default. For mixed firmware versions on an AimDB
+MQTT topic, enable the `migratable` and selected codec features, then opt
+both peers into inline envelopes:
+
+```rust,ignore
+use aimdb_data_contracts::{link_codecs::Postcard, EnvelopeCarrier,
+    EnvelopeLinkExt, LinkCodecBuilderExt, VersionedInboundExt, VersionedOutboundExt};
+
+r.link_from("mqtt://sensors/temperature")
+    .with_link_codec(Postcard::<128>)
+    .with_envelope(EnvelopeCarrier::Inline)
+    .accepts_from::<1>()
+    .finish();
+r.link_to("mqtt://legacy/temperature")
+    .with_envelope(EnvelopeCarrier::Inline)
+    .sends_as::<1>()
+    .with_link_codec(Postcard::<128>)
+    .finish();
+```
+
+An inline link defaults to the current version only. Outbound headers carry
+the shape of the version sent, when locked; `without_shape()` opts out.
+Scratch storage reserves the codec capacity plus 19 header bytes. Oversized
+values use an owned fallback that includes the same header and target version.
+
+A deployed bare v1 device needs a static binding on the hub:
+
+```rust,ignore
+r.link_from("mqtt://old/temperature")
+    .with_contract::<TemperatureV1>()
+    .with_link_codec(Postcard::<128>)
+    .finish();
+```
+
+Bindings require a version in the current record's chain. `accepts_from`
+applies only to inline links and cannot combine with a static binding.
+Outbound `with_contract::<U>()` and `sends_as::<V>()` may combine when their
+versions agree. Conflicting declarations fail registration through `build()`.
+The methods work on detached links too, in either order around codec
+selection, and preserve connector methods such as MQTT `with_qos`.
+
+Builtin `Json`, `Postcard<N>`, and `Cdr<N>` codecs support these declarations.
+Use `with_versioned_codec(custom)` for a custom codec implementing both
+`PayloadDecoder` and `PayloadEncoder` as well as `LinkCodec<T>`. Its instance
+and state are retained. A codec for just one payload type, including the
+`Default` marker's delegation to `Linkable`, cannot migrate historical types;
+select an explicit generic codec for versioned links. Custom bare codecs
+that accept a prefix must report consumption through
+`LinkCodec::decode_with_consumed` (or `Linkable::from_bytes_with_consumed`).
+Ordinary builtin `LinkCodec::decode` semantics stay unchanged outside link
+admission; bare link admission rejects trailing bytes.
+
+Inline headers are tested on both MQTT backends and require matching carrier
+configuration on the peers. Foreign ROS 2, KNX, and dashboard links retain
+their bare payloads unless explicitly configured otherwise. AimX transport
+metadata carriers remain deferred.
+
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.
@@ -624,7 +786,11 @@ It generates `pub const CATALOG: &[ContractId]` (contracts only, `no_std`)
 and a test that
 checks the catalog against `aimdb.lock` at the crate root. The `lock`
 feature belongs in `[dev-dependencies]` only, so firmware builds never see
-it. `aimdb.lock` is generated and committed:
+it. `catalog!` includes the lock at compile time, so the file must exist.
+For a new contracts crate, first create `aimdb.lock` containing only
+`version = 1`, then run `AIMDB_UPDATE_LOCK=1 cargo test` to populate it.
+Commit the generated lock:
+
 
 ```toml
 # aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
@@ -635,6 +801,20 @@ name = "mqtt_demo.temperature"
 version = 1
 shape = "sha256:51d0a7c3…"
 ```
+
+`catalog!` also implements `ContractShape` for each listed type. Its
+`SHAPE` is the first eight bytes of the locked SHA-256, interpreted as a
+big-endian integer. A version not yet in the lock has `SHAPE = None` until
+the lock is updated. `CATALOG` entries expose `name_id()` (FNV-1a 32 of
+`NAME`) and `shape()`. Distinct names with the same ID fail compilation;
+several versions of the same name remain valid.
+
+Every firmware and hub CI build must run its contracts crate's lock test.
+The runtime shape comes from the committed lock, so skipping the test can
+let a changed struct advertise a stale hash. The lock parser and shape
+lookup need neither allocation nor the dev-only TOML and SHA-256 crates.
+For types outside a catalog, `impl ContractShape for MyType {}` provides
+`SHAPE = None` without claiming a locked shape.
 
 | Change | Result |
 |---|---|

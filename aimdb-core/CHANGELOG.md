@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — value envelopes (design 062)
+
+- Allocation-free `ContractRef`, `Envelope`, and `HeaderWriter` define a compact
+  codec-independent header, with forward-compatible stamp/extension parsing.
+- Ingest errors carry countable rejection reasons. Registered inbound links
+  expose shared admission and upgrade counters through metadata/metrics; accepted
+  values receive local write stamps. Counters are lock-free native atomics:
+  64-bit where the target has them, otherwise (e.g. thumbv7em) 32-bit and
+  saturating at `u32::MAX`. They add no `portable-atomic` feature. Raw deserializers
+  now return `IngestError` instead of `String` (`.into()` preserves ordinary
+  decode errors).
+- An admission rejection carries what was received and accepted as data
+  (`AdmissionContext`, `AdmissionDetail`) and formats its diagnostic only when
+  displayed (`IngestError::detail`, `Display`), so rejecting a frame for its
+  header, contract, version, shape or codec does not allocate.
+- AimX client links refuse an inline envelope at `build()`. `AimxCodec` splices
+  payloads into its frames as JSON, so the binary header failed to encode and
+  the client dropped the session shared by every link. `EnvelopeCodec` gains
+  `carries_inline_envelopes` (default `true`, `false` for `AimxCodec`), and
+  `pump_client` checks it for `ws-client`, serial, TCP and UDS client links.
+  `session::refuse_inline_envelopes` is the same check for a connector that
+  collects its own routes; the `ws://` server uses it.
+- Link builders can finalize envelope strategies during registration. Transports
+  retain their existing byte-oriented SPI, and bare payloads remain the default.
+
 ### Changed (wire)
 
 - **`record.get` is a single, non-destructive read (#444).** It returns the
