@@ -60,7 +60,7 @@ cortex-m-rt = { workspace = true }
 critical-section = { workspace = true }
 
 # Counting allocator wraps this heap to validate 0 allocs/msg on real hardware.
-embedded-alloc = { version = "0.6", features = ["llff"] }
+embedded-alloc = { version = "0.7", features = ["llff"] }
 
 [package.metadata.embassy]
 build = [
