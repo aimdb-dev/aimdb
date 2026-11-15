@@ -575,6 +575,18 @@ pub trait EnvelopeCodec: Send + Sync {
     fn hello(&self) -> Option<(&'static str, Payload)> {
         None
     }
+
+    /// Whether a record payload may start with an inline envelope header.
+    ///
+    /// `true` (the default) for a codec that carries payloads as opaque bytes.
+    /// A codec that splices the payload into its own text format returns
+    /// `false`: the binary header would not encode, so
+    /// [`pump_client`](crate::session::pump_client) refuses links recorded
+    /// with [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY) at
+    /// build time.
+    fn carries_inline_envelopes(&self) -> bool {
+        true
+    }
 }
 
 // ===========================================================================

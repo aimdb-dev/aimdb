@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`AdmissionContext`, `AdmissionDetail`) and formats its diagnostic only when
   displayed (`IngestError::detail`, `Display`), so rejecting a frame for its
   header, contract, version, shape or codec does not allocate.
+- AimX client links refuse an inline envelope at `build()`. `AimxCodec` splices
+  payloads into its frames as JSON, so the binary header failed to encode and
+  the client dropped the session shared by every link. `EnvelopeCodec` gains
+  `carries_inline_envelopes` (default `true`, `false` for `AimxCodec`), and
+  `pump_client` checks it for `ws-client`, serial, TCP and UDS client links.
 - Link builders can finalize envelope strategies during registration. Transports
   retain their existing byte-oriented SPI, and bare payloads remain the default.
 

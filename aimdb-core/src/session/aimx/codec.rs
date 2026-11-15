@@ -228,6 +228,12 @@ fn write_frame_splicing_data(
 }
 
 impl EnvelopeCodec for AimxCodec {
+    // A payload is spliced into the frame as JSON: a binary envelope header
+    // fails to encode, and the client then drops the shared session.
+    fn carries_inline_envelopes(&self) -> bool {
+        false
+    }
+
     // --- server direction: read a request, write a reply/event -------------
     fn decode(&self, frame: &[u8]) -> Result<Inbound, CodecError> {
         let f: Frame = serde_json::from_slice(frame).map_err(|_| CodecError::Malformed)?;
