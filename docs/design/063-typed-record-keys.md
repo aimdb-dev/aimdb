@@ -317,8 +317,11 @@ Registration and lookup differ because their costs differ. A key that is
 stored must be `'static`, so a run-time name is interned; that is right
 once per record and wrong once per call, and the WASM bindings look a
 record up on every `set` from JavaScript. The lifetime enforces it:
-`configure(Name::new(&name), …)` with a borrowed `name` does not compile
-("borrowed data escapes … must outlive `'static`").
+`configure(Name::new(&name), …)` with a borrowed `name` does not compile.
+The error is the compiler's own ("borrowed data escapes … must outlive
+`'static`") and does not mention `interned`. A lifetime error cannot
+carry a custom note, so the documentation of `configure` and of
+`Name::new` says it.
 
 A lookup by `Name` works for any record, with or without a contract,
 because a lookup needs only the name and the type. It can claim the wrong
@@ -597,6 +600,10 @@ removed in the release that adds the new ones.
 2. Should the derive's `link_address` and `Key::with_link` converge on one
    attribute that also carries the link's codec and carrier, making the
    contracts crate the single place a fleet's links are declared?
+3. Which carrier a link uses by default is open in 062 §12.3. If the
+   inline header becomes the default, `accepts_from` applies to every
+   link without further setup; if not, it needs `envelope = "inline"`
+   next to it, as in §6 today.
 
 ## 12. Spike
 
@@ -624,7 +631,8 @@ Markdown.
 | No public string path is needed anywhere in the workspace | holds: 463 call sites in 118 files converted by a script; every crate compiles, including WASM and the Embassy demos; no test fails in the core, data-contracts, Tokio adapter, MQTT, `aimdb-sync`, WASM, persistence, WebSocket, KNX, Zenoh and UDS suites (§5.4) |
 | One `Name<'a, T>` as both a key (`'static`) and a borrowed lookup | holds; needs `TypedName` as a supertrait of `TypedKey`, because a blanket impl would overlap. A first version with a separate `PlainKey<T>` also worked (§10.10) |
 | A name learned at run time: `interned` to register, a borrowed `Name` to look up | holds; a `Name` with the wrong type is a run-time error (§5.2) |
-| A borrowed `Name` cannot register a record | holds; borrow-check error, caught by `cargo check` and trybuild |
+| A borrowed `Name` cannot register a record | holds; borrow-check error, caught by `cargo check` and trybuild. Its text does not point at `interned` (§5.2) |
+| Implementing a key by hand | two impls (`TypedName` and `TypedKey`) where the first version needed one; `Key`, `Name` and the derive hide this |
 | A record without a contract reports no schema | holds |
 | `producer` of an unconfigured key returns an error, not `TypeMismatch` | holds |
 | Schema set with no link (R3), and with a link: one record, `temperature` v2 | holds |

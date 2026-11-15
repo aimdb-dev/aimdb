@@ -558,6 +558,28 @@ to the old version.
    must carry several versions at once: the deferred `c` field, or the
    inline header in front of the value's bytes? Not needed for the
    acceptance test.
+3. Should the inline header be the default carrier, with the static
+   binding as the opt-out? This design keeps bare payloads as the default
+   (§6, R5). Everything else in 062 and 063 makes the new form the only
+   form, so the question is whether the wire should follow. Not decided.
+
+   | | Default stays bare (this design) | Default becomes inline |
+   |---|---|---|
+   | Existing AimDB links | bytes unchanged | bytes change on every link at the upgrade; both ends must move together |
+   | Links read by other software (`ros2://`, KNX, dashboards) | unchanged | each must opt out, or the consumer breaks |
+   | Deployed devices that cannot be reflashed | read through a static binding | the same, but the binding is now the exception to write down |
+   | Version and shape checked on arrival | only on links that opt in | on every AimDB link |
+   | Several versions on one topic | only on links that opt in | everywhere |
+   | A forgotten setting | a link silently carries no version | a foreign consumer silently receives a header |
+   | Cost per value | none | 7 bytes, or 15 with the shape |
+
+   What the spike adds: the inline carrier needs no connector change and
+   costs about 1.3 KB of code on Cortex-M (§13), so nothing technical
+   forces either answer. A carrier mismatch is detected in every
+   direction once the whole-payload rule of §6 is in place. A middle
+   option is to choose the default by scheme: inline for links between
+   AimDB instances, bare for schemes that name a foreign protocol. That
+   needs a way to tell the two apart on MQTT, where both use `mqtt://`.
 
 ## 13. Spike
 
