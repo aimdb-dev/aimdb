@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — value envelopes (design 062)
+
+- `MigrationChain` now takes explicit versions and generic payload codecs:
+  `migrate_from`, `migrate_into`, and `shape_of` replace the JSON probe APIs.
+  `migration_chain!` rejects `version_field` and generates `Reaches<V>` and
+  `VersionOf<T>` proofs. `catalog!` requires a seed `aimdb.lock`, exposes locked
+  `ContractShape` values, and rejects contract name-ID collisions.
+- Link declarations add `with_envelope`, `with_contract`, `accepts_from`,
+  `sends_as`, and `without_shape`. Built-in codecs use normal `with_link_codec`;
+  generic custom codecs use `with_versioned_codec`. Shared admission validates
+  metadata before a single decode; bound links reject unconsumed bytes.
+- Payload `schema_version` fields are ordinary data. New payloads omit them;
+  changing an already locked layout still requires a new version.
+
 ### Added
 
 - **`catalog!` and `aimdb.lock` (#410).** `catalog! { contracts: [..],

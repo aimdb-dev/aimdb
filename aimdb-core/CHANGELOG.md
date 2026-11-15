@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — value envelopes (design 062)
+
+- Allocation-free `ContractRef`, `Envelope`, and `HeaderWriter` define a compact
+  codec-independent header, with forward-compatible stamp/extension parsing.
+- Ingest errors carry countable rejection reasons. Registered inbound links
+  expose shared admission and upgrade counters through metadata/metrics; accepted
+  values receive local write stamps. Raw deserializers now return `IngestError`
+  instead of `String` (`.into()` preserves ordinary decode errors).
+- Link builders can finalize envelope strategies during registration. Transports
+  retain their existing byte-oriented SPI, and bare payloads remain the default.
+
 ### Changed (wire)
 
 - **`record.get` is a single, non-destructive read (#444).** It returns the

@@ -1,0 +1,7 @@
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "temperature"
+version = 2
+shape = "sha256:7e09aaba1dd562aedd2feb0e50ee223be0d5cf5bfb1691b5e6c25cfba6d98f0f"

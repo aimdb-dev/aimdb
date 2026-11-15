@@ -537,6 +537,10 @@ serde ignores that extra field; it never selects a migration.
 `migratable` does not enable JSON. Custom codecs implement `PayloadDecoder`
 and `PayloadEncoder`; the built-in codec features provide them too.
 
+The [rolling-upgrade fixture](../tools/rolling-upgrade-fixture/README.md) runs
+separately locked firmware and hub contracts through both MQTT backends and
+builds their shared link declarations for Cortex-M.
+
 ### Envelope admission
 
 With `migratable` enabled, `LinkContract<T, D>` holds a registration-time

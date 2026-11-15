@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — codec-independent value envelopes (design 062)
+
+- Opt-in inline headers and explicit static bindings identify each linked value
+  by contract, version, and locked shape. JSON, Postcard, and CDR can upgrade
+  historical payloads or send downgraded values, with per-route admission counters.
+- Migration dispatch now takes an explicit version; `version_field` and the JSON
+  probe are removed. Current payload structs no longer need `schema_version`.
+  Removing a locked payload field requires a new version; frozen legacy layouts
+  can keep that field as ordinary data. Bare links remain the default.
+- A locked two-revision firmware/hub fixture proves the rolling upgrade through
+  both MQTT backends. Cortex-M declarations, allocation gates, and the envelope
+  parser fuzz target accompany it. See
+  [the fixture](tools/rolling-upgrade-fixture/README.md).
+
 ### Fixed — `aimdb-mcp` tools share one session per endpoint (#451)
 
 - **No tool opens its own connection any more**, so over serial a tool call no

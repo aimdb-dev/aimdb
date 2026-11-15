@@ -805,3 +805,107 @@ pub async fn echo_broker(listener: TcpListener) {
         tokio::spawn(serve_echo(socket));
     }
 }
+
+/// Exact-topic forwarding broker for the rolling-upgrade fixture. PUBLISH
+/// payloads cross unchanged between MQTT 3.1.1 and MQTT 5 clients. A JoinSet
+/// owns every connection, so dropping the broker also stops its sessions.
+pub async fn forwarding_broker(listener: TcpListener, seen: Arc<Mutex<Seen>>) {
+    let (bus, _) = tokio::sync::broadcast::channel(128);
+    let mut sessions = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            connection = listener.accept() => {
+                let (socket, _) = connection.unwrap();
+                sessions.spawn(forward_session(socket, seen.clone(), bus.clone()));
+            }
+            Some(result) = sessions.join_next() => { result.unwrap(); }
+        }
+    }
+}
+
+async fn forward_session(
+    socket: TcpStream,
+    seen: Arc<Mutex<Seen>>,
+    bus: tokio::sync::broadcast::Sender<(String, Vec<u8>)>,
+) {
+    let mut messages = bus.subscribe();
+    let (mut reader, mut writer) = socket.into_split();
+    let mut buf = Vec::new();
+    let mut v5 = false;
+    let mut subscriptions = Vec::<String>::new();
+    loop {
+        // Preserve a partial packet read while forwarding traffic: read_exact
+        // is not cancellation safe. Split halves also avoid interleaved writes.
+        let packet = read_packet(&mut reader, &mut buf);
+        tokio::pin!(packet);
+        let packet = loop {
+            tokio::select! {
+                packet = &mut packet => break packet,
+                message = messages.recv() => {
+                    let (topic, payload) = message.expect("rolling broker bus must not lag");
+                    if subscriptions.contains(&topic) && writer.write_all(&publish(&topic, &payload, v5)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        };
+        let Some((first, body)) = packet else { return };
+        match first >> 4 {
+            1 => {
+                v5 = is_v5(&body);
+                {
+                    let mut s = seen.lock().unwrap();
+                    s.connects += 1;
+                    if let Some((id, _)) = connect_identity(&body, v5) {
+                        s.client_ids.push(id);
+                    }
+                }
+                let ack: &[u8] = if v5 {
+                    &[0x20, 3, 0, 0, 0]
+                } else {
+                    &[0x20, 2, 0, 0]
+                };
+                if writer.write_all(ack).await.is_err() {
+                    return;
+                }
+            }
+            8 => {
+                let mut topics = Vec::new();
+                let ack = suback(&body, v5, &mut topics);
+                subscriptions.extend(topics.iter().map(|(t, _)| t.clone()));
+                {
+                    let mut s = seen.lock().unwrap();
+                    s.subscribes
+                        .push(topics.iter().map(|(t, _)| t.clone()).collect());
+                    s.subscribed_qos.extend(topics);
+                }
+                if writer.write_all(&ack).await.is_err() {
+                    return;
+                }
+            }
+            3 => {
+                let Some((topic, payload, id)) = parse_publish(first, &body, v5) else {
+                    return;
+                };
+                seen.lock()
+                    .unwrap()
+                    .published
+                    .push((topic.clone(), payload.clone()));
+                // Every test waits for subscriptions before producing.
+                let _ = bus.send((topic, payload));
+                if let Some(id) = id {
+                    if writer.write_all(&[0x40, 2, id[0], id[1]]).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            12 => {
+                if writer.write_all(&[0xd0, 0]).await.is_err() {
+                    return;
+                }
+            }
+            14 => return,
+            _ => {}
+        }
+    }
+}

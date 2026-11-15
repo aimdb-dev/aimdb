@@ -895,3 +895,5 @@ async fn inline_envelopes_upgrade_and_downgrade_on_both_backends() {
         "both backends must send their own downgraded value"
     );
 }
+
+mod rolling_upgrade;

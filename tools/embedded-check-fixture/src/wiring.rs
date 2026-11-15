@@ -162,3 +162,26 @@ pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
             .finish();
     });
 }
+
+/// Monomorphize the rolling fixture's exact firmware/hub declarations on MCU.
+pub fn configure_rolling_fixture(builder: &mut AimDbBuilder) {
+    use aimdb_data_contracts::link_codecs::{Cdr, Postcard};
+    use rolling_contracts_n as firmware;
+    use rolling_contracts_n1 as hub;
+    builder.configure::<firmware::Temperature>("rolling.firmware.out", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        firmware::publish(r, Postcard::<64>);
+    });
+    builder.configure::<firmware::Temperature>("rolling.firmware.in", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        firmware::receive(r, Postcard::<64>);
+    });
+    builder.configure::<hub::Temperature>("rolling.hub.in", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        hub::receive(r, Cdr::<64>);
+    });
+    builder.configure::<hub::Temperature>("rolling.hub.out", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
+        hub::send_to_firmware(r, Cdr::<64>);
+    });
+}

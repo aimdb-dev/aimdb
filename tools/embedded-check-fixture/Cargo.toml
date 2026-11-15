@@ -25,6 +25,8 @@ rand = { version = "0.10.1", default-features = false, optional = true }
 # The Embassy wiring (`wiring.rs`) is built for the MCU only: the executor's
 # Cortex-M code does not build on the host, where the lock test runs.
 [target.'cfg(target_os = "none")'.dependencies]
+rolling-contracts-n = { path = "../rolling-upgrade-fixture/contracts_n" }
+rolling-contracts-n1 = { path = "../rolling-upgrade-fixture/contracts_n1" }
 aimdb-core = { path = "../../aimdb-core", default-features = false, features = [
     "alloc",
 ] }

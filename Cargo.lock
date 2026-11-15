@@ -300,6 +300,9 @@ dependencies = [
  "heapless 0.8.0",
  "rand 0.8.6",
  "rcgen 0.13.2",
+ "rolling-contracts-changed",
+ "rolling-contracts-n",
+ "rolling-contracts-n1",
  "rumqttc",
  "rustls-native-certs",
  "serde",
@@ -2071,6 +2074,8 @@ dependencies = [
  "aimdb-data-contracts",
  "aimdb-embassy-adapter",
  "rand 0.10.1",
+ "rolling-contracts-n",
+ "rolling-contracts-n1",
  "serde",
  "serde_json",
 ]
@@ -4511,6 +4516,33 @@ dependencies = [
  "const-default",
  "libc",
  "svgbobdoc",
+]
+
+[[package]]
+name = "rolling-contracts-changed"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-data-contracts",
+ "serde",
+]
+
+[[package]]
+name = "rolling-contracts-n"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-data-contracts",
+ "serde",
+]
+
+[[package]]
+name = "rolling-contracts-n1"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-data-contracts",
+ "serde",
 ]
 
 [[package]]
