@@ -440,6 +440,49 @@ fn cdr_inline_payload_and_foreign_bare_publication_match_the_codec() {
     });
 }
 
+/// Plain `with_link_codec` links (no envelope) follow the one-frame-one-value
+/// rule too; CDR padding declared in the encapsulation header is not a remainder.
+#[cfg(feature = "linkable-cdr")]
+#[test]
+fn plain_codec_links_reject_leftovers_but_accept_declared_cdr_padding() {
+    futures::executor::block_on(async {
+        use aimdb_data_contracts::link_codecs::Cdr;
+        let (db, captured) = db(|r| {
+            r.link_from("test://cdr")
+                .with_link_codec(Cdr::<32>)
+                .finish();
+            r.link_from("test://postcard")
+                .with_link_codec(Postcard::<32>)
+                .finish();
+        })
+        .await;
+        let inbound = InboundDispatch::new(&db, "test", &ExactGrammar).unwrap();
+        let exact = Cdr::<32>.encode(&value()).unwrap();
+        inbound.dispatch("cdr", &exact);
+        // A DDS writer padding to a 4-byte boundary declares it in the options.
+        let mut padded = exact.clone();
+        padded[3] = 3;
+        padded.extend_from_slice(&[0; 3]);
+        inbound.dispatch("cdr", &padded);
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert_eq!(inbound.stats(0).unwrap().accepted, 2);
+
+        let mut junk = exact.clone();
+        junk.push(0);
+        inbound.dispatch("cdr", &junk);
+        let mut overclaimed = exact;
+        overclaimed[3] = 2;
+        overclaimed.push(0);
+        inbound.dispatch("cdr", &overclaimed);
+        let mut postcard = Postcard::<32>.encode(&value()).unwrap();
+        postcard.push(0);
+        inbound.dispatch("postcard", &postcard);
+        assert_eq!(inbound.stats(0).unwrap().decode_error, 2);
+        assert_eq!(inbound.stats(1).unwrap().decode_error, 1);
+        assert_eq!(captured.lock().unwrap().len(), 2);
+    });
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Large {
     message: String,

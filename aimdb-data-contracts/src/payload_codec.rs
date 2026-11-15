@@ -15,6 +15,22 @@ use aimdb_core::connector::SerializeError;
 use alloc::string::ToString;
 use alloc::{string::String, vec::Vec};
 
+/// The single inbound rule: one transport frame carries exactly one value.
+///
+/// `used` is the decoder's consumed count, `len` the payload length. Bytes the
+/// decoder did not consume (beyond what its format declares, such as CDR
+/// padding or JSON whitespace) are an error. Every inbound codec path, plain
+/// `with_link_codec` and contract admission, applies this one check.
+pub(crate) fn check_consumed(used: usize, len: usize) -> Result<(), String> {
+    if used == len {
+        Ok(())
+    } else {
+        Err(alloc::format!(
+            "decoder consumed {used} of {len} payload bytes"
+        ))
+    }
+}
+
 /// Generic decoding half of a link codec.
 pub trait PayloadDecoder {
     /// Decodes one value and reports how many input bytes it consumed.

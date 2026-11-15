@@ -323,8 +323,13 @@ pub trait Observable: SchemaType {
     note = "`publish`, `subscribe` and the `linked_*` verbs encode with the record's own codec: derive or implement `Linkable` for `{Self}`"
 )]
 pub trait Linkable: SchemaType + Sized {
-    /// Decode with consumption for default bare-link admission. A custom
-    /// decoder that accepts a prefix must override this to expose its remainder.
+    /// Decode one value and report how many bytes it consumed.
+    ///
+    /// Inbound links reject a frame with unconsumed bytes as `decode_error`.
+    /// The default reports the whole input, which is right when `from_bytes`
+    /// already rejects trailing data (as `serde_json::from_slice` does). A
+    /// `from_bytes` that tolerates trailing bytes should override this with
+    /// the real count, as `#[derive(RosMessage)]` does for CDR.
     fn from_bytes_with_consumed(data: &[u8]) -> Result<(Self, usize), alloc::string::String> {
         Self::from_bytes(data).map(|value| (value, data.len()))
     }

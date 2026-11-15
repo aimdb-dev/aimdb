@@ -64,3 +64,36 @@ fn consumed_length_handles_big_endian_and_empty_body() {
     );
     assert!(aimdb_cdr::from_bytes_with_consumed::<()>(&[0, 2, 0, 0]).is_err());
 }
+
+#[test]
+fn consumed_length_includes_declared_padding() {
+    // A u8 body is one byte; DDS writers pad it to four and declare three.
+    for (padding, big_endian) in [(0u8, false), (1, false), (2, true), (3, false)] {
+        let mut frame = [0, u8::from(!big_endian), 0, padding, 7, 0, 0, 0, 0xee];
+        let end = 5 + usize::from(padding);
+        assert_eq!(
+            aimdb_cdr::from_bytes_with_consumed::<u8>(&frame[..end]).unwrap(),
+            (7, end),
+            "padding {padding}"
+        );
+        // Bytes past the declared padding are not consumed.
+        assert_eq!(
+            aimdb_cdr::from_bytes_with_consumed::<u8>(&frame).unwrap(),
+            (7, end)
+        );
+        // Only the two low option bits declare padding.
+        frame[2] = 0xff;
+        frame[3] |= 0xfc;
+        assert_eq!(
+            aimdb_cdr::from_bytes_with_consumed::<u8>(&frame[..end]).unwrap(),
+            (7, end)
+        );
+    }
+    // Padding the frame does not contain is an early end of input.
+    assert_eq!(
+        aimdb_cdr::from_bytes_with_consumed::<u8>(&[0, 1, 0, 3, 7, 0, 0]),
+        Err(aimdb_cdr::Error::UnexpectedEof)
+    );
+    // from_bytes still ignores trailing bytes, declared or not.
+    assert_eq!(from_bytes::<u8>(&[0, 1, 0, 3, 7]).unwrap(), 7);
+}

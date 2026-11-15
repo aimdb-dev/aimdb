@@ -289,7 +289,7 @@ fn json_inline_and_bound_admission() {
 
 #[cfg(feature = "linkable-postcard")]
 #[test]
-fn bound_postcard_rejects_the_inline_mismatch_and_trailing_bytes() {
+fn postcard_rejects_the_inline_mismatch_and_trailing_bytes_on_every_carrier() {
     use aimdb_data_contracts::{link_codecs::Postcard, LinkCodec};
     let codec = Postcard::<128>;
     let payload = 21.5_f32.to_le_bytes();
@@ -301,12 +301,16 @@ fn bound_postcard_rejects_the_inline_mismatch_and_trailing_bytes() {
     let mut payload = payload.to_vec();
     payload.push(99);
     assert_reason(admit_frame(&payload, &bound), Rejection::DecodeError);
+    // Inline links follow the same rule: one frame, one value.
     let inline_link = LinkContract::<V2, _>::inline_from::<1>(PayloadCodec::Postcard, codec);
-    assert!(admit_frame(
-        &frame(identity(1), PayloadCodec::Postcard, &payload),
-        &inline_link
-    )
-    .is_ok());
+    assert_reason(
+        admit_frame(
+            &frame(identity(1), PayloadCodec::Postcard, &payload),
+            &inline_link,
+        ),
+        Rejection::DecodeError,
+    );
+    assert!(admit_frame(&inline, &inline_link).is_ok());
 }
 
 #[cfg(feature = "linkable-json")]

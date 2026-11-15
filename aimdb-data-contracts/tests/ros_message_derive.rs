@@ -311,3 +311,27 @@ fn derived_names_agree_with_the_runtime_rules() {
     check::<Time>();
     check::<SpindleCommand>();
 }
+
+/// The derive reports the real consumed count, so `linked_from` links reject
+/// leftovers while accepting the trailing padding a DDS writer declares.
+#[test]
+fn derived_consumed_count_includes_declared_padding_only() {
+    use aimdb_data_contracts::{link_codecs, LinkCodec};
+    // `bool` has a one-byte body; DDS pads it to four and declares three.
+    let padded = [0x00, 0x01, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00];
+    let flag = Flag { flag: true };
+    assert_eq!(
+        Flag::from_bytes_with_consumed(&padded).unwrap(),
+        (flag.clone(), 8)
+    );
+    assert_eq!(
+        LinkCodec::<Flag>::decode_with_consumed(&link_codecs::Default, &padded).unwrap(),
+        (flag.clone(), 8)
+    );
+    // Undeclared trailing bytes are left unconsumed for the link to reject.
+    let mut junk = golden(&[0x01]);
+    junk.push(0xee);
+    assert_eq!(Flag::from_bytes_with_consumed(&junk).unwrap(), (flag, 5));
+    // Padding the frame does not contain is an error.
+    assert!(Flag::from_bytes_with_consumed(&padded[..6]).is_err());
+}

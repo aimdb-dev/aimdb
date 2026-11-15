@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `from_bytes_with_consumed` returns the consumed byte count, including the
+  trailing padding declared in the encapsulation options. `from_bytes` still
+  ignores trailing bytes.
+
 ## [0.1.0] - 2026-11-03
 
 ### Added

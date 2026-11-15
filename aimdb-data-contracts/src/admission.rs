@@ -174,9 +174,9 @@ pub fn admit_frame<T: MigrationChain, D: PayloadDecoder>(
 /// Check identity, versions, historical shape, and codec before decoding once.
 ///
 /// Rejection precedence follows design 062 §7. Missing locked shapes skip the
-/// shape check. Codec `Unspecified` uses the link's decoder. Bound links must
-/// consume the entire payload; inline links retain the codec's remainder policy.
-/// Decoder or conversion failures count as `decode_error`. No route statistics
+/// shape check. Codec `Unspecified` uses the link's decoder. On bound and
+/// inline links alike the decoder must consume the entire payload (one frame,
+/// one value); a remainder is a `decode_error`. Decoder or conversion failures count as `decode_error`. No route statistics
 /// are mutated here: the router counts the result after core's fused ingestion.
 pub fn admit<T: MigrationChain, D: PayloadDecoder>(
     env: &Envelope<'_>,
@@ -248,15 +248,8 @@ pub fn admit<T: MigrationChain, D: PayloadDecoder>(
             "migration did not decode its payload",
         ));
     };
-    if used > env.payload().len() || (link.is_bound() && used != env.payload().len()) {
-        return Err(link.reject(
-            env,
-            Rejection::DecodeError,
-            format_args!(
-                "decoder consumed {used} of {} payload bytes",
-                env.payload().len()
-            ),
-        ));
+    if let Err(detail) = crate::payload_codec::check_consumed(used, env.payload().len()) {
+        return Err(link.reject(env, Rejection::DecodeError, detail));
     }
     if received.version() == T::VERSION {
         Ok(IngestValue::current(value))

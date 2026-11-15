@@ -17,7 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Link declarations add `with_envelope`, `with_contract`, `accepts_from`,
   `sends_as`, and `without_shape`. Built-in codecs use normal `with_link_codec`;
   generic custom codecs use `with_versioned_codec`. Shared admission validates
-  metadata before a single decode; bound links reject unconsumed bytes.
+  metadata before a single decode.
+- **Inbound links reject leftover bytes:** one frame carries exactly one value.
+  Postcard and CDR links (plain `with_link_codec`, inline, bound, and
+  `#[derive(RosMessage)]` types) used to ignore trailing data and now count it
+  as `decode_error`. CDR padding declared in the encapsulation header is
+  accepted. A sender that pads frames must stop, or declare the padding.
 - Payload `schema_version` fields are ordinary data. New payloads omit them;
   changing an already locked layout still requires a new version.
 

@@ -113,9 +113,16 @@ pub trait LinkCodec<T>: Clone + Send + Sync + 'static {
     /// Decode one connector payload into a record.
     fn decode(&self, bytes: &[u8]) -> Result<T, String>;
 
-    /// Decode with consumption for bare link admission. Custom codecs that
-    /// accept trailing data must override this; the default declares full use.
-    /// Ordinary `decode` retains its existing semantics outside admission.
+    /// Decode one value and report how many bytes it consumed.
+    ///
+    /// Every inbound link installed with `with_link_codec` uses this and
+    /// rejects a frame with unconsumed bytes as `decode_error`: one frame
+    /// carries exactly one value. Count bytes the format itself declares, such
+    /// as CDR's trailing padding, as consumed.
+    ///
+    /// The default reports the whole input as consumed. That is right for a
+    /// `decode` that already rejects trailing data; a codec whose `decode`
+    /// tolerates it should override this, or leftover bytes go undetected.
     fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
         self.decode(bytes).map(|value| (value, bytes.len()))
     }
@@ -353,12 +360,8 @@ where
                 let (value, used) = codec
                     .decode_with_consumed(bytes)
                     .map_err(aimdb_core::IngestError::from)?;
-                if used != bytes.len() {
-                    return Err(aimdb_core::IngestError::new(
-                        aimdb_core::Rejection::DecodeError,
-                        alloc::format!("decoder consumed {used} of {} payload bytes", bytes.len()),
-                    ));
-                }
+                crate::payload_codec::check_consumed(used, bytes.len())
+                    .map_err(aimdb_core::IngestError::from)?;
                 Ok(value)
             })
             .with_wire_codec_info(info);
