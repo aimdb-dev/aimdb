@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saturating at `u32::MAX`. They add no `portable-atomic` feature. Raw deserializers
   now return `IngestError` instead of `String` (`.into()` preserves ordinary
   decode errors).
+- An admission rejection carries what was received and accepted as data
+  (`AdmissionContext`, `AdmissionDetail`) and formats its diagnostic only when
+  displayed (`IngestError::detail`, `Display`), so rejecting a frame for its
+  header, contract, version, shape or codec does not allocate.
 - Link builders can finalize envelope strategies during registration. Transports
   retain their existing byte-oriented SPI, and bare payloads remain the default.
 
