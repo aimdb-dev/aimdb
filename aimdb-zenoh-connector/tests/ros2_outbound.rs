@@ -189,7 +189,9 @@ async fn a_record_appears_as_a_ros_publisher() {
 /// returns the build error.
 async fn refused(
     connector: Ros2Connector,
-    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading>) + Send + 'static,
+    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading, aimdb_core::Declared>)
+        + Send
+        + 'static,
 ) -> String {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))

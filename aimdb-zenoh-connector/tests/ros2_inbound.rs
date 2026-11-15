@@ -155,7 +155,7 @@ async fn a_ros_publisher_reaches_every_record_linked_to_its_topic() {
 /// Builds a database with one inbound `ros2://` link set up by `link`, and
 /// returns the build error, if any.
 async fn build_with(
-    link: impl FnOnce(&mut RecordRegistrar<'_, Command>) + Send + 'static,
+    link: impl FnOnce(&mut RecordRegistrar<'_, Command, aimdb_core::Declared>) + Send + 'static,
     other: bool,
 ) -> Result<(), String> {
     let key_command_1 = aimdb_data_contracts::Key::<Command>::new("command");
