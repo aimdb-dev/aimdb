@@ -1,7 +1,7 @@
 //! Countable ingress outcomes and shared, per-link statistics.
 
 use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
-use portable_atomic::{AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::Ordering::Relaxed;
 
 /// Stable rejection categories, in admission precedence order (design 062 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,24 +162,65 @@ pub struct InboundRouteMetrics {
     pub stats: InboundRouteStats,
 }
 
+/// One always-on counter, on native atomics only: recording never takes a
+/// lock, so dispatch from an executor of any priority cannot block on it.
+///
+/// Where the target has native 64-bit atomics the counter is 64 bits wide.
+/// Elsewhere (e.g. thumbv7em) it is 32 bits wide and stops at `u32::MAX`
+/// rather than wrapping: a lock-based 64-bit fallback could hang a
+/// higher-priority executor that preempts an update.
+#[cfg(target_has_atomic = "64")]
+#[derive(Default)]
+struct Counter(core::sync::atomic::AtomicU64);
+
+#[cfg(target_has_atomic = "64")]
+impl Counter {
+    fn increment(&self) {
+        self.0.fetch_add(1, Relaxed);
+    }
+    fn get(&self) -> u64 {
+        self.0.load(Relaxed)
+    }
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+type Counter = NarrowCounter;
+
+/// The 32-bit, saturating [`Counter`] of targets without 64-bit atomics.
+#[cfg(any(test, not(target_has_atomic = "64")))]
+#[derive(Default)]
+struct NarrowCounter(core::sync::atomic::AtomicU32);
+
+#[cfg(any(test, not(target_has_atomic = "64")))]
+impl NarrowCounter {
+    fn increment(&self) {
+        // `Err` is the counter already at its maximum.
+        let _ = self
+            .0
+            .fetch_update(Relaxed, Relaxed, |count| count.checked_add(1));
+    }
+    fn get(&self) -> u64 {
+        u64::from(self.0.load(Relaxed))
+    }
+}
+
 /// Lifetime follows the registered link, not a connection or dispatcher.
 ///
-/// Lock-free: one 64-bit atomic per counter, recorded with relaxed ordering.
-/// Recording never allocates, locks, or calls user code, so dispatch from
-/// executors of any priority cannot block on it. On targets without native
-/// 64-bit atomics (e.g. thumbv7em), `portable-atomic` falls back to a
-/// `critical-section` the embedded binary supplies.
+/// Lock-free: one native atomic [`Counter`] per value, recorded with relaxed
+/// ordering. Recording never allocates, locks, or calls user code, so
+/// dispatch from executors of any priority cannot block on it. On targets
+/// without native 64-bit atomics each counter saturates at `u32::MAX`.
 ///
 /// A snapshot reads each counter independently: during concurrent dispatch it
 /// may already count a message in `accepted` but not yet in its upgrade
 /// counter. Once dispatch is idle, a snapshot is exact.
 pub(crate) struct InboundStats {
-    accepted: AtomicU64,
+    accepted: Counter,
     /// Indexed by [`rejection_index`].
-    rejected: [AtomicU64; REJECTIONS],
-    untracked_upgrades: AtomicU64,
+    rejected: [Counter; REJECTIONS],
+    untracked_upgrades: Counter,
     /// Sorted by source version, fixed at registration.
-    upgraded: Box<[(u32, AtomicU64)]>,
+    upgraded: Box<[(u32, Counter)]>,
 }
 
 const REJECTIONS: usize = 8;
@@ -203,20 +244,20 @@ impl InboundStats {
         sorted.sort_unstable();
         sorted.dedup();
         Self {
-            accepted: AtomicU64::new(0),
+            accepted: Counter::default(),
             rejected: Default::default(),
-            untracked_upgrades: AtomicU64::new(0),
+            untracked_upgrades: Counter::default(),
             upgraded: sorted
                 .into_iter()
-                .map(|from| (from, AtomicU64::new(0)))
+                .map(|from| (from, Counter::default()))
                 .collect(),
         }
     }
     pub(crate) fn snapshot(&self) -> InboundRouteStats {
-        let rejected = |reason| self.rejected[rejection_index(reason)].load(Relaxed);
+        let rejected = |reason| self.rejected[rejection_index(reason)].get();
         // No `..`: a new counter must be read here explicitly.
         InboundRouteStats {
-            accepted: self.accepted.load(Relaxed),
+            accepted: self.accepted.get(),
             malformed: rejected(Rejection::Malformed),
             unsupported_format: rejected(Rejection::UnsupportedFormat),
             contract_mismatch: rejected(Rejection::ContractMismatch),
@@ -230,29 +271,40 @@ impl InboundStats {
                 .iter()
                 .map(|(from, count)| UpgradeCount {
                     from: *from,
-                    count: count.load(Relaxed),
+                    count: count.get(),
                 })
                 .collect(),
-            untracked_upgrades: self.untracked_upgrades.load(Relaxed),
+            untracked_upgrades: self.untracked_upgrades.get(),
         }
     }
     pub(crate) fn accept(&self, outcome: IngestOutcome) {
-        self.accepted.fetch_add(1, Relaxed);
+        self.accepted.increment();
         if let Some(from) = outcome.upgraded_from() {
             match self.upgraded.binary_search_by_key(&from, |(v, _)| *v) {
-                Ok(i) => self.upgraded[i].1.fetch_add(1, Relaxed),
-                Err(_) => self.untracked_upgrades.fetch_add(1, Relaxed),
+                Ok(i) => self.upgraded[i].1.increment(),
+                Err(_) => self.untracked_upgrades.increment(),
             };
         }
     }
     pub(crate) fn reject(&self, reason: Rejection) {
-        self.rejected[rejection_index(reason)].fetch_add(1, Relaxed);
+        self.rejected[rejection_index(reason)].increment();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_narrow_counter_stops_at_its_maximum() {
+        let counter = NarrowCounter::default();
+        counter.increment();
+        assert_eq!(counter.get(), 1);
+        counter.0.store(u32::MAX - 1, Relaxed);
+        counter.increment();
+        counter.increment();
+        assert_eq!(counter.get(), u64::from(u32::MAX));
+    }
 
     #[test]
     fn snapshot_copies_every_counter() {
