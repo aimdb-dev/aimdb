@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 struct WrongEndV1 {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for WrongEndV1 {}
 impl SchemaType for WrongEndV1 {
     const NAME: &'static str = "wrong_end";
     const VERSION: u32 = 1;
@@ -17,6 +18,7 @@ impl SchemaType for WrongEndV1 {
 struct WrongEndCurrent {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for WrongEndCurrent {}
 impl SchemaType for WrongEndCurrent {
     const NAME: &'static str = "wrong_end";
     const VERSION: u32 = 5;
@@ -39,7 +41,6 @@ impl MigrationStep for WrongEndStep {
 
 migration_chain! {
     type Current = WrongEndCurrent;
-    version_field = "schema_version";
     steps {
         WrongEndStep: WrongEndV1 => WrongEndCurrent,
     }

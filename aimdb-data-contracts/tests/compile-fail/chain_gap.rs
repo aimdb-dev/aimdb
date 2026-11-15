@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 struct GapV1 {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for GapV1 {}
 impl SchemaType for GapV1 {
     const NAME: &'static str = "gap";
     const VERSION: u32 = 1;
@@ -17,6 +18,7 @@ impl SchemaType for GapV1 {
 struct GapCurrent {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for GapCurrent {}
 impl SchemaType for GapCurrent {
     const NAME: &'static str = "gap";
     const VERSION: u32 = 3;
@@ -39,7 +41,6 @@ impl MigrationStep for GapStep {
 
 migration_chain! {
     type Current = GapCurrent;
-    version_field = "schema_version";
     steps {
         GapStep: GapV1 => GapCurrent,
     }

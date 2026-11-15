@@ -125,6 +125,7 @@ aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = fa
     "linkable",
     "linkable-postcard",
     "migratable",
+    "linkable-json",
 ], optional = true }
 
 # Statistical benchmarking for B1/B2 — `harness::bench_spsc` (design 039

@@ -1,10 +1,10 @@
 error[E0080]: evaluation panicked: first migration step must start at version 1
-  --> tests/compile-fail/chain_wrong_start.rs:40:1
+  --> tests/compile-fail/chain_wrong_start.rs:42:1
    |
-40 | / migration_chain! {
-41 | |     type Current = WrongStartCurrent;
-42 | |     version_field = "schema_version";
-43 | |     steps {
-...  |
-46 | | }
+42 | / migration_chain! {
+43 | |     type Current = WrongStartCurrent;
+44 | |     steps {
+45 | |         WrongStartStep: WrongStartV2 => WrongStartCurrent,
+46 | |     }
+47 | | }
    | |_^ evaluation of `_` failed here

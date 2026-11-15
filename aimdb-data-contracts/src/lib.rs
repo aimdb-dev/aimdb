@@ -66,7 +66,7 @@ pub mod __private {
     pub use aimdb_cdr;
     #[cfg(feature = "ros2")]
     pub use aimdb_core::connector::SerializeError;
-    #[cfg(any(feature = "linkable-json", feature = "migratable"))]
+    #[cfg(feature = "linkable-json")]
     pub use serde_json;
 }
 
@@ -145,7 +145,7 @@ mod migratable;
 pub use simulatable::{RandomWalkParams, SimProfile, Simulatable, SimulatableRegistrarExt};
 
 #[cfg(feature = "migratable")]
-pub use migratable::{MigrationChain, MigrationError, MigrationStep};
+pub use migratable::{MigrationChain, MigrationError, MigrationStep, Reaches, VersionOf};
 
 #[cfg(feature = "migratable")]
 pub use aimdb_derive::migration_chain;

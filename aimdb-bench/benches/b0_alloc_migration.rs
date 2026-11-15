@@ -1,11 +1,5 @@
-//! B0 — Allocation counting for `migration_chain!`'s tree-free version
-//! probe.
-//!
-//! Measures per-call allocation cost of `migrate_from_bytes` upgrading a
-//! v1 payload to the current schema version. The two-pass probe scan
-//! (peak allocation O(concrete struct)) replaces a full `serde_json::Value`
-//! tree parse (peak allocation O(payload tree)) — a regression here means
-//! the tree-free path stopped being tree-free.
+//! B0 — Allocation counting for explicit-version, single-decode migration.
+//! A v1 JSON payload upgrades to the current schema without a version probe.
 //!
 //! **Measurement model:** warm up `WARMUP_ITERS` calls, `reset()` the
 //! counters, run `BATCH_SIZE` more calls, then `snapshot()` and divide by
@@ -20,7 +14,8 @@ use aimdb_bench::{
     reports::{write_reports, AllocReport},
 };
 use aimdb_data_contracts::{
-    migration_chain, MigrationChain, MigrationError, MigrationStep, SchemaType,
+    link_codecs::Json, migration_chain, MigrationChain, MigrationError, MigrationStep,
+    PayloadDecoder, SchemaType,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +37,7 @@ struct SensorV1 {
 fn sensor_v1_version() -> u32 {
     1
 }
+impl aimdb_data_contracts::ContractShape for SensorV1 {}
 impl SchemaType for SensorV1 {
     const NAME: &'static str = "bench_sensor";
     const VERSION: u32 = 1;
@@ -57,6 +53,7 @@ struct SensorV2 {
 fn sensor_v2_version() -> u32 {
     2
 }
+impl aimdb_data_contracts::ContractShape for SensorV2 {}
 impl SchemaType for SensorV2 {
     const NAME: &'static str = "bench_sensor";
     const VERSION: u32 = 2;
@@ -87,14 +84,26 @@ impl MigrationStep for SensorV1ToV2 {
 
 migration_chain! {
     type Current = SensorV2;
-    version_field = "schema_version";
     steps {
         SensorV1ToV2: SensorV1 => SensorV2,
     }
 }
 
+struct CountingDecoder {
+    calls: core::cell::Cell<usize>,
+}
+impl PayloadDecoder for CountingDecoder {
+    fn decode_payload<T: serde::de::DeserializeOwned>(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(T, usize), String> {
+        self.calls.set(self.calls.get() + 1);
+        Json.decode_payload(bytes)
+    }
+}
+
 fn main() {
-    println!("=== B0 Allocation Benchmark (migrate_from_bytes, tree-free version probe) ===");
+    println!("=== B0 Allocation Benchmark (migrate_from, single decode) ===");
     println!("  Warmup iters : {WARMUP_ITERS}");
     println!("  Batch size   : {BATCH_SIZE}");
     println!();
@@ -106,22 +115,25 @@ fn main() {
     })
     .expect("failed to serialize v1 fixture payload");
 
+    let decoder = CountingDecoder {
+        calls: core::cell::Cell::new(0),
+    };
     for _ in 0..WARMUP_ITERS {
-        let _ = SensorV2::migrate_from_bytes(&payload).expect("migration should succeed");
+        let _ = SensorV2::migrate_from(1, &payload, &decoder).expect("migration should succeed");
     }
 
+    decoder.calls.set(0);
     aimdb_bench::alloc::reset();
     for _ in 0..BATCH_SIZE {
-        let _ = SensorV2::migrate_from_bytes(&payload).expect("migration should succeed");
+        let _ = SensorV2::migrate_from(1, &payload, &decoder).expect("migration should succeed");
     }
     let (allocs, bytes) = aimdb_bench::alloc::snapshot();
-    let report = AllocReport::new(
-        "MigrateFromBytes",
-        "SensorV1ToV2",
+    assert_eq!(
+        decoder.calls.get(),
         BATCH_SIZE,
-        allocs,
-        bytes,
+        "exactly one decode per value"
     );
+    let report = AllocReport::new("MigrateFrom", "SensorV1ToV2", BATCH_SIZE, allocs, bytes);
     report.print();
 
     write_reports("b0_alloc_migration", &[report]);

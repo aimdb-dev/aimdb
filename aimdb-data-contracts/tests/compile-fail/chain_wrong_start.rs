@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 struct WrongStartV2 {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for WrongStartV2 {}
 impl SchemaType for WrongStartV2 {
     const NAME: &'static str = "wrong_start";
     const VERSION: u32 = 2;
@@ -17,6 +18,7 @@ impl SchemaType for WrongStartV2 {
 struct WrongStartCurrent {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for WrongStartCurrent {}
 impl SchemaType for WrongStartCurrent {
     const NAME: &'static str = "wrong_start";
     const VERSION: u32 = 3;
@@ -39,7 +41,6 @@ impl MigrationStep for WrongStartStep {
 
 migration_chain! {
     type Current = WrongStartCurrent;
-    version_field = "schema_version";
     steps {
         WrongStartStep: WrongStartV2 => WrongStartCurrent,
     }

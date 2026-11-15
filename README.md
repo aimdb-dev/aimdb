@@ -104,7 +104,6 @@ impl MigrationStep for TemperatureV1ToV2 {
 
 migration_chain! {
     type Current = TemperatureV2;
-    version_field = "schema_version";
     steps { TemperatureV1ToV2: TemperatureV1 => TemperatureV2 }
 }
 ```

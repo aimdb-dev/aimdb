@@ -482,6 +482,27 @@ path. A custom codec implements the generic traits explicitly. Implementing
 `LinkCodec<T>` for one type, or using the `Default` marker that delegates to
 that type's `Linkable`, does not provide generic historical decoding.
 
+### Explicit-version migration
+
+Enable `migratable` plus the selected codec feature. `migration_chain!` takes
+`type Current = T; steps { Step: Old => New, ... }`; it no longer takes
+`version_field`. Call `T::migrate_from(version, payload, &codec)` with the
+version from the envelope or static binding. It decodes the selected type
+once and applies `up` steps. `value.migrate_into(version, &codec, out)`
+downgrades and encodes into caller storage, returning its length.
+`MigrationError::BufferTooSmall` requests a larger output buffer.
+
+Each version must implement `ContractShape`, normally through `catalog!`.
+`T::shape_of(version)` returns that version's locked shape. The chain
+also generates `Reaches<V>` and `VersionOf<T>` proofs for link declarations.
+An empty `steps {}` defines a current-only chain whose minimum version is
+`T::VERSION`; it does not require `Clone`. Historical sends clone the
+current value before running by-value downgrade steps. A payload field
+named `schema_version` is ordinary data and is never inspected for dispatch.
+
+`migratable` does not enable JSON. Custom codecs implement `PayloadDecoder`
+and `PayloadEncoder`; the built-in codec features provide them too.
+
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.

@@ -15,6 +15,38 @@ use aimdb_data_contracts::{
 };
 use serde::{Deserialize, Serialize};
 
+struct Json;
+impl aimdb_data_contracts::PayloadDecoder for Json {
+    fn decode_payload<T: serde::de::DeserializeOwned>(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(T, usize), String> {
+        serde_json::from_slice(bytes)
+            .map(|value| (value, bytes.len()))
+            .map_err(|e| e.to_string())
+    }
+}
+impl aimdb_data_contracts::PayloadEncoder for Json {
+    fn encode_payload<T: serde::Serialize>(
+        &self,
+        value: &T,
+        out: &mut [u8],
+    ) -> Result<usize, aimdb_core::connector::SerializeError> {
+        let bytes = serde_json::to_vec(value)
+            .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)?;
+        out.get_mut(..bytes.len())
+            .ok_or(aimdb_core::connector::SerializeError::BufferTooSmall)?
+            .copy_from_slice(&bytes);
+        Ok(bytes.len())
+    }
+}
+fn json_for<T: MigrationChain>(value: &T, version: u32) -> Result<Vec<u8>, MigrationError> {
+    let mut out = vec![0; 2048];
+    let n = value.migrate_into(version, &Json, &mut out)?;
+    out.truncate(n);
+    Ok(out)
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // 1-step chain: Widget v1 -> v2
 // ═══════════════════════════════════════════════════════════════════
@@ -28,6 +60,7 @@ struct WidgetV1 {
 fn widget_v1() -> u32 {
     1
 }
+impl aimdb_data_contracts::ContractShape for WidgetV1 {}
 impl SchemaType for WidgetV1 {
     const NAME: &'static str = "widget";
     const VERSION: u32 = 1;
@@ -42,6 +75,7 @@ struct WidgetV2 {
 fn widget_v2() -> u32 {
     2
 }
+impl aimdb_data_contracts::ContractShape for WidgetV2 {}
 impl SchemaType for WidgetV2 {
     const NAME: &'static str = "widget";
     const VERSION: u32 = 2;
@@ -70,7 +104,6 @@ impl MigrationStep for WidgetV1ToV2 {
 
 migration_chain! {
     type Current = WidgetV2;
-    version_field = "schema_version";
     steps {
         WidgetV1ToV2: WidgetV1 => WidgetV2,
     }
@@ -83,7 +116,7 @@ fn widget_upgrades_from_v1() {
         count: 7,
     };
     let bytes = serde_json::to_vec(&v1).unwrap();
-    let current = WidgetV2::migrate_from_bytes(&bytes).unwrap();
+    let current = WidgetV2::migrate_from(1, &bytes, &Json).unwrap();
     assert_eq!(
         current,
         WidgetV2 {
@@ -100,7 +133,7 @@ fn widget_parses_current_version_directly() {
         count: 42,
     };
     let bytes = serde_json::to_vec(&v2).unwrap();
-    let current = WidgetV2::migrate_from_bytes(&bytes).unwrap();
+    let current = WidgetV2::migrate_from(2, &bytes, &Json).unwrap();
     assert_eq!(current, v2);
 }
 
@@ -110,7 +143,7 @@ fn widget_downgrades_to_v1() {
         schema_version: 2,
         count: 9,
     };
-    let bytes = v2.migrate_to_version(1).unwrap();
+    let bytes = json_for(&v2, 1).unwrap();
     let v1: WidgetV1 = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         v1,
@@ -127,9 +160,19 @@ fn widget_serializes_current_version_directly() {
         schema_version: 2,
         count: 5,
     };
-    let bytes = v2.migrate_to_version(2).unwrap();
+    let bytes = json_for(&v2, 2).unwrap();
     let round_tripped: WidgetV2 = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(round_tripped, v2);
+}
+
+#[test]
+fn explicit_version_is_independent_of_payload_data() {
+    let value = WidgetV2 {
+        schema_version: 999,
+        count: 42,
+    };
+    let bytes = serde_json::to_vec(&value).unwrap();
+    assert_eq!(WidgetV2::migrate_from(2, &bytes, &Json).unwrap(), value);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -145,6 +188,7 @@ struct GadgetV1 {
 fn gadget_v1() -> u32 {
     1
 }
+impl aimdb_data_contracts::ContractShape for GadgetV1 {}
 impl SchemaType for GadgetV1 {
     const NAME: &'static str = "gadget";
     const VERSION: u32 = 1;
@@ -159,6 +203,7 @@ struct GadgetV2 {
 fn gadget_v2() -> u32 {
     2
 }
+impl aimdb_data_contracts::ContractShape for GadgetV2 {}
 impl SchemaType for GadgetV2 {
     const NAME: &'static str = "gadget";
     const VERSION: u32 = 2;
@@ -173,6 +218,7 @@ struct GadgetV3 {
 fn gadget_v3() -> u32 {
     3
 }
+impl aimdb_data_contracts::ContractShape for GadgetV3 {}
 impl SchemaType for GadgetV3 {
     const NAME: &'static str = "gadget";
     const VERSION: u32 = 3;
@@ -222,7 +268,6 @@ impl MigrationStep for GadgetV2ToV3 {
 
 migration_chain! {
     type Current = GadgetV3;
-    version_field = "schema_version";
     steps {
         GadgetV1ToV2: GadgetV1 => GadgetV2,
         GadgetV2ToV3: GadgetV2 => GadgetV3,
@@ -236,7 +281,7 @@ fn gadget_upgrades_from_v1() {
         watts: 2,
     };
     let bytes = serde_json::to_vec(&v1).unwrap();
-    let current = GadgetV3::migrate_from_bytes(&bytes).unwrap();
+    let current = GadgetV3::migrate_from(1, &bytes, &Json).unwrap();
     assert_eq!(
         current,
         GadgetV3 {
@@ -253,7 +298,7 @@ fn gadget_upgrades_from_v2() {
         milliwatts: 1500,
     };
     let bytes = serde_json::to_vec(&v2).unwrap();
-    let current = GadgetV3::migrate_from_bytes(&bytes).unwrap();
+    let current = GadgetV3::migrate_from(2, &bytes, &Json).unwrap();
     assert_eq!(
         current,
         GadgetV3 {
@@ -269,7 +314,7 @@ fn gadget_downgrades_to_v1() {
         schema_version: 3,
         milliwatts: 4000,
     };
-    let bytes = v3.migrate_to_version(1).unwrap();
+    let bytes = json_for(&v3, 1).unwrap();
     let v1: GadgetV1 = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         v1,
@@ -286,7 +331,7 @@ fn gadget_downgrades_to_v2() {
         schema_version: 3,
         milliwatts: 4000,
     };
-    let bytes = v3.migrate_to_version(2).unwrap();
+    let bytes = json_for(&v3, 2).unwrap();
     let v2: GadgetV2 = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         v2,
@@ -310,6 +355,7 @@ struct GizmoV1 {
 fn gizmo_v1() -> u32 {
     1
 }
+impl aimdb_data_contracts::ContractShape for GizmoV1 {}
 impl SchemaType for GizmoV1 {
     const NAME: &'static str = "gizmo";
     const VERSION: u32 = 1;
@@ -325,6 +371,7 @@ struct GizmoV2 {
 fn gizmo_v2() -> u32 {
     2
 }
+impl aimdb_data_contracts::ContractShape for GizmoV2 {}
 impl SchemaType for GizmoV2 {
     const NAME: &'static str = "gizmo";
     const VERSION: u32 = 2;
@@ -341,6 +388,7 @@ struct GizmoV3 {
 fn gizmo_v3() -> u32 {
     3
 }
+impl aimdb_data_contracts::ContractShape for GizmoV3 {}
 impl SchemaType for GizmoV3 {
     const NAME: &'static str = "gizmo";
     const VERSION: u32 = 3;
@@ -357,6 +405,7 @@ struct GizmoV4 {
 fn gizmo_v4() -> u32 {
     4
 }
+impl aimdb_data_contracts::ContractShape for GizmoV4 {}
 impl SchemaType for GizmoV4 {
     const NAME: &'static str = "gizmo";
     const VERSION: u32 = 4;
@@ -435,7 +484,6 @@ impl MigrationStep for GizmoV3ToV4 {
 
 migration_chain! {
     type Current = GizmoV4;
-    version_field = "schema_version";
     steps {
         GizmoV1ToV2: GizmoV1 => GizmoV2,
         GizmoV2ToV3: GizmoV2 => GizmoV3,
@@ -449,7 +497,7 @@ fn gizmo_upgrades_from_every_historical_version() {
         schema_version: 1,
         label: "a".into(),
     };
-    let from_v1 = GizmoV4::migrate_from_bytes(&serde_json::to_vec(&v1).unwrap()).unwrap();
+    let from_v1 = GizmoV4::migrate_from(1, &serde_json::to_vec(&v1).unwrap(), &Json).unwrap();
     assert_eq!(
         from_v1,
         GizmoV4 {
@@ -465,7 +513,7 @@ fn gizmo_upgrades_from_every_historical_version() {
         label: "b".into(),
         revision: 5,
     };
-    let from_v2 = GizmoV4::migrate_from_bytes(&serde_json::to_vec(&v2).unwrap()).unwrap();
+    let from_v2 = GizmoV4::migrate_from(2, &serde_json::to_vec(&v2).unwrap(), &Json).unwrap();
     assert_eq!(
         from_v2,
         GizmoV4 {
@@ -482,7 +530,7 @@ fn gizmo_upgrades_from_every_historical_version() {
         revision: 9,
         active: false,
     };
-    let from_v3 = GizmoV4::migrate_from_bytes(&serde_json::to_vec(&v3).unwrap()).unwrap();
+    let from_v3 = GizmoV4::migrate_from(3, &serde_json::to_vec(&v3).unwrap(), &Json).unwrap();
     assert_eq!(
         from_v3,
         GizmoV4 {
@@ -499,7 +547,7 @@ fn gizmo_upgrades_from_every_historical_version() {
         revision: 12,
         active: true,
     };
-    let from_v4 = GizmoV4::migrate_from_bytes(&serde_json::to_vec(&v4).unwrap()).unwrap();
+    let from_v4 = GizmoV4::migrate_from(4, &serde_json::to_vec(&v4).unwrap(), &Json).unwrap();
     assert_eq!(from_v4, v4);
 }
 
@@ -512,7 +560,7 @@ fn gizmo_downgrades_to_every_target_version() {
         active: true,
     };
 
-    let to_v1: GizmoV1 = serde_json::from_slice(&current.migrate_to_version(1).unwrap()).unwrap();
+    let to_v1: GizmoV1 = serde_json::from_slice(&json_for(&current, 1).unwrap()).unwrap();
     assert_eq!(
         to_v1,
         GizmoV1 {
@@ -521,7 +569,7 @@ fn gizmo_downgrades_to_every_target_version() {
         }
     );
 
-    let to_v2: GizmoV2 = serde_json::from_slice(&current.migrate_to_version(2).unwrap()).unwrap();
+    let to_v2: GizmoV2 = serde_json::from_slice(&json_for(&current, 2).unwrap()).unwrap();
     assert_eq!(
         to_v2,
         GizmoV2 {
@@ -531,7 +579,7 @@ fn gizmo_downgrades_to_every_target_version() {
         }
     );
 
-    let to_v3: GizmoV3 = serde_json::from_slice(&current.migrate_to_version(3).unwrap()).unwrap();
+    let to_v3: GizmoV3 = serde_json::from_slice(&json_for(&current, 3).unwrap()).unwrap();
     assert_eq!(
         to_v3,
         GizmoV3 {
@@ -542,7 +590,7 @@ fn gizmo_downgrades_to_every_target_version() {
         }
     );
 
-    let to_v4: GizmoV4 = serde_json::from_slice(&current.migrate_to_version(4).unwrap()).unwrap();
+    let to_v4: GizmoV4 = serde_json::from_slice(&json_for(&current, 4).unwrap()).unwrap();
     assert_eq!(to_v4, current);
 }
 
@@ -552,20 +600,17 @@ fn gizmo_downgrades_to_every_target_version() {
 
 #[test]
 fn error_on_malformed_payload() {
-    let err = GizmoV4::migrate_from_bytes(b"not json").unwrap_err();
-    assert_eq!(err, MigrationError::DeserializationFailed("invalid JSON"));
-}
-
-#[test]
-fn error_on_missing_version_field() {
-    let err = GizmoV4::migrate_from_bytes(br#"{"label": "no version"}"#).unwrap_err();
-    assert_eq!(err, MigrationError::MissingVersion);
+    let err = GizmoV4::migrate_from(4, b"not json", &Json).unwrap_err();
+    assert_eq!(
+        err,
+        MigrationError::DeserializationFailed("failed to parse as GizmoV4")
+    );
 }
 
 #[test]
 fn error_on_version_too_new() {
     let payload = br#"{"schema_version": 99, "label": "future"}"#;
-    let err = GizmoV4::migrate_from_bytes(payload).unwrap_err();
+    let err = GizmoV4::migrate_from(99, payload, &Json).unwrap_err();
     assert_eq!(
         err,
         MigrationError::VersionTooNew {
@@ -578,9 +623,9 @@ fn error_on_version_too_new() {
 #[test]
 fn error_on_source_version_too_old() {
     // A payload version below MIN_VERSION (1) is too old, not too new — it
-    // must report VersionTooOld, mirroring the migrate_to_version path.
+    // must report VersionTooOld, mirroring the migrate_into path.
     let payload = br#"{"schema_version": 0, "label": "ancient"}"#;
-    let err = GizmoV4::migrate_from_bytes(payload).unwrap_err();
+    let err = GizmoV4::migrate_from(0, payload, &Json).unwrap_err();
     assert_eq!(
         err,
         MigrationError::VersionTooOld {
@@ -598,7 +643,7 @@ fn error_on_target_version_too_old() {
         revision: 3,
         active: true,
     };
-    let err = current.migrate_to_version(0).unwrap_err();
+    let err = json_for(&current, 0).unwrap_err();
     assert_eq!(
         err,
         MigrationError::VersionTooOld {
@@ -616,7 +661,7 @@ fn error_on_target_version_too_new() {
         revision: 3,
         active: true,
     };
-    let err = current.migrate_to_version(5).unwrap_err();
+    let err = json_for(&current, 5).unwrap_err();
     assert_eq!(
         err,
         MigrationError::VersionTooNew {
@@ -639,6 +684,7 @@ macro_rules! sprocket_version {
             schema_version: u32,
             teeth: u32,
         }
+        impl aimdb_data_contracts::ContractShape for $name {}
         impl SchemaType for $name {
             const NAME: &'static str = "sprocket";
             const VERSION: u32 = $version;
@@ -686,7 +732,6 @@ sprocket_step!(SprocketV4ToV5, SprocketV4, SprocketV5, 5);
 
 migration_chain! {
     type Current = SprocketV5;
-    version_field = "schema_version";
     steps {
         SprocketV1ToV2: SprocketV1 => SprocketV2,
         SprocketV2ToV3: SprocketV2 => SprocketV3,
@@ -703,7 +748,7 @@ fn sprocket_upgrades_from_every_historical_version() {
             "teeth": teeth,
         }))
         .unwrap();
-        let current = SprocketV5::migrate_from_bytes(&bytes).unwrap();
+        let current = SprocketV5::migrate_from(version, &bytes, &Json).unwrap();
         assert_eq!(
             current,
             SprocketV5 {
@@ -721,7 +766,7 @@ fn sprocket_downgrades_to_every_target_version() {
         teeth: 20,
     };
     for target in 1u32..=5 {
-        let bytes = current.migrate_to_version(target).unwrap();
+        let bytes = json_for(&current, target).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["schema_version"], target);
         assert_eq!(value["teeth"], 20);
@@ -740,6 +785,7 @@ macro_rules! doohickey_version {
             schema_version: u32,
             size: u32,
         }
+        impl aimdb_data_contracts::ContractShape for $name {}
         impl SchemaType for $name {
             const NAME: &'static str = "doohickey";
             const VERSION: u32 = $version;
@@ -789,7 +835,6 @@ doohickey_step!(DoohickeyV5ToV6, DoohickeyV5, DoohickeyV6, 6);
 
 migration_chain! {
     type Current = DoohickeyV6;
-    version_field = "schema_version";
     steps {
         DoohickeyV1ToV2: DoohickeyV1 => DoohickeyV2,
         DoohickeyV2ToV3: DoohickeyV2 => DoohickeyV3,
@@ -807,7 +852,7 @@ fn doohickey_upgrades_from_every_historical_version() {
             "size": size,
         }))
         .unwrap();
-        let current = DoohickeyV6::migrate_from_bytes(&bytes).unwrap();
+        let current = DoohickeyV6::migrate_from(version, &bytes, &Json).unwrap();
         assert_eq!(
             current,
             DoohickeyV6 {
@@ -825,7 +870,7 @@ fn doohickey_downgrades_to_every_target_version() {
         size: 99,
     };
     for target in 1u32..=6 {
-        let bytes = current.migrate_to_version(target).unwrap();
+        let bytes = json_for(&current, target).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["schema_version"], target);
         assert_eq!(value["size"], 99);

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 struct SeqV1 {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for SeqV1 {}
 impl SchemaType for SeqV1 {
     const NAME: &'static str = "seq";
     const VERSION: u32 = 1;
@@ -20,6 +21,7 @@ impl SchemaType for SeqV1 {
 struct SeqV2 {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for SeqV2 {}
 impl SchemaType for SeqV2 {
     const NAME: &'static str = "seq";
     const VERSION: u32 = 2;
@@ -29,6 +31,7 @@ impl SchemaType for SeqV2 {
 struct SeqCurrent {
     schema_version: u32,
 }
+impl aimdb_data_contracts::ContractShape for SeqCurrent {}
 impl SchemaType for SeqCurrent {
     const NAME: &'static str = "seq";
     const VERSION: u32 = 4;
@@ -68,7 +71,6 @@ impl MigrationStep for SeqStep2 {
 
 migration_chain! {
     type Current = SeqCurrent;
-    version_field = "schema_version";
     steps {
         SeqStep1: SeqV1 => SeqV2,
         SeqStep2: SeqV2 => SeqCurrent,

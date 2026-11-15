@@ -3,7 +3,7 @@
 //! schema, and every contract locked in `aimdb.lock`.
 
 use aimdb_data_contracts::{
-    Linkable, MigrationChain, MigrationError, MigrationStep, SchemaType, Streamable, WireFormat,
+    Linkable, MigrationError, MigrationStep, SchemaType, Streamable, WireFormat,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -104,19 +104,18 @@ impl MigrationStep for TemperatureV1ToV2 {
 
 aimdb_data_contracts::migration_chain! {
     type Current = TemperatureV2;
-    version_field = "schema_version";
     steps {
         TemperatureV1ToV2: TemperatureV1 => TemperatureV2,
     }
 }
 
-/// The current schema reads every version on the wire: a v1 payload is
-/// migrated through the chain, so old senders keep working.
+/// The default bare link reads the current schema. Older payloads require an
+/// explicit version passed to MigrationChain (later installed by link admission).
 impl Linkable for TemperatureV2 {
     const WIRE_FORMAT: WireFormat = WireFormat::Json;
 
     fn from_bytes(data: &[u8]) -> Result<Self, String> {
-        Self::migrate_from_bytes(data).map_err(|e| e.to_string())
+        serde_json::from_slice(data).map_err(|e| e.to_string())
     }
 
     fn to_bytes(&self) -> Result<Vec<u8>, String> {
