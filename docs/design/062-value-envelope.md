@@ -1,6 +1,14 @@
 # 062 — Value envelope
 
-**Status:** 📝 Proposed
+**Status:** Implemented (inline and static carriers; §8 remains deferred)
+
+Implementation proof: [rolling-upgrade fixture](../../tools/rolling-upgrade-fixture/README.md).
+The implemented admission API is `Result<IngestValue<T>, IngestError>`; core
+stamps successful values when producing them and records per-route outcomes.
+The byte-oriented connector SPI remains unchanged. Current payloads omit the
+in-band version field; frozen, locked historical layouts retain it as ordinary
+legacy data where removing it would violate the immutable shape rule.
+Typed record keys from 063 are outside this implementation.
 
 **Goal:** A v1 device on a binary codec (Postcard, CDR) is read by a v2 hub
 on another platform, with the version and shape checked on arrival. That

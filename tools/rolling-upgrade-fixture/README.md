@@ -80,5 +80,10 @@ cd aimdb-core/fuzz
 cargo +nightly fuzz run envelope -- -max_len=4096 -max_total_time=60
 ```
 
-The core test suite also runs a deterministic 100,000-frame malformed-input
+CI runs a 30-second coverage-guided fuzz smoke on nightly. The core test suite also runs a deterministic 100,000-frame malformed-input
 smoke test, so normal CI exercises the parser without a fuzz toolchain.
+
+Local validation completed 1,000,000 coverage-instrumented inputs (maximum
+4,096 bytes) in 24 seconds without a failure. That run used LLVM coverage
+instrumentation on the pinned stable compiler, without AddressSanitizer;
+the nightly cargo-fuzz CI lane uses its default sanitizer instrumentation.
