@@ -72,6 +72,18 @@ impl WireFormat {
         }
     }
 
+    /// The format of an envelope codec ID; `Unspecified` for IDs without a
+    /// builtin format.
+    pub const fn from_payload_codec(codec: aimdb_core::envelope::PayloadCodec) -> Self {
+        use aimdb_core::envelope::PayloadCodec;
+        match codec {
+            PayloadCodec::Json => Self::Json,
+            PayloadCodec::Postcard => Self::Postcard,
+            PayloadCodec::Cdr => Self::Cdr,
+            _ => Self::Unspecified,
+        }
+    }
+
     /// Reads the format recorded in a link config; `Unspecified` if absent or
     /// unknown.
     pub fn recorded_in(config: &[(String, String)]) -> Self {
@@ -202,6 +214,20 @@ where
     }
 }
 
+/// What a builtin codec marker reports to core: its format and scratch size.
+#[cfg(any(
+    feature = "linkable-json",
+    feature = "linkable-postcard",
+    feature = "linkable-cdr"
+))]
+fn builtin_wire_codec_info<T, C: LinkCodec<T>>() -> aimdb_core::link_wire::WireCodecInfo {
+    aimdb_core::link_wire::WireCodecInfo {
+        codec: C::WIRE_FORMAT.payload_codec(),
+        capacity: C::ENCODE_BUFFER_CAPACITY,
+        custom: false,
+    }
+}
+
 #[cfg(feature = "linkable-json")]
 impl<T> LinkCodec<T> for link_codecs::Json
 where
@@ -217,11 +243,7 @@ where
         crate::PayloadDecoder::decode_payload(self, bytes)
     }
     fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
-        Some(aimdb_core::link_wire::WireCodecInfo {
-            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
-            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
-            custom: false,
-        })
+        Some(builtin_wire_codec_info::<T, Self>())
     }
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
@@ -249,11 +271,7 @@ where
         crate::PayloadDecoder::decode_payload(self, bytes)
     }
     fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
-        Some(aimdb_core::link_wire::WireCodecInfo {
-            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
-            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
-            custom: false,
-        })
+        Some(builtin_wire_codec_info::<T, Self>())
     }
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
@@ -281,11 +299,7 @@ where
         crate::PayloadDecoder::decode_payload(self, bytes)
     }
     fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
-        Some(aimdb_core::link_wire::WireCodecInfo {
-            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
-            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
-            custom: false,
-        })
+        Some(builtin_wire_codec_info::<T, Self>())
     }
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
