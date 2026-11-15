@@ -188,27 +188,32 @@ const fn shape(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
     Some(value)
 }
 
-/// Fail during const evaluation, including `cargo check`, for colliding names.
+/// Whether two distinct contract names in `catalog` share an FNV-1a name_id.
+///
+/// Returns instead of panicking: `catalog!` asserts on the result in its own
+/// const item, so the diagnostic has no frame inside this function (and none
+/// quoting core's panic source, which differs with and without `rust-src`).
 #[doc(hidden)]
-pub const fn assert_unique_name_ids(catalog: &[crate::ContractId]) {
+pub const fn has_name_id_collision(catalog: &[crate::ContractId]) -> bool {
     let mut i = 0;
     while i < catalog.len() {
         let mut j = 0;
         while j < i {
-            assert!(
-                catalog[i].name_id() != catalog[j].name_id()
-                    || equal(
-                        catalog[i].name.as_bytes(),
-                        0,
-                        catalog[i].name.len(),
-                        catalog[j].name.as_bytes()
-                    ),
-                "catalog!: distinct contract names have the same FNV-1a name_id"
-            );
+            if catalog[i].name_id() == catalog[j].name_id()
+                && !equal(
+                    catalog[i].name.as_bytes(),
+                    0,
+                    catalog[i].name.len(),
+                    catalog[j].name.as_bytes(),
+                )
+            {
+                return true;
+            }
             j += 1;
         }
         i += 1;
     }
+    false
 }
 
 #[cfg(test)]
@@ -290,7 +295,20 @@ mod tests {
                 shape: SHAPE,
             },
         ];
-        assert_unique_name_ids(&catalog);
+        assert!(!has_name_id_collision(&catalog));
+        let colliding = [
+            crate::ContractId {
+                name: "costarring",
+                version: 1,
+                shape: None,
+            },
+            crate::ContractId {
+                name: "liquid",
+                version: 1,
+                shape: None,
+            },
+        ];
+        assert!(has_name_id_collision(&colliding));
         #[cfg(feature = "aimdb-core")]
         for name in ["", "hello", "costarring", "Wärme.温度"] {
             assert_eq!(name_id(name), aimdb_core::envelope::name_id(name));

@@ -75,7 +75,7 @@ pub use streamable::Streamable;
 
 mod contract_identity;
 #[doc(hidden)]
-pub use contract_identity::{assert_unique_name_ids, locked_shape};
+pub use contract_identity::{has_name_id_collision, locked_shape};
 pub use contract_identity::{name_id, ContractShape};
 
 mod catalog;

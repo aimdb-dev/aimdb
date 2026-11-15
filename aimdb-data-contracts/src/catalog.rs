@@ -109,7 +109,10 @@ macro_rules! catalog {
             }),+
         ];
 
-        const _: () = $crate::assert_unique_name_ids(CATALOG);
+        const _: () = ::core::assert!(
+            !$crate::has_name_id_collision(CATALOG),
+            "catalog!: distinct contract names have the same FNV-1a name_id"
+        );
 
         // `cfg(test)` of the calling crate: the invocation is gone before it
         // expands, so only the crate's own tests see it. The test is
