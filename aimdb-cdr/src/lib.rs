@@ -43,9 +43,23 @@ pub fn to_vec<T>(value: &T) -> Result<alloc::vec::Vec<u8>>
 where
     T: serde::Serialize + ?Sized,
 {
-    let mut out = alloc::vec::Vec::from(HEADER_LE);
-    value.serialize(&mut ser::Serializer::new(&mut out))?;
+    let mut out = alloc::vec::Vec::new();
+    append_to_vec(value, &mut out)?;
     Ok(out)
+}
+
+/// Appends `value` with its header after the existing contents of `out`.
+///
+/// Alignment is measured from the end of the appended header, so a prefix
+/// already in `out` (such as a transport or envelope header) does not shift
+/// it. On error `out` may hold a partial encoding after its original contents.
+#[cfg(feature = "alloc")]
+pub fn append_to_vec<T>(value: &T, out: &mut alloc::vec::Vec<u8>) -> Result<()>
+where
+    T: serde::Serialize + ?Sized,
+{
+    out.extend_from_slice(&HEADER_LE);
+    value.serialize(&mut ser::Serializer::new(out))
 }
 
 /// Decodes a value from an encapsulated payload.

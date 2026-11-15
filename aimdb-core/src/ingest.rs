@@ -127,7 +127,7 @@ impl<T> IngestValue<T> {
 }
 
 /// Successful upgrades from a source version declared at registration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "remote", derive(serde::Serialize, serde::Deserialize))]
 pub struct UpgradeCount {
     pub from: u32,
@@ -163,8 +163,12 @@ pub struct InboundRouteMetrics {
 
 /// Lifetime follows the registered link, not a connection or dispatcher.
 /// A short lock keeps 64-bit counters coherent on embedded targets too.
-/// Neither recording method calls user code or allocates while holding it.
-pub(crate) struct InboundStats(spin::Mutex<InboundRouteStats>);
+/// No method calls user code or allocates while holding it, snapshots included.
+pub(crate) struct InboundStats {
+    stats: spin::Mutex<InboundRouteStats>,
+    /// Length of `stats.upgraded`, fixed at registration.
+    versions: usize,
+}
 impl InboundStats {
     pub(crate) fn new(versions: &[u32]) -> Self {
         let mut upgraded: Vec<_> = versions
@@ -173,16 +177,37 @@ impl InboundStats {
             .collect();
         upgraded.sort_unstable_by_key(|c| c.from);
         upgraded.dedup_by_key(|c| c.from);
-        Self(spin::Mutex::new(InboundRouteStats {
-            upgraded,
-            ..Default::default()
-        }))
+        Self {
+            versions: upgraded.len(),
+            stats: spin::Mutex::new(InboundRouteStats {
+                upgraded,
+                ..Default::default()
+            }),
+        }
     }
+    /// Allocates before taking the lock, so dispatch never waits on the
+    /// allocator; under the lock it only copies.
     pub(crate) fn snapshot(&self) -> InboundRouteStats {
-        self.0.lock().clone()
+        let mut upgraded = Vec::with_capacity(self.versions);
+        let stats = self.stats.lock();
+        upgraded.extend_from_slice(&stats.upgraded);
+        // No `..`: a new counter must be copied here explicitly.
+        InboundRouteStats {
+            accepted: stats.accepted,
+            malformed: stats.malformed,
+            unsupported_format: stats.unsupported_format,
+            contract_mismatch: stats.contract_mismatch,
+            too_new: stats.too_new,
+            too_old: stats.too_old,
+            shape_mismatch: stats.shape_mismatch,
+            codec_mismatch: stats.codec_mismatch,
+            decode_error: stats.decode_error,
+            upgraded,
+            untracked_upgrades: stats.untracked_upgrades,
+        }
     }
     pub(crate) fn accept(&self, outcome: IngestOutcome) {
-        let mut stats = self.0.lock();
+        let mut stats = self.stats.lock();
         stats.accepted = stats.accepted.saturating_add(1);
         if let Some(from) = outcome.upgraded_from() {
             if let Some(counter) = stats.upgraded.iter_mut().find(|c| c.from == from) {
@@ -193,7 +218,7 @@ impl InboundStats {
         }
     }
     pub(crate) fn reject(&self, reason: Rejection) {
-        let mut stats = self.0.lock();
+        let mut stats = self.stats.lock();
         let counter = match reason {
             Rejection::Malformed => &mut stats.malformed,
             Rejection::UnsupportedFormat => &mut stats.unsupported_format,
@@ -205,5 +230,35 @@ impl InboundStats {
             Rejection::DecodeError => &mut stats.decode_error,
         };
         *counter = counter.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_copies_every_counter() {
+        let stats = InboundStats::new(&[3, 1, 3]);
+        stats.accept(IngestOutcome::current());
+        stats.accept(IngestOutcome::upgraded(1));
+        stats.accept(IngestOutcome::upgraded(2)); // not declared
+        stats.reject(Rejection::TooNew);
+        stats.reject(Rejection::DecodeError);
+        let snapshot = stats.snapshot();
+        assert_eq!(
+            snapshot,
+            InboundRouteStats {
+                accepted: 3,
+                too_new: 1,
+                decode_error: 1,
+                upgraded: alloc::vec![
+                    UpgradeCount { from: 1, count: 1 },
+                    UpgradeCount { from: 3, count: 0 },
+                ],
+                untracked_upgrades: 1,
+                ..Default::default()
+            }
+        );
     }
 }

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `from_bytes_with_consumed` returns the consumed byte count, including the
   trailing padding declared in the encapsulation options. `from_bytes` still
   ignores trailing bytes.
+- `append_to_vec` encodes after existing bytes in a `Vec` (alignment unaffected
+  by the prefix), so callers can write their own header first.
 
 ## [0.1.0] - 2026-11-03
 

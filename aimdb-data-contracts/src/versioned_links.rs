@@ -11,7 +11,10 @@ use aimdb_core::{
     EnvelopeCarrier, InboundLink, InboundLinkBuilder, OutboundLink, OutboundLinkBuilder,
 };
 use alloc::{format, string::String, vec::Vec};
-use core::{cell::RefCell, fmt::Debug};
+use core::{
+    cell::{Cell, RefCell},
+    fmt::Debug,
+};
 
 type WireResult<T> = Result<T, String>;
 
@@ -176,11 +179,13 @@ fn encode_into<T: MigrationChain, C: PayloadEncoder>(
     Ok(offset + n)
 }
 
-// Invoke the downgrade exactly once on the owned fallback, then give the
-// historical value directly to its generic owned encoder (no fixed size ceiling).
+// Invoke the downgrade exactly once on the owned fallback, then let the
+// codec append the historical value right after the header (no fixed size
+// ceiling, and the payload is never moved to make room for the header).
 struct OwnedEncoder<'a, C> {
     codec: &'a C,
-    bytes: RefCell<Option<Vec<u8>>>,
+    out: RefCell<Vec<u8>>,
+    used: Cell<bool>,
 }
 impl<C: PayloadEncoder> PayloadEncoder for OwnedEncoder<'_, C> {
     fn encode_payload<U: serde::Serialize>(
@@ -188,8 +193,11 @@ impl<C: PayloadEncoder> PayloadEncoder for OwnedEncoder<'_, C> {
         value: &U,
         _: &mut [u8],
     ) -> Result<usize, SerializeError> {
-        self.bytes
-            .replace(Some(self.codec.encode_payload_owned(value)?));
+        if self.used.replace(true) {
+            return Err(SerializeError::InvalidData);
+        }
+        self.codec
+            .encode_payload_append(value, &mut self.out.borrow_mut())?;
         Ok(0)
     }
 }
@@ -201,30 +209,20 @@ fn encode_owned<T: MigrationChain, C: PayloadEncoder>(
     info: WireCodecInfo,
     inline: bool,
 ) -> Result<Vec<u8>, SerializeError> {
+    let mut bytes = [0; 19];
+    let n = header(&mut bytes, contract, info, inline)?;
     let capture = OwnedEncoder {
         codec,
-        bytes: RefCell::new(None),
+        out: RefCell::new(bytes[..n].to_vec()),
+        used: Cell::new(false),
     };
     value
         .migrate_into(version, &capture, &mut [])
         .map_err(migration_error)?;
-    let mut payload = capture
-        .bytes
-        .into_inner()
-        .ok_or(SerializeError::InvalidData)?;
-    if inline {
-        let mut bytes = [0; 19];
-        let n = header(&mut bytes, contract, info, true)?;
-        let len = payload.len();
-        let total = len.checked_add(n).ok_or(SerializeError::InvalidData)?;
-        payload
-            .try_reserve(n)
-            .map_err(|_| SerializeError::InvalidData)?;
-        payload.resize(total, 0);
-        payload.copy_within(..len, n);
-        payload[..n].copy_from_slice(&bytes[..n]);
+    if !capture.used.get() {
+        return Err(SerializeError::InvalidData);
     }
-    Ok(payload)
+    Ok(capture.out.into_inner())
 }
 
 fn outbound<T, C>(

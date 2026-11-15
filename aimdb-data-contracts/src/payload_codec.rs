@@ -46,23 +46,32 @@ pub trait PayloadDecoder {
 
 /// Generic encoding half of a link codec.
 pub trait PayloadEncoder {
-    /// Owned fallback for values larger than route scratch storage. Builtins
-    /// override this with their native owned encoders. Custom encoders may do
-    /// likewise; the default retries serialization into growing caller storage.
-    fn encode_payload_owned<T: serde::Serialize>(
+    /// Owned fallback for values larger than route scratch storage: appends
+    /// the encoding after the existing contents of `out`, so a caller can put
+    /// a header first without moving the payload afterwards.
+    ///
+    /// Builtins override this with their native appending encoders. The
+    /// default encodes into the growing tail of `out` with
+    /// [`encode_payload`](Self::encode_payload). On error `out` may hold
+    /// partial output after its original contents.
+    fn encode_payload_append<T: serde::Serialize>(
         &self,
         value: &T,
-    ) -> Result<Vec<u8>, SerializeError> {
+        out: &mut Vec<u8>,
+    ) -> Result<(), SerializeError> {
+        let start = out.len();
         let mut capacity = 256usize;
         loop {
-            let mut out = Vec::new();
-            out.try_reserve_exact(capacity)
+            let end = start
+                .checked_add(capacity)
+                .ok_or(SerializeError::InvalidData)?;
+            out.try_reserve_exact(end.saturating_sub(out.len()))
                 .map_err(|_| SerializeError::InvalidData)?;
-            out.resize(capacity, 0);
-            match self.encode_payload(value, &mut out) {
-                Ok(n) if n <= out.len() => {
-                    out.truncate(n);
-                    return Ok(out);
+            out.resize(end, 0);
+            match self.encode_payload(value, &mut out[start..]) {
+                Ok(n) if n <= capacity => {
+                    out.truncate(start + n);
+                    return Ok(());
                 }
                 Ok(_) => return Err(SerializeError::InvalidData),
                 Err(SerializeError::BufferTooSmall) => {
@@ -71,6 +80,17 @@ pub trait PayloadEncoder {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Encodes into a new `Vec`, via
+    /// [`encode_payload_append`](Self::encode_payload_append).
+    fn encode_payload_owned<T: serde::Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<Vec<u8>, SerializeError> {
+        let mut out = Vec::new();
+        self.encode_payload_append(value, &mut out)?;
+        Ok(out)
     }
 
     /// Encodes into caller storage and returns the byte count.
@@ -106,11 +126,20 @@ impl PayloadDecoder for crate::link_codecs::Json {
 
 #[cfg(feature = "linkable-json")]
 impl PayloadEncoder for crate::link_codecs::Json {
-    fn encode_payload_owned<T: serde::Serialize>(
+    fn encode_payload_append<T: serde::Serialize>(
         &self,
         value: &T,
-    ) -> Result<Vec<u8>, SerializeError> {
-        serde_json::to_vec(value).map_err(|_| SerializeError::InvalidData)
+        out: &mut Vec<u8>,
+    ) -> Result<(), SerializeError> {
+        // `io::Write` for `Vec` needs std; no_std + alloc copies once.
+        #[cfg(feature = "std")]
+        return serde_json::to_writer(out, value).map_err(|_| SerializeError::InvalidData);
+        #[cfg(not(feature = "std"))]
+        {
+            let encoded = serde_json::to_vec(value).map_err(|_| SerializeError::InvalidData)?;
+            out.extend_from_slice(&encoded);
+            Ok(())
+        }
     }
 
     fn encode_payload<T: serde::Serialize>(
@@ -140,11 +169,21 @@ impl<const N: usize> PayloadDecoder for crate::link_codecs::Postcard<N> {
 
 #[cfg(feature = "linkable-postcard")]
 impl<const N: usize> PayloadEncoder for crate::link_codecs::Postcard<N> {
-    fn encode_payload_owned<T: serde::Serialize>(
+    fn encode_payload_append<T: serde::Serialize>(
         &self,
         value: &T,
-    ) -> Result<Vec<u8>, SerializeError> {
-        postcard::to_allocvec(value).map_err(|_| SerializeError::InvalidData)
+        out: &mut Vec<u8>,
+    ) -> Result<(), SerializeError> {
+        // `to_extend` takes its writer by value; borrow `out` through it.
+        struct Append<'a>(&'a mut Vec<u8>);
+        impl Extend<u8> for Append<'_> {
+            fn extend<I: IntoIterator<Item = u8>>(&mut self, bytes: I) {
+                self.0.extend(bytes);
+            }
+        }
+        postcard::to_extend(value, Append(out))
+            .map(|_| ())
+            .map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_payload<T: serde::Serialize>(
@@ -172,11 +211,12 @@ impl<const N: usize> PayloadDecoder for crate::link_codecs::Cdr<N> {
 
 #[cfg(feature = "linkable-cdr")]
 impl<const N: usize> PayloadEncoder for crate::link_codecs::Cdr<N> {
-    fn encode_payload_owned<T: serde::Serialize>(
+    fn encode_payload_append<T: serde::Serialize>(
         &self,
         value: &T,
-    ) -> Result<Vec<u8>, SerializeError> {
-        aimdb_cdr::to_vec(value).map_err(|_| SerializeError::InvalidData)
+        out: &mut Vec<u8>,
+    ) -> Result<(), SerializeError> {
+        aimdb_cdr::append_to_vec(value, out).map_err(|_| SerializeError::InvalidData)
     }
 
     fn encode_payload<T: serde::Serialize>(

@@ -28,6 +28,13 @@ where
         sequence: 128,
     };
     let expected = codec.encode(&value).unwrap();
+    assert_eq!(codec.encode_payload_owned(&value).unwrap(), expected);
+    // Appending after an odd-length prefix keeps it and does not shift the
+    // encoding (CDR alignment is measured from its own header).
+    let mut appended = vec![0xaa, 0xbb, 0xcc];
+    codec.encode_payload_append(&value, &mut appended).unwrap();
+    assert_eq!(&appended[..3], &[0xaa, 0xbb, 0xcc]);
+    assert_eq!(&appended[3..], expected);
     let mut out = vec![0xa5; expected.len() + 4];
     let len = codec.encode_payload(&value, &mut out).unwrap();
     assert_eq!(&out[..len], expected);
@@ -129,4 +136,28 @@ fn cdr_reports_remainder_in_both_byte_orders() {
     assert!(codec
         .decode_payload::<OldReading>(&[0, 2, 0, 0, 0, 0, 0, 0])
         .is_err());
+}
+
+/// A custom encoder that implements only `encode_payload` gets an appending
+/// owned path that grows past its first 256-byte attempt.
+#[cfg(feature = "linkable-postcard")]
+#[test]
+fn default_append_grows_and_keeps_the_prefix() {
+    struct SliceOnly;
+    impl PayloadEncoder for SliceOnly {
+        fn encode_payload<T: Serialize>(
+            &self,
+            value: &T,
+            out: &mut [u8],
+        ) -> Result<usize, SerializeError> {
+            link_codecs::Postcard::<1>.encode_payload(value, out)
+        }
+    }
+    let large = vec![7u8; 1000];
+    let expected = postcard::to_allocvec(&large).unwrap();
+    let mut out = vec![1, 2, 3];
+    SliceOnly.encode_payload_append(&large, &mut out).unwrap();
+    assert_eq!(&out[..3], &[1, 2, 3]);
+    assert_eq!(&out[3..], expected);
+    assert_eq!(SliceOnly.encode_payload_owned(&large).unwrap(), expected);
 }
