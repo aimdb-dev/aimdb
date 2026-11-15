@@ -355,6 +355,8 @@ mod tests {
         );
     }
 
+    /// Malformed input: no panic, and a frame that does parse yields a
+    /// payload inside the frame and an identity that survives re-encoding.
     #[test]
     fn arbitrary_frames_do_not_panic() {
         let mut state = 42u64;
@@ -369,7 +371,22 @@ mod tests {
             if i % 2 == 0 {
                 bytes[0] = 0xa1;
             }
-            let _ = Envelope::parse(&bytes[..i % 65]);
+            let frame = &bytes[..i % 65];
+            let Ok(env) = Envelope::parse(frame) else {
+                continue;
+            };
+            let start = frame.len() - env.payload().len();
+            assert_eq!(env.payload().as_ptr(), frame[start..].as_ptr());
+            let mut header = [0; 19];
+            let n = HeaderWriter::new(&mut header)
+                .contract(env.contract())
+                .codec(env.codec())
+                .finish()
+                .unwrap();
+            let canonical = Envelope::parse(&header[..n]).unwrap();
+            assert_eq!(canonical.contract(), env.contract());
+            assert_eq!(canonical.codec(), env.codec());
+            assert!(canonical.payload().is_empty());
         }
     }
 }

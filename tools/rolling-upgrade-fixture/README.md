@@ -69,21 +69,10 @@ LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //
   target/thumbv7em-none-eabihf/release/libaimdb_core.rlib | rg 'aimdb_core::envelope::'
 ```
 
-## Parser fuzzing
+## Malformed frames
 
-`aimdb-core/fuzz` is an isolated cargo-fuzz workspace. It checks arbitrary
-frames, borrowed payload suffixes, and canonical header re-encoding. With
-nightly and cargo-fuzz installed:
-
-```sh
-cd aimdb-core/fuzz
-cargo +nightly fuzz run envelope -- -max_len=4096 -max_total_time=60
-```
-
-CI runs a 30-second coverage-guided fuzz smoke on nightly. The core test suite also runs a deterministic 100,000-frame malformed-input
-smoke test, so normal CI exercises the parser without a fuzz toolchain.
-
-Local validation completed 1,000,000 coverage-instrumented inputs (maximum
-4,096 bytes) in 24 seconds without a failure. That run used LLVM coverage
-instrumentation on the pinned stable compiler, without AddressSanitizer;
-the nightly cargo-fuzz CI lane uses its default sanitizer instrumentation.
+The core test suite runs a deterministic 100,000-frame malformed-input test
+(`arbitrary_frames_do_not_panic` in `aimdb-core/src/envelope.rs`). It checks
+that parsing never panics, that a parsed payload lies inside its frame, and
+that the parsed identity survives canonical header re-encoding. It needs no
+extra toolchain, so normal CI exercises the parser.

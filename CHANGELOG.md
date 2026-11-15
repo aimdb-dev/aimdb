@@ -41,8 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Removing a locked payload field requires a new version; frozen legacy layouts
   can keep that field as ordinary data. Bare links remain the default.
 - A locked two-revision firmware/hub fixture proves the rolling upgrade through
-  both MQTT backends. Cortex-M declarations, allocation gates, and the envelope
-  parser fuzz target accompany it. See
+  both MQTT backends. Cortex-M declarations, allocation gates, and a
+  malformed-frame test of the envelope parser accompany it. See
   [the fixture](tools/rolling-upgrade-fixture/README.md).
 
 ### Fixed — `aimdb-mcp` tools share one session per endpoint (#451)
