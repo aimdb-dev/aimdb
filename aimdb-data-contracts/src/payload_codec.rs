@@ -52,7 +52,8 @@ pub trait PayloadEncoder {
     ///
     /// Builtins override this with their native appending encoders. The
     /// default encodes into the growing tail of `out` with
-    /// [`encode_payload`](Self::encode_payload). On error `out` may hold
+    /// [`encode_payload`](Self::encode_payload), doubling the tail each time
+    /// that returns `BufferTooSmall`. On error `out` may hold
     /// partial output after its original contents.
     fn encode_payload_append<T: serde::Serialize>(
         &self,
@@ -95,9 +96,15 @@ pub trait PayloadEncoder {
 
     /// Encodes into caller storage and returns the byte count.
     ///
-    /// Returns `BufferTooSmall` if storage is insufficient. The destination may
-    /// have been partially written on error. Built-in Postcard and CDR encoders
-    /// do not allocate on success; JSON retains its existing owned encoding path.
+    /// Returns `BufferTooSmall` if storage is insufficient, and only then: it
+    /// promises that a larger `out` would succeed. The default
+    /// [`encode_payload_append`](Self::encode_payload_append) retries with
+    /// doubled capacity, without an upper bound, for as long as it gets this
+    /// error. Report any other limit, such as a maximum encoded size, as
+    /// `InvalidData`. The destination may have been partially written on error.
+    ///
+    /// Built-in Postcard and CDR encoders do not allocate on success; JSON
+    /// retains its existing owned encoding path.
     fn encode_payload<T: serde::Serialize>(
         &self,
         value: &T,
