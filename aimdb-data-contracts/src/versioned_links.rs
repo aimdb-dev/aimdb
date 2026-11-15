@@ -339,7 +339,7 @@ macro_rules! envelope_ext {
                 options.carrier = carrier;
                 self.with_wire_options(options)
                     .with_config(
-                        "envelope",
+                        aimdb_core::link_wire::ENVELOPE_KEY,
                         if carrier == EnvelopeCarrier::Inline {
                             "inline"
                         } else {

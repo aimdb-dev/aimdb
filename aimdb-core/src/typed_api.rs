@@ -1595,7 +1595,7 @@ where
     /// Validates and registers an outbound link, or records why not.
     fn push_outbound(&mut self, mut link: OutboundLink<T>) {
         let wire_url = link.url.clone();
-        if let Err(message) = link.wire.read_carrier(&link.config) {
+        if let Err(message) = link.wire.take_carrier(&mut link.config) {
             self.rec.push_config_error(crate::ConfigError::new(
                 self.record_key.clone(),
                 Some(wire_url),
@@ -1856,7 +1856,7 @@ where
     /// Validates and registers an inbound link, or records why not.
     fn push_inbound(&mut self, mut link: InboundLink<T>) {
         let wire_url = link.url.clone();
-        if let Err(message) = link.wire.read_carrier(&link.config) {
+        if let Err(message) = link.wire.take_carrier(&mut link.config) {
             self.rec.push_config_error(crate::ConfigError::new(
                 self.record_key.clone(),
                 Some(wire_url),
@@ -2357,6 +2357,48 @@ mod tests {
             Some("2")
         );
         assert!(drain_errors(&mut rec).is_empty());
+    }
+
+    #[test]
+    fn envelope_config_is_consumed_by_core_and_never_reaches_connectors() {
+        use crate::link_wire::ENVELOPE_KEY;
+        let mut rec = crate::typed_record::TypedRecord::<TestRecord>::new();
+        rec.set_buffer(Box::new(MockBuffer));
+        let builders: Vec<Box<dyn crate::connector::ConnectorBuilder>> =
+            vec![Box::new(MockConnectorBuilder {
+                scheme: "mqtt".to_string(),
+            })];
+        let extensions = crate::extensions::Extensions::new();
+        let mut reg = make_registrar(&mut rec, &builders, &extensions);
+
+        reg.push_outbound(
+            OutboundLink::new("mqtt://out")
+                .with_config(ENVELOPE_KEY, "inline")
+                .with_config("qos", "1")
+                .with_config(ENVELOPE_KEY, "bound")
+                .with_serializer(|_ctx, r: &TestRecord| Ok(r.value.to_le_bytes().to_vec())),
+        );
+        reg.push_inbound(
+            InboundLink::new("mqtt://in")
+                .with_config(ENVELOPE_KEY, "bound")
+                .with_config("qos", "2")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+        // Still read first: the last entry wins, and inline needs a finalizer.
+        reg.push_inbound(
+            InboundLink::new("mqtt://inline")
+                .with_config(ENVELOPE_KEY, "inline")
+                .with_deserializer(|_ctx, _bytes: &[u8]| Ok(TestRecord { value: 0 })),
+        );
+
+        let expected = [("qos".to_string(), "1".to_string())];
+        assert_eq!(rec.outbound_connectors()[0].config, expected);
+        let expected = [("qos".to_string(), "2".to_string())];
+        assert_eq!(rec.inbound_connectors()[0].config, expected);
+        assert_eq!(rec.inbound_connectors().len(), 1);
+        let errors = drain_errors(&mut rec);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("inline envelopes require"));
     }
 
     // ====================================================================

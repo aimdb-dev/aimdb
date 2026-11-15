@@ -31,18 +31,26 @@ impl Default for WireOptions {
         }
     }
 }
+/// Link config key selecting the carrier (`"inline"` or `"bound"`).
+///
+/// Core consumes it at registration: it never reaches a connector's config.
+pub const ENVELOPE_KEY: &str = "envelope";
+
 impl WireOptions {
-    pub(crate) fn read_carrier(
+    /// Applies the last [`ENVELOPE_KEY`] entry, then removes every such entry.
+    /// The carrier is core's concern; transports keep their own config namespace.
+    pub(crate) fn take_carrier(
         &mut self,
-        config: &[(alloc::string::String, alloc::string::String)],
+        config: &mut alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
     ) -> Result<(), alloc::string::String> {
-        if let Some((_, value)) = config.iter().rev().find(|(key, _)| key == "envelope") {
+        if let Some((_, value)) = config.iter().rev().find(|(key, _)| key == ENVELOPE_KEY) {
             self.carrier = match value.as_str() {
                 "inline" => EnvelopeCarrier::Inline,
                 "bound" => EnvelopeCarrier::Bound,
                 _ => return Err("envelope must be 'inline' or 'bound'".into()),
             };
         }
+        config.retain(|(key, _)| key != ENVELOPE_KEY);
         Ok(())
     }
 }
