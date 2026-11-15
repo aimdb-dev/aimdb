@@ -39,7 +39,7 @@ let mut builder = AimDbBuilder::new()
             .with_client_id("my-client-id"),
     );
 
-let record_1 = aimdb_core::Name::<Temperature>::new("temperature");
+let record_1 = aimdb_data_contracts::Key::<Temperature>::new("temperature");
 builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .source(sensor_producer)

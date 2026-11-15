@@ -1,0 +1,125 @@
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:34:11
+   |
+34 |         r.linked_to("mqtt://out");
+   |           ^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `linked_to`
+  --> src/linkable.rs
+   |
+   |     fn linked_to(&mut self, url: &str) -> &mut Self
+   |        --------- required by a bound in this associated function
+   |     where
+   |         S: ContractDeclared;
+   |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkableRegistrarExt::linked_to`
+
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:35:11
+   |
+35 |         r.linked_from("mqtt://in");
+   |           ^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `linked_from`
+  --> src/linkable.rs
+   |
+   |     fn linked_from(&mut self, url: &str) -> &mut Self
+   |        ----------- required by a bound in this associated function
+   |     where
+   |         S: ContractDeclared;
+   |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkableRegistrarExt::linked_from`
+
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:36:11
+   |
+36 |         r.linked_to_with("mqtt://out2", aimdb_data_contracts::link_codecs::Default);
+   |           ^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `linked_to_with`
+  --> src/linkable.rs
+   |
+   |     fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut Self
+   |        -------------- required by a bound in this associated function
+...
+   |         S: ContractDeclared;
+   |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkCodecRegistrarExt::linked_to_with`
+
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:37:11
+   |
+37 |         r.observe();
+   |           ^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `observe`
+  --> src/observable.rs
+   |
+   |     fn observe(&mut self) -> &mut Self
+   |        ------- required by a bound in this associated function
+...
+   |         S: ContractDeclared;
+   |            ^^^^^^^^^^^^^^^^ required by this bound in `ObservableRegistrarExt::observe`
+
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:38:18
+   |
+38 |         r.output(publish(mqtt, "out"));
+   |           ------ ^^^^^^^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |           |
+   |           required by a bound introduced by this call
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `OutboundLinkBuilder<Temp, DetachedContract>` to implement `aimdb_core::Output<Temp, Undeclared>`
+note: required by a bound in `RecordRegistrar::<'a, T, S>::output`
+  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+   |
+   |     pub fn output(&mut self, output: impl Output<T, S>) -> &mut Self {
+   |                                           ^^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::output`
+
+error[E0277]: this record's key declares no data contract
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:39:17
+   |
+39 |         r.input(subscribe(mqtt, "in"));
+   |           ----- ^^^^^^^^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
+   |           |
+   |           required by a bound introduced by this call
+   |
+   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
+help: the trait `ContractDeclared` is implemented for `Declared`
+  --> $WORKSPACE/aimdb-core/src/record_id.rs
+   |
+   | impl ContractDeclared for Declared {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `InboundLinkBuilder<Temp, DetachedContract>` to implement `aimdb_core::Input<Temp, Undeclared>`
+note: required by a bound in `RecordRegistrar::<'a, T, S>::input`
+  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+   |
+   |     pub fn input(&mut self, input: impl Input<T, S>) -> &mut Self {
+   |                                         ^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::input`

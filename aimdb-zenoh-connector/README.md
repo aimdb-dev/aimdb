@@ -48,12 +48,12 @@ let ros2 = Ros2Connector::new("tcp/192.168.10.5:7447",
     .register::<SpindleCommand>();
 
 let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(ros2);
-let record_1 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+let record_1 = aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
 builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");     // a ROS publisher
 });
-let record_2 = aimdb_core::Name::<SpindleCommand>::new("cell4.spindle.cmd");
+let record_2 = aimdb_data_contracts::Key::<SpindleCommand>::new("cell4.spindle.cmd");
 builder.configure(record_2, |reg| {
     reg.buffer(BufferCfg::Mailbox)
         .linked_from("ros2://cell4/spindle_cmd");   // a ROS subscription
@@ -88,7 +88,7 @@ use aimdb_zenoh_connector::ZenohConnector;
 let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
 builder.with_connector(zenoh);
 
-let record_3 = aimdb_core::Name::<MachineState>::new("cell4.state");
+let record_3 = aimdb_data_contracts::Key::<MachineState>::new("cell4.state");
 builder.configure(record_3, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
@@ -124,7 +124,7 @@ let mut builder = AimDbBuilder::new().runtime(runtime)
     .with_connector(zenoh)
     .with_connector(ros2);
 
-let record_5 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+let record_5 = aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
 builder.configure(record_5, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_from("zenoh://cell4/probe/temperature")

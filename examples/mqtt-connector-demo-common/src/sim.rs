@@ -114,11 +114,11 @@ impl Thermometer {
     }
 }
 
-impl<T> Input<T> for Thermometer
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for Thermometer
 where
     T: From<Reading> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         let Thermometer {
             channel,
             period_secs,

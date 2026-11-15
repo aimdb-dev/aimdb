@@ -5,46 +5,51 @@
 //! `reg.input(..)`. The registrar verbs [`LinkableRegistrarExt::linked_from`] /
 //! [`linked_to`](LinkableRegistrarExt::linked_to) do the same from a full URL,
 //! and [`LinkCodecRegistrarExt`] selects a different codec per link. Every
-//! path reports `T::NAME` / `T::VERSION` as the record's schema. The raw
+//! path needs a record whose key declares `T` as its contract (`Key<T>` or
+//! `#[record_key(contract = T)]`); on a `Name<T>` record it does not compile. The raw
 //! `.link_to()` / `.link_from()` builders remain the escape hatch.
 
 use aimdb_core::typed_api::RecordRegistrar;
-use aimdb_core::{ConnectorHandle, InboundLink, OutboundLink};
+use aimdb_core::typed_api::{ContractInboundLink, ContractOutboundLink};
+use aimdb_core::{ConnectorHandle, ContractDeclared, InboundLink, OutboundLink, SchemaState};
 
 use crate::{link_codecs, LinkCodec, LinkCodecBuilderExt, Linkable};
 
-/// An outbound link carrying contract `T`: its codec and its schema.
-fn contract_out<T, C>(link: OutboundLink<T>, codec: C) -> OutboundLink<T>
+/// An outbound link carrying contract `T`: its codec, and a link type that
+/// wires only into a record whose key declares `T`.
+fn contract_out<T, C>(link: OutboundLink<T>, codec: C) -> ContractOutboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
-    link.with_link_codec(codec)
+    link.with_link_codec(codec).into_contract()
 }
 
-/// An inbound link carrying contract `T`: its codec and its schema.
-fn contract_in<T, C>(link: InboundLink<T>, codec: C) -> InboundLink<T>
+/// An inbound link carrying contract `T`: its codec, and a link type that
+/// wires only into a record whose key declares `T`.
+fn contract_in<T, C>(link: InboundLink<T>, codec: C) -> ContractInboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
-    link.with_link_codec(codec)
+    link.with_link_codec(codec).into_contract()
 }
 
 /// Publishes a `T` record to `address` on `connector`, encoded with `T`'s own
 /// [`Linkable`] codec; pass it to `reg.output(..)`.
 ///
 /// `address` needs no scheme (`"sensors/temp"`); a full URL whose scheme is
-/// the connector's, as a `#[link_address]` key gives, works too. The record
-/// reports `T::NAME` / `T::VERSION` as its schema. The result is an ordinary
-/// [`OutboundLink`], so connector options (`with_qos`, …) and
+/// the connector's, as a `#[link_address]` key gives, works too. The result
+/// is a [`ContractOutboundLink`]: connector options (`with_qos`, …) and
 /// [`with_link_codec`](LinkCodecBuilderExt::with_link_codec), which replaces
-/// the codec, apply to it.
+/// the codec, apply to it as to any [`OutboundLink`]. It is an output only of
+/// a record whose key declares `T` (`Key<T>` or
+/// `#[record_key(contract = T)]`).
 ///
 /// ```rust,ignore
 /// let mqtt = builder.connect(MqttConnector::new(broker_url));
-/// let record_1 = aimdb_core::Name::<Temperature>::new("temp.indoor");
-/// builder.configure(record_1, |reg| {
+/// const TEMP_INDOOR: Key<Temperature> = Key::new("temp.indoor");
+/// builder.configure(TEMP_INDOOR, |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)
 ///         .output(publish(mqtt, "sensors/temp/indoor").with_qos(1));
 /// });
@@ -61,7 +66,24 @@ where
 ///     reg.output(aimdb_data_contracts::publish(mqtt, "sensors/x"));
 /// }
 /// ```
-pub fn publish<T>(connector: ConnectorHandle, address: &str) -> OutboundLink<T>
+///
+/// Neither does a contract record declared without its contract (a
+/// `Name<T>`, whose registrar is [`Undeclared`](aimdb_core::Undeclared)):
+///
+/// ```compile_fail,E0277
+/// # use aimdb_core::{ConnectorHandle, RecordRegistrar, Undeclared};
+/// # #[derive(Clone, Debug)]
+/// # struct Temp;
+/// # impl aimdb_data_contracts::SchemaType for Temp { const NAME: &'static str = "temp"; }
+/// # impl aimdb_data_contracts::Linkable for Temp {
+/// #     fn to_bytes(&self) -> Result<Vec<u8>, String> { Ok(Vec::new()) }
+/// #     fn from_bytes(_: &[u8]) -> Result<Self, String> { Ok(Temp) }
+/// # }
+/// fn wire(reg: &mut RecordRegistrar<'_, Temp, Undeclared>, mqtt: ConnectorHandle) {
+///     reg.output(aimdb_data_contracts::publish(mqtt, "sensors/temp"));
+/// }
+/// ```
+pub fn publish<T>(connector: ConnectorHandle, address: &str) -> ContractOutboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
@@ -72,7 +94,7 @@ where
 /// own [`Linkable`] codec; pass it to `reg.input(..)`.
 ///
 /// The counterpart of [`publish`]; the same address rules and options apply.
-pub fn subscribe<T>(connector: ConnectorHandle, address: &str) -> InboundLink<T>
+pub fn subscribe<T>(connector: ConnectorHandle, address: &str) -> ContractInboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
@@ -82,14 +104,18 @@ where
 /// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
 /// [`Linkable`] types.
 ///
-/// Both also report `T::NAME`/`T::VERSION` as the record's schema
-/// ([`RecordRegistrar::schema`]).
-pub trait LinkableRegistrarExt<'a, T>
+/// Both exist only on a record whose key declares `T` as its contract
+/// (`Key<T>` or `#[record_key(contract = T)]`); on a `Name<T>` record they do
+/// not compile.
+pub trait LinkableRegistrarExt<'a, T, S>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
 {
     /// `.link_from(url)` with the codec defaulted to `T::from_bytes`.
-    fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T>;
+    fn linked_from(&mut self, url: &str) -> &mut Self
+    where
+        S: ContractDeclared;
 
     /// `.link_to(url)` with the codec defaulted to `T::to_bytes` and an
     /// optional bounded [`Linkable::encode_into`] fast path.
@@ -97,18 +123,27 @@ where
     /// `Linkable::to_bytes`'s `String` error is mapped to
     /// `SerializeError::InvalidData` — the connector layer's serializer error
     /// type carries no string detail.
-    fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T>;
+    fn linked_to(&mut self, url: &str) -> &mut Self
+    where
+        S: ContractDeclared;
 }
 
-impl<'a, T> LinkableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+impl<'a, T, S> LinkableRegistrarExt<'a, T, S> for RecordRegistrar<'a, T, S>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
 {
-    fn linked_from(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
+    fn linked_from(&mut self, url: &str) -> &mut Self
+    where
+        S: ContractDeclared,
+    {
         self.input(contract_in(InboundLink::new(url), link_codecs::Default))
     }
 
-    fn linked_to(&mut self, url: &str) -> &mut RecordRegistrar<'a, T> {
+    fn linked_to(&mut self, url: &str) -> &mut Self
+    where
+        S: ContractDeclared,
+    {
         self.output(contract_out(OutboundLink::new(url), link_codecs::Default))
     }
 }
@@ -118,35 +153,41 @@ where
 /// This is a sibling trait rather than new required methods on
 /// `LinkableRegistrarExt`, preserving source compatibility for downstream
 /// implementations of the existing public extension trait.
-pub trait LinkCodecRegistrarExt<'a, T>
+pub trait LinkCodecRegistrarExt<'a, T, S>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
 {
     /// `.link_from(url).with_link_codec(codec).finish()`.
-    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
-    where
-        C: LinkCodec<T>;
-
-    /// `.link_to(url).with_link_codec(codec).finish()`.
-    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
-    where
-        C: LinkCodec<T>;
-}
-
-impl<'a, T> LinkCodecRegistrarExt<'a, T> for RecordRegistrar<'a, T>
-where
-    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
-{
-    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut Self
     where
         C: LinkCodec<T>,
+        S: ContractDeclared;
+
+    /// `.link_to(url).with_link_codec(codec).finish()`.
+    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut Self
+    where
+        C: LinkCodec<T>,
+        S: ContractDeclared;
+}
+
+impl<'a, T, S> LinkCodecRegistrarExt<'a, T, S> for RecordRegistrar<'a, T, S>
+where
+    T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
+{
+    fn linked_from_with<C>(&mut self, url: &str, codec: C) -> &mut Self
+    where
+        C: LinkCodec<T>,
+        S: ContractDeclared,
     {
         self.input(contract_in(InboundLink::new(url), codec))
     }
 
-    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut RecordRegistrar<'a, T>
+    fn linked_to_with<C>(&mut self, url: &str, codec: C) -> &mut Self
     where
         C: LinkCodec<T>,
+        S: ContractDeclared,
     {
         self.output(contract_out(OutboundLink::new(url), codec))
     }

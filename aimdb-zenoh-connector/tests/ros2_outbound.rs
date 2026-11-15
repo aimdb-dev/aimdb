@@ -83,7 +83,8 @@ fn gid(token: &str) -> [u8; 16] {
     out
 }
 
-const RECORD_READING: aimdb_core::Name<Reading> = aimdb_core::Name::new("reading");
+const RECORD_READING: aimdb_data_contracts::Key<Reading> =
+    aimdb_data_contracts::Key::new("reading");
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_record_appears_as_a_ros_publisher() {
@@ -188,7 +189,9 @@ async fn a_record_appears_as_a_ros_publisher() {
 /// returns the build error.
 async fn refused(
     connector: Ros2Connector,
-    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading>) + Send + 'static,
+    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading, aimdb_core::Declared>)
+        + Send
+        + 'static,
 ) -> String {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))

@@ -353,6 +353,7 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     <#ty as ::aimdb_data_contracts::SchemaType>::NAME,
                     <#ty as ::aimdb_data_contracts::SchemaType>::VERSION,
                 ));
+                type Schema = aimdb_core::Declared;
             }
         },
         (None, Some(ty)) => quote! {
@@ -364,6 +365,7 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
             }
             impl aimdb_core::TypedKey for #name {
                 const SCHEMA: Option<(&'static str, u32)> = None;
+                type Schema = aimdb_core::Undeclared;
             }
         },
         (None, None) => {

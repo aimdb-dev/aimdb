@@ -84,9 +84,13 @@ struct AppSettings {
     feature_flag_alpha: bool,
 }
 
+/// `Temperature` is a contract (`SchemaType` + `Observable`): its key carries
+/// the schema reported in `record.list`, and `.observe()` requires it.
+const TEMPERATURE: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("server::Temperature");
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let key_server_temperature_1 = aimdb_core::Name::<Temperature>::new("server::Temperature");
     let key_server_temperaturefahrenheit_2 =
         aimdb_core::Name::<TemperatureFahrenheit>::new("server::TemperatureFahrenheit");
     let key_server_systemstatus_4 = aimdb_core::Name::<SystemStatus>::new("server::SystemStatus");
@@ -146,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `.observe()` feeds the reading's signal (`Observable::signal()`, here
     // `celsius`) into a live gauge — last/min/max/mean surface in
     // `record.list`/`record.get` as `signal_stats`.
-    builder.configure(key_server_temperature_1, |reg| {
+    builder.configure(TEMPERATURE, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
             .with_remote_access()
             .source(temperature_simulator)
@@ -161,10 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // transform closure itself), unlike `.source()`/`.tap()` which time the
     // interval between calls — see `get_stage_profiling`.
     builder.configure(key_server_temperaturefahrenheit_2, |reg| {
-        let key_server_temperature_3 = aimdb_core::Name::<Temperature>::new("server::Temperature");
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
             .with_remote_access()
-            .transform(key_server_temperature_3, |b| {
+            .transform(TEMPERATURE, |b| {
                 b.map(|t: &Temperature| {
                     Some(TemperatureFahrenheit {
                         sensor_id: t.sensor_id.clone(),

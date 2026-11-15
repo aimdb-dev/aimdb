@@ -46,7 +46,8 @@ where
     fn buffer(&mut self, cfg: aimdb_core::buffer::BufferCfg) -> &mut Self;
 }
 
-impl<T> TokioRecordRegistrarExt<T> for aimdb_core::RecordRegistrar<'_, T>
+impl<T, S: aimdb_core::SchemaState> TokioRecordRegistrarExt<T>
+    for aimdb_core::RecordRegistrar<'_, T, S>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {

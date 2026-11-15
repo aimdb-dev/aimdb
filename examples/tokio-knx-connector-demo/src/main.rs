@@ -57,11 +57,11 @@ use knx_connector_demo_common::{
 /// every record type built `From<ButtonEvent>`.
 struct EnterKey;
 
-impl<T> Input<T> for EnterKey
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for EnterKey
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.source(|ctx, producer| async move {
             let log = ctx.log();
             log.info("\n⌨️  Press ENTER to toggle light on 1/0/6");

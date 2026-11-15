@@ -93,16 +93,16 @@ async fn a_ros_publisher_reaches_every_record_linked_to_its_topic() {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2(&endpoint));
     for record in ["spindle.a", "spindle.b"] {
-        let record_key_1 = aimdb_core::Name::<Command>::interned(record);
+        let record_key_1 = aimdb_data_contracts::Key::<Command>::interned(record);
         builder.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
             reg.linked_from("ros2://cell4/spindle_cmd");
         });
     }
     let (db, runner) = builder.build().await.expect("build");
-    let record_key_2 = aimdb_core::Name::<Command>::new("spindle.a");
+    let record_key_2 = aimdb_data_contracts::Key::<Command>::new("spindle.a");
     let mut a = db.subscribe(record_key_2).unwrap();
-    let record_key_3 = aimdb_core::Name::<Command>::new("spindle.b");
+    let record_key_3 = aimdb_data_contracts::Key::<Command>::new("spindle.b");
     let mut b = db.subscribe(record_key_3).unwrap();
     tokio::spawn(runner.run());
 
@@ -155,10 +155,10 @@ async fn a_ros_publisher_reaches_every_record_linked_to_its_topic() {
 /// Builds a database with one inbound `ros2://` link set up by `link`, and
 /// returns the build error, if any.
 async fn build_with(
-    link: impl FnOnce(&mut RecordRegistrar<'_, Command>) + Send + 'static,
+    link: impl FnOnce(&mut RecordRegistrar<'_, Command, aimdb_core::Declared>) + Send + 'static,
     other: bool,
 ) -> Result<(), String> {
-    let key_command_1 = aimdb_core::Name::<Command>::new("command");
+    let key_command_1 = aimdb_data_contracts::Key::<Command>::new("command");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2(""));
@@ -167,7 +167,7 @@ async fn build_with(
         link(reg);
     });
     if other {
-        let key_other_2 = aimdb_core::Name::<Other>::new("other");
+        let key_other_2 = aimdb_data_contracts::Key::<Other>::new("other");
         builder.configure(key_other_2, |reg| {
             reg.buffer(BufferCfg::SingleLatest);
             reg.linked_from("ros2://cell4/spindle_cmd");
@@ -178,7 +178,7 @@ async fn build_with(
 
 #[tokio::test]
 async fn build_refuses_inbound_links_ros_could_not_serve() {
-    let key_command_3 = aimdb_core::Name::<Command>::new("command");
+    let key_command_3 = aimdb_data_contracts::Key::<Command>::new("command");
     let e = build_with(
         |reg| {
             reg.linked_from("ros2://cell4/{cell}/cmd");
@@ -262,7 +262,7 @@ struct CommandMirror {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn one_ros_type_per_topic_across_both_directions() {
     let build = |mirror: bool| async move {
-        let key_out_4 = aimdb_core::Name::<Command>::new("out");
+        let key_out_4 = aimdb_data_contracts::Key::<Command>::new("out");
         let mut builder = AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter::new().unwrap()))
             .with_connector(ros2("").register::<CommandMirror>());
@@ -271,13 +271,13 @@ async fn one_ros_type_per_topic_across_both_directions() {
             reg.linked_to("ros2://cell4/spindle_cmd");
         });
         if mirror {
-            let key_in_5 = aimdb_core::Name::<CommandMirror>::new("in");
+            let key_in_5 = aimdb_data_contracts::Key::<CommandMirror>::new("in");
             builder.configure(key_in_5, |reg| {
                 reg.buffer(BufferCfg::SingleLatest);
                 reg.linked_from("ros2://cell4/spindle_cmd");
             });
         } else {
-            let key_in_6 = aimdb_core::Name::<Other>::new("in");
+            let key_in_6 = aimdb_data_contracts::Key::<Other>::new("in");
             builder.configure(key_in_6, |reg| {
                 reg.buffer(BufferCfg::SingleLatest);
                 reg.linked_from("ros2://cell4/spindle_cmd");

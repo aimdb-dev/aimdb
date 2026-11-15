@@ -88,6 +88,7 @@ where
     T: SchemaType + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
     const SCHEMA: Option<(&'static str, u32)> = Some((T::NAME, T::VERSION));
+    type Schema = aimdb_core::Declared;
 }
 
 impl<T> AsRef<str> for Key<T> {

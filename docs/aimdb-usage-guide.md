@@ -35,8 +35,20 @@ lookups declare a borrowed `Name::<Temperature>::new(&name)`; lookups do not
 intern names. A `Name<T>` declaration reports no contract schema, including
 when its payload happens to implement `SchemaType`.
 
-Link helpers and `.observe()` no longer assign schemas. `contract_schema()`
-and public schema setters are removed. Existing envelope and version options
+The key is the only source of a record's schema: link helpers and
+`.observe()` no longer assign one. Instead, `configure` hands the closure a
+registrar typed by whether the key declares a contract
+(`RecordRegistrar<'_, T, Declared>` for `Key<T>` / `contract = T`,
+`RecordRegistrar<'_, T, Undeclared>` for `Name<T>` / `payload = T`). The
+contract verbs — `publish`, `subscribe`, `linked_to`, `linked_from`, their
+`_with` forms and `.observe()` — exist only on `Declared` registrars, so using
+one on a `Name<T>` record is a compile error ("this record's key declares no
+data contract") rather than a record silently reported without a schema. The
+raw `.link_to()` / `.link_from()` builders work in both states. Helper
+functions that take a registrar name the state they need
+(`&mut RecordRegistrar<'_, T, Declared>`) or are generic over
+`S: SchemaState`; custom `Input` / `Output` implementations are generic over
+`S` too. `contract_schema()` and public schema setters are removed. Existing envelope and version options
 are unchanged: select inline explicitly before `accepts_from`, and use a
 static `with_contract` binding for a bare legacy sender. A historical wire
 version does not change the record's current schema.
@@ -258,11 +270,11 @@ impl From<ButtonEvent> for ButtonPress {
 /// type built `From<ButtonEvent>`. It owns its pin.
 struct PushButton(Pin<'static>);
 
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         let PushButton(mut pin) = self;
         reg.source(move |ctx, producer| async move {
             let mut press = 0;
@@ -444,7 +456,7 @@ async fn main() -> DbResult<()> {
     // `connect` registers the connector and returns a handle to link through.
     let mqtt = builder.connect(MqttConnector::new("mqtt://broker.example.com:1883"));
 
-    let record_4 = aimdb_core::Name::<SensorReading>::new("sensor.reading");
+    let record_4 = aimdb_data_contracts::Key::<SensorReading>::new("sensor.reading");
     builder.configure(record_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .input(subscribe(mqtt, "sensor/room1").with_qos(1))
@@ -494,12 +506,12 @@ let mut builder = AimDbBuilder::new()
     .with_connector(zenoh)
     .with_connector(ros2);
 
-let record_5 = aimdb_core::Name::<MachineState>::new("cell4.state");
+let record_5 = aimdb_data_contracts::Key::<MachineState>::new("cell4.state");
 builder.configure(record_5, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
 });
-let record_6 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+let record_6 = aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
 builder.configure(record_6, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");
@@ -729,11 +741,11 @@ there; the MQTT demos
 generic over its record and bounded by `T: From<Event>`:
 
 ```rust
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.source(move |ctx, producer| async move {
             /* wait for an edge, debounce */
             producer.produce(T::from(ButtonEvent { /* … */ }));
@@ -757,7 +769,7 @@ inputs once, as struct fields, and an input takes one by value:
 let board = board::init(spawner).await;
 let NucleoInputs { b1 } = board.inputs;
 
-builder.configure::<ButtonPress>(ButtonKey::B1, |reg| {
+builder.configure(ButtonKey::B1, |reg| {
     reg.buffer_sized::<8, 3>(EmbassyBufferType::SpmcRing)
         .input(PushButton::on(b1))
         .output(publish(mqtt, ButtonKey::B1.link_address().unwrap()));
