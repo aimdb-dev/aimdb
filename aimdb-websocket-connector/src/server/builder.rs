@@ -285,6 +285,10 @@ impl ConnectorBuilder for WebSocketConnectorBuilder {
             // bus checks client permissions against.
             let outbound = OutboundRoutes::new(db, "ws")?;
 
+            // AimX frames splice each payload in as JSON: an inline envelope
+            // header would produce invalid messages, and could never arrive.
+            aimdb_core::session::refuse_inline_envelopes("ws", &outbound, &inbound)?;
+
             // ── Client manager ────────────────────────────────────
             let client_mgr = ClientManager::new(self.channel_capacity.max(1));
 

@@ -958,32 +958,7 @@ pub fn pump_client(
     // The codec cannot carry an inline envelope header: refuse such a link
     // here, not as an encode failure that drops the session for every link.
     if !handle.inline_envelopes {
-        let inline = |config: &crate::transport::ConnectorConfig| {
-            config
-                .protocol_options
-                .iter()
-                .any(|(key, _)| key == crate::connector::WIRE_ENVELOPE_KEY)
-        };
-        let refused = outbound
-            .routes()
-            .iter()
-            .find(|route| inline(&route.config))
-            .map(|route| route.default_topic.clone())
-            .or_else(|| {
-                inbound
-                    .routes()
-                    .iter()
-                    .find(|route| inline(&route.config))
-                    .map(|route| route.topic.clone())
-            });
-        if let Some(topic) = refused {
-            return Err(crate::DbError::InvalidOperation {
-                operation: alloc::format!("link {scheme}://{topic}"),
-                reason: "this connector's codec carries bare payloads only; \
-                         an inline envelope cannot be sent or received on it"
-                    .into(),
-            });
-        }
+        refuse_inline_envelopes(scheme, &outbound, &inbound)?;
     }
     if !outbound.routes().is_empty() {
         let handle = handle.clone();
@@ -1008,6 +983,49 @@ pub fn pump_client(
     }
 
     Ok(pumps)
+}
+
+/// Fails if a link of `scheme` frames its payloads in an inline envelope
+/// (it is recorded with
+/// [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY)), naming the
+/// first such link, outbound before inbound.
+///
+/// For a connector whose [`EnvelopeCodec`] reports
+/// [`carries_inline_envelopes`](EnvelopeCodec::carries_inline_envelopes) as
+/// `false`, such as one speaking AimX: call it from `build()`, once the routes
+/// are collected. [`pump_client`] already does for client connectors.
+pub fn refuse_inline_envelopes(
+    scheme: &str,
+    outbound: &crate::OutboundRoutes,
+    inbound: &crate::InboundDispatch,
+) -> crate::DbResult<()> {
+    let inline = |config: &crate::transport::ConnectorConfig| {
+        config
+            .protocol_options
+            .iter()
+            .any(|(key, _)| key == crate::connector::WIRE_ENVELOPE_KEY)
+    };
+    let refused = outbound
+        .routes()
+        .iter()
+        .find(|route| inline(&route.config))
+        .map(|route| route.default_topic.clone())
+        .or_else(|| {
+            inbound
+                .routes()
+                .iter()
+                .find(|route| inline(&route.config))
+                .map(|route| route.topic.clone())
+        });
+    match refused {
+        None => Ok(()),
+        Some(topic) => Err(crate::DbError::InvalidOperation {
+            operation: alloc::format!("link {scheme}://{topic}"),
+            reason: "this connector's codec carries bare payloads only; \
+                     an inline envelope cannot be sent or received on it"
+                .into(),
+        }),
+    }
 }
 
 /// Drive one inbound mirror: subscribe to remote topic `id` and produce every

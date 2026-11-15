@@ -42,7 +42,7 @@ mod topic_match;
 pub use topic_match::{is_wildcard, pattern_contains, topic_matches};
 
 #[cfg(feature = "connector-session")]
-pub use client::{pump_client, run_client, ClientConfig, ClientHandle};
+pub use client::{pump_client, refuse_inline_envelopes, run_client, ClientConfig, ClientHandle};
 #[cfg(feature = "connector-session")]
 pub use connector::{SessionClientConnector, SessionServerConnector};
 #[cfg(feature = "connector-session")]
@@ -580,10 +580,10 @@ pub trait EnvelopeCodec: Send + Sync {
     ///
     /// `true` (the default) for a codec that carries payloads as opaque bytes.
     /// A codec that splices the payload into its own text format returns
-    /// `false`: the binary header would not encode, so
-    /// [`pump_client`](crate::session::pump_client) refuses links recorded
-    /// with [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY) at
-    /// build time.
+    /// `false`: the binary header would not encode, so its connectors refuse
+    /// links recorded with
+    /// [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY) at build
+    /// time, through [`pump_client`] or [`refuse_inline_envelopes`].
     fn carries_inline_envelopes(&self) -> bool {
         true
     }

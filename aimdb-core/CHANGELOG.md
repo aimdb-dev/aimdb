@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the client dropped the session shared by every link. `EnvelopeCodec` gains
   `carries_inline_envelopes` (default `true`, `false` for `AimxCodec`), and
   `pump_client` checks it for `ws-client`, serial, TCP and UDS client links.
+  `session::refuse_inline_envelopes` is the same check for a connector that
+  collects its own routes; the `ws://` server uses it.
 - Link builders can finalize envelope strategies during registration. Transports
   retain their existing byte-oriented SPI, and bare payloads remain the default.
 
