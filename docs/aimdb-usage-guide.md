@@ -464,6 +464,24 @@ builder.configure::<Temperature>("cell4.temperature", |reg| {
 See [AimDB and ROS 2](aimdb-and-ros2.md) for message types, domains, QoS and
 the gateway pattern.
 
+### Generic payload codecs
+
+The built-in `Json`, `Postcard<N>`, and `Cdr<N>` markers also implement
+`PayloadDecoder` and `PayloadEncoder`. These traits operate on any serde
+type, so a migration chain can select a historical payload type before
+calling the codec. `decode_payload::<T>(bytes)` returns `(value, consumed)`;
+`encode_payload(&value, out)` writes into caller storage. The built-in implementations require the
+corresponding `linkable-json`, `linkable-postcard`, or `linkable-cdr` feature.
+
+The consumed count excludes trailing data and includes CDR encapsulation
+and alignment bytes. JSON whitespace after the value counts as consumed.
+These operations expose a remainder for admission to check; they do not
+change `LinkCodec::decode` behavior. Postcard and CDR encoding into caller
+storage remains allocation-free on success; JSON uses its owned encoding
+path. A custom codec implements the generic traits explicitly. Implementing
+`LinkCodec<T>` for one type, or using the `Default` marker that delegates to
+that type's `Linkable`, does not provide generic historical decoding.
+
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.

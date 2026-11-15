@@ -56,6 +56,18 @@ pub fn from_bytes<'de, T>(bytes: &'de [u8]) -> Result<T>
 where
     T: serde::Deserialize<'de>,
 {
+    from_bytes_with_consumed(bytes).map(|(value, _)| value)
+}
+
+/// Decodes one encapsulated value and returns its consumed byte count.
+///
+/// The count includes the four-byte encapsulation header and internal alignment
+/// padding, but excludes any trailing bytes. Alignment starts at the body, just
+/// as in [`from_bytes`]. This also supports borrowed payload fields without alloc.
+pub fn from_bytes_with_consumed<'de, T>(bytes: &'de [u8]) -> Result<(T, usize)>
+where
+    T: serde::Deserialize<'de>,
+{
     let (header, body) = bytes
         .split_at_checked(HEADER_LEN)
         .ok_or(Error::UnexpectedEof)?;
@@ -64,5 +76,7 @@ where
         [0x00, 0x00] => true,
         other => return Err(Error::InvalidHeader(other)),
     };
-    T::deserialize(&mut de::Deserializer::new(body, big_endian))
+    let mut deserializer = de::Deserializer::new(body, big_endian);
+    let value = T::deserialize(&mut deserializer)?;
+    Ok((value, HEADER_LEN + deserializer.position()))
 }

@@ -96,6 +96,12 @@ pub use contract_schema::SchemaRegistrarExt;
 mod link_codec;
 
 #[cfg(feature = "linkable")]
+mod payload_codec;
+
+#[cfg(feature = "linkable")]
+pub use payload_codec::{PayloadDecoder, PayloadEncoder};
+
+#[cfg(feature = "linkable")]
 mod linkable;
 
 #[cfg(feature = "linkable")]

@@ -20,5 +20,10 @@ let back: Temperature = aimdb_cdr::from_bytes(&buf[..len]).unwrap();
 assert_eq!(back.temperature, 21.5);
 ```
 
+`from_bytes` ignores trailing bytes. Use `from_bytes_with_consumed` when a
+caller needs to enforce that the entire payload was decoded. It returns
+`(value, consumed_bytes)`, including the encapsulation header and internal
+alignment padding, and supports borrowed fields without `alloc`.
+
 `Option`, enums, maps and `char` have no XCDR1 mapping in ROS 2 and are
 rejected with `Error::Unsupported`.

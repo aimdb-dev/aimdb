@@ -182,12 +182,7 @@ where
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        let encoded = self.encode(value)?;
-        let destination = out
-            .get_mut(..encoded.len())
-            .ok_or(SerializeError::BufferTooSmall)?;
-        destination.copy_from_slice(&encoded);
-        Ok(encoded.len())
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
@@ -208,11 +203,7 @@ where
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        match postcard::to_slice(value, out) {
-            Ok(used) => Ok(used.len()),
-            Err(postcard::Error::SerializeBufferFull) => Err(SerializeError::BufferTooSmall),
-            Err(_) => Err(SerializeError::InvalidData),
-        }
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
@@ -233,11 +224,7 @@ where
     }
 
     fn encode_into(&self, value: &T, out: &mut [u8]) -> Result<usize, SerializeError> {
-        match aimdb_cdr::to_slice(value, out) {
-            Ok(used) => Ok(used),
-            Err(aimdb_cdr::Error::BufferTooSmall) => Err(SerializeError::BufferTooSmall),
-            Err(_) => Err(SerializeError::InvalidData),
-        }
+        crate::PayloadEncoder::encode_payload(self, value, out)
     }
 }
 
