@@ -22,7 +22,7 @@ where
     C: LinkCodec<T>,
 {
     link.with_link_codec(codec)
-        .with_contract(T::NAME, T::VERSION)
+        .requires_contract(T::NAME, T::VERSION)
 }
 
 /// An inbound link carrying contract `T`: its codec, and the requirement
@@ -33,7 +33,7 @@ where
     C: LinkCodec<T>,
 {
     link.with_link_codec(codec)
-        .with_contract(T::NAME, T::VERSION)
+        .requires_contract(T::NAME, T::VERSION)
 }
 
 /// Publishes a `T` record to `address` on `connector`, encoded with `T`'s own

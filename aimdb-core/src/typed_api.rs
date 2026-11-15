@@ -1088,7 +1088,7 @@ where
     /// checked even if the link itself is rejected. It never sets the
     /// record's schema. `aimdb-data-contracts`' `publish` / `subscribe` set it
     /// from the contract type.
-    pub fn with_contract(mut self, name: &str, version: u32) -> Self {
+    pub fn requires_contract(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -1474,7 +1474,7 @@ where
     /// checked even if the link itself is rejected. It never sets the
     /// record's schema. `aimdb-data-contracts`' `publish` / `subscribe` set it
     /// from the contract type.
-    pub fn with_contract(mut self, name: &str, version: u32) -> Self {
+    pub fn requires_contract(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -2805,11 +2805,11 @@ mod tests {
         }
     }
 
-    /// `with_contract` checks the key-declared schema on registration, in both
+    /// `requires_contract` checks the key-declared schema on registration, in both
     /// directions and on both forms, even when the link is rejected. It never
     /// sets the schema itself.
     #[test]
-    fn with_contract_requires_the_key_schema() {
+    fn requires_contract_checks_the_key_schema() {
         let schema_of = |rec: &crate::typed_record::TypedRecord<TestRecord>| {
             rec.schema().map(|s| (s.name.clone(), s.version))
         };
@@ -2820,16 +2820,16 @@ mod tests {
                 .output(
                     OutboundLink::new("mqtt://out")
                         .with_serializer(ser)
-                        .with_contract("contract", 2),
+                        .requires_contract("contract", 2),
                 )
                 .input(
                     InboundLink::new("mqtt://in")
                         .with_deserializer(de)
-                        .with_contract("contract", 2),
+                        .requires_contract("contract", 2),
                 );
             reg.link_from("mqtt://in2")
                 .with_deserializer(de)
-                .with_contract("contract", 2)
+                .requires_contract("contract", 2)
                 .finish();
         });
         assert_eq!(declared.outbound_connectors().len(), 1);
@@ -2840,11 +2840,11 @@ mod tests {
             reg.output(
                 OutboundLink::new("mqtt://out")
                     .with_serializer(ser)
-                    .with_contract("contract", 2),
+                    .requires_contract("contract", 2),
             );
             reg.link_from("mqtt://in")
                 .with_deserializer(de)
-                .with_contract("contract", 2)
+                .requires_contract("contract", 2)
                 .finish();
         });
         assert_eq!(schema_of(&undeclared), None);
@@ -2854,7 +2854,7 @@ mod tests {
 
         // Rejected (no serializer), yet the contract is still checked.
         let mut rejected = registered(|reg| {
-            reg.output(OutboundLink::new("mqtt://out").with_contract("contract", 2));
+            reg.output(OutboundLink::new("mqtt://out").requires_contract("contract", 2));
         });
         assert!(rejected.outbound_connectors().is_empty());
         assert_eq!(drain_errors(&mut rejected).len(), 2);
@@ -2864,7 +2864,7 @@ mod tests {
             reg.schema("contract", 1).output(
                 OutboundLink::new("mqtt://out")
                     .with_serializer(ser)
-                    .with_contract("contract", 2),
+                    .requires_contract("contract", 2),
             );
         });
         let errors = drain_errors(&mut conflicting);
