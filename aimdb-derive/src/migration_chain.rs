@@ -111,6 +111,14 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
         let ty = &step.step_ty;
         let older = &step.older_ty;
         let newer = &step.newer_ty;
+        // The `VersionOf` / `Reaches` proofs below name `#older` a version
+        // of `#current`: on the wire that is one contract name.
+        asserts.push(quote! {
+            assert!(__same_name(
+                    <#older as ::aimdb_data_contracts::SchemaType>::NAME,
+                    <#current as ::aimdb_data_contracts::SchemaType>::NAME),
+                "every type in a migration chain must share the current type's SchemaType::NAME");
+        });
         asserts.push(quote! {
             assert!(<#ty as ::aimdb_data_contracts::MigrationStep>::FROM_VERSION
                 == <#older as ::aimdb_data_contracts::SchemaType>::VERSION,
@@ -170,6 +178,20 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
     }
     quote! {
         const _: () = {
+            const fn __same_name(a: &str, b: &str) -> bool {
+                let (a, b) = (a.as_bytes(), b.as_bytes());
+                if a.len() != b.len() {
+                    return false;
+                }
+                let mut i = 0;
+                while i < a.len() {
+                    if a[i] != b[i] {
+                        return false;
+                    }
+                    i += 1;
+                }
+                true
+            }
             #(#asserts)*
             #(#helpers)*
             #(#proofs)*

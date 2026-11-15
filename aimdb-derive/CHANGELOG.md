@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`migration_chain!` requires one contract name across the chain.** Every
+  historical type's `SchemaType::NAME` must equal the current type's, checked
+  at compile time. A differently named older type used to compile and then
+  have its frames rejected as `contract_mismatch`.
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
