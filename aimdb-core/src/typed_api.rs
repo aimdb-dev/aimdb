@@ -583,8 +583,8 @@ where
             }
             None => alloc::format!(
                 "carries contract {name} v{version}, but its key declares no schema; \
-                 declare it with `Key<{name}>` or `#[record_key(contract = ..)]` \
-                 instead of `Name<T>` or `payload = ..`"
+                 declare the record with `Key<T>` or `#[record_key(contract = T)]` \
+                 instead of `Name<T>` or `payload = T`"
             ),
         };
         let key = self.record_key.clone();

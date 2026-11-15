@@ -225,7 +225,8 @@ async fn detached_links_take_the_same_knobs() {
 /// `publish` / `subscribe` take the MQTT knobs like any other link.
 #[tokio::test]
 async fn publish_and_subscribe_take_the_knobs() {
-    let key_test_reading_contract_6 = aimdb_core::Name::<Reading>::new("test.reading.contract");
+    let key_test_reading_contract_6 =
+        aimdb_data_contracts::Key::<Reading>::new("test.reading.contract");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
     let mqtt = builder
