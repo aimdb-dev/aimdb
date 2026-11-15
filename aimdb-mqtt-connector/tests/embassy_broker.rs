@@ -313,7 +313,7 @@ fn the_session_loop_connects_and_subscribes() {
                         core::str::from_utf8(data)
                             .ok()
                             .and_then(|s| s.trim().parse::<u64>().ok())
-                            .ok_or_else(|| alloc::string::String::from("bad payload"))
+                            .ok_or_else(|| "bad payload".into())
                     })
                     .finish();
             });

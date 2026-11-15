@@ -74,7 +74,7 @@
 //!         .finish()
 //!         .link_from("ws-client://config/threshold")
 //!         .with_deserializer(|_ctx, data| {
-//!             serde_json::from_slice::<Temperature>(data).map_err(|e| e.to_string())
+//!             serde_json::from_slice::<Temperature>(data).map_err(|e| e.to_string().into())
 //!         })
 //!         .finish();
 //! });

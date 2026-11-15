@@ -57,7 +57,7 @@
 //!     reg.link_from("mqtt://commands/temperature")
 //!        .with_deserializer(|_ctx, data| match data.try_into() {
 //!            Ok(bytes) => Ok(TempCommand { target: f32::from_be_bytes(bytes) }),
-//!            Err(_) => Err("bad frame".to_string()),
+//!            Err(_) => Err("bad frame".into()),
 //!        })
 //!        .finish();
 //! });

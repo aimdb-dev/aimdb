@@ -155,7 +155,7 @@ async fn round_trips(connector: impl ConnectorBuilder + 'static) -> Report {
             .with_deserializer(|_ctx, data: &[u8]| {
                 data.try_into()
                     .map(u64::from_le_bytes)
-                    .map_err(|_| String::from("not 8 bytes"))
+                    .map_err(|_| "not 8 bytes".into())
             })
             .finish();
     });
