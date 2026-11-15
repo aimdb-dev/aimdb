@@ -61,6 +61,17 @@ impl WireFormat {
         }
     }
 
+    /// The corresponding codec ID in an inline envelope.
+    pub const fn payload_codec(self) -> aimdb_core::envelope::PayloadCodec {
+        use aimdb_core::envelope::PayloadCodec;
+        match self {
+            Self::Unspecified => PayloadCodec::Unspecified,
+            Self::Json => PayloadCodec::Json,
+            Self::Postcard => PayloadCodec::Postcard,
+            Self::Cdr => PayloadCodec::Cdr,
+        }
+    }
+
     /// Reads the format recorded in a link config; `Unspecified` if absent or
     /// unknown.
     pub fn recorded_in(config: &[(String, String)]) -> Self {
@@ -101,6 +112,20 @@ pub trait LinkCodec<T>: Clone + Send + Sync + 'static {
 
     /// Decode one connector payload into a record.
     fn decode(&self, bytes: &[u8]) -> Result<T, String>;
+
+    /// Decode with consumption for bare link admission. Custom codecs that
+    /// accept trailing data must override this; the default declares full use.
+    /// Ordinary `decode` retains its existing semantics outside admission.
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        self.decode(bytes).map(|value| (value, bytes.len()))
+    }
+
+    /// Registration-only builtin descriptor. Custom codecs use the explicit
+    /// `with_versioned_codec` path rather than claiming a builtin implementation.
+    #[doc(hidden)]
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        None
+    }
 
     /// Encode a record into owned bytes.
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError>;
@@ -157,6 +182,10 @@ where
         T::from_bytes(bytes)
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        T::from_bytes_with_consumed(bytes)
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         value.to_bytes().map_err(|_| SerializeError::InvalidData)
     }
@@ -175,6 +204,17 @@ where
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         serde_json::from_slice(bytes).map_err(|error| error.to_string())
+    }
+
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(aimdb_core::link_wire::WireCodecInfo {
+            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
+            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
+            custom: false,
+        })
     }
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
@@ -198,6 +238,17 @@ where
         postcard::from_bytes(bytes).map_err(|error| error.to_string())
     }
 
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(aimdb_core::link_wire::WireCodecInfo {
+            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
+            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
+            custom: false,
+        })
+    }
+
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
         postcard::to_allocvec(value).map_err(|_| SerializeError::InvalidData)
     }
@@ -217,6 +268,17 @@ where
 
     fn decode(&self, bytes: &[u8]) -> Result<T, String> {
         aimdb_cdr::from_bytes(bytes).map_err(|error| error.to_string())
+    }
+
+    fn decode_with_consumed(&self, bytes: &[u8]) -> Result<(T, usize), String> {
+        crate::PayloadDecoder::decode_payload(self, bytes)
+    }
+    fn wire_codec_info(&self) -> Option<aimdb_core::link_wire::WireCodecInfo> {
+        Some(aimdb_core::link_wire::WireCodecInfo {
+            codec: <Self as LinkCodec<T>>::WIRE_FORMAT.payload_codec(),
+            capacity: <Self as LinkCodec<T>>::ENCODE_BUFFER_CAPACITY,
+            custom: false,
+        })
     }
 
     fn encode(&self, value: &T) -> Result<Vec<u8>, SerializeError> {
@@ -255,6 +317,7 @@ where
     where
         C: LinkCodec<T>,
     {
+        let info = codec.wire_codec_info();
         let builder = match C::ENCODE_BUFFER_CAPACITY {
             Some(capacity) => {
                 let scratch_codec = codec.clone();
@@ -267,6 +330,7 @@ where
                 .with_serializer(move |_ctx, value| codec.encode(value))
                 .clear_serializer_into(),
         };
+        let builder = builder.with_wire_codec_info(info);
         // After the setters, which clear any earlier record.
         match C::WIRE_FORMAT.as_str() {
             Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
@@ -283,8 +347,21 @@ where
     where
         C: LinkCodec<T>,
     {
-        let builder =
-            self.with_deserializer(move |_ctx, bytes| codec.decode(bytes).map_err(Into::into));
+        let info = codec.wire_codec_info();
+        let builder = self
+            .with_deserializer(move |_ctx, bytes| {
+                let (value, used) = codec
+                    .decode_with_consumed(bytes)
+                    .map_err(aimdb_core::IngestError::from)?;
+                if used != bytes.len() {
+                    return Err(aimdb_core::IngestError::new(
+                        aimdb_core::Rejection::DecodeError,
+                        alloc::format!("decoder consumed {used} of {} payload bytes", bytes.len()),
+                    ));
+                }
+                Ok(value)
+            })
+            .with_wire_codec_info(info);
         match C::WIRE_FORMAT.as_str() {
             Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
             None => builder,

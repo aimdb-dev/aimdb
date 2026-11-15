@@ -105,6 +105,9 @@ pub mod executor;
 pub mod extensions;
 pub mod graph;
 pub mod identity;
+#[doc(hidden)]
+pub mod link_wire;
+pub use link_wire::EnvelopeCarrier;
 mod ingest;
 pub use ingest::{InboundRouteMetrics, InboundRouteStats, IngestError, IngestOutcome, IngestValue, Rejection, UpgradeCount};
 mod inbound_dispatch;

@@ -58,6 +58,7 @@ const EXPECTED: &[(&str, u64)] = &[
     ("inbound_dispatch_keyed_known", 0),
     ("inbound_dispatch_keyed_new", 1),
     ("outbound_next_static_topic", 0),
+    ("outbound_next_enveloped", 0),
     ("outbound_next_written_topic", 0),
     ("outbound_next_owned", 1),
     ("outbound_next_round_robin", 0),
@@ -262,13 +263,11 @@ async fn measure_dispatch(upgraded: bool) -> (u64, u64) {
 /// Full admission of a historical binary payload, including identity/shape checks.
 async fn measure_admission(inline: bool) -> (u64, u64) {
     use aimdb_core::envelope::{ContractRef, HeaderWriter, PayloadCodec};
-    use aimdb_data_contracts::{admit_frame, link_codecs::Postcard, LinkContract, PayloadEncoder};
-    let codec = Postcard::<64>;
-    let policy = if inline {
-        LinkContract::<Reading, _>::inline_from::<1>(PayloadCodec::Postcard, codec)
-    } else {
-        LinkContract::<Reading, _>::bound::<LegacyReading>(PayloadCodec::Postcard, codec)
+    use aimdb_data_contracts::{
+        link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+        PayloadEncoder, VersionedInboundExt,
     };
+    let codec = Postcard::<64>;
     let mut payload = [0; 32];
     let header = if inline {
         HeaderWriter::new(&mut payload)
@@ -292,10 +291,17 @@ async fn measure_admission(inline: bool) -> (u64, u64) {
         + header;
     let db = build_db(|b| {
         b.configure::<Reading>("admission", |reg| {
-            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+            let link = reg
+                .buffer(BufferCfg::SpmcRing { capacity: 64 })
                 .link_from("bench://admission")
-                .with_admitting_deserializer(&[1], move |_, _, bytes| admit_frame(bytes, &policy))
-                .finish();
+                .with_link_codec(codec);
+            if inline {
+                link.with_envelope(EnvelopeCarrier::Inline)
+                    .accepts_from::<1>()
+                    .finish();
+            } else {
+                link.with_contract::<LegacyReading>().finish();
+            }
         });
         add_decoys(b);
     })
@@ -395,6 +401,35 @@ async fn measure_next(serializer: Serializer, topic: Topic) -> (u64, u64) {
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
     let producer = db.producer::<Reading>("out.record").expect("producer");
 
+    for i in 0..WARMUP_ITERS {
+        producer.produce(reading(i));
+        pull_one(&mut outbound).await;
+    }
+    reset();
+    for i in 0..MEASURE_ITERS {
+        producer.produce(reading(i));
+        pull_one(&mut outbound).await;
+    }
+    snapshot()
+}
+
+/// Public link API, current-version inline header plus reusable payload scratch.
+async fn measure_next_enveloped() -> (u64, u64) {
+    use aimdb_data_contracts::{
+        link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+    };
+    let db = build_db(|b| {
+        b.configure::<Reading>("out.enveloped", |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_to("bench://out/enveloped")
+                .with_link_codec(Postcard::<64>)
+                .with_envelope(EnvelopeCarrier::Inline)
+                .finish();
+        });
+    })
+    .await;
+    let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
+    let producer = db.producer::<Reading>("out.enveloped").unwrap();
     for i in 0..WARMUP_ITERS {
         producer.produce(reading(i));
         pull_one(&mut outbound).await;
@@ -556,6 +591,11 @@ fn main() {
                 "outbound_next_static_topic",
                 "SpmcRing",
                 measure_next(Serializer::Scratch, Topic::Static).await,
+            ),
+            (
+                "outbound_next_enveloped",
+                "SpmcRing",
+                measure_next_enveloped().await,
             ),
             (
                 "outbound_next_written_topic",

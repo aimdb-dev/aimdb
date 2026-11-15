@@ -204,6 +204,7 @@ tokio-test = "0.4"
 serde = { workspace = true }
 aimdb-data-contracts = { path = "../aimdb-data-contracts", default-features = false, features = [
     "linkable-postcard",
+    "migratable",
 ] }
 aimdb-tokio-adapter = { path = "../aimdb-tokio-adapter", features = [
     "tokio-runtime",

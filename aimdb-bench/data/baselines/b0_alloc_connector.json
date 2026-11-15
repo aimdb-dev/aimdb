@@ -72,6 +72,15 @@
     "bytes_per_msg": 0.032
   },
   {
+    "profile": "outbound_next_enveloped",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
     "profile": "outbound_next_written_topic",
     "buffer_type": "SpmcRing",
     "total_allocs": 0,

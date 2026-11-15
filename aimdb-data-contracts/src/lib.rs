@@ -74,9 +74,9 @@ mod streamable;
 pub use streamable::Streamable;
 
 mod contract_identity;
-pub use contract_identity::{name_id, ContractShape};
 #[doc(hidden)]
 pub use contract_identity::{assert_unique_name_ids, locked_shape};
+pub use contract_identity::{name_id, ContractShape};
 
 mod catalog;
 pub use catalog::ContractId;
@@ -143,6 +143,16 @@ mod migratable;
 
 #[cfg(feature = "migratable")]
 mod admission;
+
+#[cfg(feature = "migratable")]
+mod versioned_links;
+
+#[cfg(feature = "migratable")]
+pub use aimdb_core::EnvelopeCarrier;
+#[cfg(feature = "migratable")]
+pub use versioned_links::{
+    EnvelopeLinkExt, VersionedCodecBuilderExt, VersionedInboundExt, VersionedOutboundExt,
+};
 
 #[cfg(feature = "migratable")]
 pub use admission::{admit, admit_frame, Admit, LinkContract};
@@ -313,6 +323,12 @@ pub trait Observable: SchemaType {
     note = "`publish`, `subscribe` and the `linked_*` verbs encode with the record's own codec: derive or implement `Linkable` for `{Self}`"
 )]
 pub trait Linkable: SchemaType + Sized {
+    /// Decode with consumption for default bare-link admission. A custom
+    /// decoder that accepts a prefix must override this to expose its remainder.
+    fn from_bytes_with_consumed(data: &[u8]) -> Result<(Self, usize), alloc::string::String> {
+        Self::from_bytes(data).map(|value| (value, data.len()))
+    }
+
     /// Preferred reusable scratch capacity for [`encode_into`](Self::encode_into).
     ///
     /// `None` keeps outbound links on the existing owned-`Vec` serializer.

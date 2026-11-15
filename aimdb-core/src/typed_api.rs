@@ -897,6 +897,9 @@ pub type OutboundConnectorBuilder<'r, 'a, T> =
 /// [`OutboundLink::new`] and registered by [`RecordRegistrar::output`].
 pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 
+type OutboundWireFinalizer<T> =
+    Arc<dyn Fn(OutboundLink<T>) -> Result<OutboundLink<T>, String> + Send + Sync>;
+
 /// Builder for configuring outbound connector links (AimDB → External)
 ///
 /// `R` is what the builder is attached to. [`RecordRegistrar::link_to`]
@@ -915,6 +918,9 @@ pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
 /// work on both forms.
 #[must_use = "a link does nothing until it is passed to `.output()` or finished with `.finish()`"]
 pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    wire: crate::link_wire::WireOptions,
+    wire_codec: Option<crate::link_wire::WireCodecInfo>,
+    wire_finalizer: Option<OutboundWireFinalizer<T>>,
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
@@ -948,6 +954,9 @@ where
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
+            wire: Default::default(),
+            wire_codec: None,
+            wire_finalizer: None,
             url: url.to_string(),
             connector: None,
             schema: None,
@@ -961,6 +970,9 @@ where
     fn attach<R>(self, at: R) -> OutboundLinkBuilder<T, R> {
         OutboundLinkBuilder {
             at,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -976,9 +988,41 @@ impl<T, R> OutboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    #[doc(hidden)]
+    pub fn wire_options(&self) -> crate::link_wire::WireOptions {
+        self.wire
+    }
+    #[doc(hidden)]
+    pub fn with_wire_options(mut self, options: crate::link_wire::WireOptions) -> Self {
+        self.wire = options;
+        self
+    }
+    #[doc(hidden)]
+    pub fn wire_codec_info(&self) -> Option<crate::link_wire::WireCodecInfo> {
+        self.wire_codec
+    }
+    #[doc(hidden)]
+    pub fn with_wire_codec_info(mut self, info: Option<crate::link_wire::WireCodecInfo>) -> Self {
+        self.wire_codec = info;
+        self
+    }
+    #[doc(hidden)]
+    pub fn with_wire_finalizer<F>(mut self, replace: bool, finalize: F) -> Self
+    where
+        F: Fn(OutboundLink<T>) -> Result<OutboundLink<T>, String> + Send + Sync + 'static,
+    {
+        if replace || self.wire_finalizer.is_none() {
+            self.wire_finalizer = Some(Arc::new(finalize));
+        }
+        self
+    }
+
     fn detach(self) -> (R, OutboundLink<T>) {
         let link = OutboundLinkBuilder {
             at: Detached,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -1012,6 +1056,7 @@ where
     /// a newly installed codec closure has no known format until a codec verb
     /// records one.
     fn clear_wire_format(mut self) -> Self {
+        self.wire_codec = None;
         self.config
             .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
         self
@@ -1219,6 +1264,9 @@ type TypedMatchDeserializerFn<T> = Arc<
         + 'static,
 >;
 
+type InboundWireFinalizer<T> =
+    Arc<dyn Fn(InboundLink<T>) -> Result<InboundLink<T>, String> + Send + Sync>;
+
 /// Inbound link builder attached to a record: what
 /// [`RecordRegistrar::link_from`] returns.
 ///
@@ -1248,6 +1296,9 @@ pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
 /// work on both forms.
 #[must_use = "a link does nothing until it is passed to `.input()` or finished with `.finish()`"]
 pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
+    wire: crate::link_wire::WireOptions,
+    wire_codec: Option<crate::link_wire::WireCodecInfo>,
+    wire_finalizer: Option<InboundWireFinalizer<T>>,
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
@@ -1283,6 +1334,9 @@ where
     pub fn new(url: &str) -> Self {
         Self {
             at: Detached,
+            wire: Default::default(),
+            wire_codec: None,
+            wire_finalizer: None,
             url: url.to_string(),
             connector: None,
             schema: None,
@@ -1298,6 +1352,9 @@ where
     fn attach<R>(self, at: R) -> InboundLinkBuilder<T, R> {
         InboundLinkBuilder {
             at,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -1315,9 +1372,41 @@ impl<T, R> InboundLinkBuilder<T, R>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    #[doc(hidden)]
+    pub fn wire_options(&self) -> crate::link_wire::WireOptions {
+        self.wire
+    }
+    #[doc(hidden)]
+    pub fn with_wire_options(mut self, options: crate::link_wire::WireOptions) -> Self {
+        self.wire = options;
+        self
+    }
+    #[doc(hidden)]
+    pub fn wire_codec_info(&self) -> Option<crate::link_wire::WireCodecInfo> {
+        self.wire_codec
+    }
+    #[doc(hidden)]
+    pub fn with_wire_codec_info(mut self, info: Option<crate::link_wire::WireCodecInfo>) -> Self {
+        self.wire_codec = info;
+        self
+    }
+    #[doc(hidden)]
+    pub fn with_wire_finalizer<F>(mut self, replace: bool, finalize: F) -> Self
+    where
+        F: Fn(InboundLink<T>) -> Result<InboundLink<T>, String> + Send + Sync + 'static,
+    {
+        if replace || self.wire_finalizer.is_none() {
+            self.wire_finalizer = Some(Arc::new(finalize));
+        }
+        self
+    }
+
     fn detach(self) -> (R, InboundLink<T>) {
         let link = InboundLinkBuilder {
             at: Detached,
+            wire: self.wire,
+            wire_codec: self.wire_codec,
+            wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
             schema: self.schema,
@@ -1353,6 +1442,7 @@ where
     /// a newly installed codec closure has no known format until a codec verb
     /// records one.
     fn clear_wire_format(mut self) -> Self {
+        self.wire_codec = None;
         self.config
             .retain(|(key, _)| key != crate::connector::WIRE_FORMAT_KEY);
         self
@@ -1418,6 +1508,14 @@ where
         self.match_deserializer = Some(Arc::new(f));
         self.upgrade_versions = versions.to_vec();
         self.clear_wire_format()
+    }
+
+    /// Clear both inbound callback slots before installing a complete strategy.
+    #[doc(hidden)]
+    pub fn clear_deserializers(mut self) -> Self {
+        self.context_deserializer = None;
+        self.match_deserializer = None;
+        self
     }
 
     /// Assigns each value of capture `name` a [`KeyId`](crate::KeyId), up to
@@ -1496,6 +1594,40 @@ where
 {
     /// Validates and registers an outbound link, or records why not.
     fn push_outbound(&mut self, mut link: OutboundLink<T>) {
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
+
+        let wire_url = link.url.clone();
+        if let Err(message) = link.wire.read_carrier(&link.config) {
+            self.rec.push_config_error(crate::ConfigError::new(
+                self.record_key.clone(),
+                Some(wire_url),
+                message,
+            ));
+            return;
+        }
+        if let Some(finalize) = link.wire_finalizer.take() {
+            link = match finalize(link) {
+                Ok(link) => link,
+                Err(message) => {
+                    self.rec.push_config_error(crate::ConfigError::new(
+                        self.record_key.clone(),
+                        Some(wire_url),
+                        message,
+                    ));
+                    return;
+                }
+            };
+        } else if link.wire.carrier == crate::EnvelopeCarrier::Inline {
+            self.rec.push_config_error(crate::ConfigError::new(
+                self.record_key.clone(),
+                Some(wire_url),
+                "inline envelopes require with_envelope or with_versioned_codec",
+            ));
+            return;
+        }
+
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
 
@@ -1727,6 +1859,40 @@ where
 
     /// Validates and registers an inbound link, or records why not.
     fn push_inbound(&mut self, mut link: InboundLink<T>) {
+        if let Some((name, version)) = link.schema.take() {
+            self.schema(&name, version);
+        }
+
+        let wire_url = link.url.clone();
+        if let Err(message) = link.wire.read_carrier(&link.config) {
+            self.rec.push_config_error(crate::ConfigError::new(
+                self.record_key.clone(),
+                Some(wire_url),
+                message,
+            ));
+            return;
+        }
+        if let Some(finalize) = link.wire_finalizer.take() {
+            link = match finalize(link) {
+                Ok(link) => link,
+                Err(message) => {
+                    self.rec.push_config_error(crate::ConfigError::new(
+                        self.record_key.clone(),
+                        Some(wire_url),
+                        message,
+                    ));
+                    return;
+                }
+            };
+        } else if link.wire.carrier == crate::EnvelopeCarrier::Inline {
+            self.rec.push_config_error(crate::ConfigError::new(
+                self.record_key.clone(),
+                Some(wire_url),
+                "inline envelopes require with_envelope or with_versioned_codec",
+            ));
+            return;
+        }
+
         if let Some((name, version)) = link.schema.take() {
             self.schema(&name, version);
         }

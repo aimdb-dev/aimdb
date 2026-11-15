@@ -552,6 +552,65 @@ its diagnostic. Decoder and migration conversion failures are `decode_error`.
 Neither admission nor its successful result allocates beyond allocations
 required by the chosen decoder or the contract's own conversion steps.
 
+### Envelope and version declarations on links
+
+Bare payloads remain the default. For mixed firmware versions on an AimDB
+MQTT topic, enable the `migratable` and selected codec features, then opt
+both peers into inline envelopes:
+
+```rust,ignore
+use aimdb_data_contracts::{link_codecs::Postcard, EnvelopeCarrier,
+    EnvelopeLinkExt, LinkCodecBuilderExt, VersionedInboundExt, VersionedOutboundExt};
+
+r.link_from("mqtt://sensors/temperature")
+    .with_link_codec(Postcard::<128>)
+    .with_envelope(EnvelopeCarrier::Inline)
+    .accepts_from::<1>()
+    .finish();
+r.link_to("mqtt://legacy/temperature")
+    .with_envelope(EnvelopeCarrier::Inline)
+    .sends_as::<1>()
+    .with_link_codec(Postcard::<128>)
+    .finish();
+```
+
+An inline link defaults to the current version only. Outbound headers carry
+the shape of the version sent, when locked; `without_shape()` opts out.
+Scratch storage reserves the codec capacity plus 19 header bytes. Oversized
+values use an owned fallback that includes the same header and target version.
+
+A deployed bare v1 device needs a static binding on the hub:
+
+```rust,ignore
+r.link_from("mqtt://old/temperature")
+    .with_contract::<TemperatureV1>()
+    .with_link_codec(Postcard::<128>)
+    .finish();
+```
+
+Bindings require a version in the current record's chain. `accepts_from`
+applies only to inline links and cannot combine with a static binding.
+Outbound `with_contract::<U>()` and `sends_as::<V>()` may combine when their
+versions agree. Conflicting declarations fail registration through `build()`.
+The methods work on detached links too, in either order around codec
+selection, and preserve connector methods such as MQTT `with_qos`.
+
+Builtin `Json`, `Postcard<N>`, and `Cdr<N>` codecs support these declarations.
+Use `with_versioned_codec(custom)` for a custom codec implementing both
+`PayloadDecoder` and `PayloadEncoder` as well as `LinkCodec<T>`. Its instance
+and state are retained. A codec for just one payload type, including the
+`Default` marker's delegation to `Linkable`, cannot migrate historical types;
+select an explicit generic codec for versioned links. Custom bare codecs
+that accept a prefix must report consumption through
+`LinkCodec::decode_with_consumed` (or `Linkable::from_bytes_with_consumed`).
+Ordinary builtin `LinkCodec::decode` semantics stay unchanged outside link
+admission; bare link admission rejects trailing bytes.
+
+Inline headers are tested on both MQTT backends and require matching carrier
+configuration on the peers. Foreign ROS 2, KNX, and dashboard links retain
+their bare payloads unless explicitly configured otherwise. AimX transport
+metadata carriers remain deferred.
+
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.

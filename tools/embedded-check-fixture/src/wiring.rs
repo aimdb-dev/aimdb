@@ -137,3 +137,28 @@ pub fn admit_temperature_frame(
 ) -> aimdb_data_contracts::Admit<Temperature> {
     aimdb_data_contracts::admit_frame(frame, link)
 }
+
+/// Registration-time envelope strategies compile on the MCU too. Called by a
+/// build-only fixture; a real application registers its MQTT connector first.
+pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
+    use aimdb_data_contracts::{
+        link_codecs::Json, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
+        VersionedInboundExt, VersionedOutboundExt,
+    };
+    builder.configure::<Temperature>("fixture.versioned.input", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
+            .link_from("mqtt://fixture/upgrade")
+            .with_link_codec(Json)
+            .with_envelope(EnvelopeCarrier::Inline)
+            .accepts_from::<1>()
+            .finish();
+    });
+    builder.configure::<Temperature>("fixture.versioned.output", |r| {
+        r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
+            .link_to("mqtt://fixture/legacy")
+            .with_link_codec(Json)
+            .with_envelope(EnvelopeCarrier::Inline)
+            .sends_as::<1>()
+            .finish();
+    });
+}

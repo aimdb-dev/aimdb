@@ -80,6 +80,23 @@ impl<T: MigrationChain, D: PayloadDecoder> LinkContract<T, D> {
         link
     }
 
+    pub(crate) fn configured(
+        codec: PayloadCodec,
+        decoder: D,
+        binding: Option<ContractRef>,
+        minimum: Option<u32>,
+    ) -> Self {
+        let mut policy = Self::inline(codec, decoder);
+        if let Some(binding) = binding {
+            policy.accepted_min = binding.version();
+            policy.accepted_max = binding.version();
+            policy.binding = Some(binding);
+        } else if let Some(minimum) = minimum {
+            policy.accepted_min = minimum;
+        }
+        policy
+    }
+
     pub fn contract(&self) -> ContractRef {
         self.current
     }

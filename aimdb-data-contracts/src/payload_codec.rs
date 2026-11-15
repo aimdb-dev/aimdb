@@ -7,13 +7,13 @@
 //! historical type. Custom codecs implement these traits explicitly.
 
 use aimdb_core::connector::SerializeError;
-use alloc::string::String;
 #[cfg(any(
     feature = "linkable-json",
     feature = "linkable-postcard",
     feature = "linkable-cdr"
 ))]
 use alloc::string::ToString;
+use alloc::{string::String, vec::Vec};
 
 /// Generic decoding half of a link codec.
 pub trait PayloadDecoder {
@@ -30,6 +30,33 @@ pub trait PayloadDecoder {
 
 /// Generic encoding half of a link codec.
 pub trait PayloadEncoder {
+    /// Owned fallback for values larger than route scratch storage. Builtins
+    /// override this with their native owned encoders. Custom encoders may do
+    /// likewise; the default retries serialization into growing caller storage.
+    fn encode_payload_owned<T: serde::Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<Vec<u8>, SerializeError> {
+        let mut capacity = 256usize;
+        loop {
+            let mut out = Vec::new();
+            out.try_reserve_exact(capacity)
+                .map_err(|_| SerializeError::InvalidData)?;
+            out.resize(capacity, 0);
+            match self.encode_payload(value, &mut out) {
+                Ok(n) if n <= out.len() => {
+                    out.truncate(n);
+                    return Ok(out);
+                }
+                Ok(_) => return Err(SerializeError::InvalidData),
+                Err(SerializeError::BufferTooSmall) => {
+                    capacity = capacity.checked_mul(2).ok_or(SerializeError::InvalidData)?
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Encodes into caller storage and returns the byte count.
     ///
     /// Returns `BufferTooSmall` if storage is insufficient. The destination may
@@ -63,6 +90,13 @@ impl PayloadDecoder for crate::link_codecs::Json {
 
 #[cfg(feature = "linkable-json")]
 impl PayloadEncoder for crate::link_codecs::Json {
+    fn encode_payload_owned<T: serde::Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<Vec<u8>, SerializeError> {
+        serde_json::to_vec(value).map_err(|_| SerializeError::InvalidData)
+    }
+
     fn encode_payload<T: serde::Serialize>(
         &self,
         value: &T,
@@ -90,6 +124,13 @@ impl<const N: usize> PayloadDecoder for crate::link_codecs::Postcard<N> {
 
 #[cfg(feature = "linkable-postcard")]
 impl<const N: usize> PayloadEncoder for crate::link_codecs::Postcard<N> {
+    fn encode_payload_owned<T: serde::Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<Vec<u8>, SerializeError> {
+        postcard::to_allocvec(value).map_err(|_| SerializeError::InvalidData)
+    }
+
     fn encode_payload<T: serde::Serialize>(
         &self,
         value: &T,
@@ -115,6 +156,13 @@ impl<const N: usize> PayloadDecoder for crate::link_codecs::Cdr<N> {
 
 #[cfg(feature = "linkable-cdr")]
 impl<const N: usize> PayloadEncoder for crate::link_codecs::Cdr<N> {
+    fn encode_payload_owned<T: serde::Serialize>(
+        &self,
+        value: &T,
+    ) -> Result<Vec<u8>, SerializeError> {
+        aimdb_cdr::to_vec(value).map_err(|_| SerializeError::InvalidData)
+    }
+
     fn encode_payload<T: serde::Serialize>(
         &self,
         value: &T,
