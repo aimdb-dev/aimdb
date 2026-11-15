@@ -10,6 +10,10 @@ pub trait ContractShape {
 }
 
 /// FNV-1a 32 of the UTF-8 contract name, identical to core's envelope name ID.
+///
+/// A copy of `aimdb_core::envelope::name_id` on purpose: `aimdb-core` is an
+/// optional dependency here, and `catalog!` needs the ID without it. A test
+/// holds the two equal.
 pub const fn name_id(name: &str) -> u32 {
     let bytes = name.as_bytes();
     let mut hash = 0x811c9dc5u32;

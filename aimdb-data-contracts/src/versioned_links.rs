@@ -124,24 +124,15 @@ where
         }
         _ => link,
     };
-    Ok(record_format(link, info.codec))
+    Ok(match wire_format_name(info.codec) {
+        Some(format) => link.with_config(WIRE_FORMAT_KEY, format),
+        None => link,
+    })
 }
 
-fn record_format<T, R>(
-    link: InboundLinkBuilder<T, R>,
-    codec: aimdb_core::envelope::PayloadCodec,
-) -> InboundLinkBuilder<T, R>
-where
-    T: Send + Sync + Clone + Debug + 'static,
-{
-    match codec {
-        aimdb_core::envelope::PayloadCodec::Json => link.with_config(WIRE_FORMAT_KEY, "json"),
-        aimdb_core::envelope::PayloadCodec::Postcard => {
-            link.with_config(WIRE_FORMAT_KEY, "postcard")
-        }
-        aimdb_core::envelope::PayloadCodec::Cdr => link.with_config(WIRE_FORMAT_KEY, "cdr"),
-        _ => link,
-    }
+/// The [`WIRE_FORMAT_KEY`] value of an envelope codec ID, if it has one.
+fn wire_format_name(codec: aimdb_core::envelope::PayloadCodec) -> Option<&'static str> {
+    crate::WireFormat::from_payload_codec(codec).as_str()
 }
 
 fn migration_error(error: crate::MigrationError) -> SerializeError {
@@ -278,66 +269,52 @@ where
     } else {
         link
     };
-    Ok(match info.codec {
-        aimdb_core::envelope::PayloadCodec::Json => link.with_config(WIRE_FORMAT_KEY, "json"),
-        aimdb_core::envelope::PayloadCodec::Postcard => {
-            link.with_config(WIRE_FORMAT_KEY, "postcard")
-        }
-        aimdb_core::envelope::PayloadCodec::Cdr => link.with_config(WIRE_FORMAT_KEY, "cdr"),
-        _ => link,
+    Ok(match wire_format_name(info.codec) {
+        Some(format) => link.with_config(WIRE_FORMAT_KEY, format),
+        None => link,
     })
 }
 
-fn builtin_inbound<T>(link: InboundLink<T>) -> WireResult<InboundLink<T>>
-where
-    T: MigrationChain + Send + Sync + Clone + Debug + 'static,
-{
-    let info = link.wire_codec_info().ok_or_else(|| String::from("select a builtin codec with with_link_codec, or a generic custom codec with with_versioned_codec"))?;
-    if info.custom {
-        return Err("custom versioned codec strategy was replaced".into());
-    }
-    match info.codec {
-        #[cfg(feature = "linkable-json")]
-        aimdb_core::envelope::PayloadCodec::Json => inbound(link, crate::link_codecs::Json, info),
-        #[cfg(feature = "linkable-postcard")]
-        aimdb_core::envelope::PayloadCodec::Postcard => {
-            inbound(link, crate::link_codecs::Postcard::<1>, info)
+/// Finalizes a link with the builtin codec its `with_link_codec` recorded.
+/// One list of builtin codecs serves both directions.
+macro_rules! builtin_finalizer {
+    ($name:ident, $link:ident, $finalize:ident, $half:literal) => {
+        fn $name<T>(link: $link<T>) -> WireResult<$link<T>>
+        where
+            T: MigrationChain + Send + Sync + Clone + Debug + 'static,
+        {
+            let info = link.wire_codec_info().ok_or_else(|| {
+                String::from(
+                    "select a builtin codec with with_link_codec, \
+                     or a generic custom codec with with_versioned_codec",
+                )
+            })?;
+            if info.custom {
+                return Err("custom versioned codec strategy was replaced".into());
+            }
+            match info.codec {
+                #[cfg(feature = "linkable-json")]
+                aimdb_core::envelope::PayloadCodec::Json => {
+                    $finalize(link, crate::link_codecs::Json, info)
+                }
+                #[cfg(feature = "linkable-postcard")]
+                aimdb_core::envelope::PayloadCodec::Postcard => {
+                    $finalize(link, crate::link_codecs::Postcard::<1>, info)
+                }
+                #[cfg(feature = "linkable-cdr")]
+                aimdb_core::envelope::PayloadCodec::Cdr => {
+                    $finalize(link, crate::link_codecs::Cdr::<1>, info)
+                }
+                _ => Err(format!(
+                    concat!("codec {:?} has no generic ", $half, " in this build"),
+                    info.codec
+                )),
+            }
         }
-        #[cfg(feature = "linkable-cdr")]
-        aimdb_core::envelope::PayloadCodec::Cdr => {
-            inbound(link, crate::link_codecs::Cdr::<1>, info)
-        }
-        _ => Err(format!(
-            "codec {:?} has no generic decoder in this build",
-            info.codec
-        )),
-    }
+    };
 }
-fn builtin_outbound<T>(link: OutboundLink<T>) -> WireResult<OutboundLink<T>>
-where
-    T: MigrationChain + Send + Sync + Clone + Debug + 'static,
-{
-    let info = link.wire_codec_info().ok_or_else(|| String::from("select a builtin codec with with_link_codec, or a generic custom codec with with_versioned_codec"))?;
-    if info.custom {
-        return Err("custom versioned codec strategy was replaced".into());
-    }
-    match info.codec {
-        #[cfg(feature = "linkable-json")]
-        aimdb_core::envelope::PayloadCodec::Json => outbound(link, crate::link_codecs::Json, info),
-        #[cfg(feature = "linkable-postcard")]
-        aimdb_core::envelope::PayloadCodec::Postcard => {
-            outbound(link, crate::link_codecs::Postcard::<1>, info)
-        }
-        #[cfg(feature = "linkable-cdr")]
-        aimdb_core::envelope::PayloadCodec::Cdr => {
-            outbound(link, crate::link_codecs::Cdr::<1>, info)
-        }
-        _ => Err(format!(
-            "codec {:?} has no generic encoder in this build",
-            info.codec
-        )),
-    }
-}
+builtin_finalizer!(builtin_inbound, InboundLink, inbound, "decoder");
+builtin_finalizer!(builtin_outbound, OutboundLink, outbound, "encoder");
 
 macro_rules! envelope_ext {
     ($builder:ident, $finalize:ident) => {
@@ -346,18 +323,17 @@ macro_rules! envelope_ext {
             T: MigrationChain + Send + Sync + Clone + Debug + 'static,
         {
             fn with_envelope(self, carrier: EnvelopeCarrier) -> Self {
-                let mut options = self.wire_options();
-                options.carrier = carrier;
-                self.with_wire_options(options)
-                    .with_config(
-                        aimdb_core::link_wire::ENVELOPE_KEY,
-                        if carrier == EnvelopeCarrier::Inline {
-                            "inline"
-                        } else {
-                            "bound"
-                        },
-                    )
-                    .with_wire_finalizer(false, $finalize::<T>)
+                // The config entry is the one record of the choice: core
+                // resolves the last one into the carrier at registration.
+                self.with_config(
+                    aimdb_core::link_wire::ENVELOPE_KEY,
+                    if carrier == EnvelopeCarrier::Inline {
+                        "inline"
+                    } else {
+                        "bound"
+                    },
+                )
+                .with_wire_finalizer(false, $finalize::<T>)
             }
             fn with_contract<U: SchemaType + ContractShape + VersionOf<T>>(self) -> Self {
                 let mut options = self.wire_options();

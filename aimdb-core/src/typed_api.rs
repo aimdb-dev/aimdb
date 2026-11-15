@@ -1588,42 +1588,88 @@ where
 // Link registration - the one validation path for attached and detached links
 // ============================================================================
 
+/// The wire state a detached link of either direction carries into
+/// registration.
+trait WireLink: Sized {
+    fn wire_url(&self) -> &str;
+    fn wire_parts(
+        &mut self,
+    ) -> (
+        &mut crate::link_wire::WireOptions,
+        &mut Vec<(String, String)>,
+    );
+    #[allow(clippy::type_complexity)]
+    fn take_wire_finalizer(
+        &mut self,
+    ) -> Option<Arc<dyn Fn(Self) -> Result<Self, String> + Send + Sync>>;
+}
+
+macro_rules! wire_link {
+    ($link:ident) => {
+        impl<T: Send + Sync + 'static + Debug + Clone> WireLink for $link<T> {
+            fn wire_url(&self) -> &str {
+                &self.url
+            }
+            fn wire_parts(
+                &mut self,
+            ) -> (
+                &mut crate::link_wire::WireOptions,
+                &mut Vec<(String, String)>,
+            ) {
+                (&mut self.wire, &mut self.config)
+            }
+            fn take_wire_finalizer(
+                &mut self,
+            ) -> Option<Arc<dyn Fn(Self) -> Result<Self, String> + Send + Sync>> {
+                self.wire_finalizer.take()
+            }
+        }
+    };
+}
+wire_link!(OutboundLink);
+wire_link!(InboundLink);
+
 impl<'a, T> RecordRegistrar<'a, T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
+    /// Resolves the carrier and runs the link's wire finalizer: the one path
+    /// for both directions. Records a config error and returns `None` if the
+    /// link is refused.
+    fn finalize_wire<L: WireLink>(&mut self, mut link: L) -> Option<L> {
+        let url = link.wire_url().to_string();
+        let finalized = (|| {
+            let (wire, config) = link.wire_parts();
+            wire.take_carrier(config)?;
+            if let Some(finalize) = link.take_wire_finalizer() {
+                link = finalize(link)?;
+            } else if link.wire_parts().0.carrier == crate::EnvelopeCarrier::Inline {
+                return Err(
+                    "inline envelopes require with_envelope or with_versioned_codec".into(),
+                );
+            }
+            let (wire, config) = link.wire_parts();
+            wire.record_carrier(config);
+            Ok::<L, String>(link)
+        })();
+        match finalized {
+            Ok(link) => Some(link),
+            Err(message) => {
+                self.rec.push_config_error(crate::ConfigError::new(
+                    self.record_key.clone(),
+                    Some(url),
+                    message,
+                ));
+                None
+            }
+        }
+    }
+
     /// Validates and registers an outbound link, or records why not.
-    fn push_outbound(&mut self, mut link: OutboundLink<T>) {
-        let wire_url = link.url.clone();
-        if let Err(message) = link.wire.take_carrier(&mut link.config) {
-            self.rec.push_config_error(crate::ConfigError::new(
-                self.record_key.clone(),
-                Some(wire_url),
-                message,
-            ));
+    fn push_outbound(&mut self, link: OutboundLink<T>) {
+        let Some(mut link) = self.finalize_wire(link) else {
             return;
-        }
-        if let Some(finalize) = link.wire_finalizer.take() {
-            link = match finalize(link) {
-                Ok(link) => link,
-                Err(message) => {
-                    self.rec.push_config_error(crate::ConfigError::new(
-                        self.record_key.clone(),
-                        Some(wire_url),
-                        message,
-                    ));
-                    return;
-                }
-            };
-        } else if link.wire.carrier == crate::EnvelopeCarrier::Inline {
-            self.rec.push_config_error(crate::ConfigError::new(
-                self.record_key.clone(),
-                Some(wire_url),
-                "inline envelopes require with_envelope or with_versioned_codec",
-            ));
-            return;
-        }
-        link.wire.record_carrier(&mut link.config);
+        };
 
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
@@ -1855,37 +1901,10 @@ where
     }
 
     /// Validates and registers an inbound link, or records why not.
-    fn push_inbound(&mut self, mut link: InboundLink<T>) {
-        let wire_url = link.url.clone();
-        if let Err(message) = link.wire.take_carrier(&mut link.config) {
-            self.rec.push_config_error(crate::ConfigError::new(
-                self.record_key.clone(),
-                Some(wire_url),
-                message,
-            ));
+    fn push_inbound(&mut self, link: InboundLink<T>) {
+        let Some(mut link) = self.finalize_wire(link) else {
             return;
-        }
-        if let Some(finalize) = link.wire_finalizer.take() {
-            link = match finalize(link) {
-                Ok(link) => link,
-                Err(message) => {
-                    self.rec.push_config_error(crate::ConfigError::new(
-                        self.record_key.clone(),
-                        Some(wire_url),
-                        message,
-                    ));
-                    return;
-                }
-            };
-        } else if link.wire.carrier == crate::EnvelopeCarrier::Inline {
-            self.rec.push_config_error(crate::ConfigError::new(
-                self.record_key.clone(),
-                Some(wire_url),
-                "inline envelopes require with_envelope or with_versioned_codec",
-            ));
-            return;
-        }
-        link.wire.record_carrier(&mut link.config);
+        };
 
         if let Some((name, version)) = link.schema.take() {
             self.schema(&name, version);
