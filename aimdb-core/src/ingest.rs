@@ -412,6 +412,7 @@ impl InboundStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn an_admission_rejection_formats_its_context_on_display() {
