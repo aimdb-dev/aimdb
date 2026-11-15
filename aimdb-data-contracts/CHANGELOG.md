@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `migration_chain!` rejects `version_field` and generates `Reaches<V>` and
   `VersionOf<T>` proofs. `catalog!` requires a seed `aimdb.lock`, exposes locked
   `ContractShape` values, and rejects contract name-ID collisions.
+  `MigrationError::DeserializationFailed` is now `{ target, reason }` and keeps
+  the decoder's message, so ingest rejections say why a payload failed.
 - Link declarations add `with_envelope`, `with_contract`, `accepts_from`,
   `sends_as`, and `without_shape`. Built-in codecs use normal `with_link_codec`;
   generic custom codecs use `with_versioned_codec`. Shared admission validates

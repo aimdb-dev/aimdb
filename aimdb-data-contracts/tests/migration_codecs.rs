@@ -112,7 +112,7 @@ fn exercise<C: PayloadDecoder + PayloadEncoder>(codec: C) {
     assert_eq!(decoder.calls.get(), 2);
     assert!(matches!(
         V2::migrate_from(2, &[], &decoder),
-        Err(MigrationError::DeserializationFailed(_))
+        Err(MigrationError::DeserializationFailed { .. })
     ));
     assert_eq!(decoder.calls.get(), 3);
     for (version, error) in [

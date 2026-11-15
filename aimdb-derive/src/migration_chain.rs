@@ -145,8 +145,11 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
         });
         from_arms.push(quote! {
             v if v == <#older as ::aimdb_data_contracts::SchemaType>::VERSION => {
-                let (older, _) = decoder.decode_payload::<#older>(payload).map_err(|_| {
-                    ::aimdb_data_contracts::MigrationError::DeserializationFailed(concat!("failed to parse as ", stringify!(#older)))
+                let (older, _) = decoder.decode_payload::<#older>(payload).map_err(|reason| {
+                    ::aimdb_data_contracts::MigrationError::DeserializationFailed {
+                        target: stringify!(#older),
+                        reason,
+                    }
                 })?;
                 #up(older)
             }
@@ -192,8 +195,11 @@ fn expand(input: MigrationChainInput) -> TokenStream2 {
                     match version {
                         #(#from_arms)*
                         v if v == <Self as ::aimdb_data_contracts::SchemaType>::VERSION => {
-                            decoder.decode_payload::<Self>(payload).map(|(value, _)| value).map_err(|_| {
-                                ::aimdb_data_contracts::MigrationError::DeserializationFailed(concat!("failed to parse as ", stringify!(#current)))
+                            decoder.decode_payload::<Self>(payload).map(|(value, _)| value).map_err(|reason| {
+                                ::aimdb_data_contracts::MigrationError::DeserializationFailed {
+                                    target: stringify!(#current),
+                                    reason,
+                                }
                             })
                         }
                         _ => Err(::aimdb_data_contracts::MigrationError::VersionTooOld { target: version, minimum: Self::MIN_VERSION }),

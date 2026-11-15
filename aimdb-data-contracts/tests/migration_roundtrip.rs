@@ -461,9 +461,22 @@ fn gizmo_downgrades_to_every_target_version() {
 #[test]
 fn error_on_malformed_payload() {
     let err = GizmoV4::migrate_from(4, b"not json", &Json).unwrap_err();
-    assert_eq!(
-        err,
-        MigrationError::DeserializationFailed("failed to parse as GizmoV4")
+    let MigrationError::DeserializationFailed { target, reason } = &err else {
+        panic!("expected DeserializationFailed, got {err:?}");
+    };
+    assert_eq!(*target, "GizmoV4");
+    // The decoder's own diagnosis survives, not just the type name.
+    assert!(reason.contains("expected ident"), "{reason}");
+    assert!(err
+        .to_string()
+        .starts_with("failed to parse as GizmoV4: expected ident"));
+
+    // A historical version names its own type.
+    let err = GizmoV4::migrate_from(1, b"{}", &Json).unwrap_err();
+    assert!(
+        matches!(&err, MigrationError::DeserializationFailed { target, reason }
+            if *target == "GizmoV1" && reason.contains("missing field")),
+        "{err:?}"
     );
 }
 

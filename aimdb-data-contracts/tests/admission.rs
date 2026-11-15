@@ -311,6 +311,19 @@ fn postcard_rejects_the_inline_mismatch_and_trailing_bytes_on_every_carrier() {
         Rejection::DecodeError,
     );
     assert!(admit_frame(&inline, &inline_link).is_ok());
+
+    // A historical payload that fails to decode logs the decoder's own reason.
+    let truncated = frame(identity(1), PayloadCodec::Postcard, &payload[..2]);
+    let error = admit_frame(&truncated, &inline_link).unwrap_err();
+    assert_eq!(error.reason(), Rejection::DecodeError);
+    let message = error.message();
+    let (_, reason) = message
+        .split_once("failed to parse as V1: ")
+        .unwrap_or_else(|| panic!("{message}"));
+    assert_eq!(
+        reason,
+        postcard::Error::DeserializeUnexpectedEnd.to_string()
+    );
 }
 
 #[cfg(feature = "linkable-json")]

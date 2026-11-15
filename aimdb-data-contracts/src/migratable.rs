@@ -81,8 +81,12 @@ pub enum MigrationError {
     VersionTooNew { source: u32, current: u32 },
     /// The target downgrade version is below the minimum supported
     VersionTooOld { target: u32, minimum: u32 },
-    /// Deserialization of a versioned payload failed
-    DeserializationFailed(&'static str),
+    /// Decoding a payload as the historical or current type `target` failed;
+    /// `reason` is the payload decoder's own message.
+    DeserializationFailed {
+        target: &'static str,
+        reason: alloc::string::String,
+    },
     /// Serialization during downgrade failed
     SerializationFailed(&'static str),
     /// A domain-specific conversion error in a MigrationStep
@@ -108,7 +112,9 @@ impl core::fmt::Display for MigrationError {
                     target, minimum
                 )
             }
-            Self::DeserializationFailed(msg) => write!(f, "deserialization failed: {}", msg),
+            Self::DeserializationFailed { target, reason } => {
+                write!(f, "failed to parse as {}: {}", target, reason)
+            }
             Self::SerializationFailed(msg) => write!(f, "serialization failed: {}", msg),
             Self::ConversionFailed(msg) => write!(f, "conversion failed: {}", msg),
             Self::BufferTooSmall => write!(f, "migration output buffer too small"),
