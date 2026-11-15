@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking — typed record keys (design 063)
 
 - Add TypedName, TypedKey and Name. Record registration, handles, direct reads/writes, transforms and joins infer payloads from declarations. Remove bare-string typed access and public schema setters.
-- Add `RecordRegistrar::declared_schema` and `require_contract`, and `requires_contract` on `InboundLink` / `OutboundLink`: a link that carries a contract fails `build()` unless the record's key declares that contract. `Name<T>` gains `Debug`.
+- Add a schema type-state: `TypedKey::Schema` (`Declared` / `Undeclared`), `SchemaState`, `ContractDeclared`, and a third parameter on `RecordRegistrar<'a, T, S = Undeclared>`. `configure` hands out the key's state. `Input` / `Output` take the state as a parameter (`impl<T, S: SchemaState> Input<T, S> for MyInput`). `ContractOutboundLink` / `ContractInboundLink` (from `into_contract()`) wire only into `ContractDeclared` records. `Name<T>` gains `Debug`.
 
 ### Added — value envelopes (design 062)
 

@@ -36,13 +36,19 @@ intern names. A `Name<T>` declaration reports no contract schema, including
 when its payload happens to implement `SchemaType`.
 
 The key is the only source of a record's schema: link helpers and
-`.observe()` no longer assign one. They require it instead. `publish`,
-`subscribe`, `linked_to`, `linked_from`, their `_with` forms and `.observe()`
-fail `build()` when the record's key does not declare the contract they carry,
-so a contract record declared with `Name<T>` is caught rather than silently
-reported without a schema. Declare such records with `Key<T>` or
-`#[record_key(contract = T)]`. The raw `.link_to()` / `.link_from()` builders
-check nothing. `contract_schema()` and public schema setters are removed. Existing envelope and version options
+`.observe()` no longer assign one. Instead, `configure` hands the closure a
+registrar typed by whether the key declares a contract
+(`RecordRegistrar<'_, T, Declared>` for `Key<T>` / `contract = T`,
+`RecordRegistrar<'_, T, Undeclared>` for `Name<T>` / `payload = T`). The
+contract verbs — `publish`, `subscribe`, `linked_to`, `linked_from`, their
+`_with` forms and `.observe()` — exist only on `Declared` registrars, so using
+one on a `Name<T>` record is a compile error ("this record's key declares no
+data contract") rather than a record silently reported without a schema. The
+raw `.link_to()` / `.link_from()` builders work in both states. Helper
+functions that take a registrar name the state they need
+(`&mut RecordRegistrar<'_, T, Declared>`) or are generic over
+`S: SchemaState`; custom `Input` / `Output` implementations are generic over
+`S` too. `contract_schema()` and public schema setters are removed. Existing envelope and version options
 are unchanged: select inline explicitly before `accepts_from`, and use a
 static `with_contract` binding for a bare legacy sender. A historical wire
 version does not change the record's current schema.
