@@ -2,22 +2,28 @@
 
 **Status:** 📝 Proposed
 
-**Scope:** One logical envelope for every record value that leaves a
-buffer: on a link, in an AimX frame, in a persisted row. The envelope
-carries the value's contract identity (name, version, shape), its write
-metadata (058, 060) and an opaque payload in the link's codec. It defines
-one binary header for byte carriers and one mapping to each transport's
-native header slot. It also removes the schema version from inside the
+**Goal:** A v1 device on a binary codec (Postcard, CDR) is read by a v2 hub
+on another platform, with the version and shape checked on arrival. That
+is impossible today, and it is the acceptance test of
+[063 §7](063-typed-record-keys.md).
+
+**Scope:** One logical envelope for every record value that crosses a
+link. The envelope carries the value's contract identity (name, version,
+shape) and an opaque payload in the link's codec. This design defines one
+binary header for byte carriers, and a static binding for links that
+cannot carry a header. It also removes the schema version from inside the
 payload, so migration (`migration_chain!`) works with every codec and
 needs no probe parse. Breaking for `migration_chain!`, `MigrationChain`,
-contract structs that carry `schema_version`, and the persistence schema.
-Additive on AimX (minor version) and on MQTT 5. Changes the Zenoh
-attachment format proposed in 060 before 060 ships.
+contract structs that carry `schema_version`, and the connector SPI.
+
+The header format reserves room for write metadata (058, 060), because a
+wire format is permanent for a deployed fleet. Carrying that metadata, the
+AimX, MQTT 5 and Zenoh header carriers, persistence and tool views are
+deferred (§8).
 
 **Related:** 039 (`no_std` migrations), 041 (data contracts), 045
-(per-link codecs), 054 (zero-allocation connector boundary), 057 (build
-identity), 058 (write timestamps, `Stamped`/`WriteMetadata`), 060 (trace
-context), `aimdb.lock` (`aimdb-data-contracts/src/lock.rs`).
+(per-link codecs), 054 (zero-allocation connector boundary), `aimdb.lock`
+(`aimdb-data-contracts/src/lock.rs`).
 **Declaration half:** [063](063-typed-record-keys.md). 063 says what a
 record accepts (typed keys, per-link accepted versions); this design says
 what a value is, so the receiver can compare the two at ingress.
@@ -26,11 +32,10 @@ what a value is, so the receiver can compare the two at ingress.
 
 ## 1. Problem
 
-AimDB promises typed contracts, evolution without a flag day, and one place
-to see every node. All three depend on one question that a receiver must
-answer for every value: **which contract, in which version and shape, is
-this, and what do we know about the write that produced it?** Today the
-answer is assembled in a different place on each path:
+AimDB promises typed contracts that run on every device and platform, and
+evolution without a flag day. Both depend on one question that a receiver
+must answer for every value: **which contract, in which version and
+shape, is this?** Today the answer is incomplete:
 
 - **The version lives inside the user's struct.** Contracts carry
   `pub schema_version: u32` next to `SchemaType::VERSION`. The two can
@@ -42,47 +47,34 @@ answer is assembled in a different place on each path:
   that `serde_json::from_slice`s the payload to read the version, then
   parses the same bytes a second time into the matching type
   (`aimdb-derive/src/migration_chain.rs:254-280`). A Postcard or CDR link
-  (045) has no field names to probe, so a v1 MCU on a Postcard serial link
-  cannot be upgraded on arrival.
-- **Write metadata is attached one design at a time.** The stamp rides as
-  `"ts"` in AimX (058); the trace context gets its own carrier per
-  transport: an AimX field, an MQTT 5 user property, a Zenoh attachment in
-  a text format of its own (060 §5). Each future field (origin instance,
-  build identity from 057) would repeat that work across every connector.
+  (045) has no field names to probe, so a v1 MCU on a Postcard link
+  cannot be upgraded on arrival. The codecs an MCU wants are the ones
+  that cannot evolve.
 - **The shape check never leaves the build.** `aimdb.lock` hashes each
   `NAME@VERSION`'s wire shape and fails CI on a silent change, but the hash
   is not available at run time and is not sent. A peer built from an older
   or modified contracts crate is not detected; a decode either fails with a
   serde error or, worse, succeeds on a compatible-looking layout.
-- **History forgets its version.** `aimdb-persistence-sqlite` stores
-  `record_name, value_json, stored_at`. After a contract upgrade, old rows
-  can only be read by luck.
-- **Tools must know the Rust types.** The CLI and MCP server learn a
-  record's `schema_version` from `RecordMetadata`, i.e. from the instance's
-  own configuration, not from what is actually arriving on a link. "Which
-  device sends which version" is not observable.
 
 The common root: there is no stable, codec-independent structure around a
-value at the boundary. Every wire format ever shipped is permanent for a
-deployed fleet, so this is the one place to get right before more metadata
-and more codecs land.
+value at the boundary.
+
+Three related gaps have the same root and are not closed here (§8): write
+metadata gets a new carrier per design (058, 060), persisted history does
+not record its version, and tools cannot see which version a link
+actually receives.
 
 ## 2. The rule
 
-> Every record value that crosses a boundary (link, AimX, persistence)
-> travels as an **envelope**: a contract reference, write metadata and an
-> opaque payload. The envelope is the same logical object on every path;
-> only its **carrier** differs.
+> Every record value that crosses a link travels as an **envelope**: a
+> contract reference and an opaque payload. The envelope is the same
+> logical object on every link; only its **carrier** differs.
 
 > The contract version lives in the envelope and nowhere else. A payload is
 > exactly the serialization of the contract struct for that version.
 
-> A receiver can identify, version-check, route and reject a value without
-> decoding its payload, and without knowing its Rust type.
-
-> Metadata never costs a value. A carrier that cannot fit the metadata
-> drops metadata before it drops the value (as 060 §5 already requires for
-> the trace).
+> A receiver can identify, version-check and reject a value without
+> decoding its payload.
 
 ## 3. Requirements
 
@@ -90,11 +82,11 @@ and more codecs land.
 |---|---|
 | R1 | Codec-independent: the header is the same for JSON, Postcard and CDR payloads, and is parsed without parsing the payload. |
 | R2 | `no_std`, zero allocation: parse borrows from the input; encode writes into caller storage, so 054's scratch-buffer outbound path keeps its allocation targets. |
-| R3 | Extensible: new metadata fields are added without a format version bump, and old receivers skip what they do not know. |
+| R3 | Room to grow: the header format has optional fields and extensions that an old receiver skips, so later metadata needs no format change. |
 | R4 | Compact: the minimal header fits in 8 bytes, so serial links and MCUs pay little. |
-| R5 | Foreign consumers are not broken: where a link is read by non-AimDB software (ROS 2, KNX, MQTT dashboards), the payload stays bare and the envelope travels in a header slot or is implied by link configuration. |
+| R5 | Foreign consumers and deployed devices are not broken: a link carries a header only when it is configured to. Otherwise the payload stays bare and the envelope is implied by link configuration. |
 | R6 | One decision procedure: a single inbound function decides accept, upgrade or reject for every carrier, and every rejection is counted per route. |
-| R7 | Self-locating: a captured byte string can be recognised as an envelope and decoded by a tool that has only the contracts catalog. |
+| R7 | Self-locating: a captured byte string can be recognised as an envelope. |
 
 **Non-goals:**
 
@@ -105,8 +97,7 @@ and more codecs land.
 - Negotiating versions between peers. The envelope makes the version
   visible; choosing what to send to an older peer stays link configuration
   (§7.3).
-- Changing the stamp rule of 058: a stamp is never imported. The envelope
-  carries the sender's stamp for observers only.
+- Everything in §8.
 
 ## 4. The logical envelope
 
@@ -131,18 +122,17 @@ pub enum PayloadCodec { Unspecified, Json, Postcard, Cdr }
 pub struct Envelope<'a> {
     contract: ContractRef,
     codec: PayloadCodec,
-    stamp: Option<Stamp>,          // sender's stamp (058), observers only
-    ext: Extensions<'a>,           // TLV iterator, unknown tags skipped
     payload: &'a [u8],
 }
 
 impl<'a> Envelope<'a> {
+    /// Parses a binary header (§5). Skips fields this version does not read.
     pub fn parse(frame: &'a [u8]) -> Result<Self, EnvelopeError>;
+    /// Builds the envelope of a bare payload from a link's binding (§6.1).
+    pub fn bound(contract: ContractRef, codec: PayloadCodec, payload: &'a [u8]) -> Self;
     pub fn contract(&self) -> ContractRef;
+    pub fn codec(&self) -> PayloadCodec;
     pub fn payload(&self) -> &'a [u8];
-    pub fn stamp(&self) -> Option<Stamp>;
-    pub fn trace(&self) -> Option<TraceContext>;   // ext tag 1, feature `trace-context`
-    pub fn ext(&self) -> Extensions<'a>;
 }
 
 /// Writes a header into caller storage; the codec writes the payload after it.
@@ -151,24 +141,27 @@ impl HeaderWriter<'_> {
     pub fn new(out: &mut [u8]) -> HeaderWriter<'_>;
     pub fn contract(self, c: ContractRef) -> Self;
     pub fn codec(self, c: PayloadCodec) -> Self;
-    pub fn stamp(self, s: Stamp) -> Self;
-    pub fn ext(self, tag: u16, value: &[u8]) -> Result<Self, EnvelopeError>;
     /// Returns the header length; the payload starts at that offset.
     pub fn finish(self) -> Result<usize, EnvelopeError>;
 }
 ```
 
 Fields are private behind accessors for the same reason `WriteMetadata`'s
-are (058): a later field adds an accessor and breaks no caller.
+are (058): a later field (stamp, trace) adds an accessor and breaks no
+caller.
 
 `ContractRef` replaces the ad-hoc pairs in use today: `ContractId { name,
 version }` in `catalog.rs` gains `name_id()` and `shape()` and converts into
 it; `RecordMetadata::schema_version` is filled from it.
 
+**`name_id` is 32 bits.** It is unique within one catalog, and `catalog!`'s
+check fails on a collision. A fleet uses one contracts crate (README
+step 1), so one catalog sees every name. The ID is not unique across
+unrelated fleets and does not need to be.
+
 ## 5. Binary header
 
-Used where a carrier is a plain byte string: framed links, the Zenoh
-attachment, persistence, captures.
+Used where a carrier is a plain byte string.
 
 ```text
 offset  size  field
@@ -191,10 +184,11 @@ offset  size  field
 |---|---|
 | contract only (version < 128) | 7 |
 | + shape | 15 |
-| + stamp (≈ 1 h uptime, 6–7 bytes) | 22 |
-| + trace extension (tag 1, 34 bytes binary) | 58 |
 
-For comparison, the 060 text carrier alone is 79–81 bytes on AimX.
+The whole layout is fixed now. This design writes only the contract and
+the shape: a sender never sets bit 1 or bit 2. A receiver parses and skips
+a stamp and extensions if present, so a later sender that adds them is
+still read by firmware built from this design.
 
 **Rules:**
 
@@ -202,8 +196,8 @@ For comparison, the 060 text carrier alone is 79–81 bytes on AimX.
   (`0x00`/`0x01`), but it can start a Postcard payload (a varint first field
   ≥ 128). So a frame is never *guessed* to be an envelope: a link is either
   configured as enveloped or not (§6).
-  The magic exists so tools and captures can recognise envelopes (R7) and so
-  a misconfigured peer is rejected with `NotEnvelope` instead of a serde
+  The magic exists so captures can be recognised (R7) and so a
+  misconfigured peer is rejected with `NotEnvelope` instead of a serde
   error.
 - A different low nibble means a header format this receiver cannot read:
   `UnsupportedFormat`, counted, value dropped. Format 1 is expected to last;
@@ -211,66 +205,33 @@ For comparison, the 060 text carrier alone is 79–81 bytes on AimX.
 - Unknown flag bits set → `UnsupportedFormat`. Unknown extension tags →
   skipped. That is the whole compatibility contract.
 - Extensions are bounded at 255 bytes so an outbound route can size its
-  scratch buffer statically (054 §4.7): `ENCODE_BUFFER_CAPACITY + 64 +
-  max_ext`.
-
-**Extension tags:**
-
-| Tag | Content | From |
-|---|---|---|
-| 0 | reserved | |
-| 1 | trace context: 16 B trace ID, 1 B depth, 8 B span, 8 B parent, 1 B flags | 060 |
-| 2 | origin instance tag (u16 LE) | 060 §4.2 |
-| 3 | build revision (first 8 bytes of the 057 source revision) | 057 |
-| 4–63 | reserved for AimDB | |
-| 64–1023 | application-defined, registered on the builder | |
+  scratch buffer statically (054 §4.7).
+- Extension tag 0 is reserved. Tag 1 is reserved for the trace context of
+  060. Tags 2–63 are reserved for AimDB. No tag is defined by this design.
 
 ## 6. Carriers
 
 The envelope is always present as a logical object at the connector
-boundary. How it travels depends on what the transport offers:
+boundary. A link chooses one of two carriers when it is registered:
 
-| Link | Carrier | Payload |
+| Link setting | Carrier | Payload on the wire |
 |---|---|---|
-| AimX over TCP, UDS, WebSocket, Serial | JSON fields on every value: `ts` (058), `trace` (060), new `c` (§6.1) | `value` as today |
-| MQTT 5 | user properties: `aimdb-c` (§6.1), `aimdb-trace` (060); MQTT `content-type` = codec | bare |
-| MQTT 3.1.1 | static binding, or binary header in the payload when the link sets `envelope = "inline"` | bare / enveloped |
-| Zenoh `zenoh://` | binary header (§5) as the publication's attachment; the payload stays in the publication body | bare |
-| Zenoh `ros2://` | static binding (attachment belongs to rmw_zenoh) | bare CDR |
-| KNX | static binding (the DPT is the contract) | bare |
-| Persistence | columns (§8) | bytes |
-| Captures / probe dumps | binary header + payload | |
+| default | static binding (§6.1) | bare, as today |
+| `envelope = "inline"` | binary header (§5) at the start of the payload | header + payload |
 
-### 6.1 Text form of the contract reference
+Inline is available on every link whose payload is an opaque byte string
+to the transport. The first one is MQTT, on both backends (`rumqttc`,
+MQTT 3.1.1, and `mountain-mqtt`), because it needs nothing from the
+protocol version. Both ends of a link must be configured the same way; a
+mismatch is rejected as `malformed` (§7), not mis-decoded.
 
-For carriers whose headers are strings (AimX JSON, MQTT 5 user
-properties):
+Links read by software that is not AimDB (`ros2://`, KNX, MQTT
+dashboards) stay on the default, and nothing they send or receive changes
+(R5).
 
-```text
-<name>@<version>[#<shape: 16 hex>]
-temperature@2#9c41e2d000000a1f
-```
+### 6.1 Static binding
 
-The full name is sent here, not the 32-bit ID: these carriers are not
-byte-starved, and a human reading an MQTT trace or an AimX log sees the
-contract by name. Receivers map it to the same `ContractRef`.
-
-AimX example:
-
-```json
-{"t":"event","sub":"7","seq":42,"ts":81234567000,
- "c":"temperature@2#9c41e2d000000a1f","data":{"celsius":21.5}}
-```
-
-`c` is optional and additive: AimX decoders ignore unknown fields, so this
-is a minor protocol version. A server sends it when the record's type has a
-`SchemaType`. `record.set` from a client may send it; if it does, §7 applies
-to the write.
-
-### 6.2 Static binding
-
-When a carrier has no room for a header, the link configuration *is* the
-envelope:
+When a link carries no header, the link configuration *is* the envelope:
 
 ```rust
 registrar.linked_to_with("ros2://cell/reading", Cdr::<128>)
@@ -278,11 +239,15 @@ registrar.linked_to_with("ros2://cell/reading", Cdr::<128>)
 ```
 
 Inbound, the connector builds the envelope from the binding (contract,
-version, codec) and passes it through the same decision procedure as any
-other. Without `with_contract`, the binding defaults to the record's own
-`T::NAME@T::VERSION`, which is today's implicit behaviour. The accepted
-range of an inbound link is declared with `accepts_from::<V>()` (063 §6). Static binding is
-how foreign producers stay first-class: nothing they send changes.
+version, codec) with `Envelope::bound` and passes it through the same
+decision procedure as any other. Without `with_contract`, the binding
+defaults to the record's own `T::NAME@T::VERSION`, which is today's
+implicit behaviour. A static binding names one version, so a link that
+must read v1 and v2 senders at the same time needs the inline header.
+
+Static binding is also how a deployed v1 device on a binary codec becomes
+readable without new firmware: the hub binds its link to
+`with_contract::<ReadingV1>()` and upgrades on arrival (§7).
 
 ## 7. Receiving: one decision procedure
 
@@ -292,21 +257,24 @@ pub enum Admit<T> { Value(Stamped<T>), Reject(Rejection) }
 pub fn admit<T: MigrationChain>(env: &Envelope, link: &LinkContract) -> Admit<T>;
 ```
 
+`LinkContract` is the record's contract and the link's accepted version
+range, `accepted_min..=T::VERSION` (063 §6). The default range is the
+current version only.
+
 | Condition | Result | Counter |
 |---|---|---|
 | `name_id` ≠ the record's contract | reject | `contract_mismatch` |
 | `version == T::VERSION`, shape absent or equal to the locked shape | decode payload as `T` | |
 | `version == T::VERSION`, shape differs | reject | `shape_mismatch` |
-| `MIN_VERSION ≤ version < T::VERSION` | decode as that version's type, walk `up` | `upgraded{from}` |
+| `accepted_min ≤ version < T::VERSION` | decode as that version's type, walk `up` | `upgraded{from}` |
 | `version > T::VERSION` | reject (no downgrade on ingest) | `too_new` |
-| `version < MIN_VERSION` | reject | `too_old` |
+| `version < accepted_min` | reject | `too_old` |
 | payload decode fails | reject | `decode_error` |
 | header unparseable / not an envelope | reject | `malformed` |
 
 Every counter is per route, readable through the existing buffer and route
-metrics (013) and the probe (059). Rejections never panic and never stop the
-route. The ingested value is stamped locally (058); an incoming trace is
-continued (060).
+metrics (013). Rejections never panic and never stop the route. The
+ingested value is stamped locally (058).
 
 **`shape_mismatch` is the payoff of the lock.** It catches the case the lock
 exists for: a peer built from a contracts crate where someone changed
@@ -325,9 +293,15 @@ impl ContractShape for Temperature { const SHAPE: Option<u64> = Some(0x9c41_e2d0
 ```
 
 A contract outside a catalog, or a lock not yet written, has `SHAPE =
-None`; the envelope then carries no shape and the check is skipped. The
-lock test already guarantees the file and the code agree; a stale lock
-fails CI as today.
+None`; the envelope then carries no shape and the check is skipped.
+
+**The hash sent is the locked one, not one computed from the compiled
+struct.** It is true only if the lock test ran against the code that was
+built. A build that skips the test can send a stale hash and pass the
+check on the other side. So every firmware and hub build runs its
+contracts crate's lock test in CI. The embedded check lane and the
+rolling-upgrade fixture (063 §7) do, and the usage guide states it as a
+requirement of the shape check.
 
 ### 7.2 Migration without a probe
 
@@ -364,92 +338,76 @@ One decode per value, of the right type: the probe parse disappears, and
 
 An outbound link that declares an older contract version
 (`.sends_as::<1>()`, 063 §6) encodes with
-`migrate_into(1, …)` and writes `version = 1` in the header. The choice is
-made once at registration; there is no per-message lookup (045's rule).
+`migrate_into(1, …)` and writes `version = 1` in the header, or sends a
+bare v1 payload on a statically bound link. The choice is made once at
+registration; there is no per-message lookup (045's rule).
 
-## 8. Persistence
+## 8. Deferred
 
-```sql
-CREATE TABLE record_history (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    record_name      TEXT    NOT NULL,
-    contract_name    TEXT,             -- NULL for records without SchemaType
-    contract_version INTEGER,
-    contract_shape   INTEGER,
-    codec            INTEGER NOT NULL, -- PayloadCodec; 1 for existing rows
-    value            BLOB    NOT NULL,
-    stored_at        INTEGER NOT NULL
-);
-```
+None of these is needed to read a v1 device from a v2 hub. Each builds on
+the envelope without changing the header format.
 
-Queries run each row through §7, so history written by v1 reads back as v2
-after an upgrade, and a row of a shape that no longer exists is reported,
-not mis-decoded. The migration adds the columns and backfills existing rows
-as JSON with `contract_version = NULL` (treated as "use the legacy probe",
-§10).
+| Item | Note |
+|---|---|
+| Stamp and trace context in the header | Bits 1 and 2 and extension tag 1 are reserved (§5). 058 and 060 keep their own carriers until then. |
+| AimX carrier (a `c` field on values) | AimX links stay statically bound. |
+| MQTT 5 user-property carrier | Needs MQTT 5 on the `rumqttc` backend, which speaks 3.1.1 today. Inline covers MQTT. |
+| Zenoh attachment carrier | 060's attachment format is not changed by this design. |
+| Persistence columns for contract and version | History stays as it is. |
+| Tool views (versions seen per route, `aimdb decode`) | The counters of §7 are available through the existing metrics. |
+| Origin instance and build revision extensions | Tags stay reserved. |
+| Application-defined extensions | Tags 64 and above stay unassigned. |
 
-## 9. Tools
-
-- `aimdb` CLI and MCP: route listings show, per inbound route, the contract
-  versions and shapes actually seen (from §7 counters), next to the record's
-  own. "Which station still sends `temperature@1`" becomes a query, not an
-  investigation.
-- `aimdb decode <file|hex>` decodes a captured envelope with only a
-  contracts catalog: name from `name_id`, version, shape check, payload
-  pretty-printed by codec. No running instance needed (R7).
-- The probe (059) reports the envelope counters over a debug link.
-
-## 10. What breaks, and the path through it
+## 9. What breaks, and the path through it
 
 | Item | Change |
 |---|---|
 | `migration_chain!` | `version_field` removed (accepted and ignored with a deprecation warning for one minor) |
 | `MigrationChain` | `migrate_from_bytes`/`migrate_to_version` replaced by `migrate_from`/`migrate_into` |
 | Contract structs | `schema_version` field no longer needed; keeping it is harmless but it is no longer read |
-| AimX | `c` field added (minor version) |
-| MQTT 5 | `aimdb-c` user property and `content-type` added |
-| Zenoh | 060's text attachment replaced by the §5 binary header with the trace as extension tag 1, before 060 ships |
-| Persistence | new columns, backfilled |
-| Connector SPI | inbound callbacks receive `Envelope<'_>` instead of `&[u8]`; outbound scratch writers write the header first |
+| Connector SPI | inbound callbacks receive `Envelope<'_>` instead of `&[u8]`; outbound scratch writers write the header first on inline links |
+| Link builders | `envelope = "inline"` and `with_contract` (additive) |
+
+Nothing changes on the wire for a link that does not opt in.
 
 **Deployed fleets.** Devices in the field send bare JSON with an in-band
-`schema_version` and no envelope. They stay readable: a link with no
-envelope carrier and no `with_contract` binding, on a record whose chain was
-generated with the legacy feature, falls back to the 039 probe once per
-value. The fallback lives behind `aimdb-data-contracts/legacy-version-probe`
-for one major release, and its use is counted (`legacy_probe`), so an
-operator can see when the last old device is gone.
+`schema_version` and no envelope. They stay readable: a statically bound
+link with no `with_contract`, on a record whose chain was generated with
+the legacy feature, falls back to the 039 probe once per value. The
+fallback lives behind `aimdb-data-contracts/legacy-version-probe` for one
+major release, and its use is counted (`legacy_probe`), so an operator can
+see when the last old device is gone.
 
-### 10.1 Phases
+### 9.1 Phases
 
 1. **Core types.** `aimdb-core::envelope`: `ContractRef`, `Envelope`,
-   `HeaderWriter`, extensions; property tests; no wire change.
+   `HeaderWriter`; parse skips stamp and extensions; property tests; no
+   wire change.
 2. **Identity.** `name_id`, `ContractShape` via `catalog!`; catalog check
    fails on a `name_id` collision.
 3. **Admission.** `admit` and its counters; new `MigrationChain` with
    `PayloadDecoder`/`Encoder`; legacy probe behind its feature.
-4. **Carriers.** AimX `c`; MQTT 5 properties; Zenoh attachment aligned
-   with 060; `with_contract` static binding; connector SPI change.
-5. **Persistence and tools.** Columns, backfill, `aimdb decode`, CLI/MCP
-   route views.
-6. **Examples.** Remove `schema_version` fields from examples and the
-   README.
+4. **Carriers.** `with_contract` static binding; inline header on MQTT,
+   both backends; connector SPI change.
+5. **Proof.** The rolling-upgrade test of 063 §7 passes. Remove
+   `schema_version` fields from the examples it touches.
 
-## 11. Tests
+## 10. Tests
 
-- Round trip: every header field combination, every codec; parse of
+- Round trip: contract with and without shape, every codec; parse of
   `HeaderWriter` output is identity.
 - Fuzz `Envelope::parse` (cargo-fuzz target): no panic, no read past the
   frame, bounded work for any input.
-- Forward compatibility: a header with unknown extension tags parses and the
-  value is admitted; unknown flag bits or format nibble are rejected as
-  `UnsupportedFormat`.
+- Forward compatibility: a hand-built header with a stamp and with unknown
+  extension tags parses, and the value is admitted; unknown flag bits or
+  format nibble are rejected as `UnsupportedFormat`.
 - Admission table (§7): one test per row, counters checked.
 - Shape: a contract changed under the same `NAME@VERSION` in a second
   contracts crate is rejected as `shape_mismatch` by a peer built from the
   first.
 - Migration: v1 Postcard and v1 CDR payloads upgrade to v2 (impossible
-  today); v2 → v1 downgrade on an outbound link.
+  today), through the inline header and through a static binding; v2 → v1
+  downgrade on an outbound link.
 - Allocation gate: the 054 outbound and inbound zero-allocation benches stay
   at zero with headers on; `b0_alloc_migration` shows one decode per value.
 - `thumbv7em-none-eabihf` check lane builds `envelope` and `admit`; code
@@ -459,7 +417,7 @@ operator can see when the last old device is gone.
 - Foreign: a `ros2://` publication and a KNX telegram are unchanged byte for
   byte.
 
-## 12. Alternatives considered
+## 11. Alternatives considered
 
 1. **Keep the version in the payload.** It is what exists. It ties
    migration to JSON, needs a second parse, and makes every contract author
@@ -468,33 +426,29 @@ operator can see when the last old device is gone.
    identity: a CBOR map still does not say which contract or version it is,
    and costs bytes on every value. Orthogonal; it can be a `PayloadCodec`.
 3. **Always wrap the payload.** Simplest to implement, but breaks every
-   non-AimDB consumer (the reason 060 §11.10 rejected in-payload traces).
-   Rejected: carriers plus static binding.
+   non-AimDB consumer and every deployed device. Rejected: inline is opt-in
+   per link, static binding is the default.
 4. **Negotiate per link, no per-value header.** Fails during exactly the
    situation the product exists for: a rollout, where v1 and v2 producers
    publish on one MQTT topic at the same time. Rejected.
-5. **Full contract name in the binary header.** 10–30 bytes per value on a
-   serial link for something a 4-byte ID identifies within a catalog.
-   Rejected for the binary form, kept for text carriers (§6.1).
+5. **Full contract name in the binary header.** 10–30 bytes per value for
+   something a 4-byte ID identifies within a catalog. Rejected.
 6. **Random or registry-assigned contract IDs.** Need coordination or
    storage. A hash of `NAME` is stable, free, and collisions are checked
    where all names are known: the catalog.
-7. **Protobuf `Any`-style type URLs.** Same bytes cost as (5), plus a
-   dependency on a URL scheme the project does not otherwise use.
-8. **One carrier per metadata field (status quo of 058/060).** Each field
-   is designed and reviewed per connector. Rejected: one envelope, one
-   extension registry.
+7. **A 64-bit `name_id`.** Makes collisions across unrelated fleets
+   unlikely, at 4 more bytes per value. Rejected: one fleet has one
+   catalog, and the catalog check is exact.
+8. **A header with only the contract, no reserved fields.** Smaller to
+   specify. But the next metadata field would need a second header format
+   on firmware that is already deployed. Rejected: reserve now, implement
+   later (§8).
 
-## 13. Open questions
+## 12. Open questions
 
-1. Should the shape hash be on by default for serial links (8 bytes per
-   value), or opt-in per link? Proposed: on everywhere; `without_shape()`
-   per link.
-2. `name_id` is unique within one catalog. A fleet with two contracts
-   crates could collide across them. Is "one contracts crate per fleet"
-   (README step 1) a rule we enforce, or do we widen to 64 bits?
-3. Should AimX `record.set` without `c` be rejected once a record has a
-   chain, or always treated as current version? Proposed: current version,
-   counted, for one major.
-4. Does the probe (059) want the binary header for its own record dumps,
-   making §5 the only offline format?
+1. Should the shape hash be on by default for inline links (8 bytes per
+   value), or opt-in per link? Proposed: on; `without_shape()` per link.
+2. Which carrier do AimX links (serial, TCP, UDS, WebSocket) get when one
+   must carry several versions at once: the deferred `c` field, or the
+   inline header in front of the value's bytes? Not needed for the
+   acceptance test.
