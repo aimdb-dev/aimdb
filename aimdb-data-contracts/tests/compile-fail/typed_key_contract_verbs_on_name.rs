@@ -1,9 +1,10 @@
 //! Contract verbs need a record whose key declares the contract: on a
-//! `Name<T>` record (schema-free), they do not compile.
+//! `Name<T>` record (schema-free), they do not compile. (`.observe()` is
+//! covered by a doctest on `ObservableRegistrarExt::observe`, since this
+//! suite also runs without the `observable` feature.)
 use aimdb_core::{AimDbBuilder, ConnectorHandle, Name};
 use aimdb_data_contracts::{
-    publish, subscribe, LinkCodecRegistrarExt, Linkable, LinkableRegistrarExt, Observable,
-    ObservableRegistrarExt, SchemaType,
+    publish, subscribe, LinkCodecRegistrarExt, Linkable, LinkableRegistrarExt, SchemaType,
 };
 
 #[derive(Clone, Debug)]
@@ -19,13 +20,6 @@ impl Linkable for Temp {
         Ok(Temp(0.0))
     }
 }
-impl Observable for Temp {
-    type Signal = f32;
-    const UNIT: &'static str = "C";
-    fn signal(&self) -> f32 {
-        self.0
-    }
-}
 
 const TEMP: Name<Temp> = Name::new("temp");
 
@@ -34,7 +28,6 @@ fn wire(b: &mut AimDbBuilder, mqtt: ConnectorHandle) {
         r.linked_to("mqtt://out");
         r.linked_from("mqtt://in");
         r.linked_to_with("mqtt://out2", aimdb_data_contracts::link_codecs::Default);
-        r.observe();
         r.output(publish(mqtt, "out"));
         r.input(subscribe(mqtt, "in"));
     });

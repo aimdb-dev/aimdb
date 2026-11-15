@@ -64,6 +64,28 @@ where
     /// `#[record_key(contract = T)]`); on a `Name<T>` record it does not
     /// compile.
     ///
+    /// ```compile_fail,E0277
+    /// use aimdb_core::{RecordRegistrar, Undeclared};
+    /// use aimdb_data_contracts::{Observable, ObservableRegistrarExt, SchemaType};
+    ///
+    /// #[derive(Clone, Debug)]
+    /// struct Temp(f32);
+    /// impl SchemaType for Temp {
+    ///     const NAME: &'static str = "temp";
+    /// }
+    /// impl Observable for Temp {
+    ///     type Signal = f32;
+    ///     fn signal(&self) -> f32 {
+    ///         self.0
+    ///     }
+    /// }
+    ///
+    /// // A `Name<Temp>` record: its registrar is `Undeclared`.
+    /// fn wire(reg: &mut RecordRegistrar<'_, Temp, Undeclared>) {
+    ///     reg.observe();
+    /// }
+    /// ```
+    ///
     /// Recording requires `aimdb-core`'s `observability` feature: without it
     /// [`RecordRegistrar::signal_gauge`] hands back an inert gauge and this
     /// tap compiles and runs but records nothing. `.log()` does not depend on

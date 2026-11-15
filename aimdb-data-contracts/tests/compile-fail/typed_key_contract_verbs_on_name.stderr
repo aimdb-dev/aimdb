@@ -1,7 +1,7 @@
 error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:34:11
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:28:11
    |
-34 |         r.linked_to("mqtt://out");
+28 |         r.linked_to("mqtt://out");
    |           ^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
    |
    = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
@@ -20,9 +20,9 @@ note: required by a bound in `linked_to`
    |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkableRegistrarExt::linked_to`
 
 error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:35:11
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:29:11
    |
-35 |         r.linked_from("mqtt://in");
+29 |         r.linked_from("mqtt://in");
    |           ^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
    |
    = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
@@ -41,9 +41,9 @@ note: required by a bound in `linked_from`
    |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkableRegistrarExt::linked_from`
 
 error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:36:11
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:30:11
    |
-36 |         r.linked_to_with("mqtt://out2", aimdb_data_contracts::link_codecs::Default);
+30 |         r.linked_to_with("mqtt://out2", aimdb_data_contracts::link_codecs::Default);
    |           ^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
    |
    = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
@@ -62,30 +62,9 @@ note: required by a bound in `linked_to_with`
    |            ^^^^^^^^^^^^^^^^ required by this bound in `LinkCodecRegistrarExt::linked_to_with`
 
 error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:37:11
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:31:18
    |
-37 |         r.observe();
-   |           ^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
-   |
-   = note: contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`
-help: the trait `ContractDeclared` is implemented for `Declared`
-  --> $WORKSPACE/aimdb-core/src/record_id.rs
-   |
-   | impl ContractDeclared for Declared {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: required by a bound in `observe`
-  --> src/observable.rs
-   |
-   |     fn observe(&mut self) -> &mut Self
-   |        ------- required by a bound in this associated function
-...
-   |         S: ContractDeclared;
-   |            ^^^^^^^^^^^^^^^^ required by this bound in `ObservableRegistrarExt::observe`
-
-error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:38:18
-   |
-38 |         r.output(publish(mqtt, "out"));
+31 |         r.output(publish(mqtt, "out"));
    |           ------ ^^^^^^^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
    |           |
    |           required by a bound introduced by this call
@@ -104,9 +83,9 @@ note: required by a bound in `RecordRegistrar::<'a, T, S>::output`
    |                                           ^^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::output`
 
 error[E0277]: this record's key declares no data contract
-  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:39:17
+  --> tests/compile-fail/typed_key_contract_verbs_on_name.rs:32:17
    |
-39 |         r.input(subscribe(mqtt, "in"));
+32 |         r.input(subscribe(mqtt, "in"));
    |           ----- ^^^^^^^^^^^^^^^^^^^^^ the trait `ContractDeclared` is not implemented for `Undeclared`
    |           |
    |           required by a bound introduced by this call
