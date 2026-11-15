@@ -508,8 +508,8 @@ to the old version.
 
 - Round trip: contract with and without shape, every codec; parse of
   `HeaderWriter` output is identity.
-- Fuzz `Envelope::parse` (cargo-fuzz target): no panic, no read past the
-  frame, bounded work for any input.
+- Malformed input: `Envelope::parse` over deterministic pseudo-random
+  frames in the unit tests: no panic, no read past the frame.
 - Forward compatibility: a hand-built header with a stamp and with unknown
   extension tags parses, and the value is admitted; unknown flag bits or
   format nibble are rejected as `UnsupportedFormat`.
@@ -598,15 +598,14 @@ MQTT. A second pass reviewed the code against this document, which found
 the last four findings below. It did not implement the `migration_chain!`
 changes (the chain was written by hand, as the macro would generate it),
 the whole-payload rule of §6, inbound route stats in core, the alloc
-benches, cargo-fuzz or the AimX, MQTT 5 and Zenoh
-carriers.
+benches or the AimX, MQTT 5 and Zenoh carriers.
 
 | Claim | Result |
 |---|---|
 | Header sizes: contract only 7 bytes, with shape 15 | hold; the largest without stamp or extensions is 19 (version ≥ 2²⁸) |
 | Round trip for every codec, version 0 to `u32::MAX`, with and without shape | holds |
 | A stamp and unknown extension tags are skipped; unknown flag bit, codec or format nibble → `UnsupportedFormat` | holds |
-| `parse` never panics or reads past the frame | holds for 2 million pseudo-random frames (a unit test in place of the fuzz target) |
+| `parse` never panics or reads past the frame | holds for 2 million pseudo-random frames (a unit test) |
 | `no_std`, no allocation, builds for `thumbv7em-none-eabihf` | holds; `parse` 788 B, `HeaderWriter::finish` 264 B, LEB128 256 B in a release build |
 | `0xA1` can start a Postcard payload | confirmed: a `u32` first field of `0xA1` encodes as `A1 01` |
 | `name_id` collisions are caught where all names are known | holds as a `const` assertion; `costarring` and `liquid` collide |

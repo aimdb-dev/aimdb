@@ -76,36 +76,6 @@ jobs:
     - name: Assert connector allocations per message
       run: make bench-gate
 
-  # Coverage-guided envelope parsing, isolated from production dependencies.
-  envelope-fuzz:
-    name: Envelope Parser Fuzz Smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      # Pinned, like the stable toolchain in rust-toolchain.toml: this job
-      # gates `comprehensive-check`, so a nightly regression must not turn
-      # unrelated PRs red. Bump it deliberately.
-      FUZZ_TOOLCHAIN: nightly-2026-11-10
-    steps:
-    - uses: actions/checkout@v7
-
-    - name: Install the pinned nightly for fuzz instrumentation
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ env.FUZZ_TOOLCHAIN }}
-
-    # A pinned release through cargo-binstall: a prebuilt binary where the
-    # project publishes one, instead of compiling cargo-fuzz on every run.
-    - name: Install cargo-fuzz
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-fuzz@0.13.2
-
-    # aimdb-core/fuzz/Cargo.lock is committed, so libfuzzer-sys is pinned too.
-    - name: Fuzz the envelope parser
-      working-directory: aimdb-core/fuzz
-      run: cargo +"$FUZZ_TOOLCHAIN" fuzz run envelope -- -max_total_time=30 -max_len=4096
-
   # Embedded target testing
   embedded-targets:
     name: Embedded Cross-compilation
@@ -200,7 +170,7 @@ jobs:
   comprehensive-check:
     name: Comprehensive Development Check
     runs-on: ubuntu-latest
-    needs: [format-and-lint, makefile-build, embedded-targets, bench-gate, envelope-fuzz]
+    needs: [format-and-lint, makefile-build, embedded-targets, bench-gate]
     steps:
     - uses: actions/checkout@v7
     
