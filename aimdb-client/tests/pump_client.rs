@@ -50,6 +50,8 @@ async fn mirror_reaches(
 
 #[tokio::test]
 async fn pump_client_mirrors_record_both_directions() {
+    let key_cfg_1 = aimdb_core::Name::<Msg>::new("cfg");
+    let key_tele_2 = aimdb_core::Name::<Msg>::new("tele");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -63,10 +65,10 @@ async fn pump_client_mirrors_record_both_directions() {
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    sb.configure::<Msg>("cfg", |reg| {
+    sb.configure(key_cfg_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    sb.configure::<Msg>("tele", |reg| {
+    sb.configure(key_tele_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (server_db, server_runner) = sb.build().await.expect("build server db");
@@ -88,14 +90,14 @@ async fn pump_client_mirrors_record_both_directions() {
             max_offline_queue: 1024,
             sends_hello: false,
         }));
-    cb.configure::<Msg>("cfg", |reg| {
+    cb.configure(key_cfg_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("uds://cfg")
             .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
-    cb.configure::<Msg>("tele", |reg| {
+    cb.configure(key_tele_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("uds://tele")
@@ -156,7 +158,8 @@ async fn three_outbound_routes_mirror_from_one_task() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
     for key in KEYS {
-        sb.configure::<Msg>(key, |reg| {
+        let record_key_1 = aimdb_core::Name::<Msg>::interned(key);
+        sb.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
     }
@@ -179,7 +182,8 @@ async fn three_outbound_routes_mirror_from_one_task() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(client());
     for key in KEYS {
-        cb.configure::<Msg>(key, move |reg| {
+        let record_key_2 = aimdb_core::Name::<Msg>::interned(key);
+        cb.configure(record_key_2, move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .with_remote_access()
                 .link_to(&format!("uds://{key}"))

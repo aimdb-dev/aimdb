@@ -172,8 +172,11 @@ where
         }
     }
 
-    /// Add a typed input to the join.
-    pub fn input<I>(mut self, key: impl crate::RecordKey) -> Self
+    /// Add an input to the join; its type is the key's.
+    pub fn input<K: crate::record_id::TypedKey>(self, key: K) -> Self {
+        self.input_dyn::<K::Contract>(key)
+    }
+    fn input_dyn<I>(mut self, key: impl crate::RecordKey) -> Self
     where
         I: Send + Sync + Clone + Debug + 'static,
     {
@@ -183,7 +186,7 @@ where
         let factory: JoinInputFactory = Box::new(
             move |db: Arc<crate::AimDb>, index: usize, tx: async_channel::Sender<JoinTrigger>| {
                 Box::pin(async move {
-                    let consumer = match db.consumer::<I>(&key_for_factory) {
+                    let consumer = match db.consumer_dyn::<I>(&key_for_factory) {
                         Ok(c) => c,
                         Err(_e) => {
                             report(TransformEvent::JoinConsumerResolutionFailed {

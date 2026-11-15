@@ -47,10 +47,12 @@ fn sample(
 
 #[tokio::test]
 async fn detached_links_take_the_same_qos() {
+    let key_attached_1 = aimdb_core::Name::<Sample>::new("attached");
+    let key_detached_2 = aimdb_core::Name::<Sample>::new("detached");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(NoopRos2);
-    builder.configure::<Sample>("attached", |reg| {
+    builder.configure(key_attached_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         reg.link_to("ros2://cell/out")
             .with_serializer(|_ctx, _s: &Sample| Ok(Vec::new()))
@@ -62,7 +64,7 @@ async fn detached_links_take_the_same_qos() {
             .with_depth(5)
             .finish();
     });
-    builder.configure::<Sample>("detached", |reg| {
+    builder.configure(key_detached_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .output(
                 OutboundLink::new("ros2://cell/out")

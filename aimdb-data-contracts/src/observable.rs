@@ -83,7 +83,6 @@ where
     where
         T::Signal: Into<f64>,
     {
-        self.schema(T::NAME, T::VERSION);
         let gauge = self.signal_gauge(T::SIGNAL, T::UNIT);
         self.tap(move |_ctx, consumer| async move {
             let mut reader = consumer.subscribe();

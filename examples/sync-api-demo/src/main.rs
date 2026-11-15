@@ -33,6 +33,7 @@ struct Temperature {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let key_sensor_temperature_1 = aimdb_core::Name::<Temperature>::new("sensor.temperature");
     // Subscribe to tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -51,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Temperature>("sensor.temperature", |reg| {
+    builder.configure(key_sensor_temperature_1, |reg| {
         // Configure a ring buffer with capacity for 10 values
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             // Add a simple consumer that logs values
@@ -69,8 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Create consumers before producing
     println!("2. Creating consumers for Temperature...");
-    let mut consumer1 = handle.consumer::<Temperature>("sensor.temperature")?;
-    let mut consumer2 = handle.consumer::<Temperature>("sensor.temperature")?;
+    let mut consumer1 = handle.consumer(key_sensor_temperature_1)?;
+    let mut consumer2 = handle.consumer(key_sensor_temperature_1)?;
     println!("   ✓ Two consumers created\n");
 
     // Step 3: Spawn consumer threads
@@ -131,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 4: Create a synchronous producer
     println!("4. Creating producer and producing values...");
-    let producer = handle.producer::<Temperature>("sensor.temperature")?;
+    let producer = handle.producer(key_sensor_temperature_1)?;
     println!("   ✓ Producer created\n");
 
     // Step 5: Produce values

@@ -39,7 +39,8 @@ let mut builder = AimDbBuilder::new()
             .with_client_id("my-client-id"),
     );
 
-builder.configure::<Temperature>("temperature", |reg| {
+let record_1 = aimdb_core::Name::<Temperature>::new("temperature");
+builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .source(sensor_producer)
         .link_to("mqtt://sensors/temperature")   // outbound

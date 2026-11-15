@@ -35,6 +35,8 @@ struct Reading {
 
 #[tokio::test]
 async fn aimx_roundtrip_over_uds_production_server() {
+    let key_setting_1 = aimdb_core::Name::<Setting>::new("setting");
+    let key_events_2 = aimdb_core::Name::<Reading>::new("events");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -52,10 +54,10 @@ async fn aimx_roundtrip_over_uds_production_server() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure::<Reading>("events", |reg| {
+    builder.configure(key_events_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
             .with_remote_access();
     });
@@ -105,7 +107,7 @@ async fn aimx_roundtrip_over_uds_production_server() {
     assert!(set_ts >= seeded);
 
     // Streaming: a producer feeds `events`; the subscription routes updates back.
-    let producer = db.producer::<Reading>("events").expect("producer");
+    let producer = db.producer(key_events_2).expect("producer");
     tokio::spawn(async move {
         for n in 1..=50 {
             producer.produce(Reading { n });
@@ -178,7 +180,8 @@ async fn wildcard_subscribe_fans_in_matching_records() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
     for key in ["temp.vienna", "temp.berlin", "humidity.london"] {
-        builder.configure::<Setting>(key, |reg| {
+        let record_key_1 = aimdb_core::Name::<Setting>::interned(key);
+        builder.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
     }
@@ -283,7 +286,8 @@ async fn exact_subscribe_sends_the_current_value_once() {
         ("empty", BufferCfg::SingleLatest),
         ("ring", BufferCfg::SpmcRing { capacity: 16 }),
     ] {
-        builder.configure::<Setting>(key, |reg| {
+        let record_key_2 = aimdb_core::Name::<Setting>::interned(key);
+        builder.configure(record_key_2, |reg| {
             reg.buffer(cfg).with_remote_access();
         });
     }
@@ -331,6 +335,8 @@ async fn exact_subscribe_sends_the_current_value_once() {
 /// drain cursor, so `record.drain` still returns every unread event.
 #[tokio::test]
 async fn record_get_answers_at_once_and_leaves_drain_intact() {
+    let key_stream_3 = aimdb_core::Name::<Reading>::new("stream");
+    let key_state_4 = aimdb_core::Name::<Reading>::new("state");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -338,11 +344,11 @@ async fn record_get_answers_at_once_and_leaves_drain_intact() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    builder.configure::<Reading>("stream", |reg| {
+    builder.configure(key_stream_3, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
-    builder.configure::<Reading>("state", |reg| {
+    builder.configure(key_state_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");
@@ -375,8 +381,8 @@ async fn record_get_answers_at_once_and_leaves_drain_intact() {
     // Open the drain cursors, then write.
     assert_eq!(conn.drain_record("stream").await.expect("drain").count, 0);
     assert_eq!(conn.drain_record("state").await.expect("drain").count, 0);
-    let ring = db.producer::<Reading>("stream").expect("producer");
-    let state = db.producer::<Reading>("state").expect("producer");
+    let ring = db.producer(key_stream_3).expect("producer");
+    let state = db.producer(key_state_4).expect("producer");
     for n in 1..=3 {
         ring.produce(Reading { n });
     }
@@ -420,6 +426,7 @@ async fn record_get_answers_at_once_and_leaves_drain_intact() {
 /// first subscribe deterministically.
 #[tokio::test]
 async fn a_refused_subscription_is_a_terminal_error_not_a_silent_eof() {
+    let key_denied_5 = aimdb_core::Name::<Setting>::new("denied");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -429,7 +436,7 @@ async fn a_refused_subscription_is_a_terminal_error_not_a_silent_eof() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    builder.configure::<Setting>("denied", |reg| {
+    builder.configure(key_denied_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (_db, runner) = builder.build().await.expect("build db");
@@ -487,7 +494,8 @@ async fn armed_watch_sees_only_the_write_after_it() {
         ("ring", BufferCfg::SpmcRing { capacity: 16 }),
         ("mailbox", BufferCfg::Mailbox),
     ] {
-        builder.configure::<Setting>(key, |reg| {
+        let record_key_3 = aimdb_core::Name::<Setting>::interned(key);
+        builder.configure(record_key_3, |reg| {
             reg.buffer(cfg).with_remote_access();
         });
     }
@@ -530,6 +538,7 @@ async fn armed_watch_sees_only_the_write_after_it() {
 /// Arming on an unknown record is refused up front, not reported as a wait.
 #[tokio::test]
 async fn arm_on_an_unknown_record_is_refused() {
+    let key_known_6 = aimdb_core::Name::<Setting>::new("known");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
 
@@ -537,7 +546,7 @@ async fn arm_on_an_unknown_record_is_refused() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    builder.configure::<Setting>("known", |reg| {
+    builder.configure(key_known_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (_db, runner) = builder.build().await.expect("build db");

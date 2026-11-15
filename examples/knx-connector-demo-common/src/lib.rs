@@ -17,7 +17,7 @@
 //! ```rust,ignore
 //! let knx = builder.connect(KnxConnector::new(..));
 //!
-//! builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+//! builder.configure(TemperatureKey::LivingRoom, |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest)
 //!         .tap(temperature_monitor)
 //!         .input(

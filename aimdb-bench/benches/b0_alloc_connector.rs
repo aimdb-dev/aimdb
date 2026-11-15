@@ -30,9 +30,7 @@ use aimdb_bench::alloc::{reset, snapshot};
 use aimdb_bench::reports::{write_reports, AllocReport};
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::{ConnectorBuilder, SerializeError};
-use aimdb_core::{
-    AimDb, AimDbBuilder, DbResult, ExactGrammar, InboundDispatch, OutboundRoutes, StringKey,
-};
+use aimdb_core::{AimDb, AimDbBuilder, DbResult, ExactGrammar, InboundDispatch, OutboundRoutes};
 use aimdb_mqtt_connector::MqttGrammar;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
@@ -169,7 +167,9 @@ async fn build_db(configure: impl FnOnce(&mut AimDbBuilder)) -> AimDb {
 fn add_decoys(b: &mut AimDbBuilder) {
     for i in 0..DECOY_ROUTES {
         let topic = format!("bench://in/decoy/{i}");
-        b.configure::<Reading>(StringKey::intern(format!("in.decoy{i}")), |reg| {
+
+        let declared_key_1 = aimdb_core::Name::<Reading>::interned(&format!("in.decoy{i}"));
+        b.configure(declared_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from(&topic)
                 .with_deserializer(|_ctx, _bytes| Ok(reading(0)))
@@ -181,7 +181,8 @@ fn add_decoys(b: &mut AimDbBuilder) {
 /// One linked record plus the decoys.
 async fn inbound_db(upgraded: bool) -> AimDb {
     build_db(|b| {
-        b.configure::<Reading>("in.target", |reg| {
+        let key_in_target_1 = aimdb_core::Name::<Reading>::new("in.target");
+        b.configure(key_in_target_1, |reg| {
             let link = reg
                 .buffer(BufferCfg::SpmcRing { capacity: 64 })
                 .link_from("bench://in/target");
@@ -206,7 +207,8 @@ async fn inbound_db(upgraded: bool) -> AimDb {
 /// One record on `in/{device}/target`, keyed or not, plus the decoys.
 async fn pattern_db(keyed: bool) -> AimDb {
     build_db(|b| {
-        b.configure::<Reading>("in.pattern", move |reg| {
+        let key_in_pattern_2 = aimdb_core::Name::<Reading>::new("in.pattern");
+        b.configure(key_in_pattern_2, move |reg| {
             let link = reg
                 .buffer(BufferCfg::SpmcRing { capacity: 64 })
                 .link_from("bench://in/{device}/target");
@@ -290,7 +292,8 @@ async fn measure_admission(inline: bool) -> (u64, u64) {
         .unwrap()
         + header;
     let db = build_db(|b| {
-        b.configure::<Reading>("admission", |reg| {
+        let key_admission_3 = aimdb_core::Name::<Reading>::new("admission");
+        b.configure(key_admission_3, |reg| {
             let link = reg
                 .buffer(BufferCfg::SpmcRing { capacity: 64 })
                 .link_from("bench://admission")
@@ -392,14 +395,16 @@ async fn pull_one(outbound: &mut OutboundRoutes) {
 }
 
 async fn measure_next(serializer: Serializer, topic: Topic) -> (u64, u64) {
+    let key_out_record_5 = aimdb_core::Name::<Reading>::new("out.record");
     let db = build_db(|b| {
-        b.configure::<Reading>("out.record", move |reg| {
+        let key_out_record_4 = aimdb_core::Name::<Reading>::new("out.record");
+        b.configure(key_out_record_4, move |reg| {
             outbound_link(reg, serializer, topic)
         });
     })
     .await;
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
-    let producer = db.producer::<Reading>("out.record").expect("producer");
+    let producer = db.producer(key_out_record_5).expect("producer");
 
     for i in 0..WARMUP_ITERS {
         producer.produce(reading(i));
@@ -419,7 +424,8 @@ async fn measure_next_enveloped() -> (u64, u64) {
         link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
     };
     let db = build_db(|b| {
-        b.configure::<Reading>("out.enveloped", |reg| {
+        let key_out_enveloped_6 = aimdb_core::Name::<Reading>::new("out.enveloped");
+        b.configure(key_out_enveloped_6, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
                 .link_to("bench://out/enveloped")
                 .with_link_codec(Postcard::<64>)
@@ -429,7 +435,8 @@ async fn measure_next_enveloped() -> (u64, u64) {
     })
     .await;
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
-    let producer = db.producer::<Reading>("out.enveloped").unwrap();
+    let record_key_1 = aimdb_core::Name::<Reading>::new("out.enveloped");
+    let producer = db.producer(record_key_1).unwrap();
     for i in 0..WARMUP_ITERS {
         producer.produce(reading(i));
         pull_one(&mut outbound).await;
@@ -446,7 +453,8 @@ async fn measure_next_enveloped() -> (u64, u64) {
 async fn measure_next_round_robin() -> (u64, u64) {
     let db = build_db(|b| {
         for i in 0..ROUND_ROBIN_ROUTES {
-            b.configure::<Reading>(StringKey::intern(format!("out.rr{i}")), |reg| {
+            let declared_key_2 = aimdb_core::Name::<Reading>::interned(&format!("out.rr{i}"));
+            b.configure(declared_key_2, |reg| {
                 outbound_link(reg, Serializer::Scratch, Topic::Static)
             });
         }
@@ -455,8 +463,9 @@ async fn measure_next_round_robin() -> (u64, u64) {
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
     let producers: Vec<_> = (0..ROUND_ROBIN_ROUTES)
         .map(|i| {
-            db.producer::<Reading>(format!("out.rr{i}"))
-                .expect("producer")
+            let record_key_2_name = format!("out.rr{i}");
+            let record_key_2 = aimdb_core::Name::<Reading>::new(&record_key_2_name);
+            db.producer(record_key_2).expect("producer")
         })
         .collect();
     for i in 0..WARMUP_ITERS / ROUND_ROBIN_ROUTES {
@@ -485,16 +494,18 @@ async fn round_robin(
 /// The transport pulls in its own task and parks before every value; the
 /// producer writes one value, then yields until it was pulled.
 async fn measure_next_parked() -> (u64, u64) {
+    let key_out_record_8 = aimdb_core::Name::<Reading>::new("out.record");
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let db = build_db(|b| {
-        b.configure::<Reading>("out.record", |reg| {
+        let key_out_record_7 = aimdb_core::Name::<Reading>::new("out.record");
+        b.configure(key_out_record_7, |reg| {
             outbound_link(reg, Serializer::Scratch, Topic::Static)
         });
     })
     .await;
     let mut outbound = OutboundRoutes::new(&db, SCHEME).unwrap();
-    let producer = db.producer::<Reading>("out.record").expect("producer");
+    let producer = db.producer(key_out_record_8).expect("producer");
     let pulled = Arc::new(AtomicUsize::new(0));
     let total = WARMUP_ITERS + MEASURE_ITERS;
     let transport = {

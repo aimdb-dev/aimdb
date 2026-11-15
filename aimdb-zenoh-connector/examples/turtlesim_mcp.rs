@@ -183,6 +183,9 @@ async fn main() {
 }
 
 async fn run<P: TurtlePose>() {
+    let key_turtle_goal_1 = aimdb_core::Name::<Goal>::new("turtle.goal");
+    let key_turtle_pose_2 = aimdb_core::Name::<P>::new("turtle.pose");
+    let key_turtle_cmd_vel_3 = aimdb_core::Name::<Twist>::new("turtle.cmd_vel");
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
     let socket =
         std::env::var("AIMX_SOCKET").unwrap_or_else(|_| "/tmp/aimdb-turtlesim.sock".into());
@@ -206,21 +209,23 @@ async fn run<P: TurtlePose>() {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2)
         .with_connector(aimx);
-    builder.configure::<Goal>("turtle.goal", |reg| {
+    builder.configure(key_turtle_goal_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure::<P>("turtle.pose", |reg| {
+    builder.configure(key_turtle_pose_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from("ros2://turtle1/pose");
     });
     // Only the newest velocity command matters.
-    builder.configure::<Twist>("turtle.cmd_vel", |reg| {
+    builder.configure(key_turtle_cmd_vel_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .transform_join(|join| {
-                join.input::<Goal>("turtle.goal")
-                    .input::<P>("turtle.pose")
+                let key_turtle_goal_4 = aimdb_core::Name::<Goal>::new("turtle.goal");
+                let key_turtle_pose_5 = aimdb_core::Name::<P>::new("turtle.pose");
+                join.input(key_turtle_goal_4)
+                    .input(key_turtle_pose_5)
                     .on_triggers(|mut rx, producer| async move {
                         let mut goal = Goal::Stop;
                         let mut pose = None;

@@ -1,0 +1,18 @@
+error[E0631]: type mismatch in closure arguments
+ --> tests/compile-fail/typed_key_transform.rs:6:36
+  |
+6 |         r.transform(READING, |b| b.map(|v: &contracts::V1| Some(contracts::V2 { celsius: v.temp, quality: 1 })));
+  |                                    ^^^ ------------------- found signature defined here
+  |                                    |
+  |                                    expected due to this
+  |
+  = note: expected closure signature `for<'a> fn(&'a V2) -> _`
+             found closure signature `fn(&V1) -> _`
+note: required by a bound in `TransformBuilder::<I, O>::map`
+ --> $WORKSPACE/aimdb-core/src/transform/single.rs
+  |
+  |     pub fn map<F>(self, f: F) -> TransformPipeline<I, O>
+  |            --- required by a bound in this associated function
+  |     where
+  |         F: Fn(&I) -> Option<O> + Send + Sync + 'static,
+  |            ^^^^^^^^^^^^^^^^^^^ required by this bound in `TransformBuilder::<I, O>::map`

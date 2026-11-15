@@ -27,7 +27,7 @@ use std::time::Instant;
 use aimdb_bench::alloc::{reset, snapshot};
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::connector::{ConnectorBuilder, SerializeError};
-use aimdb_core::{AimDb, AimDbBuilder, DbResult, OutboundRoutes, Producer, StringKey};
+use aimdb_core::{AimDb, AimDbBuilder, DbResult, OutboundRoutes, Producer};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use futures::task::AtomicWaker;
 
@@ -76,7 +76,8 @@ async fn build_db(n: usize) -> AimDb {
         .runtime(runtime)
         .with_connector(NoopConnectorBuilder);
     for i in 0..n {
-        builder.configure::<u64>(StringKey::intern(format!("r{i}")), move |reg| {
+        let declared_key_1 = aimdb_core::Name::<u64>::interned(&format!("r{i}"));
+        builder.configure(declared_key_1, move |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: RING })
                 .link_to(&format!("{SCHEME}://r{i}"))
                 .with_serializer(|_ctx, v: &u64| Ok(v.to_le_bytes().to_vec()))
@@ -148,11 +149,15 @@ async fn drive_producer(producer: Producer<u64>, ack: Arc<Ack>) -> (f64, f64) {
 async fn task_per_route(n: usize) -> (f64, f64) {
     let db = build_db(n).await;
     let busy = n - 1;
-    let producer = db.producer::<u64>(format!("r{busy}")).expect("producer");
+    let record_key_1_name = format!("r{busy}");
+    let record_key_1 = aimdb_core::Name::<u64>::new(&record_key_1_name);
+    let producer = db.producer(record_key_1).expect("producer");
     let ack = Ack::new();
     let mut tasks = Vec::new();
     for i in 0..n {
-        let mut reader = db.subscribe::<u64>(format!("r{i}")).expect("subscribe");
+        let record_key_2_name = format!("r{i}");
+        let record_key_2 = aimdb_core::Name::<u64>::new(&record_key_2_name);
+        let mut reader = db.subscribe(record_key_2).expect("subscribe");
         let ack = ack.clone();
         tasks.push(tokio::spawn(async move {
             loop {
@@ -176,7 +181,9 @@ async fn task_per_route(n: usize) -> (f64, f64) {
 async fn outbound_routes(n: usize) -> (f64, f64) {
     let db = build_db(n).await;
     let busy = n - 1;
-    let producer = db.producer::<u64>(format!("r{busy}")).expect("producer");
+    let record_key_3_name = format!("r{busy}");
+    let record_key_3 = aimdb_core::Name::<u64>::new(&record_key_3_name);
+    let producer = db.producer(record_key_3).expect("producer");
     let mut outbound = OutboundRoutes::new(&db, SCHEME).expect("routes");
     let ack = Ack::new();
     let transport = {

@@ -205,7 +205,7 @@ impl WebSocketConnectorBuilder {
     /// # use aimdb_websocket_connector::WebSocketConnector;
     ///
     /// async fn temperature(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
-    ///     db.latest::<f32>("temperature")
+    ///     db.latest(aimdb_core::Name::<f32>::new("temperature"))
     ///         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     ///         .map(|sample| format!("{:.1}", sample.value))
     ///         .ok_or(StatusCode::SERVICE_UNAVAILABLE)

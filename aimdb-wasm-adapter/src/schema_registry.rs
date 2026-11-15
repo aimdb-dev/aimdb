@@ -94,7 +94,8 @@ impl SchemaRegistry {
             type_id: core::any::TypeId::of::<T>(),
             configure: Arc::new(|builder, key, cfg| {
                 use crate::WasmRecordRegistrarExt;
-                builder.configure::<T>(key, |reg| {
+                let record_key = aimdb_data_contracts::Key::<T>::interned(key.as_ref());
+                builder.configure(record_key, |reg| {
                     reg.buffer(cfg);
                 });
             }),

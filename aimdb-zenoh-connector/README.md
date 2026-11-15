@@ -48,11 +48,13 @@ let ros2 = Ros2Connector::new("tcp/192.168.10.5:7447",
     .register::<SpindleCommand>();
 
 let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(ros2);
-builder.configure::<Temperature>("cell4.temperature", |reg| {
+let record_1 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");     // a ROS publisher
 });
-builder.configure::<SpindleCommand>("cell4.spindle.cmd", |reg| {
+let record_2 = aimdb_core::Name::<SpindleCommand>::new("cell4.spindle.cmd");
+builder.configure(record_2, |reg| {
     reg.buffer(BufferCfg::Mailbox)
         .linked_from("ros2://cell4/spindle_cmd");   // a ROS subscription
 });
@@ -86,11 +88,13 @@ use aimdb_zenoh_connector::ZenohConnector;
 let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
 builder.with_connector(zenoh);
 
-builder.configure::<MachineState>("cell4.state", |reg| {
+let record_3 = aimdb_core::Name::<MachineState>::new("cell4.state");
+builder.configure(record_3, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
 });
-builder.configure::<MachineState>("cells.state", |reg| {
+let record_4 = aimdb_core::Name::<MachineState>::new("cells.state");
+builder.configure(record_4, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
         .link_from("zenoh://aimdb/{cell}/state")      // every cell
         .key("cell", 64)                              // a KeyId per cell
@@ -120,7 +124,8 @@ let mut builder = AimDbBuilder::new().runtime(runtime)
     .with_connector(zenoh)
     .with_connector(ros2);
 
-builder.configure::<Temperature>("cell4.temperature", |reg| {
+let record_5 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+builder.configure(record_5, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_from("zenoh://cell4/probe/temperature")
         .linked_to("ros2://cell4/temperature");

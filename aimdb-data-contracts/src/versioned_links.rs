@@ -114,7 +114,6 @@ where
     let link = link
         .clear_deserializers()
         .with_admitting_deserializer(&versions, move |_, _, bytes| admit_frame(bytes, &policy))
-        .with_schema(T::NAME, T::VERSION)
         .with_wire_codec_info(Some(info));
     // A bound link reads one version; tell the connector when it is not the
     // current one.
@@ -262,7 +261,6 @@ where
         }),
         None => link.clear_serializer_into(),
     }
-    .with_schema(T::NAME, T::VERSION)
     .with_wire_codec_info(Some(info));
     let link = if version != T::VERSION {
         link.with_config(WIRE_VERSION_KEY, &format!("{version}"))

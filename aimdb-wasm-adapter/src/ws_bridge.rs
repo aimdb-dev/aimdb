@@ -947,7 +947,8 @@ where
     match serde_json::from_value::<T>(json) {
         Ok(val) => {
             // Single write path via Producer<T>.
-            match db.producer::<T>(key) {
+            let record_key = aimdb_core::Name::<T>::new(key);
+            match db.producer(record_key) {
                 Ok(producer) => {
                     producer.produce(val);
                 }

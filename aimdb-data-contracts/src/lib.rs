@@ -87,10 +87,9 @@ pub use catalog::ContractId;
 pub mod lock;
 
 #[cfg(feature = "aimdb-core")]
-mod contract_schema;
-
+mod key;
 #[cfg(feature = "aimdb-core")]
-pub use contract_schema::SchemaRegistrarExt;
+pub use key::Key;
 
 #[cfg(feature = "linkable")]
 mod link_codec;
@@ -311,7 +310,7 @@ pub trait Observable: SchemaType {
 /// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
 /// let mqtt = builder.connect(MqttConnector::new(broker_url));
-/// builder.configure::<Temperature>(NODE_ID, |reg| {
+/// builder.configure(aimdb_core::Name::<Temperature>::interned(NODE_ID), |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)
 ///         .input(subscribe(mqtt, "sensors/temperature"));
 /// });

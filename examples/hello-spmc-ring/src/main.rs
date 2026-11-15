@@ -36,7 +36,7 @@ impl Display for Temperature {
     }
 }
 
-const KEY: &str = "sensor.temperature";
+const KEY: aimdb_core::Name<Temperature> = aimdb_core::Name::new("sensor.temperature");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== hello-spmc-ring: SPMC ring buffer sync demo ===\n");
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Temperature>(KEY, |reg| {
+    builder.configure(KEY, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             // Register 2 taps that observe temperature values
             .tap(sensor_observer_fast)
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build happens inside the runtime thread where Tokio context exists
     let handle = builder.attach()?;
 
-    let producer = handle.producer::<Temperature>(KEY)?;
+    let producer = handle.producer(KEY)?;
 
     for i in 0..10 {
         let now = SystemTime::now();

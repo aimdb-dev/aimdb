@@ -541,6 +541,8 @@ Permissions:
 
     #[test]
     fn test_format_records_table() {
+        let key_sensor_temperature_1 = StringKey::new("sensor.temperature");
+        let key_app_config_2 = StringKey::new("app.config");
         use aimdb_core::graph::RecordOrigin;
         use aimdb_core::profiling::SignalStatsInfo;
         use aimdb_core::record_id::{RecordId, StringKey};
@@ -550,7 +552,7 @@ Permissions:
 
         let mut temperature = RecordMetadata::new(
             RecordId::new(0),
-            StringKey::new("sensor.temperature"),
+            key_sensor_temperature_1,
             TypeId::of::<i32>(),
             "Temperature".to_string(),
             RecordOrigin::Source,
@@ -589,7 +591,7 @@ Permissions:
 
         let mut config = RecordMetadata::new(
             RecordId::new(1),
-            StringKey::new("app.config"),
+            key_app_config_2,
             TypeId::of::<String>(),
             "Config".to_string(),
             RecordOrigin::Passive,
@@ -618,6 +620,7 @@ Permissions:
 
     #[test]
     fn test_format_records_table_signal_without_unit() {
+        let key_system_load_3 = StringKey::new("system.load");
         use aimdb_core::graph::RecordOrigin;
         use aimdb_core::profiling::SignalStatsInfo;
         use aimdb_core::record_id::{RecordId, StringKey};
@@ -627,7 +630,7 @@ Permissions:
 
         let mut record = RecordMetadata::new(
             RecordId::new(0),
-            StringKey::new("system.load"),
+            key_system_load_3,
             TypeId::of::<f64>(),
             "Load".to_string(),
             RecordOrigin::Source,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- Add TypedName, TypedKey and Name. Record registration, handles, direct reads/writes, transforms and joins infer payloads from declarations. Remove bare-string typed access and public schema setters.
+
 ### Added — value envelopes (design 062)
 
 - Allocation-free `ContractRef`, `Envelope`, and `HeaderWriter` define a compact

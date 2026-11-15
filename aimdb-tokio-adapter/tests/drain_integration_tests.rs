@@ -42,6 +42,8 @@ fn test_socket_path(test_name: &str) -> String {
 
 /// Helper: set up a test AimDB server with remote access
 async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb {
+    let key_test_temperature_1 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+    let key_test_counter_2 = aimdb_core::Name::<Counter>::new("test::Counter");
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);
@@ -56,13 +58,13 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb {
         .with_connector(UdsServer::from_config(remote_config));
 
     // SpmcRing for drain testing (capacity 20)
-    builder.configure::<Temperature>("test::Temperature", |reg| {
+    builder.configure(key_test_temperature_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 20 })
             .with_remote_access();
     });
 
     // SingleLatest for drain behavior comparison
-    builder.configure::<Counter>("test::Counter", |reg| {
+    builder.configure(key_test_counter_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
@@ -73,6 +75,7 @@ async fn setup_test_server(socket_path: &str) -> aimdb_core::AimDb {
 
 /// Helper: set up server with a small ring to test overflow
 async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb {
+    let key_test_counter_3 = aimdb_core::Name::<Counter>::new("test::Counter");
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);
@@ -86,7 +89,7 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb {
         .runtime(adapter)
         .with_connector(UdsServer::from_config(remote_config));
 
-    builder.configure::<Counter>("test::Counter", |reg| {
+    builder.configure(key_test_counter_3, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 4 })
             .with_remote_access();
     });
@@ -98,6 +101,7 @@ async fn setup_small_ring_server(socket_path: &str) -> aimdb_core::AimDb {
 
 /// Helper: set up server with a record that does NOT have remote access
 async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb {
+    let key_test_counter_4 = aimdb_core::Name::<Counter>::new("test::Counter");
     let _ = std::fs::remove_file(socket_path);
 
     let adapter = Arc::new(TokioAdapter);
@@ -112,7 +116,7 @@ async fn setup_no_remote_access_server(socket_path: &str) -> aimdb_core::AimDb {
         .with_connector(UdsServer::from_config(remote_config));
 
     // Register WITHOUT .with_remote_access()
-    builder.configure::<Counter>("test::Counter", |reg| {
+    builder.configure(key_test_counter_4, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
     });
 
@@ -131,8 +135,9 @@ async fn test_drain_cold_start_returns_empty() {
     let db = setup_test_server(&socket_path).await;
 
     // Write some data BEFORE client connects
-    db.produce::<Temperature>(
-        "test::Temperature",
+    let record_key_1 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+    db.produce(
+        record_key_1,
         Temperature {
             celsius: 20.0,
             sensor_id: "s1".to_string(),
@@ -179,8 +184,9 @@ async fn test_drain_returns_accumulated_values() {
 
     // Write 5 values
     for i in 0..5 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_2 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_2,
             Temperature {
                 celsius: 20.0 + i as f64,
                 sensor_id: format!("s{}", i),
@@ -240,8 +246,9 @@ async fn test_drain_sequential_only_new_values() {
 
     // Write 3 values
     for i in 0..3 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_3 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_3,
             Temperature {
                 celsius: 10.0 + i as f64,
                 sensor_id: format!("batch1-{}", i),
@@ -261,8 +268,9 @@ async fn test_drain_sequential_only_new_values() {
 
     // Write 2 more values
     for i in 0..2 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_4 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_4,
             Temperature {
                 celsius: 30.0 + i as f64,
                 sensor_id: format!("batch2-{}", i),
@@ -310,8 +318,9 @@ async fn test_drain_with_limit() {
 
     // Write 10 values
     for i in 0..10 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_5 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_5,
             Temperature {
                 celsius: i as f64,
                 sensor_id: format!("s{}", i),
@@ -375,8 +384,8 @@ async fn test_drain_single_latest_at_most_one() {
 
     // Write 5 values — SingleLatest overwrites, only last survives
     for i in 0..5 {
-        db.produce::<Counter>("test::Counter", Counter { value: i })
-            .unwrap();
+        let record_key_6 = aimdb_core::Name::<Counter>::new("test::Counter");
+        db.produce(record_key_6, Counter { value: i }).unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -463,8 +472,8 @@ async fn test_drain_with_ring_overflow() {
 
     // Write 20 values into capacity-4 ring — causes overflow
     for i in 0..20 {
-        db.produce::<Counter>("test::Counter", Counter { value: i })
-            .unwrap();
+        let record_key_7 = aimdb_core::Name::<Counter>::new("test::Counter");
+        db.produce(record_key_7, Counter { value: i }).unwrap();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -514,8 +523,9 @@ async fn test_drain_multiple_records_independent() {
 
     // Write to Temperature only
     for i in 0..3 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_8 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_8,
             Temperature {
                 celsius: i as f64,
                 sensor_id: "temp".to_string(),
@@ -525,8 +535,8 @@ async fn test_drain_multiple_records_independent() {
     }
 
     // Write to Counter only
-    db.produce::<Counter>("test::Counter", Counter { value: 42 })
-        .unwrap();
+    let record_key_9 = aimdb_core::Name::<Counter>::new("test::Counter");
+    db.produce(record_key_9, Counter { value: 42 }).unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -563,8 +573,9 @@ async fn test_drain_response_structure() {
     let _ = client.drain_record("test::Temperature").await.unwrap();
 
     // Write a value with known fields
-    db.produce::<Temperature>(
-        "test::Temperature",
+    let record_key_10 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+    db.produce(
+        record_key_10,
         Temperature {
             celsius: 25.5,
             sensor_id: "test-sensor".to_string(),
@@ -609,8 +620,9 @@ async fn test_drain_with_zero_limit() {
 
     // Write values
     for i in 0..5 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_11 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_11,
             Temperature {
                 celsius: i as f64,
                 sensor_id: "s".to_string(),
@@ -654,12 +666,14 @@ async fn test_drain_independent_of_other_consumers() {
 
     // Also subscribe via the in-process API (not the AimX client) to
     // prove the drain reader is independent of other consumers
-    let mut in_process_reader = db.subscribe::<Temperature>("test::Temperature").unwrap();
+    let record_key_12 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+    let mut in_process_reader = db.subscribe(record_key_12).unwrap();
 
     // Write values
     for i in 0..3 {
-        db.produce::<Temperature>(
-            "test::Temperature",
+        let record_key_13 = aimdb_core::Name::<Temperature>::new("test::Temperature");
+        db.produce(
+            record_key_13,
             Temperature {
                 celsius: 100.0 + i as f64,
                 sensor_id: "test".to_string(),

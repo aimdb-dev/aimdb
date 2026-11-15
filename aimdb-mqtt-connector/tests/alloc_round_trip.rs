@@ -134,10 +134,12 @@ fn measure(connector: impl ConnectorBuilder + 'static) -> Report {
 }
 
 async fn round_trips(connector: impl ConnectorBuilder + 'static) -> Report {
+    let key_ping_1 = aimdb_core::Name::<u64>::new("ping");
+    let key_pong_2 = aimdb_core::Name::<u64>::new("pong");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("ping", |reg| {
+    builder.configure(key_ping_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to(TOPIC)
             .with_serializer(|_ctx, v: &u64| Ok(v.to_le_bytes().to_vec()))
@@ -149,7 +151,7 @@ async fn round_trips(connector: impl ConnectorBuilder + 'static) -> Report {
             })
             .finish();
     });
-    builder.configure::<u64>("pong", |reg| {
+    builder.configure(key_pong_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(TOPIC)
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -161,8 +163,9 @@ async fn round_trips(connector: impl ConnectorBuilder + 'static) -> Report {
     });
     let (db, runner) = builder.build().await.expect("build db");
     tokio::spawn(runner.run());
-    let producer = db.producer::<u64>("ping").expect("producer");
-    let mut pong = db.subscribe::<u64>("pong").expect("subscribe");
+    let producer = db.producer(key_ping_1).expect("producer");
+    let record_key_1 = aimdb_core::Name::<u64>::new("pong");
+    let mut pong = db.subscribe(record_key_1).expect("subscribe");
 
     // Warm-up also waits out the connect and subscribe.
     tokio::time::timeout(Duration::from_secs(60), async {

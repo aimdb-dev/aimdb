@@ -138,13 +138,24 @@ impl AimDbInner {
         &self.dependency_graph
     }
 
+    /// Inspects a record using its declared payload type.
+    pub fn get_typed_record_by_key<N: crate::TypedName>(
+        &self,
+        key: N,
+    ) -> DbResult<&TypedRecord<N::Contract>> {
+        self.get_typed_record_by_key_raw::<N::Contract>(key.name())
+    }
+
     /// Helper to get a typed record by RecordKey
     ///
     /// This encapsulates the common pattern of:
     /// 1. Resolving key to RecordId
     /// 2. Validating TypeId matches
     /// 3. Downcasting to the typed record
-    pub fn get_typed_record_by_key<T>(&self, key: impl AsRef<str>) -> DbResult<&TypedRecord<T>>
+    pub(crate) fn get_typed_record_by_key_raw<T>(
+        &self,
+        key: impl AsRef<str>,
+    ) -> DbResult<&TypedRecord<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -159,7 +170,7 @@ impl AimDbInner {
     }
 
     /// Helper to get a typed record by RecordId with type validation
-    pub fn get_typed_record_by_id<T>(&self, id: RecordId) -> DbResult<&TypedRecord<T>>
+    pub(crate) fn get_typed_record_by_id<T>(&self, id: RecordId) -> DbResult<&TypedRecord<T>>
     where
         T: Send + 'static + Debug + Clone,
     {
@@ -464,7 +475,8 @@ impl AimDbBuilder {
     /// // (1) data-plane link to an MQTT topic
     /// let mut b = AimDbBuilder::new().runtime(rt)
     ///     .with_connector(MqttConnector::new("mqtt://broker.local:1883"));
-    /// b.configure::<Temperature>("commands.temp", |r| {
+    /// let record_1 = aimdb_core::Name::<Temperature>::new("commands.temp");
+    /// b.configure(record_1, |r| {
     ///     r.link_from("mqtt://commands/temp").with_deserializer(parse).finish();
     /// });
     /// b.build().await?;
@@ -477,7 +489,8 @@ impl AimDbBuilder {
     /// // (2b) remote-access CLIENT — mirror a record to a peer over UDS
     /// let mut b = AimDbBuilder::new().runtime(rt)
     ///     .with_connector(UdsClient::new("/run/aimdb.sock"));
-    /// b.configure::<Temp>("temp", |r| { r.with_remote_access().link_to("uds://temp"); });
+    /// let record_2 = aimdb_core::Name::<Temp>::new("temp");
+    /// b.configure(record_2, |r| { r.with_remote_access().link_to("uds://temp"); });
     /// b.build().await?;
     /// ```
     pub fn with_connector(
@@ -497,7 +510,8 @@ impl AimDbBuilder {
     /// ```rust,ignore
     /// let mut b = AimDbBuilder::new().runtime(rt);
     /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
-    /// b.configure::<Temperature>("temp.indoor", |r| {
+    /// let record_3 = aimdb_core::Name::<Temperature>::new("temp.indoor");
+    /// b.configure(record_3, |r| {
     ///     // A contract (`Linkable`) brings its own wire format:
     ///     r.output(aimdb_data_contracts::publish(mqtt, "sensors/temp/indoor"));
     ///     // Any other type, with a serializer of its own:
@@ -534,20 +548,21 @@ impl AimDbBuilder {
     /// "sensor.temperature.room2").
     ///
     /// # Arguments
-    /// * `key` - A unique identifier for this record. Can be a string literal, `StringKey`,
-    ///   or any type implementing `RecordKey` (including user-defined enum keys).
+    /// * `key` - A static typed declaration (`Key<T>`, `Name<T>` or typed enum).
+    ///   Runtime names must be interned before registration; borrowed names are for lookup.
     /// * `f` - Configuration closure
-    pub fn configure<T>(
+    ///
+    /// Configures the record named by a typed key (063). The payload type is
+    /// the key's contract, and the record's schema is set from it.
+    pub fn configure<K: crate::record_id::TypedKey>(
         &mut self,
-        key: impl RecordKey,
-        f: impl FnOnce(&mut RecordRegistrar<'_, T>),
-    ) -> &mut Self
-    where
-        T: Send + Sync + 'static + Debug + Clone,
-    {
+        key: K,
+        f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract>),
+    ) -> &mut Self {
+        type Payload<K> = <K as crate::TypedName>::Contract;
         // Convert any RecordKey to StringKey for internal storage
-        let record_key: StringKey = StringKey::from_dynamic(key.as_str());
-        let type_id = TypeId::of::<T>();
+        let record_key: StringKey = StringKey::new(key.as_str());
+        let type_id = TypeId::of::<Payload<K>>();
 
         // Find existing record with this key, or create new one
         let record_index = self.record_index.get(&record_key).copied();
@@ -563,7 +578,7 @@ impl AimDbBuilder {
             Some(idx) => {
                 // Use existing record. A key re-registered with a different
                 // type is a user mistake: record it (reported from build())
-                // and skip the closure — a registrar for the wrong `T`
+                // and skip the closure — a registrar for the wrong `Payload<K>`
                 // cannot even be constructed.
                 let (_, existing_type, record) = &mut self.records[idx];
                 if *existing_type != type_id {
@@ -575,7 +590,7 @@ impl AimDbBuilder {
                     return self;
                 }
                 (
-                    record.as_typed_mut::<T>().expect(
+                    record.as_typed_mut::<Payload<K>>().expect(
                         "record registry type mismatch despite TypeId check — \
                          this is a bug in aimdb-core",
                     ),
@@ -585,11 +600,14 @@ impl AimDbBuilder {
             None => {
                 // Create new record
                 self.record_index.insert(record_key, self.records.len());
-                self.records
-                    .push((record_key, type_id, Box::new(TypedRecord::<T>::new())));
+                self.records.push((
+                    record_key,
+                    type_id,
+                    Box::new(TypedRecord::<Payload<K>>::new()),
+                ));
                 let (_, _, record) = self.records.last_mut().unwrap();
                 (
-                    record.as_typed_mut::<T>().expect(
+                    record.as_typed_mut::<Payload<K>>().expect(
                         "record registry type mismatch despite TypeId check — \
                          this is a bug in aimdb-core",
                     ),
@@ -598,14 +616,26 @@ impl AimDbBuilder {
             }
         };
 
+        if !is_new_record && rec.schema().map(|s| (s.name.as_str(), s.version)) != K::SCHEMA {
+            rec.push_config_error(crate::ConfigError::new(
+                record_key.as_str(),
+                None,
+                "key already registered with a different schema declaration",
+            ));
+            return self;
+        }
         let mut reg = RecordRegistrar {
             rec,
             connector_builders: &self.connector_builders,
             builder_id: self.builder_id,
             record_key: record_key.as_str().to_string(),
+            key_link_address: key.link_address().map(ToString::to_string),
             extensions: &self.extensions,
             last_stage: None,
         };
+        if let Some((name, version)) = K::SCHEMA {
+            reg.rec.set_schema(name, version);
+        }
         f(&mut reg);
 
         // Only store spawn function for new records to avoid duplicates
@@ -613,14 +643,18 @@ impl AimDbBuilder {
             let spawn_key = record_key;
 
             let spawn_fn: SpawnFnType = Box::new(move |db: &Arc<AimDb>, id: RecordId| {
-                let typed_record = db.inner().get_typed_record_by_id::<T>(id)?;
+                let typed_record = db.inner().get_typed_record_by_id::<Payload<K>>(id)?;
                 // Resolve the record's key for key-based Producer/Consumer construction.
                 let key = db
                     .inner()
                     .key_for(id)
                     .map(|k| k.as_str().to_string())
                     .unwrap_or_else(|| alloc::format!("__record_{}", id.index()));
-                RecordFutureCollector::<T>::collect_all_futures(typed_record, db, key.as_str())
+                RecordFutureCollector::<Payload<K>>::collect_all_futures(
+                    typed_record,
+                    db,
+                    key.as_str(),
+                )
             });
 
             self.spawn_fns.push((spawn_key, spawn_fn));
@@ -1141,19 +1175,22 @@ impl AimDb {
     /// Uses O(1) key-based lookup to find the correct record. Sync + fallible —
     /// only the lookup can fail; the buffer push itself is infallible.
     ///
-    /// For hot paths, prefer `db.producer::<T>(key)?` once and reuse the
+    /// For hot paths, prefer `db.producer(aimdb_core::Name::<T>::new(key))?` once and reuse the
     /// returned handle.
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
     /// * `value` - The value to produce
-    pub fn produce<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
+    pub fn produce<N: crate::TypedName>(&self, key: N, value: N::Contract) -> DbResult<()> {
+        self.produce_raw::<N::Contract>(key.name(), value)
+    }
+    pub(crate) fn produce_raw<T>(&self, key: impl AsRef<str>, value: T) -> DbResult<()>
     where
         T: Send + 'static + Debug + Clone,
     {
         // Single write path via WriteHandle. For hot paths,
-        // prefer `db.producer::<T>(key)` once and reuse the returned handle.
-        let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
+        // prefer `db.producer(aimdb_core::Name::<T>::new(key))` once and reuse the returned handle.
+        let typed_rec = self.inner.get_typed_record_by_key_raw::<T>(key)?;
         typed_rec.writer_handle()?.push(value);
         Ok(())
     }
@@ -1171,11 +1208,17 @@ impl AimDb {
     ///
     /// The value comes with the metadata of the write that stored it; read
     /// `.value` for the value alone, `.stamp()` for its write time.
-    pub fn latest<T>(&self, key: impl AsRef<str>) -> DbResult<Option<crate::Stamped<T>>>
+    pub fn latest<N: crate::TypedName>(
+        &self,
+        key: N,
+    ) -> DbResult<Option<crate::Stamped<N::Contract>>> {
+        self.latest_raw::<N::Contract>(key.name())
+    }
+    pub(crate) fn latest_raw<T>(&self, key: impl AsRef<str>) -> DbResult<Option<crate::Stamped<T>>>
     where
         T: Send + 'static + Debug + Clone,
     {
-        let record = self.inner.get_typed_record_by_key::<T>(key)?;
+        let record = self.inner.get_typed_record_by_key_raw::<T>(key)?;
         Ok(record.latest().map(|value| value.into_stamped()))
     }
 
@@ -1185,11 +1228,20 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    pub fn subscribe<T>(&self, key: impl AsRef<str>) -> DbResult<crate::buffer::Reader<T>>
+    pub fn subscribe<N: crate::TypedName>(
+        &self,
+        key: N,
+    ) -> DbResult<crate::buffer::Reader<N::Contract>> {
+        self.subscribe_raw::<N::Contract>(key.name())
+    }
+    pub(crate) fn subscribe_raw<T>(
+        &self,
+        key: impl AsRef<str>,
+    ) -> DbResult<crate::buffer::Reader<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
-        let typed_rec = self.inner.get_typed_record_by_key::<T>(key)?;
+        let typed_rec = self.inner.get_typed_record_by_key_raw::<T>(key)?;
         typed_rec.subscribe()
     }
 
@@ -1199,7 +1251,15 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    pub fn producer<T>(
+    ///
+    /// Typed producer for a record declared with a [`TypedKey`](crate::TypedKey) (063).
+    pub fn producer<N: crate::record_id::TypedName>(
+        &self,
+        key: N,
+    ) -> DbResult<crate::typed_api::Producer<N::Contract>> {
+        self.producer_dyn::<N::Contract>(key.name())
+    }
+    pub(crate) fn producer_dyn<T>(
         &self,
         key: impl Into<alloc::string::String>,
     ) -> DbResult<crate::typed_api::Producer<T>>
@@ -1209,7 +1269,7 @@ impl AimDb {
         // Pre-resolve the typed record so the returned Producer holds a write
         // handle to the record's buffer/snapshot/metadata directly
         let key_str: alloc::string::String = key.into();
-        let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
+        let typed_rec = self.inner.get_typed_record_by_key_raw::<T>(&key_str)?;
         Ok(crate::typed_api::Producer::new(typed_rec.writer_handle()?))
     }
 
@@ -1219,7 +1279,15 @@ impl AimDb {
     ///
     /// # Arguments
     /// * `key` - The record key (e.g., "sensor.temperature")
-    pub fn consumer<T>(
+    ///
+    /// Typed consumer for a record declared with a [`TypedKey`](crate::TypedKey) (063).
+    pub fn consumer<N: crate::record_id::TypedName>(
+        &self,
+        key: N,
+    ) -> DbResult<crate::typed_api::Consumer<N::Contract>> {
+        self.consumer_dyn::<N::Contract>(key.name())
+    }
+    pub(crate) fn consumer_dyn<T>(
         &self,
         key: impl Into<alloc::string::String>,
     ) -> DbResult<crate::typed_api::Consumer<T>>
@@ -1231,7 +1299,7 @@ impl AimDb {
         // a configured buffer surfaces as `MissingConfiguration` here rather
         // than panicking later inside `subscribe()`.
         let key_str: alloc::string::String = key.into();
-        let typed_rec = self.inner.get_typed_record_by_key::<T>(&key_str)?;
+        let typed_rec = self.inner.get_typed_record_by_key_raw::<T>(&key_str)?;
         let buffer = typed_rec.buffer_handle().ok_or_else(|| {
             DbError::missing_configuration(alloc::format!("buffer for record '{}'", key_str))
         })?;

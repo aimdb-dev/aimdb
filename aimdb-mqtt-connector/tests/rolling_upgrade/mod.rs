@@ -55,11 +55,11 @@ where
                 .transport(TokioNet::tcp())
                 .with_client_id("rolling-mcu"),
         );
-    mcu.configure::<firmware::Temperature>(firmware::INDOOR_TEMP, |r| {
+    mcu.configure(firmware::INDOOR_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest);
         firmware::publish(r, codec);
     });
-    mcu.configure::<firmware::Temperature>(firmware::RETURN_TEMP, |r| {
+    mcu.configure(firmware::RETURN_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest);
         firmware::receive(r, codec);
     });
@@ -67,18 +67,18 @@ where
     let mut b = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(MqttConnector::new(url.clone()).with_client_id("rolling-hub"));
-    b.configure::<hub::Temperature>(hub::INDOOR_TEMP, |r| {
+    b.configure(hub::INDOOR_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest);
         hub::receive(r, codec);
     });
-    b.configure::<hub::Temperature>(hub::OUTDOOR_TEMP, |r| {
+    b.configure(hub::OUTDOOR_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .link_from(hub::OUTDOOR_URL)
             .with_link_codec(codec)
             .with_envelope(EnvelopeCarrier::Inline)
             .finish();
     });
-    b.configure::<hub::Temperature>(firmware::RETURN_TEMP, |r| {
+    b.configure(hub::RETURN_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest);
         hub::send_to_firmware(r, codec);
     });
@@ -86,7 +86,7 @@ where
     let mut second = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(MqttConnector::new(url).with_client_id("rolling-second-sensor"));
-    second.configure::<hub::Temperature>(hub::OUTDOOR_TEMP, |r| {
+    second.configure(hub::OUTDOOR_TEMP, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .link_to(hub::OUTDOOR_URL)
             .with_link_codec(codec)
@@ -94,18 +94,9 @@ where
             .finish();
     });
     let (second, second_runner) = second.build().await.unwrap();
-    let mut indoor = db
-        .consumer::<hub::Temperature>(hub::INDOOR_TEMP)
-        .unwrap()
-        .subscribe();
-    let mut outdoor = db
-        .consumer::<hub::Temperature>(hub::OUTDOOR_TEMP)
-        .unwrap()
-        .subscribe();
-    let mut returned = mcu
-        .consumer::<firmware::Temperature>(firmware::RETURN_TEMP)
-        .unwrap()
-        .subscribe();
+    let mut indoor = db.consumer(hub::INDOOR_TEMP).unwrap().subscribe();
+    let mut outdoor = db.consumer(hub::OUTDOOR_TEMP).unwrap().subscribe();
+    let mut returned = mcu.consumer(firmware::RETURN_TEMP).unwrap().subscribe();
     tokio::select! {
         _ = mcu_runner.run() => panic!("MCU stopped"),
         _ = runner.run() => panic!("hub stopped"),
@@ -113,7 +104,7 @@ where
         _ = common::forwarding_broker(listener, seen.clone()) => panic!("broker stopped"),
         _ = async {
             subscribed(&seen, 3).await;
-            mcu.producer::<firmware::Temperature>(firmware::INDOOR_TEMP).unwrap()
+            mcu.producer(firmware::INDOOR_TEMP).unwrap()
                 .produce(firmware::Temperature { temp: 21.5 });
             let value = indoor.recv().await.unwrap();
             assert_eq!(value.value, hub::Temperature { celsius: 21.5, quality: 1 });
@@ -125,17 +116,17 @@ where
             assert_eq!(stats(&db, 0).upgraded[0].from, 1);
             assert_no_rejections(&stats(&db, 0));
             let records = db.list_records();
-            let records: Vec<_> = records.iter().filter(|r| r.record_key == hub::INDOOR_TEMP).collect();
+            let records: Vec<_> = records.iter().filter(|r| r.record_key == hub::INDOOR_TEMP.as_ref()).collect();
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].schema_type.as_deref(), Some("temperature"));
             assert_eq!(records[0].schema_version, Some(2));
-            second.producer::<hub::Temperature>(hub::OUTDOOR_TEMP).unwrap()
+            second.producer(hub::OUTDOOR_TEMP).unwrap()
                 .produce(hub::Temperature { celsius: 8.0, quality: 7 });
             assert_eq!(outdoor.recv().await.unwrap().value, hub::Temperature { celsius: 8.0, quality: 7 });
             accepted(&db, 1).await;
             assert_eq!(stats(&db, 1).accepted, 1);
             assert!(stats(&db, 1).upgraded.iter().all(|v| v.count == 0));
-            db.producer::<hub::Temperature>(firmware::RETURN_TEMP).unwrap()
+            db.producer(hub::RETURN_TEMP).unwrap()
                 .produce(hub::Temperature { celsius: 25.0, quality: 300 });
             assert_eq!(returned.recv().await.unwrap().value, firmware::Temperature { temp: 25.0 });
             let seen = seen.lock().unwrap();
@@ -194,9 +185,6 @@ async fn rolling_rejections_and_deployed_devices() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("mqtt://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let seen = Arc::new(Mutex::new(Seen::default()));
-    let mut b = AimDbBuilder::new()
-        .runtime(Arc::new(TokioAdapter))
-        .with_connector(MqttConnector::new(url.clone()).with_client_id("rolling-policy-hub"));
     let cases = [
         "old",
         "new",
@@ -206,8 +194,13 @@ async fn rolling_rejections_and_deployed_devices() {
         "bare-postcard",
         "bare-json",
     ];
-    for case in cases {
-        b.configure::<hub::Temperature>(case, |r| {
+    let receiver_keys = cases.map(aimdb_data_contracts::Key::<hub::Temperature>::new);
+    let sender_keys = cases.map(aimdb_core::Name::<Vec<u8>>::new);
+    let mut b = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(MqttConnector::new(url.clone()).with_client_id("rolling-policy-hub"));
+    for (case, key) in cases.into_iter().zip(receiver_keys) {
+        b.configure(key, |r| {
             r.buffer(BufferCfg::SingleLatest);
             let link = r.link_from(&format!("mqtt://rolling/{case}"));
             match case {
@@ -244,8 +237,8 @@ async fn rolling_rejections_and_deployed_devices() {
                 .transport(TokioNet::tcp())
                 .with_client_id("rolling-policy-mcu"),
         );
-    for case in cases {
-        mcu.configure::<Vec<u8>>(case, |r| {
+    for (case, key) in cases.into_iter().zip(sender_keys) {
+        mcu.configure(key, |r| {
             r.buffer(BufferCfg::SingleLatest)
                 .link_to(&format!("mqtt://rolling/{case}"))
                 .with_serializer(|_, bytes: &Vec<u8>| Ok(bytes.clone()))
@@ -253,9 +246,9 @@ async fn rolling_rejections_and_deployed_devices() {
         });
     }
     let (mcu, mcu_runner) = mcu.build().await.unwrap();
-    let mut readers: Vec<_> = cases
-        .iter()
-        .map(|case| db.consumer::<hub::Temperature>(*case).unwrap().subscribe())
+    let mut readers: Vec<_> = receiver_keys
+        .into_iter()
+        .map(|key| db.consumer(key).unwrap().subscribe())
         .collect();
     let v1 = firmware::Temperature { temp: 21.5 };
     let v1_payload = Postcard::<64>.encode_payload_owned(&v1).unwrap();
@@ -309,7 +302,7 @@ async fn rolling_rejections_and_deployed_devices() {
         _ = async {
             subscribed(&seen, cases.len()).await;
             for (i, bytes) in bad.into_iter().enumerate() {
-                mcu.producer::<Vec<u8>>(cases[i]).unwrap().produce(bytes);
+                mcu.producer(sender_keys[i]).unwrap().produce(bytes);
                 loop {
                     let s = stats(&db, i);
                     let rejected = [s.too_old, s.too_new, s.shape_mismatch, s.contract_mismatch, s.decode_error];
@@ -321,12 +314,12 @@ async fn rolling_rejections_and_deployed_devices() {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
                 // Recover on the very same route, respecting its carrier.
-                mcu.producer::<Vec<u8>>(cases[i]).unwrap().produce(if i == 4 { v1_payload.clone() } else { valid_current.clone() });
+                mcu.producer(sender_keys[i]).unwrap().produce(if i == 4 { v1_payload.clone() } else { valid_current.clone() });
                 assert_eq!(readers[i].recv().await.unwrap().value, current);
                 assert_eq!(accepted(&db, i).await.accepted, 1);
             }
             for (i, bytes) in [(5, v1_payload.clone()), (6, br#"{"schema_version":999,"temp":21.5}"#.to_vec())] {
-                mcu.producer::<Vec<u8>>(cases[i]).unwrap().produce(bytes);
+                mcu.producer(sender_keys[i]).unwrap().produce(bytes);
                 assert_eq!(readers[i].recv().await.unwrap().value, current);
                 let s = accepted(&db, i).await;
                 assert_eq!(s.accepted, 1);

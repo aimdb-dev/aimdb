@@ -4,9 +4,11 @@
 use aimdb_data_contracts::{migration_chain, SchemaType};
 use serde::{Deserialize, Serialize};
 
-pub const INDOOR_TEMP: &str = "temp.indoor";
+pub const INDOOR_TEMP: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("temp.indoor").with_link(INDOOR_URL);
 pub const INDOOR_URL: &str = "mqtt://rolling/indoor";
-pub const RETURN_TEMP: &str = "temp.return";
+pub const RETURN_TEMP: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("temp.return").with_link(RETURN_URL);
 pub const RETURN_URL: &str = "mqtt://rolling/return";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -19,7 +21,8 @@ impl SchemaType for TemperatureV1 {
 }
 
 use aimdb_data_contracts::{MigrationError, MigrationStep};
-pub const OUTDOOR_TEMP: &str = "temp.outdoor";
+pub const OUTDOOR_TEMP: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("temp.outdoor").with_link(OUTDOOR_URL);
 pub const OUTDOOR_URL: &str = "mqtt://rolling/outdoor";
 pub type Temperature = TemperatureV2;
 
@@ -66,7 +69,7 @@ pub fn receive<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
     use aimdb_data_contracts::{
         EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt, VersionedInboundExt,
     };
-    r.link_from(INDOOR_URL)
+    r.link_from_key()
         .with_link_codec(codec)
         .with_envelope(EnvelopeCarrier::Inline)
         .accepts_from::<1>()
@@ -80,7 +83,7 @@ pub fn send_to_firmware<C: aimdb_data_contracts::LinkCodec<Temperature> + 'stati
     use aimdb_data_contracts::{
         EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt, VersionedOutboundExt,
     };
-    r.link_to(RETURN_URL)
+    r.link_to_key()
         .with_link_codec(codec)
         .with_envelope(EnvelopeCarrier::Inline)
         .sends_as::<1>()

@@ -19,8 +19,9 @@ struct Reading {
 }
 
 fn configured_builder() -> AimDbBuilder {
+    let key_sensor_reading_1 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Reading>("sensor.reading", |reg| {
+    builder.configure(key_sensor_reading_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
             .tap(|_ctx, _consumer| async move {});
     });
@@ -32,7 +33,7 @@ fn configured_builder() -> AimDbBuilder {
 /// A watchdog rather than a plain call: the defect these tests cover is a
 /// wait that never ends, and a test that reproduces it should fail rather
 /// than hang the suite.
-fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+fn within<T: Send + Sync + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(f());
@@ -44,6 +45,7 @@ fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'st
 /// `AimDbSyncExt::attach` — the entry point that carried the spin.
 #[test]
 fn attach_on_a_built_db_returns_a_usable_handle() {
+    let key_sensor_reading_2 = aimdb_core::Name::<Reading>::new("sensor.reading");
     // `build()` is async, so it runs in a runtime that is dropped before
     // `attach()`: attach blocks, and must not be called from inside one.
     let db = {
@@ -53,9 +55,7 @@ fn attach_on_a_built_db_returns_a_usable_handle() {
     };
 
     let handle = within(Duration::from_secs(10), move || db.attach()).expect("attach");
-    handle
-        .producer::<Reading>("sensor.reading")
-        .expect("producer");
+    handle.producer(key_sensor_reading_2).expect("producer");
     handle.detach().expect("detach");
 }
 
@@ -112,13 +112,10 @@ fn detach_timeout_shuts_down_cleanly() {
 
 #[test]
 fn producer_and_consumer_work_through_the_attached_runtime() {
+    let key_sensor_reading_3 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let handle = configured_builder().attach().expect("attach");
-    let producer = handle
-        .producer::<Reading>("sensor.reading")
-        .expect("producer");
-    let mut consumer = handle
-        .consumer::<Reading>("sensor.reading")
-        .expect("consumer");
+    let producer = handle.producer(key_sensor_reading_3).expect("producer");
+    let mut consumer = handle.consumer(key_sensor_reading_3).expect("consumer");
 
     producer.set(Reading { value: 42 }).expect("set");
     let got = consumer
@@ -135,6 +132,7 @@ fn producer_and_consumer_work_through_the_attached_runtime() {
 /// accumulate anything, and the process stays healthy afterwards.
 #[test]
 fn a_timed_out_detach_strands_nothing() {
+    let key_sensor_reading_4 = aimdb_core::Name::<Reading>::new("sensor.reading");
     for _ in 0..8 {
         let handle = configured_builder().attach().expect("attach");
         // A timeout short enough that it may or may not expire — either outcome
@@ -147,9 +145,7 @@ fn a_timed_out_detach_strands_nothing() {
     let handle = configured_builder()
         .attach()
         .expect("attach after timeouts");
-    let producer = handle
-        .producer::<Reading>("sensor.reading")
-        .expect("producer");
+    let producer = handle.producer(key_sensor_reading_4).expect("producer");
     producer.set(Reading { value: 1 }).expect("set");
     handle.detach().expect("detach");
 }

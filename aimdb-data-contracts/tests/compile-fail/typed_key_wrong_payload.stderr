@@ -1,0 +1,10 @@
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_wrong_payload.rs:5:50
+  |
+5 |     let _: aimdb_core::Producer<contracts::V1> = db.producer(READING).unwrap();
+  |            -----------------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Producer<V1>`, found `Producer<V2>`
+  |            |
+  |            expected due to this
+  |
+  = note: expected struct `Producer<V1>`
+             found struct `Producer<V2>`

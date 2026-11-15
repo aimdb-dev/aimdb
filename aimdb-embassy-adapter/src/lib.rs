@@ -291,7 +291,8 @@ where
     /// ```ignore
     /// use embassy_stm32::exti::ExtiInput;
     ///
-    /// builder.configure::<LightControl>(|reg| {
+    /// let light = aimdb_core::Name::<LightControl>::new("light.control");
+    /// builder.configure(light, |reg| {
     ///     reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
     ///         .link_to("knx://1/0/6")
     ///         .source_with_context(button, button_handler)

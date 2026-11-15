@@ -34,10 +34,11 @@ fn data(id: u32) -> TestData {
 }
 
 fn attach(cfg: BufferCfg) -> AimDbHandle {
+    let key_test_data_1 = aimdb_core::Name::<TestData>::new("test.data");
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test.data", |reg| {
+    builder.configure(key_test_data_1, |reg| {
         reg.buffer(cfg).tap(|_ctx, _consumer| async move {
             // No-op tap just to satisfy validation
         });
@@ -47,12 +48,13 @@ fn attach(cfg: BufferCfg) -> AimDbHandle {
 }
 
 fn setup(cfg: BufferCfg) -> (AimDbHandle, SyncProducer<TestData>, SyncConsumer<TestData>) {
+    let key_test_data_2 = aimdb_core::Name::<TestData>::new("test.data");
     let handle = attach(cfg);
     let producer = handle
-        .producer::<TestData>("test.data")
+        .producer(key_test_data_2)
         .expect("Failed to create producer");
     let consumer = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_2)
         .expect("Failed to create consumer");
     (handle, producer, consumer)
 }
@@ -76,14 +78,15 @@ fn test_basic_producer_consumer() {
 /// Test multiple producers and consumers
 #[test]
 fn test_multi_threaded_producer_consumer() {
+    let key_test_data_3 = aimdb_core::Name::<TestData>::new("test.data");
     let handle = attach(BufferCfg::SpmcRing { capacity: 100 });
 
     // Create multiple consumers
     let mut consumer1 = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_3)
         .expect("Failed to create consumer 1");
     let mut consumer2 = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_3)
         .expect("Failed to create consumer 2");
 
     // Spawn consumer threads
@@ -109,7 +112,7 @@ fn test_multi_threaded_producer_consumer() {
 
     // Create multiple producers
     let producer1 = handle
-        .producer::<TestData>("test.data")
+        .producer(key_test_data_3)
         .expect("Failed to create producer 1");
     let producer2 = producer1.clone();
 
@@ -200,10 +203,11 @@ fn test_non_blocking_consumer_operation() {
 /// Test graceful shutdown
 #[test]
 fn test_graceful_shutdown() {
+    let key_test_data_4 = aimdb_core::Name::<TestData>::new("test.data");
     let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
 
     let producer = handle
-        .producer::<TestData>("test.data")
+        .producer(key_test_data_4)
         .expect("Failed to create producer");
 
     // Produce some values
@@ -264,9 +268,10 @@ fn check_reports_what_a_publish_would_find() {
 /// Test an immediate consumer read after runtime shutdown.
 #[test]
 fn test_runtime_shutdown_error_non_blocking() {
+    let key_test_data_5 = aimdb_core::Name::<TestData>::new("test.data");
     let handle = attach(BufferCfg::SpmcRing { capacity: 10 });
     let mut consumer = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_5)
         .expect("Failed to create consumer");
 
     // Shut down the runtime
@@ -301,16 +306,17 @@ fn test_runtime_shutdown_after_produce_read_error() {
 /// Test buffer semantics - SPMC Ring
 #[test]
 fn test_spmc_ring_semantics() {
+    let key_test_data_6 = aimdb_core::Name::<TestData>::new("test.data");
     let handle = attach(BufferCfg::SpmcRing { capacity: 5 });
 
     let producer = handle
-        .producer::<TestData>("test.data")
+        .producer(key_test_data_6)
         .expect("Failed to create producer");
     let mut consumer1 = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_6)
         .expect("Failed to create consumer 1");
     let mut consumer2 = handle
-        .consumer::<TestData>("test.data")
+        .consumer(key_test_data_6)
         .expect("Failed to create consumer 2");
 
     // Produce multiple values
@@ -401,6 +407,7 @@ fn test_get_latest_with_timeout() {
 /// Test that produce errors are properly propagated back to the sync caller
 #[test]
 fn test_error_propagation() {
+    let key_test_data_7 = aimdb_core::Name::<TestData>::new("test.data");
     // Build a database WITHOUT registering TestData
     // This will cause produce() to fail with RecordKeyNotFound
     let adapter = Arc::new(TokioAdapter);
@@ -411,7 +418,7 @@ fn test_error_propagation() {
     // Create a producer for an unregistered type/key
     // Note: producer creation succeeds, but set() should fail
     let producer = handle
-        .producer::<TestData>("test.data")
+        .producer(key_test_data_7)
         .expect("Failed to create producer");
 
     // Try to produce a value - this should fail because the key is not registered

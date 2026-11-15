@@ -10,12 +10,14 @@ struct FeatureGate {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let key_config_checkout_rollout_1 =
+        aimdb_core::Name::<FeatureGate>::new("config.checkout_rollout");
     println!("=== hello-single-latest-async: SingleLatest buffer demo ===\n");
 
     let adapter = Arc::new(TokioAdapter::new()?);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<FeatureGate>("config.checkout_rollout", |reg| {
+    builder.configure(key_config_checkout_rollout_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(rollout_source)
             .tap(rollout_observer);

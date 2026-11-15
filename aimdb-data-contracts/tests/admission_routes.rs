@@ -83,13 +83,14 @@ fn frame(
 #[test]
 fn all_reasons_reach_route_metrics_and_later_values_are_locally_stamped() {
     futures::executor::block_on(async {
+        let key_temperature_1 = aimdb_data_contracts::Key::<V2>::new("temperature");
         let captured: Captured = Default::default();
         let ops = Arc::new(ManualClockRuntimeOps::default());
         let link = LinkContract::<V2, _>::inline_from::<1>(PayloadCodec::Postcard, Postcard::<128>);
         let mut builder = AimDbBuilder::new()
             .runtime(ops.clone())
             .with_connector(NoopConnector);
-        builder.configure::<V2>("temperature", |r| {
+        builder.configure(key_temperature_1, |r| {
             r.buffer_raw(Box::new(Capture(captured.clone())))
                 .link_from("test://reading")
                 .with_admitting_deserializer(&[1], move |_, _, bytes| admit_frame(bytes, &link))
@@ -179,12 +180,13 @@ fn all_reasons_reach_route_metrics_and_later_values_are_locally_stamped() {
 #[test]
 fn a_bound_postcard_route_rejects_inline_garbage_without_producing() {
     futures::executor::block_on(async {
+        let key_temperature_2 = aimdb_data_contracts::Key::<V2>::new("temperature");
         let captured: Captured = Default::default();
         let binding = LinkContract::<V2, _>::bound::<V1>(PayloadCodec::Postcard, Postcard::<128>);
         let mut builder = AimDbBuilder::new()
             .runtime(Arc::new(ManualClockRuntimeOps::default()))
             .with_connector(NoopConnector);
-        builder.configure::<V2>("temperature", |r| {
+        builder.configure(key_temperature_2, |r| {
             r.buffer_raw(Box::new(Capture(captured.clone())))
                 .link_from("test://reading")
                 .with_admitting_deserializer(&[1], move |_, _, bytes| admit_frame(bytes, &binding))

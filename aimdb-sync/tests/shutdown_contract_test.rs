@@ -17,8 +17,9 @@ struct Reading {
 }
 
 fn attach() -> AimDbHandle {
+    let key_sensor_reading_1 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Reading>("sensor.reading", |reg| {
+    builder.configure(key_sensor_reading_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
             .tap(|_ctx, _consumer| async move {});
     });
@@ -78,9 +79,8 @@ fn shutdown_completes_while_producers_publish() {
 
     let publishers: Vec<_> = (0..4)
         .map(|_| {
-            let producer = handle
-                .producer::<Reading>("sensor.reading")
-                .expect("producer");
+            let key_sensor_reading_2 = aimdb_core::Name::<Reading>::new("sensor.reading");
+            let producer = handle.producer(key_sensor_reading_2).expect("producer");
             let stop = Arc::clone(&stop);
             let unexpected = Arc::clone(&unexpected);
             let published = Arc::clone(&published);
@@ -208,10 +208,9 @@ fn detach_is_shutdown_by_value() {
 /// silence.
 #[test]
 fn a_publish_after_shutdown_is_refused() {
+    let key_sensor_reading_3 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let handle = attach();
-    let producer = handle
-        .producer::<Reading>("sensor.reading")
-        .expect("producer");
+    let producer = handle.producer(key_sensor_reading_3).expect("producer");
     producer
         .set(Reading { value: 1 })
         .expect("publishes while open");
@@ -228,10 +227,9 @@ fn a_publish_after_shutdown_is_refused() {
 /// the wake is the last `Arc<AimDb>` dropping, so the handle must own it.
 #[test]
 fn a_parked_consumer_wakes_when_another_thread_shuts_down() {
+    let key_sensor_reading_4 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let handle = Arc::new(attach());
-    let mut consumer = handle
-        .consumer::<Reading>("sensor.reading")
-        .expect("consumer");
+    let mut consumer = handle.consumer(key_sensor_reading_4).expect("consumer");
 
     let parked = thread::spawn(move || consumer.get());
 

@@ -19,7 +19,7 @@ where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
-    link.with_link_codec(codec).with_schema(T::NAME, T::VERSION)
+    link.with_link_codec(codec)
 }
 
 /// An inbound link carrying contract `T`: its codec and its schema.
@@ -28,7 +28,7 @@ where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
-    link.with_link_codec(codec).with_schema(T::NAME, T::VERSION)
+    link.with_link_codec(codec)
 }
 
 /// Publishes a `T` record to `address` on `connector`, encoded with `T`'s own
@@ -43,7 +43,8 @@ where
 ///
 /// ```rust,ignore
 /// let mqtt = builder.connect(MqttConnector::new(broker_url));
-/// builder.configure::<Temperature>("temp.indoor", |reg| {
+/// let record_1 = aimdb_core::Name::<Temperature>::new("temp.indoor");
+/// builder.configure(record_1, |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)
 ///         .output(publish(mqtt, "sensors/temp/indoor").with_qos(1));
 /// });

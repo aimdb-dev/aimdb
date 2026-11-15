@@ -24,16 +24,18 @@ struct AppConfig {
 /// Test: Multiple records of the same type with different keys
 #[tokio::test]
 async fn test_multi_instance_same_type() {
+    let key_sensors_indoor_1 = aimdb_core::Name::<Temperature>::new("sensors.indoor");
+    let key_sensors_outdoor_2 = aimdb_core::Name::<Temperature>::new("sensors.outdoor");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register two Temperature records with different keys
-    builder.configure::<Temperature>("sensors.indoor", |reg| {
+    builder.configure(key_sensors_indoor_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("sensors.outdoor", |reg| {
+    builder.configure(key_sensors_outdoor_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -41,10 +43,12 @@ async fn test_multi_instance_same_type() {
     tokio::spawn(runner.run());
 
     // Produce to each record separately
-    db.produce::<Temperature>("sensors.indoor", Temperature { celsius: 22.0 })
+    let record_key_1 = aimdb_core::Name::<Temperature>::new("sensors.indoor");
+    db.produce(record_key_1, Temperature { celsius: 22.0 })
         .unwrap();
 
-    db.produce::<Temperature>("sensors.outdoor", Temperature { celsius: -5.0 })
+    let record_key_2 = aimdb_core::Name::<Temperature>::new("sensors.outdoor");
+    db.produce(record_key_2, Temperature { celsius: -5.0 })
         .unwrap();
 
     // Verify we can resolve both keys
@@ -62,15 +66,17 @@ async fn test_multi_instance_same_type() {
 /// Test: Key-based producer works correctly
 #[tokio::test]
 async fn test_producer() {
+    let key_sensor_a_3 = aimdb_core::Name::<Temperature>::new("sensor.a");
+    let key_sensor_b_4 = aimdb_core::Name::<Temperature>::new("sensor.b");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("sensor.a", |reg| {
+    builder.configure(key_sensor_a_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("sensor.b", |reg| {
+    builder.configure(key_sensor_b_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -78,8 +84,8 @@ async fn test_producer() {
     tokio::spawn(runner.run());
 
     // Key-bound producers resolve the typed record up front.
-    let producer_a = db.producer::<Temperature>("sensor.a").unwrap();
-    let producer_b = db.producer::<Temperature>("sensor.b").unwrap();
+    let producer_a = db.producer(key_sensor_a_3).unwrap();
+    let producer_b = db.producer(key_sensor_b_4).unwrap();
 
     // Produce values
     producer_a.produce(Temperature { celsius: 10.0 });
@@ -89,15 +95,17 @@ async fn test_producer() {
 /// Test: Key-based consumer works correctly
 #[tokio::test]
 async fn test_consumer() {
+    let key_zone_north_5 = aimdb_core::Name::<Temperature>::new("zone.north");
+    let key_zone_south_6 = aimdb_core::Name::<Temperature>::new("zone.south");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("zone.north", |reg| {
+    builder.configure(key_zone_north_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("zone.south", |reg| {
+    builder.configure(key_zone_south_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -105,8 +113,8 @@ async fn test_consumer() {
     tokio::spawn(runner.run());
 
     // Key-bound consumers resolve the typed record up front.
-    let consumer_north = db.consumer::<Temperature>("zone.north").unwrap();
-    let consumer_south = db.consumer::<Temperature>("zone.south").unwrap();
+    let consumer_north = db.consumer(key_zone_north_5).unwrap();
+    let consumer_south = db.consumer(key_zone_south_6).unwrap();
 
     // Subscribe should work
     let _reader_north = consumer_north.subscribe();
@@ -116,12 +124,13 @@ async fn test_consumer() {
 /// Test: Single instance key-based lookup works
 #[tokio::test]
 async fn test_single_instance_key_lookup() {
+    let key_single_temp_7 = aimdb_core::Name::<Temperature>::new("single.temp");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register only one Temperature record
-    builder.configure::<Temperature>("single.temp", |reg| {
+    builder.configure(key_single_temp_7, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -129,21 +138,24 @@ async fn test_single_instance_key_lookup() {
     tokio::spawn(runner.run());
 
     // Key-based produce should work
-    db.produce::<Temperature>("single.temp", Temperature { celsius: 30.0 })
+    let record_key_3 = aimdb_core::Name::<Temperature>::new("single.temp");
+    db.produce(record_key_3, Temperature { celsius: 30.0 })
         .unwrap();
 
     // Key-based subscribe should work
-    let _reader = db.subscribe::<Temperature>("single.temp").unwrap();
+    let record_key_4 = aimdb_core::Name::<Temperature>::new("single.temp");
+    let _reader = db.subscribe(record_key_4).unwrap();
 }
 
 /// Test: Key not found error
 #[tokio::test]
 async fn test_key_not_found_error() {
+    let key_existing_key_8 = aimdb_core::Name::<Temperature>::new("existing.key");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("existing.key", |reg| {
+    builder.configure(key_existing_key_8, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -151,7 +163,8 @@ async fn test_key_not_found_error() {
     tokio::spawn(runner.run());
 
     // Try to produce to non-existent key
-    let result = db.produce::<Temperature>("nonexistent.key", Temperature { celsius: 0.0 });
+    let record_key_5 = aimdb_core::Name::<Temperature>::new("nonexistent.key");
+    let result = db.produce(record_key_5, Temperature { celsius: 0.0 });
 
     match result {
         Err(DbError::RecordKeyNotFound { key }) => {
@@ -164,12 +177,13 @@ async fn test_key_not_found_error() {
 /// Test: Type mismatch error when accessing with wrong type
 #[tokio::test]
 async fn test_type_mismatch_error() {
+    let key_sensor_temp_9 = aimdb_core::Name::<Temperature>::new("sensor.temp");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register a Temperature record
-    builder.configure::<Temperature>("sensor.temp", |reg| {
+    builder.configure(key_sensor_temp_9, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -177,8 +191,9 @@ async fn test_type_mismatch_error() {
     tokio::spawn(runner.run());
 
     // Try to produce AppConfig to a Temperature record
-    let result = db.produce::<AppConfig>(
-        "sensor.temp",
+    let record_key_6 = aimdb_core::Name::<AppConfig>::new("sensor.temp");
+    let result = db.produce(
+        record_key_6,
         AppConfig {
             debug: true,
             name: "test".to_string(),
@@ -199,17 +214,19 @@ async fn test_type_mismatch_error() {
 /// panic on user mistakes).
 #[tokio::test]
 async fn test_duplicate_key_error() {
+    let key_shared_key_10 = aimdb_core::Name::<Temperature>::new("shared.key");
+    let key_shared_key_11 = aimdb_core::Name::<AppConfig>::new("shared.key");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register first record
-    builder.configure::<Temperature>("shared.key", |reg| {
+    builder.configure(key_shared_key_10, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
     // Re-register the same key with a different type — recorded, not panicked
-    builder.configure::<AppConfig>("shared.key", |reg| {
+    builder.configure(key_shared_key_11, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -226,18 +243,21 @@ async fn test_duplicate_key_error() {
 /// (the setters only catch same-stage duplicates).
 #[tokio::test]
 async fn test_conflicting_writers_reported_from_build() {
+    let key_t_input_12 = aimdb_core::Name::<Temperature>::new("t.input");
+    let key_t_conflicted_13 = aimdb_core::Name::<Temperature>::new("t.conflicted");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("t.input", |reg| {
+    builder.configure(key_t_input_12, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("t.conflicted", |reg| {
+    builder.configure(key_t_conflicted_13, |reg| {
+        let key_t_input_14 = aimdb_core::Name::<Temperature>::new("t.input");
         reg.buffer(BufferCfg::SingleLatest)
             .source(|_ctx, _producer| async move {})
-            .transform::<Temperature, _>("t.input", |b| b.map(|t: &Temperature| Some(t.clone())));
+            .transform(key_t_input_14, |b| b.map(|t: &Temperature| Some(t.clone())));
     });
 
     let Err(DbError::InvalidConfiguration { errors }) = builder.build().await else {
@@ -256,19 +276,22 @@ async fn test_conflicting_writers_reported_from_build() {
 /// Test: RecordId remains stable and can be used for O(1) access
 #[tokio::test]
 async fn test_record_id_stability() {
+    let key_first_15 = aimdb_core::Name::<Temperature>::new("first");
+    let key_second_16 = aimdb_core::Name::<AppConfig>::new("second");
+    let key_third_17 = aimdb_core::Name::<Temperature>::new("third");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("first", |reg| {
+    builder.configure(key_first_15, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<AppConfig>("second", |reg| {
+    builder.configure(key_second_16, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("third", |reg| {
+    builder.configure(key_third_17, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
@@ -288,24 +311,28 @@ async fn test_record_id_stability() {
 /// Test: records_of_type introspection
 #[tokio::test]
 async fn test_records_of_type_introspection() {
+    let key_temp_a_18 = aimdb_core::Name::<Temperature>::new("temp.a");
+    let key_temp_b_19 = aimdb_core::Name::<Temperature>::new("temp.b");
+    let key_config_20 = aimdb_core::Name::<AppConfig>::new("config");
+    let key_temp_c_21 = aimdb_core::Name::<Temperature>::new("temp.c");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register 3 Temperature and 1 AppConfig
-    builder.configure::<Temperature>("temp.a", |reg| {
+    builder.configure(key_temp_a_18, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("temp.b", |reg| {
+    builder.configure(key_temp_b_19, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<AppConfig>("config", |reg| {
+    builder.configure(key_config_20, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 
-    builder.configure::<Temperature>("temp.c", |reg| {
+    builder.configure(key_temp_c_21, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
 

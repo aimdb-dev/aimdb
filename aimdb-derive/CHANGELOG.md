@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- RecordKey requires record_key(contract = T) or record_key(payload = T); prefix moves into record_key and key_prefix is removed.
+
 ### Fixed
 
 - **`migration_chain!` requires one contract name across the chain.** Every

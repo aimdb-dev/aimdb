@@ -69,15 +69,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<Temperature>("temperature", |reg| {
+    let record_1 = aimdb_core::Name::<Temperature>::new("temperature");
+    builder.configure(record_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
     
     let handle = builder.attach()?;
     
     // Get sync handles
-    let producer = handle.producer::<Temperature>("temperature")?;
-    let mut consumer = handle.consumer::<Temperature>("temperature")?;
+    let record_2 = aimdb_core::Name::<Temperature>::new("temperature");
+    let producer = handle.producer(record_2)?;
+    let record_3 = aimdb_core::Name::<Temperature>::new("temperature");
+    let mut consumer = handle.consumer(record_3)?;
     
     // Send from one thread
     let prod_handle = std::thread::spawn(move || {
@@ -116,7 +119,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Write a Value
 
 ```rust
-let producer = handle.producer::<Temperature>("temperature")?;
+let record_4 = aimdb_core::Name::<Temperature>::new("temperature");
+let producer = handle.producer(record_4)?;
 
 let temp = Temperature { 
     celsius: 23.5, 
@@ -134,7 +138,8 @@ producer.set(temp)?;
 ### Blocking Receive
 
 ```rust
-let mut consumer = handle.consumer::<Temperature>("temperature")?;
+let record_5 = aimdb_core::Name::<Temperature>::new("temperature");
+let mut consumer = handle.consumer(record_5)?;
 
 // Blocks until value is available
 let temp = consumer.get()?;
@@ -191,18 +196,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<Temperature>("temperature", |reg| {
+    let record_6 = aimdb_core::Name::<Temperature>::new("temperature");
+    builder.configure(record_6, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     
     let handle = builder.attach()?;
-    let producer = handle.producer::<Temperature>("temperature")?;
+    let record_7 = aimdb_core::Name::<Temperature>::new("temperature");
+    let producer = handle.producer(record_7)?;
     
     // Spawn multiple consumer threads
     let mut handles = vec![];
     
     for id in 0..3 {
-        let mut consumer = handle.consumer::<Temperature>("temperature")?;
+        let record_8 = aimdb_core::Name::<Temperature>::new("temperature");
+        let mut consumer = handle.consumer(record_8)?;
         let handle = std::thread::spawn(move || {
             loop {
                 match consumer.get_with_timeout(Duration::from_secs(1)) {
@@ -238,8 +246,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `SyncProducer` type is `Send + Sync`, shareable across threads. `SyncConsumer` type is `Send` only, can be moved to another thread:
 
 ```rust
-let producer = handle.producer::<Temperature>("temperature")?;
-let mut consumer = handle.consumer::<Temperature>("temperature")?;
+let record_9 = aimdb_core::Name::<Temperature>::new("temperature");
+let producer = handle.producer(record_9)?;
+let record_10 = aimdb_core::Name::<Temperature>::new("temperature");
+let mut consumer = handle.consumer(record_10)?;
 
 // `SyncProducer` implements `Clone`
 let prod_clone = producer.clone();
@@ -290,18 +300,21 @@ Choose buffer based on use case:
 use aimdb_core::buffer::BufferCfg;
 
 // SPMC Ring: Multiple consumers, bounded history, overwrites the oldest value when full
-builder.configure::<MyData>("my-data", |reg| {
+let record_11 = aimdb_core::Name::<MyData>::new("my-data");
+builder.configure(record_11, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
 });
 
 // SingleLatest: Always get newest value, each write replaces the previous value
-builder.configure::<MyData>("my-data", |reg| {
+let record_12 = aimdb_core::Name::<MyData>::new("my-data");
+builder.configure(record_12, |reg| {
     reg.buffer(BufferCfg::SingleLatest);
 });
 
 // Mailbox: One pending value. A new value overwrites an unread one, and with
 // several consumers each value is taken by only one of them
-builder.configure::<MyData>("my-data", |reg| {
+let record_13 = aimdb_core::Name::<MyData>::new("my-data");
+builder.configure(record_13, |reg| {
     reg.buffer(BufferCfg::Mailbox);
 });
 ```
@@ -355,13 +368,16 @@ impl LegacyAdapter {
         let adapter = Arc::new(TokioAdapter);
         let mut builder = AimDbBuilder::new().runtime(adapter);
         
-        builder.configure::<SensorData>("sensor-data", |reg| {
+        let record_14 = aimdb_core::Name::<SensorData>::new("sensor-data");
+        builder.configure(record_14, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
         });
         
         let handle = builder.attach()?;
-        let producer = handle.producer::<SensorData>("sensor-data")?;
-        let consumer = handle.consumer::<SensorData>("sensor-data")?;
+        let record_15 = aimdb_core::Name::<SensorData>::new("sensor-data");
+        let producer = handle.producer(record_15)?;
+        let record_16 = aimdb_core::Name::<SensorData>::new("sensor-data");
+        let consumer = handle.consumer(record_16)?;
         Ok(Self { handle, producer, consumer })
     }
     
@@ -395,13 +411,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
     
-    builder.configure::<LogMessage>("log-message", |reg| {
+    let record_17 = aimdb_core::Name::<LogMessage>::new("log-message");
+    builder.configure(record_17, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
     });
     
     let handle = builder.attach()?;
-    let producer = handle.producer::<LogMessage>("log-message")?;
-    let mut consumer = handle.consumer::<LogMessage>("log-message")?;
+    let record_18 = aimdb_core::Name::<LogMessage>::new("log-message");
+    let producer = handle.producer(record_18)?;
+    let record_19 = aimdb_core::Name::<LogMessage>::new("log-message");
+    let mut consumer = handle.consumer(record_19)?;
     
     // Simple loop - no async/await
     loop {

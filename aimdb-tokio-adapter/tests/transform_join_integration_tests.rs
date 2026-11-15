@@ -30,24 +30,28 @@ struct Sum(u32);
 
 #[tokio::test]
 async fn transform_join_produces_sum_on_both_inputs() {
+    let key_test_a_1 = aimdb_core::Name::<ValueA>::new("test::A");
+    let key_test_b_2 = aimdb_core::Name::<ValueB>::new("test::B");
+    let key_test_sum_3 = aimdb_core::Name::<Sum>::new("test::Sum");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // SpmcRing inputs (vs SingleLatest) so that values produced before the join
     // transform's forwarders subscribe are still buffered and replayed — removes
     // a startup race where the test might otherwise need a hand-tuned barrier.
-    builder.configure::<ValueA>("test::A", |reg| {
+    builder.configure(key_test_a_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
-    builder.configure::<ValueB>("test::B", |reg| {
+    builder.configure(key_test_b_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
-    builder.configure::<Sum>("test::Sum", |reg| {
+    builder.configure(key_test_sum_3, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .transform_join(|b| {
-                b.input::<ValueA>("test::A")
-                    .input::<ValueB>("test::B")
-                    .on_triggers(|mut rx, producer| async move {
+                let key_test_a_4 = aimdb_core::Name::<ValueA>::new("test::A");
+                let key_test_b_5 = aimdb_core::Name::<ValueB>::new("test::B");
+                b.input(key_test_a_4).input(key_test_b_5).on_triggers(
+                    |mut rx, producer| async move {
                         let mut last_a: Option<u32> = None;
                         let mut last_b: Option<u32> = None;
                         while let Ok(trigger) = rx.recv().await {
@@ -60,20 +64,24 @@ async fn transform_join_produces_sum_on_both_inputs() {
                                 producer.produce(Sum(a + b));
                             }
                         }
-                    })
+                    },
+                )
             });
     });
 
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut sum_rx = db.subscribe::<Sum>("test::Sum").unwrap();
+    let record_key_1 = aimdb_core::Name::<Sum>::new("test::Sum");
+    let mut sum_rx = db.subscribe(record_key_1).unwrap();
 
     // Yield to let the join transform task spawn its input forwarders and subscribe.
     tokio::task::yield_now().await;
 
     // A=1, B=10 → Sum=11 (first time both are present)
-    db.produce::<ValueA>("test::A", ValueA(1)).unwrap();
-    db.produce::<ValueB>("test::B", ValueB(10)).unwrap();
+    let record_key_2 = aimdb_core::Name::<ValueA>::new("test::A");
+    db.produce(record_key_2, ValueA(1)).unwrap();
+    let record_key_3 = aimdb_core::Name::<ValueB>::new("test::B");
+    db.produce(record_key_3, ValueB(10)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -81,7 +89,8 @@ async fn transform_join_produces_sum_on_both_inputs() {
     assert_eq!(s.value.0, 11, "expected 1+10=11");
 
     // A=2 → Sum=12 (B stays 10)
-    db.produce::<ValueA>("test::A", ValueA(2)).unwrap();
+    let record_key_4 = aimdb_core::Name::<ValueA>::new("test::A");
+    db.produce(record_key_4, ValueA(2)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -89,7 +98,8 @@ async fn transform_join_produces_sum_on_both_inputs() {
     assert_eq!(s.value.0, 12, "expected 2+10=12");
 
     // B=20 → Sum=22 (A stays 2)
-    db.produce::<ValueB>("test::B", ValueB(20)).unwrap();
+    let record_key_5 = aimdb_core::Name::<ValueB>::new("test::B");
+    db.produce(record_key_5, ValueB(20)).unwrap();
     let s = tokio::time::timeout(Duration::from_secs(2), sum_rx.recv())
         .await
         .unwrap()
@@ -103,6 +113,8 @@ async fn transform_join_produces_sum_on_both_inputs() {
 /// without deadlock and every produced value is observed in order.
 #[tokio::test]
 async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
+    let key_stress_a_6 = aimdb_core::Name::<ValueA>::new("stress::A");
+    let key_stress_echo_7 = aimdb_core::Name::<Sum>::new("stress::Echo");
     const N: u32 = 200;
     const SENTINEL: u32 = u32::MAX;
     let cap = (N + 16) as usize;
@@ -112,13 +124,14 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
 
     // Input/output rings sized larger than the bounded(64) fan-in so the SpmcRing
     // itself isn't the limiter — we want the bounded channel to be the bottleneck.
-    builder.configure::<ValueA>("stress::A", |reg| {
+    builder.configure(key_stress_a_6, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: cap });
     });
-    builder.configure::<Sum>("stress::Echo", |reg| {
+    builder.configure(key_stress_echo_7, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: cap })
             .transform_join(|b| {
-                b.input::<ValueA>("stress::A")
+                let key_stress_a_8 = aimdb_core::Name::<ValueA>::new("stress::A");
+                b.input(key_stress_a_8)
                     .on_triggers(|mut rx, producer| async move {
                         while let Ok(trigger) = rx.recv().await {
                             if let Some(v) = trigger.as_input::<ValueA>().copied() {
@@ -134,7 +147,8 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
 
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut echo_rx = db.subscribe::<Sum>("stress::Echo").unwrap();
+    let record_key_6 = aimdb_core::Name::<Sum>::new("stress::Echo");
+    let mut echo_rx = db.subscribe(record_key_6).unwrap();
 
     // Warm-up: keep producing a sentinel until its echo lands. SpmcRing buffers
     // are tokio broadcast channels, so subscribers (including the join input
@@ -144,9 +158,8 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
         let warmup_db = db.clone();
         let warmup = tokio::spawn(async move {
             loop {
-                warmup_db
-                    .produce::<ValueA>("stress::A", ValueA(SENTINEL))
-                    .unwrap();
+                let record_key_7 = aimdb_core::Name::<ValueA>::new("stress::A");
+                warmup_db.produce(record_key_7, ValueA(SENTINEL)).unwrap();
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         });
@@ -177,9 +190,8 @@ async fn transform_join_bounded_fanin_backpressure_no_deadlock() {
     let producer_db = db.clone();
     let producer_task = tokio::spawn(async move {
         for i in 0..N {
-            producer_db
-                .produce::<ValueA>("stress::A", ValueA(i))
-                .unwrap();
+            let record_key_8 = aimdb_core::Name::<ValueA>::new("stress::A");
+            producer_db.produce(record_key_8, ValueA(i)).unwrap();
         }
     });
 
@@ -224,22 +236,27 @@ struct Difference {
 /// produces nothing.
 #[tokio::test]
 async fn transform_join_pairs_values_by_timestamp() {
+    let key_pair_flow_9 = aimdb_core::Name::<Flow>::new("pair::Flow");
+    let key_pair_return_10 = aimdb_core::Name::<Return>::new("pair::Return");
+    let key_pair_difference_11 = aimdb_core::Name::<Difference>::new("pair::Difference");
     const TOLERANCE: Duration = Duration::from_millis(20);
 
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Flow>("pair::Flow", |reg| {
+    builder.configure(key_pair_flow_9, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
-    builder.configure::<Return>("pair::Return", |reg| {
+    builder.configure(key_pair_return_10, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
-    builder.configure::<Difference>("pair::Difference", |reg| {
+    builder.configure(key_pair_difference_11, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .transform_join(|b| {
-                b.input::<Flow>("pair::Flow")
-                    .input::<Return>("pair::Return")
+                let key_pair_flow_12 = aimdb_core::Name::<Flow>::new("pair::Flow");
+                let key_pair_return_13 = aimdb_core::Name::<Return>::new("pair::Return");
+                b.input(key_pair_flow_12)
+                    .input(key_pair_return_13)
                     .on_triggers(|mut rx, producer| async move {
                         let mut flow: Option<Flow> = None;
                         let mut ret: Option<Return> = None;
@@ -266,7 +283,8 @@ async fn transform_join_pairs_values_by_timestamp() {
 
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut diff_rx = db.subscribe::<Difference>("pair::Difference").unwrap();
+    let record_key_9 = aimdb_core::Name::<Difference>::new("pair::Difference");
+    let mut diff_rx = db.subscribe(record_key_9).unwrap();
     tokio::task::yield_now().await;
 
     let ms = Duration::from_millis;
@@ -280,8 +298,10 @@ async fn transform_join_pairs_values_by_timestamp() {
     };
 
     // 5 ms apart, within tolerance; the Return is the earlier of the two.
-    db.produce::<Return>("pair::Return", ret(0, 45.0)).unwrap();
-    db.produce::<Flow>("pair::Flow", flow(5, 60.0)).unwrap();
+    let record_key_10 = aimdb_core::Name::<Return>::new("pair::Return");
+    db.produce(record_key_10, ret(0, 45.0)).unwrap();
+    let record_key_11 = aimdb_core::Name::<Flow>::new("pair::Flow");
+    db.produce(record_key_11, flow(5, 60.0)).unwrap();
     let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
         .await
         .unwrap()
@@ -291,10 +311,12 @@ async fn transform_join_pairs_values_by_timestamp() {
     // Each input is delivered in write order, so every interleaving of the
     // two inputs ends with the 1000 ms Flow and the 1012 ms Return retained
     // together; the 500 ms Flow never comes within tolerance of a Return.
-    db.produce::<Flow>("pair::Flow", flow(500, 61.0)).unwrap();
-    db.produce::<Flow>("pair::Flow", flow(1000, 62.0)).unwrap();
-    db.produce::<Return>("pair::Return", ret(1012, 50.0))
-        .unwrap();
+    let record_key_12 = aimdb_core::Name::<Flow>::new("pair::Flow");
+    db.produce(record_key_12, flow(500, 61.0)).unwrap();
+    let record_key_13 = aimdb_core::Name::<Flow>::new("pair::Flow");
+    db.produce(record_key_13, flow(1000, 62.0)).unwrap();
+    let record_key_14 = aimdb_core::Name::<Return>::new("pair::Return");
+    db.produce(record_key_14, ret(1012, 50.0)).unwrap();
     let d = tokio::time::timeout(Duration::from_secs(2), diff_rx.recv())
         .await
         .unwrap()

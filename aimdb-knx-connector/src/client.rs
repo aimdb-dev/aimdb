@@ -492,6 +492,8 @@ mod tests {
     /// A db whose `knx` connector tunnels to `gateway`: record `in` reads group
     /// 1/0/7 and record `out` writes group 1/0/8.
     async fn knx_db(gateway: SocketAddr) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+        let key_in_1 = aimdb_core::Name::<u8>::new("in");
+        let key_out_2 = aimdb_core::Name::<u8>::new("out");
         let mut builder = AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter))
             .with_connector(crate::KnxConnector::new(
@@ -499,7 +501,7 @@ mod tests {
                 TokioDelay,
                 format!("knx://{gateway}"),
             ));
-        builder.configure::<u8>("in", |reg| {
+        builder.configure(key_in_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("knx://1/0/7")
                 .with_deserializer(|_ctx, data: &[u8]| {
@@ -509,7 +511,7 @@ mod tests {
                 })
                 .finish();
         });
-        builder.configure::<u8>("out", |reg| {
+        builder.configure(key_out_2, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_to("knx://1/0/8")
                 .with_serializer(|_ctx, v: &u8| Ok(vec![*v]))
@@ -523,11 +525,13 @@ mod tests {
     /// wire as a group write.
     #[tokio::test]
     async fn telegrams_round_trip_through_records() {
+        let key_out_3 = aimdb_core::Name::<u8>::new("out");
         let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
             .expect("bind gateway");
         let (db, runner) = knx_db(gateway.local_addr().expect("gateway addr")).await;
-        let mut inbound = db.subscribe::<u8>("in").expect("subscribe");
+        let record_key_1 = aimdb_core::Name::<u8>::new("in");
+        let mut inbound = db.subscribe(record_key_1).expect("subscribe");
         let task = tokio::spawn(runner.run());
 
         let client_addr = accept_connect(&gateway).await;
@@ -561,7 +565,7 @@ mod tests {
         assert_eq!(value.value, 0x01);
 
         // Outbound: a produced value reaches the wire.
-        db.producer::<u8>("out").expect("producer").produce(1);
+        db.producer(key_out_3).expect("producer").produce(1);
         expect_write_to_1_0_8(&gateway).await;
 
         task.abort();
@@ -571,11 +575,12 @@ mod tests {
     /// record buffer and goes out once the handshake completes.
     #[tokio::test]
     async fn a_value_produced_during_connect_is_sent_after_the_handshake() {
+        let key_out_4 = aimdb_core::Name::<u8>::new("out");
         let gateway = tokio::net::UdpSocket::bind("127.0.0.1:0")
             .await
             .expect("bind gateway");
         let (db, runner) = knx_db(gateway.local_addr().expect("gateway addr")).await;
-        db.producer::<u8>("out").expect("producer").produce(1);
+        db.producer(key_out_4).expect("producer").produce(1);
         let task = tokio::spawn(runner.run());
 
         accept_connect(&gateway).await;

@@ -64,10 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_persistence(backend, Duration::from_secs(7 * 24 * 3600));
 
     // 2. Opt individual records into persistence.
-    builder.configure::<Accuracy>("accuracy.vienna", |reg| {
+    let record_1 = aimdb_core::Name::<Accuracy>::new("accuracy.vienna");
+    builder.configure(record_1, |reg| {
         reg.persist();
     });
-    builder.configure::<Accuracy>("accuracy.berlin", |reg| {
+    let record_2 = aimdb_core::Name::<Accuracy>::new("accuracy.berlin");
+    builder.configure(record_2, |reg| {
         reg.persist();
     });
 
@@ -135,7 +137,8 @@ builder.with_persistence(
 ### Record registration
 
 ```rust
-builder.configure::<MyRecord>("my_record.key", |reg| {
+let record_3 = aimdb_core::Name::<MyRecord>::new("my_record.key");
+builder.configure(record_3, |reg| {
     reg.persist();
 });
 ```

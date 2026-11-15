@@ -44,7 +44,8 @@
 //!     .runtime(runtime)
 //!     .with_persistence(backend.clone(), Duration::from_secs(7 * 24 * 3600));
 //!
-//! builder.configure::<MyRecord>("my.record", |reg| {
+//! let record_1 = aimdb_core::Name::<MyRecord>::new("my.record");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 500 })
 //!        .persist();
 //! });

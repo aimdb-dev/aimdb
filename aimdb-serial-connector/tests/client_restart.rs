@@ -52,6 +52,7 @@ async fn start_host(
     sink: &HostSink,
     line_wr: &Arc<tokio::sync::Mutex<WriteHalf<DuplexStream>>>,
 ) -> Host {
+    let key_temp_1 = aimdb_core::Name::<Temp>::new("temp");
     let (process_end, port_end) = tokio::io::duplex(64 * 1024);
     let (mut port_rd, port_wr) = tokio::io::split(port_end);
     *sink.lock().await = Some(port_wr);
@@ -68,7 +69,7 @@ async fn start_host(
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(SerialClient::new(TokioByteStream(process_end)));
-    builder.configure::<Temp>("temp", |reg| {
+    builder.configure(key_temp_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("serial://temp")
@@ -94,13 +95,14 @@ fn mirrored(db: &AimDb) -> Option<u64> {
 
 #[tokio::test]
 async fn a_restarted_client_keeps_mirroring() {
+    let key_temp_2 = aimdb_core::Name::<Temp>::new("temp");
     // The line: the board holds one end for its whole life.
     let (board_end, line_end) = tokio::io::duplex(64 * 1024);
 
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(SerialServer::new(TokioByteStream(board_end)));
-    builder.configure::<Temp>("temp", |reg| {
+    builder.configure(key_temp_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
@@ -120,7 +122,8 @@ async fn a_restarted_client_keeps_mirroring() {
                     *n += 1;
                     *n
                 };
-                let _ = board.produce::<Temp>("temp", Temp { c });
+                let record_key_1 = aimdb_core::Name::<Temp>::new("temp");
+                let _ = board.produce(record_key_1, Temp { c });
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         });
@@ -234,10 +237,11 @@ async fn mirrors(db: &AimDb, c: u64) -> bool {
 
 /// A host process mirroring `temp` over `stream`, which a test drives by hand.
 async fn start_fake_host(stream: DuplexStream) -> (Arc<AimDb>, JoinHandle<()>) {
+    let key_temp_3 = aimdb_core::Name::<Temp>::new("temp");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(SerialClient::new(TokioByteStream(stream)));
-    builder.configure::<Temp>("temp", |reg| {
+    builder.configure(key_temp_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("serial://temp")

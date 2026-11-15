@@ -19,7 +19,7 @@ struct FeatureFlag {
     rollout_percent: f32,
 }
 
-const KEY: &str = "config.checkout_rollout";
+const KEY: aimdb_core::Name<FeatureFlag> = aimdb_core::Name::new("config.checkout_rollout");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== AimDB SingleLatest Sync Demo ===\n");
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<FeatureFlag>(KEY, |reg| {
+    builder.configure(KEY, |reg| {
         // Configure a SingleLatest buffer
         reg.buffer(BufferCfg::SingleLatest)
             // Register 2 taps that observe rollout percentage values
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2: Create a synchronous producer
     println!("2. Creating producer and producing values...");
 
-    let producer = handle.producer::<FeatureFlag>(KEY)?;
+    let producer = handle.producer(KEY)?;
 
     // Step 3: Produce values
     println!("3. Producing rollout percentage values");

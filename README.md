@@ -152,10 +152,11 @@ pub struct Temperature {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let key_temp_indoor_1 = aimdb_core::Name::<Temperature>::new("temp.indoor");
     let runtime = Arc::new(TokioAdapter::new()?);
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Temperature>("temp.indoor", |reg| {
+    builder.configure(key_temp_indoor_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .source(|ctx, producer| async move {
                 let time = ctx.time();

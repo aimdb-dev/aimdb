@@ -57,7 +57,8 @@ where
 
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
-    builder.configure::<T>(key, move |reg| {
+    let record_key_1 = aimdb_core::Name::<T>::interned(key);
+    builder.configure(record_key_1, move |reg| {
         let ack_tx = ack_tx.clone();
         let mut tap_ready_tx = Some(tap_ready_tx);
 

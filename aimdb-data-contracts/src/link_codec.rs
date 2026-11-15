@@ -716,6 +716,9 @@ mod tests {
     #[test]
     fn one_record_type_uses_route_local_json_and_postcard_codecs() {
         futures::executor::block_on(async {
+            let key_reading_out_1 = crate::Key::<Reading>::new("reading.out");
+            let key_reading_json_in_2 = crate::Key::<Reading>::new("reading.json.in");
+            let key_reading_postcard_in_3 = crate::Key::<Reading>::new("reading.postcard.in");
             let reading = Reading {
                 value: 24.5,
                 sequence: 11,
@@ -726,7 +729,7 @@ mod tests {
                 .runtime(Arc::new(NoopRuntimeOps))
                 .with_connector(NoopConnector);
 
-            builder.configure::<Reading>("reading.out", |registrar| {
+            builder.configure(key_reading_out_1, |registrar| {
                 registrar.buffer_raw(Box::new(CannedBuffer {
                     value: reading.clone(),
                 }));
@@ -746,7 +749,7 @@ mod tests {
             });
 
             let json_capture = json_in.clone();
-            builder.configure::<Reading>("reading.json.in", move |registrar| {
+            builder.configure(key_reading_json_in_2, move |registrar| {
                 registrar.buffer_raw(Box::new(CapturingBuffer {
                     latest: json_capture,
                 }));
@@ -754,7 +757,7 @@ mod tests {
             });
 
             let postcard_capture = postcard_in.clone();
-            builder.configure::<Reading>("reading.postcard.in", move |registrar| {
+            builder.configure(key_reading_postcard_in_3, move |registrar| {
                 registrar.buffer_raw(Box::new(CapturingBuffer {
                     latest: postcard_capture,
                 }));
@@ -865,6 +868,8 @@ mod tests {
         use aimdb_core::connector::WIRE_FORMAT_KEY;
 
         futures::executor::block_on(async {
+            let key_reading_formats_4 = crate::Key::<Reading>::new("reading.formats");
+            let key_reading_formats_in_5 = crate::Key::<Reading>::new("reading.formats.in");
             let reading = Reading {
                 value: 1.0,
                 sequence: 1,
@@ -872,7 +877,7 @@ mod tests {
             let mut builder = AimDbBuilder::new()
                 .runtime(Arc::new(NoopRuntimeOps))
                 .with_connector(NoopConnector);
-            builder.configure::<Reading>("reading.formats", |registrar| {
+            builder.configure(key_reading_formats_4, |registrar| {
                 registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
                 registrar.linked_to_with("test://json", link_codecs::Json);
                 registrar.linked_to_with("test://postcard", link_codecs::Postcard::<64>);
@@ -889,7 +894,7 @@ mod tests {
                     .with_serializer(|_ctx, _value| Ok(Vec::new()))
                     .finish();
             });
-            builder.configure::<Reading>("reading.formats.in", |registrar| {
+            builder.configure(key_reading_formats_in_5, |registrar| {
                 registrar.buffer_raw(Box::new(CapturingBuffer {
                     latest: Arc::new(std::sync::Mutex::new(None)),
                 }));
@@ -953,6 +958,8 @@ mod tests {
         use crate::{publish, subscribe, LinkableRegistrarExt};
 
         futures::executor::block_on(async {
+            let key_linked_6 = crate::Key::<Reading>::new("linked");
+            let key_handle_7 = crate::Key::<Reading>::new("handle");
             let reading = Reading {
                 value: 1.0,
                 sequence: 1,
@@ -960,13 +967,13 @@ mod tests {
             let mut builder = AimDbBuilder::new().runtime(Arc::new(NoopRuntimeOps));
             let test = builder.connect(NoopConnector);
             let linked_reading = reading.clone();
-            builder.configure::<Reading>("linked", move |registrar| {
+            builder.configure(key_linked_6, move |registrar| {
                 registrar.buffer_raw(Box::new(CannedBuffer {
                     value: linked_reading,
                 }));
                 registrar.linked_to("test://out").linked_from("test://in");
             });
-            builder.configure::<Reading>("handle", move |registrar| {
+            builder.configure(key_handle_7, move |registrar| {
                 registrar
                     .buffer_raw(Box::new(CannedBuffer { value: reading }))
                     .output(publish(test, "out"))
@@ -1013,6 +1020,8 @@ mod tests {
         use aimdb_core::{InboundLink, OutboundLink};
 
         futures::executor::block_on(async {
+            let key_reading_out_8 = crate::Key::<Reading>::new("reading.out");
+            let key_reading_in_9 = crate::Key::<Reading>::new("reading.in");
             let reading = Reading {
                 value: 1.0,
                 sequence: 1,
@@ -1020,7 +1029,7 @@ mod tests {
             let mut builder = AimDbBuilder::new()
                 .runtime(Arc::new(NoopRuntimeOps))
                 .with_connector(NoopConnector);
-            builder.configure::<Reading>("reading.out", |registrar| {
+            builder.configure(key_reading_out_8, |registrar| {
                 registrar
                     .buffer_raw(Box::new(CannedBuffer { value: reading }))
                     .output(
@@ -1028,7 +1037,7 @@ mod tests {
                             .with_link_codec(link_codecs::Postcard::<64>),
                     );
             });
-            builder.configure::<Reading>("reading.in", |registrar| {
+            builder.configure(key_reading_in_9, |registrar| {
                 registrar
                     .buffer_raw(Box::new(CapturingBuffer {
                         latest: Arc::new(std::sync::Mutex::new(None)),
@@ -1064,6 +1073,7 @@ mod tests {
         use super::WireFormat;
 
         futures::executor::block_on(async {
+            let key_reading_cdr_10 = crate::Key::<Reading>::new("reading.cdr");
             let reading = Reading {
                 value: 1.0,
                 sequence: 1,
@@ -1071,7 +1081,7 @@ mod tests {
             let mut builder = AimDbBuilder::new()
                 .runtime(Arc::new(NoopRuntimeOps))
                 .with_connector(NoopConnector);
-            builder.configure::<Reading>("reading.cdr", |registrar| {
+            builder.configure(key_reading_cdr_10, |registrar| {
                 registrar.buffer_raw(Box::new(CannedBuffer { value: reading }));
                 registrar.linked_to_with("test://cdr", link_codecs::Cdr::<64>);
             });

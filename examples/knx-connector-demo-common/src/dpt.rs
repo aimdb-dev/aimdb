@@ -8,7 +8,7 @@
 //! ```rust,ignore
 //! let knx = builder.connect(KnxConnector::new(..));
 //!
-//! builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+//! builder.configure(TemperatureKey::LivingRoom, |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest).input(
 //!         InboundLink::on(knx, TemperatureKey::LivingRoom.link_address().unwrap())
 //!             .with_deserializer(dpt::temperature_at("Living Room")),

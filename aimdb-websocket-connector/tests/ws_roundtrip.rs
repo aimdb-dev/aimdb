@@ -64,20 +64,22 @@ async fn mirror_reaches(
 
 #[tokio::test]
 async fn ws_mirrors_record_both_directions() {
+    let key_tele_1 = aimdb_core::Name::<Msg>::new("tele");
+    let key_cfg_2 = aimdb_core::Name::<Msg>::new("cfg");
     let addr = free_addr();
 
     // --- server: tele (broadcast source) + cfg (inbound write target) --------
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
-    sb.configure::<Msg>("tele", |reg| {
+    sb.configure(key_tele_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://tele")
             .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
-    sb.configure::<Msg>("cfg", |reg| {
+    sb.configure(key_cfg_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://cfg")
@@ -98,14 +100,14 @@ async fn ws_mirrors_record_both_directions() {
     let mut cb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WsClientConnector::new(format!("ws://{addr}/ws")));
-    cb.configure::<Msg>("cfg", |reg| {
+    cb.configure(key_cfg_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws-client://cfg")
             .with_serializer(|_ctx, m: &Msg| Ok(serde_json::to_vec(m).expect("serialize")))
             .finish();
     });
-    cb.configure::<Msg>("tele", |reg| {
+    cb.configure(key_tele_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws-client://tele")

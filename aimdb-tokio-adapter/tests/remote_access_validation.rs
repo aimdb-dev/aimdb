@@ -19,9 +19,10 @@ struct Config {
 
 #[tokio::test]
 async fn bufferless_remote_access_record_fails_build() {
+    let key_test_config_1 = aimdb_core::Name::<Config>::new("test::Config");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
 
-    builder.configure::<Config>("test::Config", |reg| {
+    builder.configure(key_test_config_1, |reg| {
         // .with_remote_access() but no .buffer(...) — invalid: remote reads
         // and writes go straight to the buffer.
         reg.with_remote_access();
@@ -35,9 +36,10 @@ async fn bufferless_remote_access_record_fails_build() {
 
 #[tokio::test]
 async fn remote_access_record_with_buffer_builds() {
+    let key_test_config_2 = aimdb_core::Name::<Config>::new("test::Config");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
 
-    builder.configure::<Config>("test::Config", |reg| {
+    builder.configure(key_test_config_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 

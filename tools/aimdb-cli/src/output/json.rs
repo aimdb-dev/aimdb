@@ -103,13 +103,14 @@ mod tests {
 
     #[test]
     fn test_json_formatting() {
+        let key_sensor_temperature_1 = StringKey::new("sensor.temperature");
         use aimdb_core::graph::RecordOrigin;
         use aimdb_core::record_id::{RecordId, StringKey};
         use core::any::TypeId;
 
         let records = vec![RecordMetadata::new(
             RecordId::new(0),
-            StringKey::new("sensor.temperature"),
+            key_sensor_temperature_1,
             TypeId::of::<i32>(),
             "Temperature".to_string(),
             RecordOrigin::Source,

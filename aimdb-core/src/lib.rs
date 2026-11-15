@@ -214,7 +214,7 @@ pub use topic_pattern::{
 pub use inbound_key::KeyId;
 
 // Record identification exports
-pub use record_id::{RecordId, RecordKey, StringKey};
+pub use record_id::{Name, RecordId, RecordKey, StringKey, TypedKey, TypedName};
 
 // Graph exports (dependency graph for record topology)
 pub use graph::{DependencyGraph, EdgeType, GraphEdge, GraphNode, RecordOrigin};

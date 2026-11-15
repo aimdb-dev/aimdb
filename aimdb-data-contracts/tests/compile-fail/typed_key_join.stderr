@@ -1,0 +1,47 @@
+error[E0277]: `V1` is not a typed record key
+ --> tests/compile-fail/typed_key_join.rs:5:26
+  |
+5 |     let _ = join.input::<contracts::V1>(READING);
+  |                  -----   ^^^^^^^^^^^^^ unsatisfied trait bound
+  |                  |
+  |                  required by a bound introduced by this call
+  |
+help: the trait `TypedKey` is not implemented for `V1`
+ --> tests/compile-fail/../fixtures/admission_contracts.rs
+  |
+  | pub struct V1 {
+  | ^^^^^^^^^^^^^
+  = note: declare the record once as a `Key<T>` (or a `Name<T>` without a data contract) and pass that
+help: the following other types implement trait `TypedKey`
+ --> src/key.rs
+  |
+  | / impl<T> TypedKey for Key<T>
+  | | where
+  | |     T: SchemaType + Send + Sync + Clone + core::fmt::Debug + 'static,
+  | |_____________________________________________________________________^ `Key<T>`
+  |
+ ::: $WORKSPACE/aimdb-core/src/record_id.rs
+  |
+  |   impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedKey for Name<'static, T> {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `aimdb_core::Name<'static, T>`
+note: required by a bound in `JoinBuilder::<O>::input`
+ --> $WORKSPACE/aimdb-core/src/transform/join.rs
+  |
+  |     pub fn input<K: crate::record_id::TypedKey>(self, key: K) -> Self {
+  |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `JoinBuilder::<O>::input`
+
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_join.rs:5:41
+  |
+5 |     let _ = join.input::<contracts::V1>(READING);
+  |                  ---------------------- ^^^^^^^ expected `V1`, found `Key<V2>`
+  |                  |
+  |                  arguments to this method are incorrect
+  |
+  = note: expected struct `V1`
+             found struct `Key<V2>`
+note: method defined here
+ --> $WORKSPACE/aimdb-core/src/transform/join.rs
+  |
+  |     pub fn input<K: crate::record_id::TypedKey>(self, key: K) -> Self {
+  |            ^^^^^

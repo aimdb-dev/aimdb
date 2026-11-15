@@ -25,7 +25,8 @@ fn at(stamp: Stamp) -> alloc::string::String {
 ///
 /// # Example
 /// ```ignore
-/// builder.configure::<TemperatureReading>("temp.livingroom", |reg| {
+/// let record_1 = aimdb_core::Name::<TemperatureReading>::new("temp.livingroom");
+/// builder.configure(record_1, |reg| {
 ///     reg.buffer(...)
 ///        .tap(temperature_monitor)
 ///        .link_from("knx://9/1/0")

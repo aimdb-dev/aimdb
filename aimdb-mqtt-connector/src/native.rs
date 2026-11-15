@@ -402,7 +402,8 @@ mod tests {
             .with_connector(crate::MqttConnector::new("mqtt://127.0.0.1:1"));
         for i in 0..routes {
             let key = aimdb_core::StringKey::intern(format!("out{i}"));
-            builder.configure::<u64>(key, move |reg| {
+            let record_key_1 = aimdb_core::Name::<u64>::interned(key.as_ref());
+            builder.configure(record_key_1, move |reg| {
                 let mut link = reg
                     .buffer(BufferCfg::SingleLatest)
                     .link_to(&format!("mqtt://out/{i}"))
@@ -450,7 +451,8 @@ mod tests {
             .runtime(Arc::new(TokioAdapter))
             .with_connector(crate::MqttConnector::new("mqtt://127.0.0.1:1"));
         for (key, topic, qos) in [("a", "cmd/{id}", "3"), ("b", "status/in", "x")] {
-            builder.configure::<u64>(key, move |reg| {
+            let record_key_2 = aimdb_core::Name::<u64>::interned(key);
+            builder.configure(record_key_2, move |reg| {
                 reg.buffer(BufferCfg::SingleLatest)
                     .link_from(&format!("mqtt://{topic}"))
                     .with_config("qos", qos)

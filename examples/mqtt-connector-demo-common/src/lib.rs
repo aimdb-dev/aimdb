@@ -18,7 +18,7 @@
 //! let mqtt = builder.connect(MqttConnector::new(broker_url));
 //! let SimThermometers { indoor, .. } = SimThermometers::new();
 //!
-//! builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+//! builder.configure(SensorKey::TempIndoor, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
 //!         .input(Thermometer::on(indoor))
 //!         .tap(temperature_logger)

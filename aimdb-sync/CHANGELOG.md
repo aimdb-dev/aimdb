@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- Producer and consumer factories take typed names and infer their payload type. Names are declared before builder and handle calls.
+
 ## [0.7.0] - 2026-11-03
 
 ### Changed (breaking)

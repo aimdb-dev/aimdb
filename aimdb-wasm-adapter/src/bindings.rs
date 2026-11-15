@@ -568,13 +568,13 @@ pub(crate) fn get_typed<T>(db: &AimDb, key: &str) -> Result<JsValue, JsError>
 where
     T: Send + Sync + 'static + Debug + Clone + Serialize,
 {
-    let inner = db.inner();
-    let typed = inner
-        .get_typed_record_by_key::<T>(key)
-        .map_err(|e| JsError::new(&format!("{e:?}")))?;
+    let name = aimdb_core::Name::<T>::new(key);
 
-    match typed.latest() {
-        Some(val) => stamped_to_js(val.get(), val.stamp())
+    match db
+        .latest(name)
+        .map_err(|e| JsError::new(&format!("{e:?}")))?
+    {
+        Some(val) => stamped_to_js(&val.value, val.stamp())
             .map_err(|e| JsError::new(&format!("Serialization failed: {e}"))),
         None => Ok(JsValue::UNDEFINED),
     }
@@ -609,7 +609,8 @@ where
         .map_err(|e| JsError::new(&format!("Contract violation: {e}")))?;
 
     // Single write path via Producer<T>.
-    db.producer::<T>(key)
+    let record_key_1 = aimdb_core::Name::<T>::new(key);
+    db.producer(record_key_1)
         .map_err(|e| JsError::new(&format!("{e:?}")))?
         .produce(val);
     Ok(())
@@ -629,8 +630,9 @@ pub(crate) fn subscribe_typed<T>(
 where
     T: Send + Sync + 'static + Debug + Clone + Serialize,
 {
+    let record_key_2 = aimdb_core::Name::<T>::new(key);
     let mut reader = db
-        .subscribe::<T>(key)
+        .subscribe(record_key_2)
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     let callback = callback.clone();

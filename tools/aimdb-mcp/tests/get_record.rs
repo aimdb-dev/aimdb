@@ -26,6 +26,8 @@ fn args(endpoint: &str, record: &str) -> Option<Value> {
 
 #[tokio::test]
 async fn get_record_answers_at_once_and_leaves_drain_intact() {
+    let key_stream_1 = aimdb_core::Name::<Reading>::new("stream");
+    let key_state_2 = aimdb_core::Name::<Reading>::new("state");
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("aimdb.sock");
     let endpoint = sock.to_str().unwrap().to_string();
@@ -34,11 +36,11 @@ async fn get_record_answers_at_once_and_leaves_drain_intact() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
-    builder.configure::<Reading>("stream", |reg| {
+    builder.configure(key_stream_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
-    builder.configure::<Reading>("state", |reg| {
+    builder.configure(key_state_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");
@@ -72,7 +74,7 @@ async fn get_record_answers_at_once_and_leaves_drain_intact() {
         ))
     };
     assert_eq!(drain().await.expect("drain")["count"], 0);
-    let producer = db.producer::<Reading>("stream").expect("producer");
+    let producer = db.producer(key_stream_1).expect("producer");
     for n in 1..=3 {
         producer.produce(Reading { n });
     }
@@ -96,9 +98,7 @@ async fn get_record_answers_at_once_and_leaves_drain_intact() {
     assert_eq!(ns, [1, 2, 3]);
 
     // A state record with a value answers with it, at once.
-    db.producer::<Reading>("state")
-        .unwrap()
-        .produce(Reading { n: 7 });
+    db.producer(key_state_2).unwrap().produce(Reading { n: 7 });
     let got = tools::get_record(args(&endpoint, "state"))
         .await
         .expect("get");

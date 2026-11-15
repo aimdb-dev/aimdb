@@ -50,13 +50,14 @@ struct Probe {
 
 /// One record with an inbound link per pattern, keyed by `(capture, capacity)`.
 async fn record(links: &[(&'static str, Option<(&'static str, u16)>)]) -> (AimDb, Vec<Arc<Probe>>) {
+    let key_rec_1 = aimdb_core::Name::<Sample>::new("rec");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(NoopZenoh);
     let probes: Vec<Arc<Probe>> = links.iter().map(|_| Arc::default()).collect();
     let config: Vec<_> = links.iter().copied().zip(probes.clone()).collect();
-    builder.configure::<Sample>("rec", move |reg| {
+    builder.configure(key_rec_1, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         for ((pattern, key), probe) in config {
             let mut link = reg.link_from(&format!("zenoh://{pattern}"));

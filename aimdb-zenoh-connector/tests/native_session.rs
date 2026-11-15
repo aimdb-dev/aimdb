@@ -89,6 +89,11 @@ fn le(
     Ok(v.to_le_bytes().to_vec())
 }
 
+const RECORD_OUT: aimdb_core::Name<u32> = aimdb_core::Name::new("out");
+const RECORD_DYN: aimdb_core::Name<u32> = aimdb_core::Name::new("dyn");
+const RECORD_MIRROR: aimdb_core::Name<u32> = aimdb_core::Name::new("mirror");
+const RECORD_LONG: aimdb_core::Name<u32> = aimdb_core::Name::new("long");
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbound_values_reach_a_zenoh_subscriber() {
     let endpoint = format!("tcp/127.0.0.1:{}", free_port());
@@ -98,13 +103,13 @@ async fn outbound_values_reach_a_zenoh_subscriber() {
     let written = remote.declare_subscriber("aimdb/test/dyn/*").await.unwrap();
 
     let (db, runner) = build(&endpoint, |b| {
-        b.configure::<u32>("out", |reg| {
+        b.configure(RECORD_OUT, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_to("zenoh://aimdb/test/out")
                 .with_serializer(le)
                 .finish();
         });
-        b.configure::<u32>("dyn", |reg| {
+        b.configure(RECORD_DYN, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_to("zenoh://aimdb/test/dyn/default")
                 .with_topic_fn(32, |v: &u32, out| {
@@ -122,7 +127,7 @@ async fn outbound_values_reach_a_zenoh_subscriber() {
     let deadline = tokio::time::Instant::now() + WAIT;
     let mut value = 0u32;
     let sample = loop {
-        db.produce("out", value).unwrap();
+        db.produce(RECORD_OUT, value).unwrap();
         value += 1;
         if let Ok(Ok(sample)) =
             tokio::time::timeout(Duration::from_millis(200), fixed.recv_async()).await
@@ -137,7 +142,7 @@ async fn outbound_values_reach_a_zenoh_subscriber() {
     assert_eq!(sample.key_expr().as_str(), "aimdb/test/out");
     assert_eq!(sample.payload().to_bytes().len(), 4);
 
-    db.produce("dyn", 7u32).unwrap();
+    db.produce(RECORD_DYN, 7u32).unwrap();
     let sample = tokio::time::timeout(WAIT, written.recv_async())
         .await
         .expect("written-key sample")
@@ -162,7 +167,8 @@ async fn inbound_patterns_capture_and_key_each_publisher() {
 
     let p = probe.clone();
     let (_db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("cells", move |reg| {
+        let key_cells_3 = aimdb_core::Name::<u32>::new("cells");
+        b.configure(key_cells_3, move |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_from("zenoh://aimdb/{cell}/state")
                 .key("cell", 8)
@@ -210,7 +216,9 @@ async fn every_route_ingests_a_sample_once() {
     let counters: Vec<Arc<AtomicUsize>> = (0..4).map(|_| Arc::default()).collect();
     let c = counters.clone();
     let (_db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("covered", |reg| {
+        let key_covered_4 = aimdb_core::Name::<u32>::new("covered");
+        let key_overlap_5 = aimdb_core::Name::<u32>::new("overlap");
+        b.configure(key_covered_4, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
             for (url, counter) in [
                 ("zenoh://aimdb/cell4/x", &c[0]),
@@ -225,7 +233,7 @@ async fn every_route_ingests_a_sample_once() {
                     .finish();
             }
         });
-        b.configure::<u32>("overlap", |reg| {
+        b.configure(key_overlap_5, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
             for (url, counter) in [("zenoh://a/*/c", &c[2]), ("zenoh://a/b/*", &c[3])] {
                 let counter = counter.clone();
@@ -271,7 +279,7 @@ async fn an_outbound_wildcard_key_fails_the_build() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(connector("tcp/127.0.0.1:1"));
-    builder.configure::<u32>("out", |reg| {
+    builder.configure(RECORD_OUT, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to("zenoh://aimdb/*/out")
             .with_serializer(le)
@@ -287,7 +295,8 @@ async fn the_connector_waits_for_a_router_that_starts_later() {
     let probe = Arc::new(Probe::default());
     let p = probe.clone();
     let (_db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("late", move |reg| {
+        let key_late_7 = aimdb_core::Name::<u32>::new("late");
+        b.configure(key_late_7, move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("zenoh://aimdb/late")
                 .with_deserializer(move |_ctx, _bytes: &[u8]| {
@@ -326,7 +335,7 @@ async fn a_record_linked_both_ways_does_not_ingest_its_own_puts() {
     let ingested = Arc::new(AtomicUsize::new(0));
     let i = ingested.clone();
     let (db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("mirror", move |reg| {
+        b.configure(RECORD_MIRROR, move |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_to("zenoh://aimdb/mirror")
                 .with_serializer(le)
@@ -346,7 +355,7 @@ async fn a_record_linked_both_ways_does_not_ingest_its_own_puts() {
     let deadline = tokio::time::Instant::now() + WAIT;
     let mut produced = 0u32;
     loop {
-        db.produce("mirror", produced).unwrap();
+        db.produce(RECORD_MIRROR, produced).unwrap();
         produced += 1;
         if let Ok(Ok(_)) =
             tokio::time::timeout(Duration::from_millis(200), echoes.recv_async()).await
@@ -391,7 +400,8 @@ async fn a_remote_delete_is_not_ingested() {
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
     let (_db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("deleted", move |reg| {
+        let key_deleted_9 = aimdb_core::Name::<u32>::new("deleted");
+        b.configure(key_deleted_9, move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("zenoh://aimdb/deleted")
                 .with_deserializer(move |_ctx, _bytes: &[u8]| {
@@ -444,7 +454,8 @@ async fn opening_the_session_does_not_stall_the_database() {
     });
 
     let (db, runner) = build(&endpoint, |b| {
-        b.configure::<u32>("ticks", |reg| {
+        let key_ticks_10 = aimdb_core::Name::<u32>::new("ticks");
+        b.configure(key_ticks_10, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 1024 })
                 .source(|ctx, producer| async move {
                     let mut n = 0u32;
@@ -455,7 +466,7 @@ async fn opening_the_session_does_not_stall_the_database() {
                     }
                 });
         });
-        b.configure::<u32>("out", |reg| {
+        b.configure(RECORD_OUT, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_to("zenoh://aimdb/stall")
                 .with_serializer(le)
@@ -463,7 +474,8 @@ async fn opening_the_session_does_not_stall_the_database() {
         });
     })
     .await;
-    let mut ticks = db.subscribe::<u32>("ticks").unwrap();
+    let record_key_1 = aimdb_core::Name::<u32>::new("ticks");
+    let mut ticks = db.subscribe(record_key_1).unwrap();
     tokio::spawn(runner.run());
 
     let mut seen = 0;
@@ -489,7 +501,8 @@ async fn a_panicking_deserializer_drops_only_its_sample() {
     let good = Arc::new(AtomicUsize::new(0));
     let g = good.clone();
     let (_db, runner) = build(&endpoint, move |b| {
-        b.configure::<u32>("decoded", move |reg| {
+        let key_decoded_12 = aimdb_core::Name::<u32>::new("decoded");
+        b.configure(key_decoded_12, move |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_from("zenoh://aimdb/decode")
                 .with_deserializer(move |_ctx, bytes: &[u8]| {
@@ -537,7 +550,7 @@ async fn keys_longer_than_the_wire_format_are_refused() {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(connector("tcp/127.0.0.1:1"));
     let url = format!("zenoh://{long}");
-    builder.configure::<u32>("out", move |reg| {
+    builder.configure(RECORD_OUT, move |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to(&url)
             .with_serializer(le)
@@ -552,7 +565,7 @@ async fn keys_longer_than_the_wire_format_are_refused() {
     let remote = client(&endpoint).await;
     let ok = remote.declare_subscriber("aimdb/long/ok").await.unwrap();
     let (db, runner) = build(&endpoint, |b| {
-        b.configure::<u32>("long", |reg| {
+        b.configure(RECORD_LONG, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
                 .link_to("zenoh://aimdb/long/ok")
                 .with_topic_fn(70_000, |v: &u32, out| {
@@ -574,8 +587,8 @@ async fn keys_longer_than_the_wire_format_are_refused() {
     tokio::spawn(runner.run());
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        db.produce("long", 0u32).unwrap();
-        db.produce("long", 1u32).unwrap();
+        db.produce(RECORD_LONG, 0u32).unwrap();
+        db.produce(RECORD_LONG, 1u32).unwrap();
         if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(200), ok.recv_async()).await {
             break;
         }
@@ -592,7 +605,7 @@ async fn a_current_thread_runtime_fails_the_build() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(connector("tcp/127.0.0.1:1"));
-    builder.configure::<u32>("out", |reg| {
+    builder.configure(RECORD_OUT, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to("zenoh://aimdb/out")
             .with_serializer(le)

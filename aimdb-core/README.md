@@ -125,7 +125,8 @@ fn to_alert(temp: &Temperature) -> Option<TemperatureAlert> {
     }
 }
 
-builder.configure::<TemperatureAlert>("alert.temp.outdoor", |reg| {
+let record_1 = aimdb_core::Name::<TemperatureAlert>::new("alert.temp.outdoor");
+builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
        .transform::<Temperature, _>(SensorKey::TempOutdoor, |t| t.map(to_alert))
        .tap(alert_logger)

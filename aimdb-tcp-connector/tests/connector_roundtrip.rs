@@ -27,8 +27,9 @@ struct Setting {
 }
 
 async fn db() -> Arc<aimdb_core::AimDb> {
+    let key_setting_1 = aimdb_core::Name::<Setting>::new("setting");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, _runner) = builder.build().await.expect("build db");
@@ -130,6 +131,7 @@ async fn an_unpolled_build_leaves_the_listener_in_place() {
 ///   `record.list` returns, which is what the last assertion reads.
 #[tokio::test]
 async fn a_policy_allowed_write_lands_through_the_built_server() {
+    let key_setting_2 = aimdb_core::Name::<Setting>::new("setting");
     let listener = TokioNet::listen("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("bound addr");
 
@@ -141,7 +143,7 @@ async fn a_policy_allowed_write_lands_through_the_built_server() {
         .with_connector(
             TcpServer::new(listener).with_config(AimxConfig::uds_default().security_policy(policy)),
         );
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");

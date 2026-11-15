@@ -51,7 +51,8 @@
 //! registrar extension trait, which `aimdb-core` cannot depend on):
 //!
 //! ```rust,ignore
-//! builder.configure::<Temperature>("sensors.outdoor", |reg| {
+//! let record_1 = aimdb_core::Name::<Temperature>::new("sensors.outdoor");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(cfg)
 //!        .source(temperature_producer)
 //!        .tap(temperature_monitor)
@@ -475,6 +476,7 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     pub(crate) builder_id: u32,
     /// The record key for this record
     pub(crate) record_key: String,
+    pub(crate) key_link_address: Option<String>,
     /// Extension storage from the builder — allows external crates (e.g.
     /// `aimdb-persistence`) to retrieve typed state inside `.persist()`.
     pub(crate) extensions: &'a crate::extensions::Extensions,
@@ -553,7 +555,7 @@ where
     /// `aimdb-data-contracts` calls this from `SchemaType` (`linked_to`,
     /// `linked_from`, `observe`, `contract_schema`). Setting the same schema
     /// again does nothing; a different one fails `build()`.
-    pub fn schema(&mut self, name: &str, version: u32) -> &mut Self {
+    pub(crate) fn schema(&mut self, name: &str, version: u32) -> &mut Self {
         self.rec.set_schema(name, version);
         self
     }
@@ -669,15 +671,15 @@ where
     /// # Arguments
     /// * `input_key` - The record key to subscribe to as input
     /// * `build_fn` - Closure that configures the transform pipeline via `TransformBuilder`
-    pub fn transform<I, F>(&mut self, input_key: impl crate::RecordKey, build_fn: F) -> &mut Self
+    pub fn transform<K, F>(&mut self, input_key: K, build_fn: F) -> &mut Self
     where
-        I: Send + Sync + Clone + Debug + 'static,
+        K: crate::record_id::TypedKey,
         F: FnOnce(
-            crate::transform::TransformBuilder<I, T>,
-        ) -> crate::transform::TransformPipeline<I, T>,
+            crate::transform::TransformBuilder<K::Contract, T>,
+        ) -> crate::transform::TransformPipeline<K::Contract, T>,
     {
         let input_key_str = input_key.as_str().to_string();
-        let builder = crate::transform::TransformBuilder::<I, T>::new(input_key_str);
+        let builder = crate::transform::TransformBuilder::<K::Contract, T>::new(input_key_str);
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
@@ -716,6 +718,18 @@ where
             self.last_stage = Some((StageKind::Transform, 0));
         }
         self
+    }
+    /// Builds a link using the address declared on this record's typed key.
+    /// A missing address is reported by `build()`.
+    pub fn link_to_key(&mut self) -> OutboundConnectorBuilder<'_, 'a, T> {
+        let address = self.key_link_address.clone().unwrap_or_default();
+        self.link_to(&address)
+    }
+    /// Builds a link using the address declared on this record's typed key.
+    /// A missing address is reported by `build()`.
+    pub fn link_from_key(&mut self) -> InboundConnectorBuilder<'_, 'a, T> {
+        let address = self.key_link_address.clone().unwrap_or_default();
+        self.link_from(&address)
     }
 
     /// Link TO external system (outbound: AimDB → External)
@@ -1041,7 +1055,8 @@ where
     /// before it. A different schema on the same record fails `build()`.
     /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
     /// contract type.
-    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_schema(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -1207,7 +1222,7 @@ where
 {
     let writer = db
         .inner()
-        .get_typed_record_by_key::<T>(record_key)
+        .get_typed_record_by_key_raw::<T>(record_key)
         .and_then(|rec| rec.writer_handle())
         .unwrap_or_else(|e| {
             panic!(
@@ -1427,7 +1442,8 @@ where
     /// before it. A different schema on the same record fails `build()`.
     /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
     /// contract type.
-    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_schema(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -1787,7 +1803,7 @@ where
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
+                    .get_typed_record_by_key_raw::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
                             "outbound link: record '{record_key}' lookup failed ({e:?}) — \
@@ -1825,7 +1841,7 @@ where
                       accept: &dyn Fn(Option<&str>) -> bool| {
                     let sample = db
                         .inner()
-                        .get_typed_record_by_key::<T>(&record_key)
+                        .get_typed_record_by_key_raw::<T>(&record_key)
                         .ok()?
                         .latest()?
                         .into_stamped();
@@ -2102,6 +2118,7 @@ mod tests {
             connector_builders: builders,
             builder_id: TEST_BUILDER,
             record_key: "test::Record".to_string(),
+            key_link_address: None,
             extensions,
             last_stage: None,
         }
@@ -2733,10 +2750,11 @@ mod tests {
         let foreign = other.connect(NoopConnectorBuilder);
 
         for (use_foreign, expect_ok) in [(false, true), (true, false)] {
+            let key_temp_indoor_1 = crate::Name::<TestRecord>::new("temp.indoor");
             let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
             let mqtt = builder.connect(NoopConnectorBuilder);
             let on = if use_foreign { foreign } else { mqtt };
-            builder.configure::<TestRecord>("temp.indoor", move |reg| {
+            builder.configure(key_temp_indoor_1, move |reg| {
                 reg.buffer_raw(Box::new(MockBuffer))
                     .input(InboundLink::on(on, "commands/temp/indoor").with_deserializer(de))
                     .output(OutboundLink::on(on, "sensors/temp/indoor").with_serializer(ser));
@@ -2815,9 +2833,10 @@ mod tests {
     /// registered with `with_connector`.
     #[tokio::test]
     async fn connected_connector_serves_links() {
+        let key_rec_in_2 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
         let _mqtt = builder.connect(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_2, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(InboundLink::new("mqtt://a").with_deserializer(de));
         });
@@ -2830,10 +2849,11 @@ mod tests {
     /// through `.link_from()`.
     #[tokio::test]
     async fn two_inbound_inputs_fan_in() {
+        let key_rec_in_3 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_3, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(InboundLink::new("mqtt://a").with_deserializer(de))
                 .input(InboundLink::new("mqtt://b").with_deserializer(de));
@@ -2845,10 +2865,11 @@ mod tests {
 
     #[tokio::test]
     async fn input_source_and_link_conflict() {
+        let key_rec_in_4 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_4, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(Counter)
                 .input(InboundLink::new("mqtt://a").with_deserializer(de));
@@ -3133,20 +3154,24 @@ mod tests {
     /// mistakes reports all three from one `build()` call.
     #[tokio::test]
     async fn build_reports_all_configuration_mistakes_at_once() {
+        let key_rec_a_5 = crate::Name::<TestRecord>::new("rec.a");
+        let key_rec_b_6 = crate::Name::<TestRecord>::new("rec.b");
+        let key_rec_c_7 = crate::Name::<TestRecord>::new("rec.c");
+        let key_rec_c_8 = crate::Name::<OtherRecord>::new("rec.c");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
 
         // Mistake 1: outbound link with no serializer
-        builder.configure::<TestRecord>("rec.a", |reg| {
+        builder.configure(key_rec_a_5, |reg| {
             reg.link_to("mqtt://broker/a").finish();
         });
         // Mistake 2: two .source() registrations on one record
-        builder.configure::<TestRecord>("rec.b", |reg| {
+        builder.configure(key_rec_b_6, |reg| {
             reg.source(|_ctx, _p| async move {});
             reg.source(|_ctx, _p| async move {});
         });
         // Mistake 3: key re-registered with a different type
-        builder.configure::<TestRecord>("rec.c", |_reg| {});
-        builder.configure::<OtherRecord>("rec.c", |_reg| {});
+        builder.configure(key_rec_c_7, |_reg| {});
+        builder.configure(key_rec_c_8, |_reg| {});
 
         let Err(err) = builder.build().await else {
             panic!("build must fail");
@@ -3170,11 +3195,12 @@ mod tests {
     /// requirement is validated by `build()` instead of `finish()`.
     #[tokio::test]
     async fn buffer_after_link_from_is_valid() {
+        let key_rec_x_9 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
 
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_9, |reg| {
             reg.link_from("mqtt://broker/x")
                 .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
@@ -3189,11 +3215,12 @@ mod tests {
     /// panicked at spawn time, deep inside a connector factory closure.
     #[tokio::test]
     async fn linked_record_without_buffer_fails_build() {
+        let key_rec_x_10 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
 
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_10, |reg| {
             reg.link_from("mqtt://broker/x")
                 .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
@@ -3299,13 +3326,14 @@ mod tests {
     async fn inbound_db(
         links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
     ) -> (crate::AimDb, Arc<AtomicI32>, Arc<AtomicUsize>) {
+        let key_rec_in_11 = crate::Name::<TestRecord>::new("rec.in");
         let last = Arc::new(AtomicI32::new(-1));
         let count = Arc::new(AtomicUsize::new(0));
         let (buf_last, buf_count) = (last.clone(), count.clone());
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
+        builder.configure(key_rec_in_11, move |reg| {
             reg.buffer_raw(Box::new(RecordingBuffer {
                 last: buf_last,
                 count: buf_count,
@@ -3336,13 +3364,14 @@ mod tests {
     /// Design 058 §1: an inbound value is stamped when it is written locally.
     #[tokio::test]
     async fn an_inbound_value_is_stamped_when_written() {
+        let key_rec_in_12 = crate::Name::<TestRecord>::new("rec.in");
         let ops = crate::executor::test_support::ManualClockRuntimeOps::default();
         let stamp = Arc::new(core::sync::atomic::AtomicU64::new(u64::MAX));
         let buf_stamp = stamp.clone();
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(ops.clone()))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
+        builder.configure(key_rec_in_12, move |reg| {
             reg.buffer_raw(Box::new(StampRecordingBuffer(buf_stamp)));
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
@@ -3630,10 +3659,11 @@ mod tests {
         script: Script,
         links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
     ) -> (crate::AimDb, crate::OutboundRoutes) {
+        let key_rec_out_13 = crate::Name::<TestRecord>::new("rec.out");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.out", move |reg| {
+        builder.configure(key_rec_out_13, move |reg| {
             reg.buffer_raw(Box::new(ScriptedBuffer(script)));
             links(reg);
         });
@@ -3995,10 +4025,12 @@ mod tests {
     /// graph node and `record.list`.
     #[tokio::test]
     async fn graph_node_carries_schema_and_outbound_links() {
+        let key_rec_out_14 = crate::Name::<TestRecord>::new("rec.out");
+        let key_rec_plain_15 = crate::Name::<TestRecord>::new("rec.plain");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.out", |reg| {
+        builder.configure(key_rec_out_14, |reg| {
             reg.buffer_raw(Box::new(MockBuffer));
             reg.schema("flow", 2).schema("flow", 2);
             reg.link_to("mqtt://plant/boiler/flow_avg")
@@ -4008,7 +4040,7 @@ mod tests {
                 .with_serializer(le)
                 .finish();
         });
-        builder.configure::<TestRecord>("rec.plain", |_reg| {});
+        builder.configure(key_rec_plain_15, |_reg| {});
         let (db, _runner) = builder.build().await.expect("build must succeed");
 
         let graph = db.inner().dependency_graph();
@@ -4055,8 +4087,9 @@ mod tests {
     /// #332: two different schemas on one record fail `build()`.
     #[tokio::test]
     async fn conflicting_schemas_fail_build() {
+        let key_rec_x_16 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_16, |reg| {
             reg.schema("flow", 1).schema("flow", 2);
         });
         let Err(crate::DbError::InvalidConfiguration { errors }) = builder.build().await else {

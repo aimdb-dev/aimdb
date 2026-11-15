@@ -99,7 +99,8 @@ let zenoh = ZenohConnector::new("tcp/192.168.10.5:7447");
 let ros2 = zenoh.ros2(Ros2Node::new("cell4_gateway")).register::<Temperature>();
 builder.with_connector(zenoh).with_connector(ros2);
 
-builder.configure::<Temperature>("cell4.temperature", |reg| {
+let record_1 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_from("zenoh://cell4/probe/temperature")
         .linked_to("ros2://cell4/temperature");

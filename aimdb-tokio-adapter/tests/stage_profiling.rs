@@ -27,7 +27,8 @@ async fn source_and_tap_stages_are_timed_and_named() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Reading>(KEY, |reg| {
+    let record_key_1 = aimdb_core::Name::<Reading>::interned(KEY);
+    builder.configure(record_key_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
             .source(|ctx, producer| async move {
                 let mut n = 0u64;
@@ -55,9 +56,10 @@ async fn source_and_tap_stages_are_timed_and_named() {
     // Let the pipeline run for a bunch of iterations.
     tokio::time::sleep(Duration::from_millis(250)).await;
 
+    let declared_key_1 = aimdb_core::Name::<Reading>::new(KEY);
     let rec = db
         .inner()
-        .get_typed_record_by_key::<Reading>(KEY)
+        .get_typed_record_by_key(declared_key_1)
         .expect("typed record");
     let prof = rec.profiling();
 
@@ -111,7 +113,8 @@ async fn transform_stage_is_timed_and_is_the_bottleneck() {
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Reading>(KEY, |reg| {
+    let record_key_2 = aimdb_core::Name::<Reading>::interned(KEY);
+    builder.configure(record_key_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
             .source(|ctx, producer| async move {
                 let mut n = 0u64;
@@ -124,9 +127,11 @@ async fn transform_stage_is_timed_and_is_the_bottleneck() {
             .with_name("fast_source");
     });
 
-    builder.configure::<Doubled>(DOUBLED_KEY, |reg| {
+    let record_key_3 = aimdb_core::Name::<Doubled>::interned(DOUBLED_KEY);
+    builder.configure(record_key_3, |reg| {
+        let record_key_4 = aimdb_core::Name::<Reading>::interned(KEY);
         reg.buffer(BufferCfg::SpmcRing { capacity: 32 })
-            .transform::<Reading, _>(KEY, |b| {
+            .transform(record_key_4, |b| {
                 b.map(|input: &Reading| {
                     // Simulate expensive per-value work (wall-clock, synchronous —
                     // the transform closure has no `.await` point).
@@ -151,9 +156,10 @@ async fn transform_stage_is_timed_and_is_the_bottleneck() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    let declared_key_2 = aimdb_core::Name::<Doubled>::new(DOUBLED_KEY);
     let rec = db
         .inner()
-        .get_typed_record_by_key::<Doubled>(DOUBLED_KEY)
+        .get_typed_record_by_key(declared_key_2)
         .expect("typed record");
     let prof = rec.profiling();
 
@@ -187,10 +193,12 @@ async fn transform_stage_is_timed_and_is_the_bottleneck() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn with_name_is_a_no_op_friendly_builder() {
+    let key_profiling_unused_3 = aimdb_core::Name::<Reading>::new("profiling::Unused");
+    let key_profiling_unused_1 = aimdb_core::Name::<Reading>::new("profiling::Unused");
     // `.with_name()` must always be chainable even on a stage that is never run.
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
-    builder.configure::<Reading>("profiling::Unused", |reg| {
+    builder.configure(key_profiling_unused_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .tap(|_ctx, consumer| async move {
                 let mut reader = consumer.subscribe();
@@ -202,7 +210,7 @@ async fn with_name_is_a_no_op_friendly_builder() {
     tokio::spawn(runner.run());
     let rec = db
         .inner()
-        .get_typed_record_by_key::<Reading>("profiling::Unused")
+        .get_typed_record_by_key(key_profiling_unused_3)
         .expect("typed record");
     assert_eq!(
         rec.profiling().tap(0).unwrap().name.as_deref(),

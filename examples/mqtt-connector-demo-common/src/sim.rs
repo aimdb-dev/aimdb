@@ -8,7 +8,7 @@
 //! ```rust,ignore
 //! let SimThermometers { indoor, outdoor, server_room } = SimThermometers::new();
 //!
-//! builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+//! builder.configure(SensorKey::TempIndoor, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
 //!         .input(Thermometer::on(indoor));
 //! });

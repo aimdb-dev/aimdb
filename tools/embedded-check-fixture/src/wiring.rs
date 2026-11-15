@@ -12,9 +12,12 @@ use aimdb_data_contracts::SimulatableRegistrarExt;
 use crate::contracts::{DewPoint, Humidity, Temperature};
 
 /// Record keys.
-pub const TEMPERATURE: &str = "fixture.temperature";
-pub const HUMIDITY: &str = "fixture.humidity";
-pub const DEW_POINT: &str = "fixture.dew_point";
+pub const TEMPERATURE: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("fixture.temperature");
+pub const HUMIDITY: aimdb_data_contracts::Key<Humidity> =
+    aimdb_data_contracts::Key::new("fixture.humidity");
+pub const DEW_POINT: aimdb_data_contracts::Key<DewPoint> =
+    aimdb_data_contracts::Key::new("fixture.dew_point");
 
 /// Where each record is published, encoded by its contract's `Linkable`.
 pub const TEMPERATURE_URL: &str = "mqtt://fixture/temperature";
@@ -23,7 +26,7 @@ pub const DEW_POINT_URL: &str = "mqtt://fixture/dew_point";
 
 /// Registers two sensor records and a dew point joined from them.
 pub fn configure(builder: &mut AimDbBuilder) {
-    builder.configure::<Temperature>(TEMPERATURE, |reg| {
+    builder.configure(TEMPERATURE, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing);
         #[cfg(feature = "sim")]
         reg.simulate(sim::temperature(), sim::rng(42));
@@ -32,7 +35,7 @@ pub fn configure(builder: &mut AimDbBuilder) {
         reg.linked_to(TEMPERATURE_URL);
     });
 
-    builder.configure::<Humidity>(HUMIDITY, |reg| {
+    builder.configure(HUMIDITY, |reg| {
         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing);
         #[cfg(feature = "sim")]
         reg.simulate(sim::humidity(), sim::rng(84));
@@ -41,11 +44,11 @@ pub fn configure(builder: &mut AimDbBuilder) {
         reg.linked_to(HUMIDITY_URL);
     });
 
-    builder.configure::<DewPoint>(DEW_POINT, |reg| {
+    builder.configure(DEW_POINT, |reg| {
         reg.buffer_sized::<8, 1>(EmbassyBufferType::SpmcRing)
             .transform_join(|b| {
-                b.input::<Temperature>(TEMPERATURE)
-                    .input::<Humidity>(HUMIDITY)
+                b.input(TEMPERATURE)
+                    .input(HUMIDITY)
                     .on_triggers(|mut rx, producer| async move {
                         let mut last_temp: Option<Temperature> = None;
                         let mut last_hum: Option<Humidity> = None;
@@ -141,11 +144,15 @@ pub fn admit_temperature_frame(
 /// Registration-time envelope strategies compile on the MCU too. Called by a
 /// build-only fixture; a real application registers its MQTT connector first.
 pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
+    let key_fixture_versioned_input_1 =
+        aimdb_core::Name::<Temperature>::new("fixture.versioned.input");
+    let key_fixture_versioned_output_2 =
+        aimdb_core::Name::<Temperature>::new("fixture.versioned.output");
     use aimdb_data_contracts::{
         link_codecs::Json, EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt,
         VersionedInboundExt, VersionedOutboundExt,
     };
-    builder.configure::<Temperature>("fixture.versioned.input", |r| {
+    builder.configure(key_fixture_versioned_input_1, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
             .link_from("mqtt://fixture/upgrade")
             .with_link_codec(Json)
@@ -153,7 +160,7 @@ pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
             .accepts_from::<3>()
             .finish();
     });
-    builder.configure::<Temperature>("fixture.versioned.output", |r| {
+    builder.configure(key_fixture_versioned_output_2, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing)
             .link_to("mqtt://fixture/legacy")
             .with_link_codec(Json)
@@ -165,22 +172,28 @@ pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
 
 /// Monomorphize the rolling fixture's exact firmware/hub declarations on MCU.
 pub fn configure_rolling_fixture(builder: &mut AimDbBuilder) {
+    let key_rolling_firmware_out_3 =
+        aimdb_core::Name::<firmware::Temperature>::new("rolling.firmware.out");
+    let key_rolling_firmware_in_4 =
+        aimdb_core::Name::<firmware::Temperature>::new("rolling.firmware.in");
+    let key_rolling_hub_in_5 = aimdb_core::Name::<hub::Temperature>::new("rolling.hub.in");
+    let key_rolling_hub_out_6 = aimdb_core::Name::<hub::Temperature>::new("rolling.hub.out");
     use aimdb_data_contracts::link_codecs::{Cdr, Postcard};
     use rolling_contracts_n as firmware;
     use rolling_contracts_n1 as hub;
-    builder.configure::<firmware::Temperature>("rolling.firmware.out", |r| {
+    builder.configure(key_rolling_firmware_out_3, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
         firmware::publish(r, Postcard::<64>);
     });
-    builder.configure::<firmware::Temperature>("rolling.firmware.in", |r| {
+    builder.configure(key_rolling_firmware_in_4, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
         firmware::receive(r, Postcard::<64>);
     });
-    builder.configure::<hub::Temperature>("rolling.hub.in", |r| {
+    builder.configure(key_rolling_hub_in_5, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
         hub::receive(r, Cdr::<64>);
     });
-    builder.configure::<hub::Temperature>("rolling.hub.out", |r| {
+    builder.configure(key_rolling_hub_out_6, |r| {
         r.buffer_sized::<4, 1>(EmbassyBufferType::SpmcRing);
         hub::send_to_firmware(r, Cdr::<64>);
     });

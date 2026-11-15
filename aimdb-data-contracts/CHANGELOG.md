@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- Add Key<T>; contract identity comes from SchemaType. Link and observation helpers preserve the schema declared by the key.
+
 ### Changed — value envelopes (design 062)
 
 - `MigrationChain` now takes explicit versions and generic payload codecs:
