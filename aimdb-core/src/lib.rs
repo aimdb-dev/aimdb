@@ -99,6 +99,7 @@ pub mod clock;
 pub mod codec;
 pub mod connector;
 pub mod context;
+pub mod envelope;
 mod error;
 pub mod executor;
 pub mod extensions;
