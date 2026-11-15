@@ -142,8 +142,8 @@ pub trait VersionOf<Current> {}
 ///
 /// ```rust
 /// # use aimdb_data_contracts::{MigrationError, MigrationStep};
-/// # struct TemperatureV1 { schema_version: u32, temp: f64, timestamp: u64, unit: String }
-/// # struct TemperatureV2 { schema_version: u32, celsius: f64, timestamp: u64 }
+/// # struct TemperatureV1 { temp: f64, timestamp: u64, unit: String }
+/// # struct TemperatureV2 { celsius: f64, timestamp: u64 }
 /// struct TemperatureV1ToV2;
 /// impl MigrationStep for TemperatureV1ToV2 {
 ///     type Older = TemperatureV1;
@@ -157,10 +157,10 @@ pub trait VersionOf<Current> {}
 ///             "K" => v1.temp - 273.15,
 ///             _ => v1.temp,
 ///         };
-///         Ok(TemperatureV2 { schema_version: 2, celsius, timestamp: v1.timestamp })
+///         Ok(TemperatureV2 { celsius, timestamp: v1.timestamp })
 ///     }
 ///     fn down(v2: TemperatureV2) -> Result<TemperatureV1, MigrationError> {
-///         Ok(TemperatureV1 { schema_version: 1, temp: v2.celsius, timestamp: v2.timestamp, unit: "C".into() })
+///         Ok(TemperatureV1 { temp: v2.celsius, timestamp: v2.timestamp, unit: "C".into() })
 ///     }
 /// }
 /// ```
@@ -231,7 +231,6 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V1 {
-        schema_version: u32,
         n: u32,
     }
     impl aimdb_data_contracts::ContractShape for V1 {}
@@ -242,7 +241,6 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V2 {
-        schema_version: u32,
         n: u32,
     }
     impl aimdb_data_contracts::ContractShape for V2 {}
@@ -253,7 +251,6 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V3 {
-        schema_version: u32,
         n: u32,
     }
     impl aimdb_data_contracts::ContractShape for V3 {}
@@ -264,7 +261,6 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V4 {
-        schema_version: u32,
         n: u32,
     }
     impl aimdb_data_contracts::ContractShape for V4 {}
@@ -275,7 +271,6 @@ mod arity_check {
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct V5 {
-        schema_version: u32,
         n: u32,
     }
     impl aimdb_data_contracts::ContractShape for V5 {}
@@ -291,16 +286,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 1;
         const TO_VERSION: u32 = 2;
         fn up(v: V1) -> Result<V2, MigrationError> {
-            Ok(V2 {
-                schema_version: 2,
-                n: v.n,
-            })
+            Ok(V2 { n: v.n })
         }
         fn down(v: V2) -> Result<V1, MigrationError> {
-            Ok(V1 {
-                schema_version: 1,
-                n: v.n,
-            })
+            Ok(V1 { n: v.n })
         }
     }
 
@@ -311,16 +300,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 2;
         const TO_VERSION: u32 = 3;
         fn up(v: V2) -> Result<V3, MigrationError> {
-            Ok(V3 {
-                schema_version: 3,
-                n: v.n,
-            })
+            Ok(V3 { n: v.n })
         }
         fn down(v: V3) -> Result<V2, MigrationError> {
-            Ok(V2 {
-                schema_version: 2,
-                n: v.n,
-            })
+            Ok(V2 { n: v.n })
         }
     }
 
@@ -331,16 +314,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 3;
         const TO_VERSION: u32 = 4;
         fn up(v: V3) -> Result<V4, MigrationError> {
-            Ok(V4 {
-                schema_version: 4,
-                n: v.n,
-            })
+            Ok(V4 { n: v.n })
         }
         fn down(v: V4) -> Result<V3, MigrationError> {
-            Ok(V3 {
-                schema_version: 3,
-                n: v.n,
-            })
+            Ok(V3 { n: v.n })
         }
     }
 
@@ -351,16 +328,10 @@ mod arity_check {
         const FROM_VERSION: u32 = 4;
         const TO_VERSION: u32 = 5;
         fn up(v: V4) -> Result<V5, MigrationError> {
-            Ok(V5 {
-                schema_version: 5,
-                n: v.n,
-            })
+            Ok(V5 { n: v.n })
         }
         fn down(v: V5) -> Result<V4, MigrationError> {
-            Ok(V4 {
-                schema_version: 4,
-                n: v.n,
-            })
+            Ok(V4 { n: v.n })
         }
     }
 

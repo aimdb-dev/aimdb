@@ -125,7 +125,7 @@ mod sim {
 /// In an application this policy is created once while registering the link.
 pub fn temperature_admission(
 ) -> aimdb_data_contracts::LinkContract<Temperature, aimdb_data_contracts::link_codecs::Json> {
-    aimdb_data_contracts::LinkContract::inline_from::<1>(
+    aimdb_data_contracts::LinkContract::inline_from::<3>(
         aimdb_core::envelope::PayloadCodec::Json,
         aimdb_data_contracts::link_codecs::Json,
     )
@@ -150,7 +150,7 @@ pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
             .link_from("mqtt://fixture/upgrade")
             .with_link_codec(Json)
             .with_envelope(EnvelopeCarrier::Inline)
-            .accepts_from::<1>()
+            .accepts_from::<3>()
             .finish();
     });
     builder.configure::<Temperature>("fixture.versioned.output", |r| {
@@ -158,7 +158,7 @@ pub fn configure_versioned_links(builder: &mut AimDbBuilder) {
             .link_to("mqtt://fixture/legacy")
             .with_link_codec(Json)
             .with_envelope(EnvelopeCarrier::Inline)
-            .sends_as::<1>()
+            .sends_as::<3>()
             .finish();
     });
 }

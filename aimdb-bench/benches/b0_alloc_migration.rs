@@ -24,18 +24,13 @@ static GLOBAL: aimdb_bench::alloc::CountingAllocator<std::alloc::System> =
     aimdb_bench::alloc::CountingAllocator(std::alloc::System);
 
 // A `label: String` field keeps this fixture representative of real
-// contracts (e.g. embedded-check-fixture's `TemperatureV1.unit`) — an
+// contracts (e.g. embedded-check-fixture's `TemperatureV3.unit`) — an
 // all-primitive struct would parse allocation-free regardless of the
 // version-scan strategy and wouldn't show anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SensorV1 {
-    #[serde(default = "sensor_v1_version")]
-    schema_version: u32,
     label: String,
     value: f32,
-}
-fn sensor_v1_version() -> u32 {
-    1
 }
 impl aimdb_data_contracts::ContractShape for SensorV1 {}
 impl SchemaType for SensorV1 {
@@ -45,13 +40,8 @@ impl SchemaType for SensorV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SensorV2 {
-    #[serde(default = "sensor_v2_version")]
-    schema_version: u32,
     label: String,
     value: f32,
-}
-fn sensor_v2_version() -> u32 {
-    2
 }
 impl aimdb_data_contracts::ContractShape for SensorV2 {}
 impl SchemaType for SensorV2 {
@@ -68,14 +58,12 @@ impl MigrationStep for SensorV1ToV2 {
 
     fn up(v1: SensorV1) -> Result<SensorV2, MigrationError> {
         Ok(SensorV2 {
-            schema_version: 2,
             label: v1.label,
             value: v1.value,
         })
     }
     fn down(v2: SensorV2) -> Result<SensorV1, MigrationError> {
         Ok(SensorV1 {
-            schema_version: 1,
             label: v2.label,
             value: v2.value,
         })
@@ -109,7 +97,6 @@ fn main() {
     println!();
 
     let payload = serde_json::to_vec(&SensorV1 {
-        schema_version: 1,
         label: "bench-sensor-01".to_string(),
         value: 42.5,
     })

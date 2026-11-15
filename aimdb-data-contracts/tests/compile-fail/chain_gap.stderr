@@ -1,10 +1,10 @@
 error[E0080]: evaluation panicked: migration step must increment version by exactly 1
-  --> tests/compile-fail/chain_gap.rs:42:1
+  --> tests/compile-fail/chain_gap.rs:36:1
    |
-42 | / migration_chain! {
-43 | |     type Current = GapCurrent;
-44 | |     steps {
-45 | |         GapStep: GapV1 => GapCurrent,
-46 | |     }
-47 | | }
+36 | / migration_chain! {
+37 | |     type Current = GapCurrent;
+38 | |     steps {
+39 | |         GapStep: GapV1 => GapCurrent,
+40 | |     }
+41 | | }
    | |_^ evaluation of `_` failed here

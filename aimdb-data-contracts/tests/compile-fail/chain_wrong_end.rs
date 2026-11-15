@@ -1,13 +1,9 @@
 // Last (only) step doesn't end at Current::VERSION.
-use aimdb_data_contracts::{
-    migration_chain, MigrationError, MigrationStep, SchemaType,
-};
+use aimdb_data_contracts::{migration_chain, MigrationError, MigrationStep, SchemaType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-struct WrongEndV1 {
-    schema_version: u32,
-}
+struct WrongEndV1 {}
 impl aimdb_data_contracts::ContractShape for WrongEndV1 {}
 impl SchemaType for WrongEndV1 {
     const NAME: &'static str = "wrong_end";
@@ -15,9 +11,7 @@ impl SchemaType for WrongEndV1 {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct WrongEndCurrent {
-    schema_version: u32,
-}
+struct WrongEndCurrent {}
 impl aimdb_data_contracts::ContractShape for WrongEndCurrent {}
 impl SchemaType for WrongEndCurrent {
     const NAME: &'static str = "wrong_end";
@@ -32,10 +26,10 @@ impl MigrationStep for WrongEndStep {
     const TO_VERSION: u32 = 2;
 
     fn up(_older: WrongEndV1) -> Result<WrongEndCurrent, MigrationError> {
-        Ok(WrongEndCurrent { schema_version: 5 })
+        Ok(WrongEndCurrent {})
     }
     fn down(_newer: WrongEndCurrent) -> Result<WrongEndV1, MigrationError> {
-        Ok(WrongEndV1 { schema_version: 1 })
+        Ok(WrongEndV1 {})
     }
 }
 

@@ -523,6 +523,17 @@ An empty `steps {}` defines a current-only chain whose minimum version is
 current value before running by-value downgrade steps. A payload field
 named `schema_version` is ordinary data and is never inspected for dispatch.
 
+New contract payloads need no `schema_version` field: `SchemaType::VERSION`
+and the envelope or static binding identify the version. Removing an existing
+field changes the wire shape, including on binary codecs. For a locked contract,
+add a new version and migration step; keep historical layouts unchanged when
+supporting deployed senders. `AIMDB_UPDATE_LOCK=1` accepts new versions but
+cannot overwrite a changed shape under an existing `NAME@VERSION`.
+The embedded fixture keeps its frozen v1/v2 payload layouts and migrates to
+field-free v3/v4 layouts as an example. Bare legacy JSON with an extra version
+field can also be read by a field-free type through an explicit static binding:
+serde ignores that extra field; it never selects a migration.
+
 `migratable` does not enable JSON. Custom codecs implement `PayloadDecoder`
 and `PayloadEncoder`; the built-in codec features provide them too.
 

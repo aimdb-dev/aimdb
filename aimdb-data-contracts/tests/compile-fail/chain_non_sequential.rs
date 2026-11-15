@@ -2,15 +2,11 @@
 // (SeqStep1::Newer == SeqStep2::Older == SeqV2), but SeqStep2's declared
 // FROM_VERSION (3) doesn't match SeqStep1's declared TO_VERSION (2) — a
 // version-numbering gap the type system alone can't catch.
-use aimdb_data_contracts::{
-    migration_chain, MigrationError, MigrationStep, SchemaType,
-};
+use aimdb_data_contracts::{migration_chain, MigrationError, MigrationStep, SchemaType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-struct SeqV1 {
-    schema_version: u32,
-}
+struct SeqV1 {}
 impl aimdb_data_contracts::ContractShape for SeqV1 {}
 impl SchemaType for SeqV1 {
     const NAME: &'static str = "seq";
@@ -18,9 +14,7 @@ impl SchemaType for SeqV1 {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct SeqV2 {
-    schema_version: u32,
-}
+struct SeqV2 {}
 impl aimdb_data_contracts::ContractShape for SeqV2 {}
 impl SchemaType for SeqV2 {
     const NAME: &'static str = "seq";
@@ -28,9 +22,7 @@ impl SchemaType for SeqV2 {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct SeqCurrent {
-    schema_version: u32,
-}
+struct SeqCurrent {}
 impl aimdb_data_contracts::ContractShape for SeqCurrent {}
 impl SchemaType for SeqCurrent {
     const NAME: &'static str = "seq";
@@ -45,10 +37,10 @@ impl MigrationStep for SeqStep1 {
     const TO_VERSION: u32 = 2;
 
     fn up(_older: SeqV1) -> Result<SeqV2, MigrationError> {
-        Ok(SeqV2 { schema_version: 2 })
+        Ok(SeqV2 {})
     }
     fn down(_newer: SeqV2) -> Result<SeqV1, MigrationError> {
-        Ok(SeqV1 { schema_version: 1 })
+        Ok(SeqV1 {})
     }
 }
 
@@ -62,10 +54,10 @@ impl MigrationStep for SeqStep2 {
     const TO_VERSION: u32 = 4;
 
     fn up(_older: SeqV2) -> Result<SeqCurrent, MigrationError> {
-        Ok(SeqCurrent { schema_version: 4 })
+        Ok(SeqCurrent {})
     }
     fn down(_newer: SeqCurrent) -> Result<SeqV2, MigrationError> {
-        Ok(SeqV2 { schema_version: 2 })
+        Ok(SeqV2 {})
     }
 }
 

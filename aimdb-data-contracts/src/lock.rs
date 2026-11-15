@@ -416,6 +416,38 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_payload_version_field_requires_a_new_version() {
+        let root = temp_root("payload-version");
+        let legacy = traced(
+            "temperature",
+            1,
+            r#"struct { "schema_version": u32, "temp": f32 }"#,
+        );
+        check_with(&root, std::slice::from_ref(&legacy), true).unwrap();
+        let path = root.join(FILE_NAME);
+        let original = std::fs::read_to_string(&path).unwrap();
+
+        let field_free = r#"struct { "temp": f32 }"#;
+        let error = check_with(&root, &[traced("temperature", 1, field_free)], true).unwrap_err();
+        assert!(error.contains("shape changed without a VERSION bump"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        let current = [legacy, traced("temperature", 2, field_free)];
+        check_with(&root, &current, true).unwrap();
+        assert_eq!(check_with(&root, &current, false).unwrap(), None);
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            crate::locked_shape(&updated, "temperature", 1),
+            crate::locked_shape(&original, "temperature", 1)
+        );
+        assert_ne!(
+            crate::locked_shape(&updated, "temperature", 1),
+            crate::locked_shape(&updated, "temperature", 2)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn seed_lock_bootstraps_runtime_shape() {
         let root = temp_root("seed");
         let path = root.join(FILE_NAME);
