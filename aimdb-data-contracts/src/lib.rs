@@ -73,6 +73,11 @@ pub mod __private {
 mod streamable;
 pub use streamable::Streamable;
 
+mod contract_identity;
+pub use contract_identity::{name_id, ContractShape};
+#[doc(hidden)]
+pub use contract_identity::{assert_unique_name_ids, locked_shape};
+
 mod catalog;
 pub use catalog::ContractId;
 

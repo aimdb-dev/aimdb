@@ -624,7 +624,11 @@ It generates `pub const CATALOG: &[ContractId]` (contracts only, `no_std`)
 and a test that
 checks the catalog against `aimdb.lock` at the crate root. The `lock`
 feature belongs in `[dev-dependencies]` only, so firmware builds never see
-it. `aimdb.lock` is generated and committed:
+it. `catalog!` includes the lock at compile time, so the file must exist.
+For a new contracts crate, first create `aimdb.lock` containing only
+`version = 1`, then run `AIMDB_UPDATE_LOCK=1 cargo test` to populate it.
+Commit the generated lock:
+
 
 ```toml
 # aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
@@ -635,6 +639,20 @@ name = "mqtt_demo.temperature"
 version = 1
 shape = "sha256:51d0a7c3…"
 ```
+
+`catalog!` also implements `ContractShape` for each listed type. Its
+`SHAPE` is the first eight bytes of the locked SHA-256, interpreted as a
+big-endian integer. A version not yet in the lock has `SHAPE = None` until
+the lock is updated. `CATALOG` entries expose `name_id()` (FNV-1a 32 of
+`NAME`) and `shape()`. Distinct names with the same ID fail compilation;
+several versions of the same name remain valid.
+
+Every firmware and hub CI build must run its contracts crate's lock test.
+The runtime shape comes from the committed lock, so skipping the test can
+let a changed struct advertise a stale hash. The lock parser and shape
+lookup need neither allocation nor the dev-only TOML and SHA-256 crates.
+For types outside a catalog, `impl ContractShape for MyType {}` provides
+`SHAPE = None` without claiming a locked shape.
 
 | Change | Result |
 |---|---|

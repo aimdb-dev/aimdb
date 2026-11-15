@@ -1,0 +1,10 @@
+error: couldn't read `$DIR/tests/compile-fail-catalog/../fixtures/no_such_catalog/aimdb.lock`: No such file or directory (os error 2)
+ --> tests/compile-fail-catalog/missing_lock.rs:4:1
+  |
+4 | / aimdb_data_contracts::catalog! {
+5 | |     @lock_dir "../fixtures/no_such_catalog",
+6 | |     contracts: [A],
+7 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `::core::include_str` which comes from the expansion of the macro `aimdb_data_contracts::catalog` (in Nightly builds, run with -Z macro-backtrace for more info)

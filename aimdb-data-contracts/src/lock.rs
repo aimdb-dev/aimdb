@@ -260,7 +260,7 @@ fn render(entries: &[Entry]) -> String {
 }
 
 /// A TOML basic string. Also quotes names in the shape text.
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
@@ -413,6 +413,22 @@ mod tests {
         assert_eq!(check_with(&root, &v1, false).unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seed_lock_bootstraps_runtime_shape() {
+        let root = temp_root("seed");
+        let path = root.join(FILE_NAME);
+        std::fs::write(&path, "version = 1\n").unwrap();
+        let current = [traced("temperature", 1, "f32")];
+        assert!(check_with(&root, &current, false).is_err());
+        assert!(check_with(&root, &current, true).unwrap().is_some());
+        assert_eq!(check_with(&root, &current, false).unwrap(), None);
+        let text = std::fs::read_to_string(path).unwrap();
+        let hash = shape::hash("f32");
+        let expected = u64::from_str_radix(&hash[7..23], 16).unwrap();
+        assert_eq!(crate::locked_shape(&text, "temperature", 1), Some(expected));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

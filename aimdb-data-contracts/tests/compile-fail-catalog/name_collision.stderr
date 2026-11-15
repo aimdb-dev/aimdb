@@ -1,0 +1,25 @@
+error[E0080]: evaluation panicked: catalog!: distinct contract names have the same FNV-1a name_id
+ --> tests/compile-fail-catalog/name_collision.rs:6:1
+  |
+6 | / aimdb_data_contracts::catalog! {
+7 | |     @lock_dir "../fixtures/seed",
+8 | |     contracts: [A, B],
+9 | | }
+  | |_^ evaluation of `_` failed inside this call
+  |
+note: inside `aimdb_data_contracts::assert_unique_name_ids`
+ --> $RUST/core/src/panic.rs
+  |
+  |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+  |
+ ::: src/contract_identity.rs
+  |
+  | /             assert!(
+  | |                 catalog[i].name_id() != catalog[j].name_id()
+  | |                     || equal(
+  | |                         catalog[i].name.as_bytes(),
+... |
+  | |                 "catalog!: distinct contract names have the same FNV-1a name_id"
+  | |             );
+  | |_____________- in this macro invocation
