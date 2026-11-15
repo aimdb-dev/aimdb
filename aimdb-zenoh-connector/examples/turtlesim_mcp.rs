@@ -184,8 +184,10 @@ async fn main() {
 
 async fn run<P: TurtlePose>() {
     let key_turtle_goal_1 = aimdb_core::Name::<Goal>::new("turtle.goal");
-    let key_turtle_pose_2 = aimdb_core::Name::<P>::new("turtle.pose");
-    let key_turtle_cmd_vel_3 = aimdb_core::Name::<Twist>::new("turtle.cmd_vel");
+    // Pose and Twist are ROS contracts: `Key<T>` declares their schema, which
+    // `linked_from` / `linked_to` require. Goal is plain app state: `Name<T>`.
+    let pose_key = aimdb_data_contracts::Key::<P>::new("turtle.pose");
+    let cmd_vel_key = aimdb_data_contracts::Key::<Twist>::new("turtle.cmd_vel");
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
     let socket =
         std::env::var("AIMX_SOCKET").unwrap_or_else(|_| "/tmp/aimdb-turtlesim.sock".into());
@@ -212,21 +214,18 @@ async fn run<P: TurtlePose>() {
     builder.configure(key_turtle_goal_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure(key_turtle_pose_2, |reg| {
+    builder.configure(pose_key, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from("ros2://turtle1/pose");
     });
     // Only the newest velocity command matters.
-    builder.configure(key_turtle_cmd_vel_3, |reg| {
+    builder.configure(cmd_vel_key, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .transform_join(|join| {
-                let key_turtle_goal_4 = aimdb_core::Name::<Goal>::new("turtle.goal");
-                let key_turtle_pose_5 = aimdb_core::Name::<P>::new("turtle.pose");
-                join.input(key_turtle_goal_4)
-                    .input(key_turtle_pose_5)
-                    .on_triggers(|mut rx, producer| async move {
+                join.input(key_turtle_goal_1).input(pose_key).on_triggers(
+                    |mut rx, producer| async move {
                         let mut goal = Goal::Stop;
                         let mut pose = None;
                         let mut moving = false;
@@ -253,7 +252,8 @@ async fn run<P: TurtlePose>() {
                                 None => {}
                             }
                         }
-                    })
+                    },
+                )
             })
             .linked_to("ros2://turtle1/cmd_vel");
     });

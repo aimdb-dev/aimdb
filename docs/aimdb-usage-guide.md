@@ -35,8 +35,14 @@ lookups declare a borrowed `Name::<Temperature>::new(&name)`; lookups do not
 intern names. A `Name<T>` declaration reports no contract schema, including
 when its payload happens to implement `SchemaType`.
 
-Link helpers and `.observe()` no longer assign schemas. `contract_schema()`
-and public schema setters are removed. Existing envelope and version options
+The key is the only source of a record's schema: link helpers and
+`.observe()` no longer assign one. They require it instead. `publish`,
+`subscribe`, `linked_to`, `linked_from`, their `_with` forms and `.observe()`
+fail `build()` when the record's key does not declare the contract they carry,
+so a contract record declared with `Name<T>` is caught rather than silently
+reported without a schema. Declare such records with `Key<T>` or
+`#[record_key(contract = T)]`. The raw `.link_to()` / `.link_from()` builders
+check nothing. `contract_schema()` and public schema setters are removed. Existing envelope and version options
 are unchanged: select inline explicitly before `accepts_from`, and use a
 static `with_contract` binding for a bare legacy sender. A historical wire
 version does not change the record's current schema.
@@ -444,7 +450,7 @@ async fn main() -> DbResult<()> {
     // `connect` registers the connector and returns a handle to link through.
     let mqtt = builder.connect(MqttConnector::new("mqtt://broker.example.com:1883"));
 
-    let record_4 = aimdb_core::Name::<SensorReading>::new("sensor.reading");
+    let record_4 = aimdb_data_contracts::Key::<SensorReading>::new("sensor.reading");
     builder.configure(record_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .input(subscribe(mqtt, "sensor/room1").with_qos(1))
@@ -494,12 +500,12 @@ let mut builder = AimDbBuilder::new()
     .with_connector(zenoh)
     .with_connector(ros2);
 
-let record_5 = aimdb_core::Name::<MachineState>::new("cell4.state");
+let record_5 = aimdb_data_contracts::Key::<MachineState>::new("cell4.state");
 builder.configure(record_5, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
 });
-let record_6 = aimdb_core::Name::<Temperature>::new("cell4.temperature");
+let record_6 = aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
 builder.configure(record_6, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");
@@ -757,7 +763,7 @@ inputs once, as struct fields, and an input takes one by value:
 let board = board::init(spawner).await;
 let NucleoInputs { b1 } = board.inputs;
 
-builder.configure::<ButtonPress>(ButtonKey::B1, |reg| {
+builder.configure(ButtonKey::B1, |reg| {
     reg.buffer_sized::<8, 3>(EmbassyBufferType::SpmcRing)
         .input(PushButton::on(b1))
         .output(publish(mqtt, ButtonKey::B1.link_address().unwrap()));

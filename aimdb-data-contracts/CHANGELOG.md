@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking — typed record keys (design 063)
 
-- Add Key<T>; contract identity comes from SchemaType. Link and observation helpers preserve the schema declared by the key.
+- Add Key<T>; contract identity comes from SchemaType. Link and observation helpers require the schema declared by the key: `publish`, `subscribe`, `linked_to`, `linked_from`, their `_with` forms and `observe` fail `build()` on a record declared with `Name<T>` or `payload = T`.
 
 ### Changed — value envelopes (design 062)
 

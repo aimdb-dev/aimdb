@@ -54,9 +54,10 @@ struct Twist {
     angular: Vector3,
 }
 
+const CMD_VEL: aimdb_data_contracts::Key<Twist> = aimdb_data_contracts::Key::new("robot.cmd_vel");
+
 #[tokio::main]
 async fn main() {
-    let key_robot_cmd_vel_1 = aimdb_core::Name::<Twist>::new("robot.cmd_vel");
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
     let socket =
         std::env::var("AIMX_SOCKET").unwrap_or_else(|_| "/tmp/aimdb-ros2-gateway.sock".into());
@@ -83,15 +84,14 @@ async fn main() {
         .with_connector(aimx);
     // SingleLatest: the record is the robot's current command, which
     // `aimdb record get` reads and a late `aimdb watch` receives first.
-    builder.configure(key_robot_cmd_vel_1, |reg| {
+    builder.configure(CMD_VEL, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from("ros2://cmd_vel") // CDR, as a ROS subscription
             .linked_to_with("zenoh://telemetry/cmd_vel", Json); // JSON, plain Zenoh
     });
     let (db, runner) = builder.build().await.expect("build");
-    let record_key_1 = aimdb_core::Name::<Twist>::new("robot.cmd_vel");
-    let mut reader = db.subscribe(record_key_1).expect("reader");
+    let mut reader = db.subscribe(CMD_VEL).expect("reader");
     tokio::spawn(runner.run());
 
     println!("ros2_gateway: /cmd_vel -> robot.cmd_vel -> telemetry/cmd_vel");

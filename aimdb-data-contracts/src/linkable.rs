@@ -5,7 +5,8 @@
 //! `reg.input(..)`. The registrar verbs [`LinkableRegistrarExt::linked_from`] /
 //! [`linked_to`](LinkableRegistrarExt::linked_to) do the same from a full URL,
 //! and [`LinkCodecRegistrarExt`] selects a different codec per link. Every
-//! path reports `T::NAME` / `T::VERSION` as the record's schema. The raw
+//! path requires the record's key to declare `T` as its contract (`Key<T>`
+//! or `#[record_key(contract = T)]`), or `build()` fails. The raw
 //! `.link_to()` / `.link_from()` builders remain the escape hatch.
 
 use aimdb_core::typed_api::RecordRegistrar;
@@ -13,38 +14,42 @@ use aimdb_core::{ConnectorHandle, InboundLink, OutboundLink};
 
 use crate::{link_codecs, LinkCodec, LinkCodecBuilderExt, Linkable};
 
-/// An outbound link carrying contract `T`: its codec and its schema.
+/// An outbound link carrying contract `T`: its codec, and the requirement
+/// that the record's key declares `T`.
 fn contract_out<T, C>(link: OutboundLink<T>, codec: C) -> OutboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
     link.with_link_codec(codec)
+        .with_contract(T::NAME, T::VERSION)
 }
 
-/// An inbound link carrying contract `T`: its codec and its schema.
+/// An inbound link carrying contract `T`: its codec, and the requirement
+/// that the record's key declares `T`.
 fn contract_in<T, C>(link: InboundLink<T>, codec: C) -> InboundLink<T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,
     C: LinkCodec<T>,
 {
     link.with_link_codec(codec)
+        .with_contract(T::NAME, T::VERSION)
 }
 
 /// Publishes a `T` record to `address` on `connector`, encoded with `T`'s own
 /// [`Linkable`] codec; pass it to `reg.output(..)`.
 ///
 /// `address` needs no scheme (`"sensors/temp"`); a full URL whose scheme is
-/// the connector's, as a `#[link_address]` key gives, works too. The record
-/// reports `T::NAME` / `T::VERSION` as its schema. The result is an ordinary
+/// the connector's, as a `#[link_address]` key gives, works too. The record's
+/// key must declare `T` as its contract, or `build()` fails. The result is an ordinary
 /// [`OutboundLink`], so connector options (`with_qos`, …) and
 /// [`with_link_codec`](LinkCodecBuilderExt::with_link_codec), which replaces
 /// the codec, apply to it.
 ///
 /// ```rust,ignore
 /// let mqtt = builder.connect(MqttConnector::new(broker_url));
-/// let record_1 = aimdb_core::Name::<Temperature>::new("temp.indoor");
-/// builder.configure(record_1, |reg| {
+/// const TEMP_INDOOR: Key<Temperature> = Key::new("temp.indoor");
+/// builder.configure(TEMP_INDOOR, |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)
 ///         .output(publish(mqtt, "sensors/temp/indoor").with_qos(1));
 /// });
@@ -82,8 +87,8 @@ where
 /// Adds `.linked_from(url)` and `.linked_to(url)` to [`RecordRegistrar`] for
 /// [`Linkable`] types.
 ///
-/// Both also report `T::NAME`/`T::VERSION` as the record's schema
-/// ([`RecordRegistrar::schema`]).
+/// Both require the record's key to declare `T` as its contract
+/// ([`RecordRegistrar::require_contract`]).
 pub trait LinkableRegistrarExt<'a, T>
 where
     T: Linkable + Send + Sync + Clone + core::fmt::Debug + 'static,

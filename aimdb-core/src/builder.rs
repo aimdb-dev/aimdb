@@ -510,7 +510,8 @@ impl AimDbBuilder {
     /// ```rust,ignore
     /// let mut b = AimDbBuilder::new().runtime(rt);
     /// let mqtt = b.connect(MqttConnector::new("mqtt://broker.local:1883"));
-    /// let record_3 = aimdb_core::Name::<Temperature>::new("temp.indoor");
+    /// // A contract record is declared with `Key<T>`, which carries its schema.
+    /// let record_3 = aimdb_data_contracts::Key::<Temperature>::new("temp.indoor");
     /// b.configure(record_3, |r| {
     ///     // A contract (`Linkable`) brings its own wire format:
     ///     r.output(aimdb_data_contracts::publish(mqtt, "sensors/temp/indoor"));

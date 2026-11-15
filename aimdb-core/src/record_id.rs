@@ -638,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn test_static_str_record_key() {
-        // &'static str implements RecordKey
+    fn test_name_record_key() {
+        // A `Name<T>` with a static name implements RecordKey
         let key = Name::<u32>::new("sensors.temp");
         assert_eq!(key.as_str(), "sensors.temp");
     }
@@ -773,6 +773,11 @@ impl<T> Eq for Name<'_, T> {}
 impl<T> core::hash::Hash for Name<'_, T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state)
+    }
+}
+impl<T> core::fmt::Debug for Name<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name)
     }
 }
 impl<T> core::borrow::Borrow<str> for Name<'_, T> {

@@ -306,11 +306,11 @@ pub trait Observable: SchemaType {
 /// Not compiled: the snippet needs `aimdb-core`'s builder types in scope.
 ///
 /// ```rust,ignore
-/// use aimdb_data_contracts::subscribe;
+/// use aimdb_data_contracts::{subscribe, Key};
 /// use my_app::Temperature;  // user-defined type implementing Linkable
 ///
 /// let mqtt = builder.connect(MqttConnector::new(broker_url));
-/// builder.configure(aimdb_core::Name::<Temperature>::interned(NODE_ID), |reg| {
+/// builder.configure(Key::<Temperature>::interned(NODE_ID), |reg| {
 ///     reg.buffer(BufferCfg::SingleLatest)
 ///         .input(subscribe(mqtt, "sensors/temperature"));
 /// });

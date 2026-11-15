@@ -552,11 +552,44 @@ where
     /// Sets the data-contract schema this record carries, reported in the
     /// dependency graph (`graph.nodes`) and in `record.list`.
     ///
-    /// `aimdb-data-contracts` calls this from `SchemaType` (`linked_to`,
-    /// `linked_from`, `observe`, `contract_schema`). Setting the same schema
-    /// again does nothing; a different one fails `build()`.
+    /// Only `configure` calls this, from the key's [`TypedKey::SCHEMA`](crate::TypedKey::SCHEMA):
+    /// the key is the one source of a record's schema (063). Setting the same
+    /// schema again does nothing; a different one fails `build()`.
     pub(crate) fn schema(&mut self, name: &str, version: u32) -> &mut Self {
         self.rec.set_schema(name, version);
+        self
+    }
+
+    /// The data-contract schema this record's key declared, if any.
+    ///
+    /// `None` for a record declared with a `Name<T>` or a
+    /// `#[record_key(payload = T)]` enum.
+    pub fn declared_schema(&self) -> Option<(&str, u32)> {
+        self.rec.schema().map(|s| (s.name.as_str(), s.version))
+    }
+
+    /// Requires this record's key to declare the contract `name` / `version`.
+    ///
+    /// Contract-only helpers (`publish`, `subscribe`, `linked_to`,
+    /// `linked_from`, `observe` in `aimdb-data-contracts`) call this so that a
+    /// contract record declared with a schema-free `Name<T>` fails `build()`
+    /// instead of silently dropping its schema from the graph and
+    /// `record.list`. It never sets the schema: the key is its one source.
+    pub fn require_contract(&mut self, name: &str, version: u32) -> &mut Self {
+        let message = match self.declared_schema() {
+            Some((n, v)) if n == name && v == version => return self,
+            Some((n, v)) => {
+                alloc::format!("carries contract {name} v{version}, but its key declares {n} v{v}")
+            }
+            None => alloc::format!(
+                "carries contract {name} v{version}, but its key declares no schema; \
+                 declare it with `Key<{name}>` or `#[record_key(contract = ..)]` \
+                 instead of `Name<T>` or `payload = ..`"
+            ),
+        };
+        let key = self.record_key.clone();
+        self.rec
+            .push_config_error(crate::error::ConfigError::new(key, None, message));
         self
     }
 
@@ -1048,15 +1081,14 @@ where
         (self.at, link)
     }
 
-    /// Reports `name` / `version` as the record's data-contract schema when
-    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    /// Declares that this link carries the contract `name` / `version`.
     ///
-    /// Reported even if the link itself is rejected, like a `schema()` call
-    /// before it. A different schema on the same record fails `build()`.
-    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
-    /// contract type.
-    #[cfg(test)]
-    pub(crate) fn with_schema(mut self, name: &str, version: u32) -> Self {
+    /// When the link is registered, the record's key must declare the same
+    /// contract ([`RecordRegistrar::require_contract`]), or `build()` fails;
+    /// checked even if the link itself is rejected. It never sets the
+    /// record's schema. `aimdb-data-contracts`' `publish` / `subscribe` set it
+    /// from the contract type.
+    pub fn with_contract(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -1435,15 +1467,14 @@ where
         (self.at, link)
     }
 
-    /// Reports `name` / `version` as the record's data-contract schema when
-    /// the link is registered, as [`RecordRegistrar::schema`] would.
+    /// Declares that this link carries the contract `name` / `version`.
     ///
-    /// Reported even if the link itself is rejected, like a `schema()` call
-    /// before it. A different schema on the same record fails `build()`.
-    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
-    /// contract type.
-    #[cfg(test)]
-    pub(crate) fn with_schema(mut self, name: &str, version: u32) -> Self {
+    /// When the link is registered, the record's key must declare the same
+    /// contract ([`RecordRegistrar::require_contract`]), or `build()` fails;
+    /// checked even if the link itself is rejected. It never sets the
+    /// record's schema. `aimdb-data-contracts`' `publish` / `subscribe` set it
+    /// from the contract type.
+    pub fn with_contract(mut self, name: &str, version: u32) -> Self {
         self.schema = Some((name.to_string(), version));
         self
     }
@@ -1691,7 +1722,7 @@ where
         use crate::error::ConfigError;
 
         if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
+            self.require_contract(&name, version);
         }
 
         let record_key = self.record_key.clone();
@@ -1923,7 +1954,7 @@ where
         };
 
         if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
+            self.require_contract(&name, version);
         }
         match self.inbound_link(&mut link) {
             Ok(inbound) => self.rec.add_inbound_connector(inbound),
@@ -2774,59 +2805,72 @@ mod tests {
         }
     }
 
-    /// `with_schema` reports the record's schema on registration, in both
-    /// directions and on both forms, even when the link is rejected; a second
-    /// schema conflicts as with `reg.schema(..)`.
+    /// `with_contract` checks the key-declared schema on registration, in both
+    /// directions and on both forms, even when the link is rejected. It never
+    /// sets the schema itself.
     #[test]
-    fn with_schema_reports_the_record_schema() {
+    fn with_contract_requires_the_key_schema() {
         let schema_of = |rec: &crate::typed_record::TypedRecord<TestRecord>| {
             rec.schema().map(|s| (s.name.clone(), s.version))
         };
-        let expected = Some(("contract".to_string(), 2));
 
-        let mut detached = registered(|reg| {
+        // Declared by the key (`configure` sets it before the closure runs).
+        let mut declared = registered(|reg| {
+            reg.schema("contract", 2)
+                .output(
+                    OutboundLink::new("mqtt://out")
+                        .with_serializer(ser)
+                        .with_contract("contract", 2),
+                )
+                .input(
+                    InboundLink::new("mqtt://in")
+                        .with_deserializer(de)
+                        .with_contract("contract", 2),
+                );
+            reg.link_from("mqtt://in2")
+                .with_deserializer(de)
+                .with_contract("contract", 2)
+                .finish();
+        });
+        assert_eq!(declared.outbound_connectors().len(), 1);
+        assert!(drain_errors(&mut declared).is_empty());
+
+        // Schema-free key: one error per contract link, and no schema set.
+        let mut undeclared = registered(|reg| {
             reg.output(
                 OutboundLink::new("mqtt://out")
                     .with_serializer(ser)
-                    .with_schema("contract", 2),
-            )
-            .input(
-                InboundLink::new("mqtt://in")
-                    .with_deserializer(de)
-                    .with_schema("contract", 2),
+                    .with_contract("contract", 2),
             );
-        });
-        assert_eq!(schema_of(&detached), expected);
-        assert_eq!(detached.outbound_connectors().len(), 1);
-        assert!(drain_errors(&mut detached).is_empty());
-
-        let mut attached = registered(|reg| {
             reg.link_from("mqtt://in")
                 .with_deserializer(de)
-                .with_schema("contract", 2)
+                .with_contract("contract", 2)
                 .finish();
         });
-        assert_eq!(schema_of(&attached), expected);
-        assert!(drain_errors(&mut attached).is_empty());
+        assert_eq!(schema_of(&undeclared), None);
+        let errors = drain_errors(&mut undeclared);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].message.contains("declares no schema"));
 
-        // Rejected (no serializer), yet the schema is reported.
+        // Rejected (no serializer), yet the contract is still checked.
         let mut rejected = registered(|reg| {
-            reg.output(OutboundLink::new("mqtt://out").with_schema("contract", 2));
+            reg.output(OutboundLink::new("mqtt://out").with_contract("contract", 2));
         });
-        assert_eq!(schema_of(&rejected), expected);
         assert!(rejected.outbound_connectors().is_empty());
-        assert_eq!(drain_errors(&mut rejected).len(), 1);
+        assert_eq!(drain_errors(&mut rejected).len(), 2);
 
+        // A different declared contract conflicts.
         let mut conflicting = registered(|reg| {
             reg.schema("contract", 1).output(
                 OutboundLink::new("mqtt://out")
                     .with_serializer(ser)
-                    .with_schema("contract", 2),
+                    .with_contract("contract", 2),
             );
         });
         let errors = drain_errors(&mut conflicting);
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].message.contains("already carries contract v1"));
+        assert!(errors[0].message.contains("its key declares contract v1"));
+        assert_eq!(schema_of(&conflicting), Some(("contract".to_string(), 1)));
     }
 
     /// A connector registered with `connect` serves links exactly like one

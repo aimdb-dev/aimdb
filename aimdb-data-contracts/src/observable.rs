@@ -55,7 +55,8 @@ where
 {
     /// Feed `T::signal()` into the record's signal gauge (last/min/max/mean),
     /// visible via `record.list` / `record.get` / stage profiling.
-    /// Also reports `T::NAME`/`T::VERSION` as the record's schema.
+    /// The record's key must declare `T` as its contract (`Key<T>` or
+    /// `#[record_key(contract = T)]`), or `build()` fails.
     ///
     /// Recording requires `aimdb-core`'s `observability` feature: without it
     /// [`RecordRegistrar::signal_gauge`] hands back an inert gauge and this
@@ -83,6 +84,7 @@ where
     where
         T::Signal: Into<f64>,
     {
+        self.require_contract(T::NAME, T::VERSION);
         let gauge = self.signal_gauge(T::SIGNAL, T::UNIT);
         self.tap(move |_ctx, consumer| async move {
             let mut reader = consumer.subscribe();
