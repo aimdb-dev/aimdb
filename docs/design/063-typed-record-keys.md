@@ -17,8 +17,9 @@ checked against the contract's migration chain at compile time.
 
 **The typed key is the only way to name a record.** The string-keyed
 functions are removed, not renamed: there is no `configure::<T>("name")`
-and no `_dyn` variant. A name learned at run time and a record without a
-contract each get a typed form (§5.2, §5.3). Breaking for every call site
+and no `_dyn` variant. There are two key types: `Key<T>` for a record with
+a data contract, and `Name<T>` for everything else, which is a record
+without a contract or a name learned at run time (§5.2). Breaking for every call site
 that names a record; §5.4 measures the conversion.
 
 Key bindings in `aimdb.lock`, tool views and a typed `aimdb-client` are
@@ -122,28 +123,33 @@ both are known:
 ```rust
 // aimdb-core::record_id
 
-/// A record key bound to the payload type this build speaks.
-pub trait TypedKey: RecordKey + Copy {
+/// Names a record and its payload type: what `producer` and `consumer`
+/// take.
+pub trait TypedName {
     type Contract: Send + Sync + Clone + Debug + 'static;
+    fn name(&self) -> &str;
+}
+
+/// A typed name that can be stored: what `configure`, `transform` and
+/// join inputs take.
+pub trait TypedKey: TypedName + RecordKey + Copy {
     /// Contract name and version, reported as the record's schema.
     /// `None` for a record without a data contract.
     const SCHEMA: Option<(&'static str, u32)>;
 }
 
-/// Names a record and its payload type: what `producer` and `consumer`
-/// take. Every `TypedKey` is one.
-pub trait TypedName {
-    type Contract: Send + Sync + Clone + Debug + 'static;
-    fn name(&self) -> &str;
+/// A record name with its payload type and no data contract (§5.2).
+/// `Name<'static, T>` is a `TypedKey`; any `Name<'a, T>` is a `TypedName`.
+pub struct Name<'a, T> { /* name: &'a str, link, PhantomData<fn() -> T> */ }
+
+impl<'a, T> Name<'a, T> {
+    pub const fn new(name: &'a str) -> Self;
+    pub const fn with_link(self, address: &'a str) -> Self;
 }
-impl<K: TypedKey> TypedName for K { /* … */ }
-
-/// A key for a record without a data contract (§5.3).
-pub struct PlainKey<T> { /* name, link, PhantomData<fn() -> T> */ }
-
-/// A borrowed name with its payload type, for a lookup by a name learned
-/// at run time (§5.2).
-pub struct Name<'a, T> { /* Cow<'a, str>, PhantomData<fn() -> T> */ }
+impl<T> Name<'static, T> {
+    /// For a name learned at run time; interns it.
+    pub fn interned(name: &str) -> Self;
+}
 
 // aimdb-data-contracts
 
@@ -157,18 +163,22 @@ pub struct Key<T> {
 impl<T: SchemaType> Key<T> {
     pub const fn new(name: &'static str) -> Self;
     pub const fn with_link(self, address: &'static str) -> Self;
-    /// For a name learned at run time; interns it (§5.2).
+    /// For a name learned at run time; interns it.
     pub fn interned(name: &str) -> Self;
 }
 
+impl<T: SchemaType + …> TypedName for Key<T> { type Contract = T; /* … */ }
 impl<T: SchemaType + …> TypedKey for Key<T> {
-    type Contract = T;
     const SCHEMA: Option<(&'static str, u32)> = Some((T::NAME, T::VERSION));
 }
 impl<T> RecordKey for Key<T> { /* as_str = name, link_address = link */ }
 ```
 
-`Key<T>` and `PlainKey<T>` are `Copy`, `const`-constructible and hold no
+`TypedKey` has `TypedName` as a supertrait, not a blanket impl over it,
+so that `Name` can be both: a `'static` one is a key, a shorter borrow is
+only a name.
+
+`Key<T>` and `Name<T>` are `Copy`, `const`-constructible and hold no
 allocation (R2); their `Clone`, `Eq`, `Hash` and `Borrow<str>` are written
 by hand so they do not require them of `T`. A contracts crate that
 declares keys depends on `aimdb-core`, as one that derives `RecordKey`
@@ -203,7 +213,7 @@ The derive implements `TypedKey` as well as `RecordKey`, and it requires
 the payload type: `#[record_key(contract = T)]` for a contract (the
 generated `SCHEMA` names `::aimdb_data_contracts::SchemaType`, so the
 crate depends on it under that name), or `#[record_key(payload = T)]` for
-a type without one (§5.3). A derive with neither is an error, because an
+a type without one (§5.2). A derive with neither is an error, because an
 enum that names no type cannot be used anywhere. `prefix` moves into the
 same attribute and the separate `#[key_prefix]` attribute is removed.
 
@@ -263,52 +273,70 @@ r.transform_join(|j| j.input(INDOOR_TEMP).input(OUTDOOR_TEMP).on_triggers(…));
   `TypeMismatch`.
 - A bare string is not a key. `configure("temp.indoor", …)` fails with
   "`&str` is not a typed record key" and a note that points at `Key<T>`
-  and `PlainKey<T>` (`#[diagnostic::on_unimplemented]` on `TypedKey`).
+  and `Name<T>` (`#[diagnostic::on_unimplemented]` on both traits).
 - The same signatures compile on Tokio, Embassy and WASM: nothing here
   depends on the runtime.
 
-### 5.2 Names learned at run time
+### 5.2 `Name<T>`: everything that is not a contract key
 
-Some code learns a record's name at run time: the WASM bindings get it
-from JavaScript, and generated configuration reads it from a file. It
-still knows the payload type, so it states both, through the same
-functions:
+Two kinds of record have no `Key<T>` in a contracts crate, and one type
+covers both.
+
+**A record without a contract.** A counter, a derived mean or an internal
+state record has a payload type and no `SchemaType`:
+
+```rust
+pub const MEAN: Name<f32> = Name::new("temp.mean");
+
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
+#[record_key(payload = u64, prefix = "count.")]
+pub enum Counter { #[key = "in"] In, #[key = "out"] Out }
+
+builder.configure(MEAN, |r| …);
+let rx = db.consumer(MEAN)?;                     // Consumer<f32>
+```
+
+Its record reports no schema, and the version declarations of §6 are not
+available on its links, because they require `T: MigrationChain`.
+
+**A name learned at run time.** The WASM bindings get record names from
+JavaScript, and generated configuration reads them from a file. That code
+still knows the payload type, so it states both:
 
 ```rust
 // Registration, once at startup. The name is interned (leaked), as
 // `configure` already does today for every key.
-builder.configure(Key::<Temperature>::interned(&name), |r| …);
+builder.configure(Key::<Temperature>::interned(&name), |r| …);   // with a contract
+builder.configure(Name::<u64>::interned(&name), |r| …);          // without
 
 // Lookup, possibly per call. Borrowed; nothing is interned.
 let tx = db.producer(Name::<Temperature>::new(&name))?;
 ```
 
-Two forms, because their costs differ. A key that is stored must be
-`'static`, so a run-time name is interned; that is right once per record
-and wrong once per call. The WASM bindings look a record up on every
-`set` from JavaScript, so lookups take a borrowed `Name`.
+Registration and lookup differ because their costs differ. A key that is
+stored must be `'static`, so a run-time name is interned; that is right
+once per record and wrong once per call, and the WASM bindings look a
+record up on every `set` from JavaScript. The lifetime enforces it:
+`configure(Name::new(&name), …)` with a borrowed `name` does not compile
+("borrowed data escapes … must outlive `'static`").
 
-A `Name` can claim the wrong type, because nothing ties a run-time string
-to a declaration. That stays a run-time `TypeMismatch`, and it is the only
-place one remains.
+A lookup by `Name` works for any record, with or without a contract,
+because a lookup needs only the name and the type. It can claim the wrong
+type, since nothing ties a run-time string to a declaration. That stays a
+run-time `TypeMismatch`, and it is the only place one remains. For the
+same reason `Name::<Humidity>::new("temp.indoor")` written out at a call
+site compiles; the protection of R1 is for keys that are declared once
+and used by name.
 
-### 5.3 Records without a contract
+### 5.3 What a contracts crate exports
 
-Not every record crosses a link. A counter, a derived mean, an internal
-state record has a payload type and no `SchemaType`:
+So a user learns two types and one rule:
 
-```rust
-pub const MEAN: PlainKey<f32> = PlainKey::new("temp.mean");
-
-#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
-#[record_key(payload = u64, prefix = "count.")]
-pub enum Counter { #[key = "in"] In, #[key = "out"] Out }
-```
-
-A plain key is typed like any other; its record reports no schema, and
-the version declarations of §6 are not available on its links, because
-they require `T: MigrationChain`. `PlainKey::interned` exists for the
-same reason as `Key::interned`.
+| The record | Its key |
+|---|---|
+| has a data contract | `Key<T>` const, or a derive with `contract = T` |
+| has none | `Name<T>` const, or a derive with `payload = T` |
+| is named at run time | `Key::interned` / `Name::interned` to register, `Name::new(&name)` to look up |
 
 ### 5.4 Converting existing code
 
@@ -324,11 +352,13 @@ string and a type at the call site become a key that carries both.
 | `handle.producer::<T>("k")` (`aimdb-sync`) | `handle.producer(K)` |
 
 In the spike a script rewrote 463 call sites in 118 Rust files to this
-form, building the key in place (`PlainKey::<T>::of("k")`). Every
-workspace crate then compiled without a hand edit, including the WASM
-adapter for `wasm32-unknown-unknown` and the Embassy demos for
+form, building the key in place (`Name::<T>::new("k")`, or a spike-only
+helper that wraps an existing enum key). Every workspace
+crate then compiled, including the WASM adapter for
+`wasm32-unknown-unknown` and the Embassy demos for
 `thumbv8m.main-none-eabihf`, and the workspace's test suites passed
-(§12). So nothing in the workspace needs a string path. The real
+(§12). Three sites needed a hand edit: benches that passed an owned
+`format!(…)` string to a lookup, and now borrow it. So nothing in the workspace needs a string path. The real
 conversion declares each key once as a `const` and uses it at every site;
 the script's in-place form is the fallback for tests that use a name
 once. The existing key enums already hold one payload type each, so each
@@ -506,7 +536,7 @@ removed in the release that adds the new ones.
 
 ### 9.1 Phases
 
-1. `TypedKey`, `TypedName`, `PlainKey`, `Name` in core; `Key<T>` in
+1. `TypedKey`, `TypedName` and `Name` in core; `Key<T>` in
    data-contracts; the derive attributes; typed `configure`, `producer`,
    `consumer`, `transform`, join `input`, and `aimdb-sync`. The string
    forms are removed in the same change, and the workspace, examples and
@@ -551,7 +581,13 @@ removed in the release that adds the new ones.
    type to learn, but core cannot see `SchemaType`, so it could not set
    the schema from `T`, and a contract record declared through it would
    silently report none. Rejected: `Key<T>` requires a contract,
-   `PlainKey<T>` says there is none.
+   `Name<T>` says there is none.
+10. **Three types: `Key<T>`, `PlainKey<T>` for records without a
+    contract, and a borrowed `Name<T>` for run-time lookups.** The spike
+    built this first. It works, but a plain key and a run-time name carry
+    the same information (a name and a type, no contract) and differ only
+    in lifetime. Rejected: one `Name<'a, T>`, where `'static` makes it a
+    key.
 
 ## 11. Open questions
 
@@ -565,7 +601,7 @@ removed in the release that adds the new ones.
 ## 12. Spike
 
 A throwaway branch implemented the typed keys (`TypedKey`, `TypedName`,
-`Key<T>`, `PlainKey<T>`, `Name<T>`), the derive attributes, the typed
+`Key<T>`, `Name<T>`), the derive attributes, the typed
 `configure`, `producer`, `consumer`, `transform`, join `input` and
 `aimdb-sync` handles, the link declarations as extension traits, and the
 062 envelope and admission. The string-keyed functions were made private
@@ -586,8 +622,10 @@ Markdown.
 | `transform` and join `input` infer the input type from the key | hold; a `map` closure needs no type annotation |
 | A bare string is not a key | holds; compile error on `configure("…")` and `producer("…")` |
 | No public string path is needed anywhere in the workspace | holds: 463 call sites in 118 files converted by a script; every crate compiles, including WASM and the Embassy demos; no test fails in the core, data-contracts, Tokio adapter, MQTT, `aimdb-sync`, WASM, persistence, WebSocket, KNX, Zenoh and UDS suites (§5.4) |
-| A name learned at run time: `Key::interned` to register, `Name` to look up | holds; a `Name` with the wrong type is a run-time error (§5.2) |
-| A record without a contract (`PlainKey`) reports no schema | holds |
+| One `Name<'a, T>` as both a key (`'static`) and a borrowed lookup | holds; needs `TypedName` as a supertrait of `TypedKey`, because a blanket impl would overlap. A first version with a separate `PlainKey<T>` also worked (§10.10) |
+| A name learned at run time: `interned` to register, a borrowed `Name` to look up | holds; a `Name` with the wrong type is a run-time error (§5.2) |
+| A borrowed `Name` cannot register a record | holds; borrow-check error, caught by `cargo check` and trybuild |
+| A record without a contract reports no schema | holds |
 | `producer` of an unconfigured key returns an error, not `TypeMismatch` | holds |
 | Schema set with no link (R3), and with a link: one record, `temperature` v2 | holds |
 | Two consts, one name, two contracts → `build()` error (§5.5) | holds |
@@ -605,6 +643,6 @@ Markdown.
 
 Findings that changed this document: where `TypedKey` and `Key<T>` live
 (§4.1); extension traits and a trait bound instead of a `const` assertion
-(§6); the turbofish (§5.1); `Name` for lookups, because a stored key is
-interned (§5.2); `PlainKey` for records without a contract (§5.3); the
-conversion measured (§5.4).
+(§6); the turbofish (§5.1); one `Name<T>` for records without a contract
+and for run-time names, borrowed for lookups because a stored key is
+interned (§5.2); the conversion measured (§5.4).
