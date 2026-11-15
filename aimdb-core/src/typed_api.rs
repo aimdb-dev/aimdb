@@ -1623,6 +1623,7 @@ where
             ));
             return;
         }
+        link.wire.record_carrier(&mut link.config);
 
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
@@ -1884,6 +1885,7 @@ where
             ));
             return;
         }
+        link.wire.record_carrier(&mut link.config);
 
         if let Some((name, version)) = link.schema.take() {
             self.schema(&name, version);

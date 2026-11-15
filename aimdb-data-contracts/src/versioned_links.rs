@@ -4,7 +4,7 @@ use crate::{
     admit_frame, ContractShape, LinkCodec, LinkCodecBuilderExt, LinkContract, MigrationChain,
     PayloadDecoder, PayloadEncoder, Reaches, SchemaType, VersionOf,
 };
-use aimdb_core::connector::{SerializeError, WIRE_FORMAT_KEY};
+use aimdb_core::connector::{SerializeError, WIRE_FORMAT_KEY, WIRE_VERSION_KEY};
 use aimdb_core::envelope::{ContractRef, HeaderWriter};
 use aimdb_core::link_wire::{WireCodecInfo, WireOptions};
 use aimdb_core::{
@@ -116,6 +116,14 @@ where
         .with_admitting_deserializer(&versions, move |_, _, bytes| admit_frame(bytes, &policy))
         .with_schema(T::NAME, T::VERSION)
         .with_wire_codec_info(Some(info));
+    // A bound link reads one version; tell the connector when it is not the
+    // current one.
+    let link = match binding {
+        Some(binding) if binding.version() != T::VERSION => {
+            link.with_config(WIRE_VERSION_KEY, &format!("{}", binding.version()))
+        }
+        _ => link,
+    };
     Ok(record_format(link, info.codec))
 }
 
@@ -265,6 +273,11 @@ where
     }
     .with_schema(T::NAME, T::VERSION)
     .with_wire_codec_info(Some(info));
+    let link = if version != T::VERSION {
+        link.with_config(WIRE_VERSION_KEY, &format!("{version}"))
+    } else {
+        link
+    };
     Ok(match info.codec {
         aimdb_core::envelope::PayloadCodec::Json => link.with_config(WIRE_FORMAT_KEY, "json"),
         aimdb_core::envelope::PayloadCodec::Postcard => {

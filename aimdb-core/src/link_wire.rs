@@ -34,6 +34,8 @@ impl Default for WireOptions {
 /// Link config key selecting the carrier (`"inline"` or `"bound"`).
 ///
 /// Core consumes it at registration: it never reaches a connector's config.
+/// An inline carrier is passed on as
+/// [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY) instead.
 pub const ENVELOPE_KEY: &str = "envelope";
 
 impl WireOptions {
@@ -50,8 +52,25 @@ impl WireOptions {
                 _ => return Err("envelope must be 'inline' or 'bound'".into()),
             };
         }
-        config.retain(|(key, _)| key != ENVELOPE_KEY);
+        // The reserved framing keys are recorded at registration only.
+        config.retain(|(key, _)| {
+            key != ENVELOPE_KEY
+                && key != crate::connector::WIRE_ENVELOPE_KEY
+                && key != crate::connector::WIRE_VERSION_KEY
+        });
         Ok(())
+    }
+
+    /// Records an inline carrier under
+    /// [`WIRE_ENVELOPE_KEY`](crate::connector::WIRE_ENVELOPE_KEY), so the
+    /// connector sees the framing the finalized link puts on the wire.
+    pub(crate) fn record_carrier(
+        &self,
+        config: &mut alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
+    ) {
+        if self.carrier == EnvelopeCarrier::Inline {
+            config.push((crate::connector::WIRE_ENVELOPE_KEY.into(), "inline".into()));
+        }
     }
 }
 

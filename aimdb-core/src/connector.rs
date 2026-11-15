@@ -467,6 +467,18 @@ impl fmt::Display for ConnectorUrl {
 /// Keys prefixed `aimdb.` are reserved; connectors must not use them.
 pub const WIRE_FORMAT_KEY: &str = "aimdb.wire_format";
 
+/// Link config key recorded as `"inline"` when the link frames every payload
+/// in an inline envelope header. Absent on a bare (bound) link.
+///
+/// Core records it at registration from the link's carrier, so a connector
+/// whose peers expect bare payloads can refuse the link at build time.
+pub const WIRE_ENVELOPE_KEY: &str = "aimdb.envelope";
+
+/// Link config key naming the contract version on the wire, recorded only
+/// when it differs from the record type's current version (`sends_as`, or a
+/// `with_contract` binding to an older version).
+pub const WIRE_VERSION_KEY: &str = "aimdb.wire_version";
+
 /// Configuration for an outbound connector link
 ///
 /// Stores the parsed URL, configuration, and the route factory until the
