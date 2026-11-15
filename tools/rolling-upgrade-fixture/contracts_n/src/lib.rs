@@ -25,8 +25,11 @@ aimdb_data_contracts::catalog! { contracts: [TemperatureV1], helpers: [], }
 migration_chain! { type Current = TemperatureV1; steps {} }
 
 /// Firmware's actual link declaration, also compiled for Cortex-M.
-pub fn publish<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
-    r: &mut aimdb_core::RecordRegistrar<'_, Temperature>,
+pub fn publish<
+    C: aimdb_data_contracts::LinkCodec<Temperature> + 'static,
+    S: aimdb_core::SchemaState,
+>(
+    r: &mut aimdb_core::RecordRegistrar<'_, Temperature, S>,
     codec: C,
 ) {
     use aimdb_data_contracts::{EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt};
@@ -36,8 +39,11 @@ pub fn publish<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
         .finish();
 }
 
-pub fn receive<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
-    r: &mut aimdb_core::RecordRegistrar<'_, Temperature>,
+pub fn receive<
+    C: aimdb_data_contracts::LinkCodec<Temperature> + 'static,
+    S: aimdb_core::SchemaState,
+>(
+    r: &mut aimdb_core::RecordRegistrar<'_, Temperature, S>,
     codec: C,
 ) {
     use aimdb_data_contracts::{EnvelopeCarrier, EnvelopeLinkExt, LinkCodecBuilderExt};

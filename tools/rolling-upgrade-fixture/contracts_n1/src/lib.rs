@@ -62,8 +62,11 @@ impl MigrationStep for V1ToV2 {
 aimdb_data_contracts::catalog! { contracts: [TemperatureV1, TemperatureV2, Humidity], helpers: [], }
 migration_chain! { type Current = TemperatureV2; steps { V1ToV2: TemperatureV1 => TemperatureV2 } }
 
-pub fn receive<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
-    r: &mut aimdb_core::RecordRegistrar<'_, Temperature>,
+pub fn receive<
+    C: aimdb_data_contracts::LinkCodec<Temperature> + 'static,
+    S: aimdb_core::SchemaState,
+>(
+    r: &mut aimdb_core::RecordRegistrar<'_, Temperature, S>,
     codec: C,
 ) {
     use aimdb_data_contracts::{
@@ -76,8 +79,11 @@ pub fn receive<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
         .finish();
 }
 
-pub fn send_to_firmware<C: aimdb_data_contracts::LinkCodec<Temperature> + 'static>(
-    r: &mut aimdb_core::RecordRegistrar<'_, Temperature>,
+pub fn send_to_firmware<
+    C: aimdb_data_contracts::LinkCodec<Temperature> + 'static,
+    S: aimdb_core::SchemaState,
+>(
+    r: &mut aimdb_core::RecordRegistrar<'_, Temperature, S>,
     codec: C,
 ) {
     use aimdb_data_contracts::{
