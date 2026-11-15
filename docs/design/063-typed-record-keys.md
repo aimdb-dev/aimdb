@@ -7,17 +7,22 @@ declaration compiles for MCU, edge and cloud. A hub states which older
 contract versions it still reads, and the compiler checks that statement.
 The design is done when the rolling-upgrade test in §7 passes.
 
-**Scope:** A record is declared as a key bound to its data contract
+**Scope:** A record is declared as a key bound to its payload type
 (`Key<T>`, or a `RecordKey` derive with `contract = T`). `configure`,
-`producer`, `consumer` and links take that declaration and infer the
-payload type from it, so a key used with the wrong type does not compile.
-Links declare which contract versions they accept from or send to peers,
-and that declaration is checked against the contract's migration chain at
-compile time. Breaking for the builder's string-keyed `configure`,
-`producer` and `consumer`, which are renamed `*_dyn` and kept for tools.
+`producer`, `consumer`, `transform`, join inputs, links and `aimdb-sync`
+take that declaration and infer the payload type from it, so a key used
+with the wrong type does not compile. Links declare which contract
+versions they accept from or send to peers, and that declaration is
+checked against the contract's migration chain at compile time.
 
-Typed transforms, joins and `aimdb-sync`, key bindings in `aimdb.lock`,
-and tool views are deferred (§8).
+**The typed key is the only way to name a record.** The string-keyed
+functions are removed, not renamed: there is no `configure::<T>("name")`
+and no `_dyn` variant. A name learned at run time and a record without a
+contract each get a typed form (§5.2, §5.3). Breaking for every call site
+that names a record; §5.4 measures the conversion.
+
+Key bindings in `aimdb.lock`, tool views and a typed `aimdb-client` are
+deferred (§8).
 
 **Related:** 015 (record ID architecture), 016 (`RecordKey` trait), 039
 (`no_std` migrations), 041 (data contracts), 055 (wildcard inbound
@@ -86,17 +91,19 @@ target.
 
 | # | Requirement |
 |---|---|
-| R1 | Using a key with the wrong payload type is a compile error in `configure`, `producer`, `consumer` and links. |
+| R1 | Using a declared key with the wrong payload type is a compile error in `configure`, `producer`, `consumer`, `transform`, join inputs, links and `aimdb-sync`. |
 | R2 | Declarations are `const`, `no_std` and allocation-free, so the same contracts crate serves MCU, edge and cloud. |
 | R3 | Every record declared with a typed key reports its contract name and version to the graph and `record.list`, link or no link. |
 | R4 | Several keys may share one contract (a second sensor), each its own record. |
 | R5 | A link that accepts or sends an older version declares it; the declaration fails to compile if the chain does not reach it. |
 | R6 | Rejections at ingress name key, link, received contract and version, and accepted range, and are counted per route (062 §7). |
-| R7 | Dynamic access (CLI, MCP, `aimdb-client`, wildcard links) keeps working through an explicit, separately named string path. |
+| R7 | One path: no public function takes a record name without its payload type. Names learned at run time (the WASM bindings, generated configuration) and records without a contract use the same functions. |
 
 **Non-goals:**
 
-- Typing remote access. `aimdb-client` stays dynamic (JSON).
+- Typing remote access. `aimdb-client`, the CLI and MCP address records
+  by name over AimX and exchange JSON; that path is type-erased inside
+  the instance and does not use the functions of this design.
 - Version negotiation between peers. Links state what they accept and send;
   nothing is negotiated.
 - Per-variant contracts in one key enum (§10.6).
@@ -115,16 +122,32 @@ both are known:
 ```rust
 // aimdb-core::record_id
 
-/// A record key bound to the contract type this build speaks.
+/// A record key bound to the payload type this build speaks.
 pub trait TypedKey: RecordKey + Copy {
     type Contract: Send + Sync + Clone + Debug + 'static;
     /// Contract name and version, reported as the record's schema.
-    const SCHEMA: (&'static str, u32);
+    /// `None` for a record without a data contract.
+    const SCHEMA: Option<(&'static str, u32)>;
 }
+
+/// Names a record and its payload type: what `producer` and `consumer`
+/// take. Every `TypedKey` is one.
+pub trait TypedName {
+    type Contract: Send + Sync + Clone + Debug + 'static;
+    fn name(&self) -> &str;
+}
+impl<K: TypedKey> TypedName for K { /* … */ }
+
+/// A key for a record without a data contract (§5.3).
+pub struct PlainKey<T> { /* name, link, PhantomData<fn() -> T> */ }
+
+/// A borrowed name with its payload type, for a lookup by a name learned
+/// at run time (§5.2).
+pub struct Name<'a, T> { /* Cow<'a, str>, PhantomData<fn() -> T> */ }
 
 // aimdb-data-contracts
 
-/// The single-record form: a const.
+/// A key for a record with a data contract.
 pub struct Key<T> {
     name: &'static str,
     link: Option<&'static str>,
@@ -134,20 +157,27 @@ pub struct Key<T> {
 impl<T: SchemaType> Key<T> {
     pub const fn new(name: &'static str) -> Self;
     pub const fn with_link(self, address: &'static str) -> Self;
+    /// For a name learned at run time; interns it (§5.2).
+    pub fn interned(name: &str) -> Self;
 }
 
 impl<T: SchemaType + …> TypedKey for Key<T> {
     type Contract = T;
-    const SCHEMA: (&'static str, u32) = (T::NAME, T::VERSION);
+    const SCHEMA: Option<(&'static str, u32)> = Some((T::NAME, T::VERSION));
 }
 impl<T> RecordKey for Key<T> { /* as_str = name, link_address = link */ }
 ```
 
-`Key<T>` is `Copy`, `const`-constructible and holds no allocation (R2);
-its `Clone`, `Eq`, `Hash` and `Borrow<str>` are written by hand so they do
-not require them of `T`. It implements `RecordKey`, so everything that
-takes an untyped key today accepts it. A contracts crate that declares
-keys depends on `aimdb-core`, as one that derives `RecordKey` already does.
+`Key<T>` and `PlainKey<T>` are `Copy`, `const`-constructible and hold no
+allocation (R2); their `Clone`, `Eq`, `Hash` and `Borrow<str>` are written
+by hand so they do not require them of `T`. A contracts crate that
+declares keys depends on `aimdb-core`, as one that derives `RecordKey`
+already does.
+
+`RecordKey` stays as the untyped supertrait that core stores and hashes.
+It is no longer accepted by any public function on its own, and the
+blanket `impl RecordKey for &'static str` is removed with the string
+path.
 
 ### 4.2 In a contracts crate
 
@@ -169,12 +199,13 @@ pub enum StationTemp {
 }
 ```
 
-`#[record_key(contract = …)]` makes the derive implement `TypedKey` as
-well as `RecordKey`; the generated `SCHEMA` names
-`::aimdb_data_contracts::SchemaType`, so the crate depends on it under
-that name. The existing `#[key_prefix]` attribute stays as an
-alias for `prefix`. A derive without `contract` keeps implementing only
-`RecordKey` and works with the `_dyn` path (§5.2).
+The derive implements `TypedKey` as well as `RecordKey`, and it requires
+the payload type: `#[record_key(contract = T)]` for a contract (the
+generated `SCHEMA` names `::aimdb_data_contracts::SchemaType`, so the
+crate depends on it under that name), or `#[record_key(payload = T)]` for
+a type without one (§5.3). A derive with neither is an error, because an
+enum that names no type cannot be used anywhere. `prefix` moves into the
+same attribute and the separate `#[key_prefix]` attribute is removed.
 
 The type parameter is the *current* version for this build. When the crate
 moves to v3, `Temperature` points at `TemperatureV3`. Every call site that
@@ -202,46 +233,109 @@ not compile even when the type is right: the error says `Temperature` does
 not implement `TypedKey`. Call sites leave the turbofish out.
 
 ```rust
+// AimDbBuilder, AimDb
 pub fn configure<K: TypedKey>(&mut self, key: K,
     f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract>)) -> &mut Self;
-pub fn producer<K: TypedKey>(&self, key: K) -> DbResult<Producer<K::Contract>>;
-pub fn consumer<K: TypedKey>(&self, key: K) -> DbResult<Consumer<K::Contract>>;
+pub fn producer<N: TypedName>(&self, key: N) -> DbResult<Producer<N::Contract>>;
+pub fn consumer<N: TypedName>(&self, key: N) -> DbResult<Consumer<N::Contract>>;
+
+// RecordRegistrar<T>, JoinBuilder<T>
+pub fn transform<K: TypedKey, F>(&mut self, input: K, build: F) -> &mut Self
+    where F: FnOnce(TransformBuilder<K::Contract, T>) -> TransformPipeline<K::Contract, T>;
+pub fn input<K: TypedKey>(self, key: K) -> Self;
+
+// aimdb-sync: AimDbHandle
+pub fn producer<N: TypedName>(&self, key: N) -> SyncResult<SyncProducer<N::Contract>>;
+pub fn consumer<N: TypedName>(&self, key: N) -> SyncResult<SyncConsumer<N::Contract>>;
 ```
 
-- `configure` sets the record's schema from `K::Contract` unconditionally
-  (R3). `RecordRegistrar::schema()` remains for `_dyn` records only.
-- `producer`/`consumer` can still fail, with `MissingConfiguration` (the
-  key was never configured), but never with `TypeMismatch`.
+```rust
+// The input type comes from the key: `t` is &Temperature.
+r.transform(INDOOR_TEMP, |b| b.map(|t| Some(t.celsius * 1.8 + 32.0)));
+r.transform_join(|j| j.input(INDOOR_TEMP).input(OUTDOOR_TEMP).on_triggers(…));
+```
+
+- `configure` sets the record's schema from `K::SCHEMA` (R3).
+  `RecordRegistrar::schema()` and the link builders' `with_schema` are
+  removed from the public API: nothing else may set a schema.
+- `producer`/`consumer` on a declared key can still fail, with
+  `MissingConfiguration` (the key was never configured), but never with
+  `TypeMismatch`.
+- A bare string is not a key. `configure("temp.indoor", …)` fails with
+  "`&str` is not a typed record key" and a note that points at `Key<T>`
+  and `PlainKey<T>` (`#[diagnostic::on_unimplemented]` on `TypedKey`).
 - The same signatures compile on Tokio, Embassy and WASM: nothing here
   depends on the runtime.
 
-### 5.2 The dynamic path
+### 5.2 Names learned at run time
+
+Some code learns a record's name at run time: the WASM bindings get it
+from JavaScript, and generated configuration reads it from a file. It
+still knows the payload type, so it states both, through the same
+functions:
 
 ```rust
-builder.configure_dyn::<Temperature>("temp.lab", |r| …);
-db.producer_dyn::<Temperature>("temp.lab")?;
+// Registration, once at startup. The name is interned (leaked), as
+// `configure` already does today for every key.
+builder.configure(Key::<Temperature>::interned(&name), |r| …);
+
+// Lookup, possibly per call. Borrowed; nothing is interned.
+let tx = db.producer(Name::<Temperature>::new(&name))?;
 ```
 
-These are today's functions, renamed. They exist for code that learns keys
-at run time: tools, wildcard inbound links (055), generated configuration.
-They keep today's checks: a type conflict fails `build()` and a mismatch
-returns `TypeMismatch`.
+Two forms, because their costs differ. A key that is stored must be
+`'static`, so a run-time name is interned; that is right once per record
+and wrong once per call. The WASM bindings look a record up on every
+`set` from JavaScript, so lookups take a borrowed `Name`.
 
-The rename is a breaking change with no alias: the typed functions take
-the plain names, so the old signatures cannot stay under them. The fix at
-a call site is mechanical: append `_dyn`, or switch to a typed key. In
-the spike, one `sed` over `.configure::<`, `.producer::<` and
-`.consumer::<` changed 388 lines in 117 Rust files. Every workspace
-crate then compiled without another edit, including the WASM adapter for
-`wasm32-unknown-unknown` and the Embassy demos for
-`thumbv8m.main-none-eabihf`, and the core, data-contracts, Tokio adapter,
-MQTT, `aimdb-sync` and embedded-fixture suites passed. Every existing call site has a
-turbofish, so the rule matches all of them. Files that call `aimdb-sync`'s
-own `producer`/`consumer` were skipped, because that API is not renamed
-(§8). Left for the same rule: 111 sites in 26 Markdown files outside
-`docs/design`.
+A `Name` can claim the wrong type, because nothing ties a run-time string
+to a declaration. That stays a run-time `TypeMismatch`, and it is the only
+place one remains.
 
-### 5.3 Two declarations of one name
+### 5.3 Records without a contract
+
+Not every record crosses a link. A counter, a derived mean, an internal
+state record has a payload type and no `SchemaType`:
+
+```rust
+pub const MEAN: PlainKey<f32> = PlainKey::new("temp.mean");
+
+#[derive(RecordKey, Clone, Copy, PartialEq, Eq, Debug)]
+#[record_key(payload = u64, prefix = "count.")]
+pub enum Counter { #[key = "in"] In, #[key = "out"] Out }
+```
+
+A plain key is typed like any other; its record reports no schema, and
+the version declarations of §6 are not available on its links, because
+they require `T: MigrationChain`. `PlainKey::interned` exists for the
+same reason as `Key::interned`.
+
+### 5.4 Converting existing code
+
+Every call site that names a record changes. The change is mechanical: a
+string and a type at the call site become a key that carries both.
+
+| Today | With this design |
+|---|---|
+| `b.configure::<T>("k", f)` | `b.configure(K, f)` |
+| `db.producer::<T>("k")` | `db.producer(K)` |
+| `r.transform::<I, _>("k", f)` | `r.transform(K, f)` |
+| `j.input::<I>("k")` | `j.input(K)` |
+| `handle.producer::<T>("k")` (`aimdb-sync`) | `handle.producer(K)` |
+
+In the spike a script rewrote 463 call sites in 118 Rust files to this
+form, building the key in place (`PlainKey::<T>::of("k")`). Every
+workspace crate then compiled without a hand edit, including the WASM
+adapter for `wasm32-unknown-unknown` and the Embassy demos for
+`thumbv8m.main-none-eabihf`, and the workspace's test suites passed
+(§12). So nothing in the workspace needs a string path. The real
+conversion declares each key once as a `const` and uses it at every site;
+the script's in-place form is the fallback for tests that use a name
+once. The existing key enums already hold one payload type each, so each
+gains one attribute. Left to convert by hand: 111 sites in 26 Markdown
+files outside `docs/design`.
+
+### 5.5 Two declarations of one name
 
 Two consts can declare `"temp.indoor"` with different contracts. That
 cannot be a compile error across crates. It stays a `build()` error
@@ -382,7 +476,7 @@ target. Both fixture crates run their lock test (062 §7.1).
 | V8 | Same as the main case with `Cdr` | upgraded |
 | V9 | MCU sends bare Postcard, no header; hub link `with_contract::<TemperatureV1>()` | upgraded: a deployed binary device is read without new firmware |
 | V11 | MCU sends the inline header; hub link is bound, Postcard | rejected: `decode_error` (062 §6, whole-payload rule) |
-| V10 | MCU sends bare JSON with `schema_version: 1`, no header, no binding | upgraded through the legacy probe; `legacy_probe` = 1 |
+| V10 | MCU sends bare JSON whose v1 struct has a `schema_version` field; hub link `with_contract::<TemperatureV1>()` | upgraded: the field is ordinary data of v1, and nothing probes it (062 §9) |
 
 ## 8. Deferred
 
@@ -390,27 +484,33 @@ None of these is needed for §7. Each is additive on top of `TypedKey`.
 
 | Item | Note |
 |---|---|
-| Typed `transform` and `JoinBuilder::input` | They keep the explicit input type and string key, checked at `build()` as today. |
-| Typed `aimdb-sync` `producer`/`consumer` | Keep `impl AsRef<str>` and the run-time check. |
 | Key bindings in `aimdb.lock` (`catalog! { keys: … }`) | The lock keeps checking shapes. A key that changes contract is caught by review, and by `contract_mismatch` at ingress. |
 | Tool views: accepted range, received versions and last rejection in `record.list`, CLI and MCP | The counters exist (062 §7); the views come later. |
 | Typed `aimdb-client` (`client.get(INDOOR_TEMP)`) | |
-| Converting all examples and the README to typed keys | Only the examples the acceptance test touches are converted. The rest get the mechanical `_dyn` rename. |
 
 ## 9. What breaks
 
+Nothing here has a deprecation period or an alias. The old forms are
+removed in the release that adds the new ones.
+
 | Item | Change |
 |---|---|
-| `AimDbBuilder::configure`, `AimDb::producer`/`consumer` | take `K: TypedKey`; string forms renamed `configure_dyn`, `producer_dyn`, `consumer_dyn` |
-| `#[derive(RecordKey)]` | new `#[record_key(contract = …, prefix = …)]` (additive) |
-| Inbound/outbound link builders | `accepts_from`, `sends_as` (additive) |
-| Graph, `record.list` | schema always set for typed records (additive) |
+| `AimDbBuilder::configure`, `AimDb::producer`/`consumer` | take a typed key; the string forms are removed |
+| `RecordRegistrar::transform`, `JoinBuilder::input` | take a typed key; the input type parameter is removed |
+| `aimdb-sync` `producer`/`consumer` | take a typed key |
+| `#[derive(RecordKey)]` | requires `#[record_key(contract = T)]` or `(payload = T)`; `#[key_prefix]` removed in favour of `prefix` |
+| `impl RecordKey for &'static str` | removed |
+| `RecordRegistrar::schema()`, link builders' `with_schema` | removed from the public API; the key sets the schema |
+| Inbound/outbound link builders | `accepts_from`, `sends_as` (new) |
+| Graph, `record.list` | schema always set for records with a contract |
 
 ### 9.1 Phases
 
-1. `TypedKey`, `Key<T>`, the derive attribute; typed `configure`,
-   `producer`, `consumer`; string forms renamed to `_dyn`; schema set from
-   the key.
+1. `TypedKey`, `TypedName`, `PlainKey`, `Name` in core; `Key<T>` in
+   data-contracts; the derive attributes; typed `configure`, `producer`,
+   `consumer`, `transform`, join `input`, and `aimdb-sync`. The string
+   forms are removed in the same change, and the workspace, examples and
+   README are converted with it.
 2. `accepts_from`/`sends_as` on the link builders. Needs the
    `MigrationChain` of 062 §7.2 and its admission procedure.
 3. The rolling-upgrade fixture (§7), gated in CI: the main case first,
@@ -440,6 +540,18 @@ None of these is needed for §7. Each is additive on top of `TypedKey`.
 7. **Typed entry points under new names** (`configure_key`), keeping the
    string forms where they are. Not breaking, but the checked path would
    be the longer name and the unchecked one the default. Rejected.
+8. **Keep the string forms as `configure_dyn`, `producer_dyn`,
+   `consumer_dyn`** for tools and run-time names. This was the first
+   draft. The spike showed that nothing needs them: tools reach records
+   over AimX, not through these functions, and the one real run-time
+   caller (the WASM bindings) knows the payload type and can say so in a
+   `Name`. Keeping them would leave a second, unchecked way to do
+   everything, and tests and examples would stay on it. Rejected.
+9. **One `Key<T>` in core for records with and without a contract.** One
+   type to learn, but core cannot see `SchemaType`, so it could not set
+   the schema from `T`, and a contract record declared through it would
+   silently report none. Rejected: `Key<T>` requires a contract,
+   `PlainKey<T>` says there is none.
 
 ## 11. Open questions
 
@@ -452,23 +564,33 @@ None of these is needed for §7. Each is additive on top of `TypedKey`.
 
 ## 12. Spike
 
-A throwaway branch implemented `TypedKey`, `Key<T>`, the derive attribute,
-the typed builder functions with the `_dyn` rename across the workspace,
-the link declarations as extension traits, and the 062 envelope and
-admission. It ran the main case of §7 and some variants. Fixture contracts
-were two modules of one crate, not two crates, and the chain was written by
-hand as `migration_chain!` would generate it.
+A throwaway branch implemented the typed keys (`TypedKey`, `TypedName`,
+`Key<T>`, `PlainKey<T>`, `Name<T>`), the derive attributes, the typed
+`configure`, `producer`, `consumer`, `transform`, join `input` and
+`aimdb-sync` handles, the link declarations as extension traits, and the
+062 envelope and admission. The string-keyed functions were made private
+to their crates and every call site in the workspace was converted
+(§5.4). It ran the main case of §7 and its variants. Fixture contracts
+were two modules of one crate, not two crates, and the chain was written
+by hand as `migration_chain!` would generate it. Not done in the spike:
+removing `impl RecordKey for &'static str`, `RecordRegistrar::schema()`
+and `#[key_prefix]`, the derive error for a missing payload type, and the
+Markdown.
 
 | Claim | Result |
 |---|---|
 | `TypedKey` in core with `Contract: SchemaType` | does not compile: core does not depend on `aimdb-data-contracts`. `SCHEMA` const in core, `Key<T>` in data-contracts (§4.1) |
 | `Key<T>` const, `Copy`, no allocation | holds; 32 bytes on a 64-bit host |
-| `#[record_key(contract = T, prefix = …)]` | holds; generates `TypedKey` |
+| `#[record_key(contract = T, prefix = …)]` and `(payload = T, …)` | hold; both generate `TypedKey` |
 | `configure`/`producer`/`consumer` infer `T` from the key; wrong type is a compile error (V6) | holds |
+| `transform` and join `input` infer the input type from the key | hold; a `map` closure needs no type annotation |
+| A bare string is not a key | holds; compile error on `configure("…")` and `producer("…")` |
+| No public string path is needed anywhere in the workspace | holds: 463 call sites in 118 files converted by a script; every crate compiles, including WASM and the Embassy demos; no test fails in the core, data-contracts, Tokio adapter, MQTT, `aimdb-sync`, WASM, persistence, WebSocket, KNX, Zenoh and UDS suites (§5.4) |
+| A name learned at run time: `Key::interned` to register, `Name` to look up | holds; a `Name` with the wrong type is a run-time error (§5.2) |
+| A record without a contract (`PlainKey`) reports no schema | holds |
 | `producer` of an unconfigured key returns an error, not `TypeMismatch` | holds |
 | Schema set with no link (R3), and with a link: one record, `temperature` v2 | holds |
-| Two consts, one name, two contracts → `build()` error (§5.3) | holds |
-| `_dyn` rename is mechanical | holds for every workspace crate (§5.2) |
+| Two consts, one name, two contracts → `build()` error (§5.5) | holds |
 | `accepts_from` as an inherent method on the link builders | not possible from data-contracts; extension traits (§6) |
 | Inline `const` assertion makes an uncovered version a compile error (V2) | only in `cargo build`, only when reachable; `cargo check` and `cargo clippy` pass, and trybuild reports the case as compiling. Replaced by a `Reaches<V>` bound, which trybuild catches (§6) |
 | Main case: v1 MCU (`mountain-mqtt`, Postcard, inline) read by v2 hub (`rumqttc`) | holds; `upgraded{from: 1}` counted. The fake broker does not route, so the MCU's frame was captured and replayed to the hub |
@@ -477,10 +599,12 @@ hand as `migration_chain!` would generate it.
 | V7 `sends_as::<1>()` | holds over MQTT |
 | V8 CDR, V9 bare Postcard with a static binding | hold over MQTT into the hub |
 | A static binding to another contract | compile error through `VersionOf` (trybuild) |
-| V10 legacy JSON probe | not tested |
+| V10 bare JSON with `schema_version`, bound to v1 | upgraded, in the admission function, not over MQTT |
+| V11 inline frame on a bound Postcard link | admitted with a wrong value; the whole-payload rule that rejects it is not implemented (062 §6) |
 | Same declarations on `thumbv7em-none-eabihf` | the fixture contracts, keys and admission build |
 
 Findings that changed this document: where `TypedKey` and `Key<T>` live
 (§4.1); extension traits and a trait bound instead of a `const` assertion
-(§6); the turbofish (§5.1); the rename measured (§5.2).
-
+(§6); the turbofish (§5.1); `Name` for lookups, because a stored key is
+interned (§5.2); `PlainKey` for records without a contract (§5.3); the
+conversion measured (§5.4).

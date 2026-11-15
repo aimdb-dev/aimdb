@@ -445,25 +445,39 @@ the envelope without changing the header format.
 | Origin instance and build revision extensions | Tags stay reserved. |
 | Application-defined extensions | Tags 64 and above stay unassigned. |
 
-## 9. What breaks, and the path through it
+## 9. What breaks
+
+Nothing here has a deprecation period, an alias or a fallback. The old
+forms are removed in the release that adds the new ones.
 
 | Item | Change |
 |---|---|
-| `migration_chain!` | `version_field` removed (accepted and ignored with a deprecation warning for one minor) |
-| `MigrationChain` | `migrate_from_bytes`/`migrate_to_version` replaced by `migrate_from`/`migrate_into` |
-| Contract structs | `schema_version` field no longer needed; keeping it is harmless but it is no longer read |
+| `migration_chain!` | `version_field` removed; using it is a compile error that names this section |
+| `MigrationChain` | `migrate_from_bytes`/`migrate_to_version` replaced by `migrate_from`/`migrate_into`; `shape_of` added |
+| The JSON version probe (`__VersionProbe`, 039) | removed |
+| Contract structs | `schema_version` removed from every contract and example in the workspace. A field of that name in a user's struct is ordinary data |
 | Inbound deserializer error | `String` becomes an error with a countable reason (§7) |
-| Link builders | `envelope = "inline"` and `with_contract` (additive) |
+| Link builders | `envelope = "inline"` and `with_contract` (new) |
 
 Nothing changes on the wire for a link that does not opt in.
 
 **Deployed fleets.** Devices in the field send bare JSON with an in-band
-`schema_version` and no envelope. They stay readable: a statically bound
-link with no `with_contract`, on a record whose chain was generated with
-the legacy feature, falls back to the 039 probe once per value. The
-fallback lives behind `aimdb-data-contracts/legacy-version-probe` for one
-major release, and its use is counted (`legacy_probe`), so an operator can
-see when the last old device is gone.
+`schema_version` and no envelope. There is no probe for them. They are
+read like any other deployed device, through a static binding (§6.1):
+
+```rust
+r.link_from("mqtt://sensors/old/temperature")
+    .with_link_codec(Json)
+    .with_contract::<TemperatureV1>();
+```
+
+The hub's `TemperatureV1` does not need the `schema_version` field: serde
+ignores a JSON field the struct does not declare, and the spike read
+`{"schema_version":1,"temp":21.5}` this way. What is lost is one case:
+bare JSON senders of *several* versions on one topic. Nothing tells them
+apart without the probe. Such a fleet gives each version its own topic,
+or moves its new firmware to the inline header and binds the old topic
+to the old version.
 
 ### 9.1 Phases
 
@@ -474,12 +488,13 @@ see when the last old device is gone.
    fails on a `name_id` collision.
 3. **Admission.** `admit` and its counters; inbound route stats in core
    and a countable ingest error (§7); new `MigrationChain` with
-   `PayloadDecoder`/`Encoder`; legacy probe behind its feature.
+   `PayloadDecoder`/`Encoder`; the JSON probe and `version_field` are
+   removed in the same change.
 4. **Carriers.** `with_contract` static binding; inline header on MQTT,
    both backends. Both run inside the link's codec closures; no connector
    change (§6).
-5. **Proof.** The rolling-upgrade test of 063 §7 passes. Remove
-   `schema_version` fields from the examples it touches.
+5. **Proof.** The rolling-upgrade test of 063 §7 passes. `schema_version`
+   fields are removed from every contract and example in the workspace.
 
 ## 10. Tests
 
@@ -503,8 +518,8 @@ see when the last old device is gone.
   at zero with headers on; `b0_alloc_migration` shows one decode per value.
 - `thumbv7em-none-eabihf` check lane builds `envelope` and `admit`; code
   size of the envelope module recorded in the PR.
-- Legacy: a bare JSON v1 payload with `schema_version` is admitted through
-  the probe and counted.
+- Deployed JSON: a bare JSON v1 payload that still carries
+  `schema_version` is upgraded through a static binding, with no probe.
 - Foreign: a `ros2://` publication and a KNX telegram are unchanged byte for
   byte.
 
@@ -552,8 +567,8 @@ declarations in a separate crate, and the rolling upgrade of 063 §7 over
 MQTT. A second pass reviewed the code against this document, which found
 the last four findings below. It did not implement the `migration_chain!`
 changes (the chain was written by hand, as the macro would generate it),
-the whole-payload rule of §6, inbound route stats in core, the legacy
-probe, the alloc benches, cargo-fuzz or the AimX, MQTT 5 and Zenoh
+the whole-payload rule of §6, inbound route stats in core, the alloc
+benches, cargo-fuzz or the AimX, MQTT 5 and Zenoh
 carriers.
 
 | Claim | Result |
@@ -572,6 +587,7 @@ carriers.
 | Over MQTT into the hub: `too_new`, `too_old`, `shape_mismatch`, `contract_mismatch`; upgrade with CDR; bare Postcard on a link bound to v1 | hold |
 | `sends_as::<1>()` over MQTT; the v1 side decodes it | holds; the header carries v1's locked shape (§7.3) |
 | A carrier mismatch is rejected, not mis-decoded | bare → inline: `malformed`. Inline → bound CDR: `decode_error`. Inline → bound Postcard: **admitted with a wrong value** (§6) |
+| Bare JSON from old firmware, with `schema_version` in the payload, on a link bound to v1 | upgraded with no probe (§9) |
 | Per-route rejection counters through the existing metrics | does not hold: inbound routes have none (§7) |
 | `PayloadDecoder` as the generic half of the built-in codecs | holds; a 15-line delegation to `LinkCodec<U>`. A user codec that implements `LinkCodec<T>` for one `T` only cannot migrate |
 
