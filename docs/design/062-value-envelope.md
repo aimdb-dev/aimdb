@@ -28,6 +28,10 @@ deferred (§8).
 record accepts (typed keys, per-link accepted versions); this design says
 what a value is, so the receiver can compare the two at ingress.
 
+A throwaway spike tested this design together with 063, through the
+rolling upgrade of 063 §7 over both MQTT backends. §13 lists what it
+showed; the corrections are already in the text above it.
+
 ---
 
 ## 1. Problem
@@ -110,7 +114,8 @@ pub struct ContractRef {
     /// FNV-1a 32 of `SchemaType::NAME`.
     name_id: u32,
     version: u32,
-    /// Low 64 bits of the `aimdb.lock` shape hash for `NAME@VERSION`.
+    /// First 8 bytes of the `aimdb.lock` SHA-256 for `NAME@VERSION`,
+    /// read as a big-endian `u64` (the first 16 hex digits in the lock).
     shape: Option<u64>,
 }
 
@@ -157,7 +162,10 @@ it; `RecordMetadata::schema_version` is filled from it.
 **`name_id` is 32 bits.** It is unique within one catalog, and `catalog!`'s
 check fails on a collision. A fleet uses one contracts crate (README
 step 1), so one catalog sees every name. The ID is not unique across
-unrelated fleets and does not need to be.
+unrelated fleets and does not need to be. Collisions between ordinary
+words exist (`costarring` and `liquid` share an ID), so the check is
+needed; it is a `const` assertion over the catalog's names and fails
+`cargo check`.
 
 ## 5. Binary header
 
@@ -202,8 +210,12 @@ still read by firmware built from this design.
 - A different low nibble means a header format this receiver cannot read:
   `UnsupportedFormat`, counted, value dropped. Format 1 is expected to last;
   growth goes into extensions.
-- Unknown flag bits set → `UnsupportedFormat`. Unknown extension tags →
-  skipped. That is the whole compatibility contract.
+- Unknown flag bits or an unknown codec value → `UnsupportedFormat`.
+  Unknown extension tags → skipped. That is the whole compatibility
+  contract.
+- A frame that ends inside the header, or a varint longer than its field
+  allows, is malformed. A varint with redundant continuation bytes is
+  accepted; senders write the shortest form.
 - Extensions are bounded at 255 bytes so an outbound route can size its
   scratch buffer statically (054 §4.7).
 - Extension tag 0 is reserved. Tag 1 is reserved for the trace context of
@@ -222,8 +234,33 @@ boundary. A link chooses one of two carriers when it is registered:
 Inline is available on every link whose payload is an opaque byte string
 to the transport. The first one is MQTT, on both backends (`rumqttc`,
 MQTT 3.1.1, and `mountain-mqtt`), because it needs nothing from the
-protocol version. Both ends of a link must be configured the same way; a
-mismatch is rejected as `malformed` (§7), not mis-decoded.
+protocol version. Both ends of a link must be configured the same way. What a mismatch
+does depends on its direction:
+
+| Sender | Receiver | Result |
+|---|---|---|
+| bare | inline | rejected, `malformed` (no magic) |
+| inline | bound, CDR or JSON | rejected, `decode_error` (the header is not a CDR encapsulation or JSON) |
+| inline | bound, Postcard | **decoded as garbage** unless the rule below applies |
+
+Postcard has no framing of its own, and `postcard::from_bytes` ignores
+bytes after the value. In the spike a bound Postcard link read the first
+four header bytes of an inline frame as the `f32` of `TemperatureV1` and
+admitted it. So a bound link requires the decoder to consume the whole
+payload: `PayloadDecoder` reports the bytes it used, and `admit` rejects a
+remainder as `decode_error`. This catches the mismatch whenever the
+header and payload together are not a valid value of the bound type on
+their own, which is every case but a contrived one. The built-in
+`LinkCodec` for Postcard keeps ignoring trailing bytes outside `admit`.
+
+Neither carrier needs anything from the connector. Inbound, the link's
+deserializer receives the payload bytes it receives today, parses the
+header or builds the bound envelope, and runs `admit`. Outbound, the
+link's scratch serializer writes the header and then the payload. In the
+spike, MQTT inline ran on both backends with no change to
+`aimdb-mqtt-connector` (§13). The connector SPI changes only for carriers
+that put the envelope in transport metadata (MQTT 5 properties, Zenoh
+attachments), and those are deferred (§8).
 
 Links read by software that is not AimDB (`ros2://`, KNX, MQTT
 dashboards) stay on the default, and nothing they send or receive changes
@@ -245,6 +282,14 @@ defaults to the record's own `T::NAME@T::VERSION`, which is today's
 implicit behaviour. A static binding names one version, so a link that
 must read v1 and v2 senders at the same time needs the inline header.
 
+The bound type must be a version in the record's chain. The chain
+generates `impl VersionOf<ReadingV2> for ReadingV1 {}` for each of its
+types, and `with_contract::<U>()` requires `U: VersionOf<T>`, so binding a
+link to another contract fails to type-check (063 §6 explains why this is
+a trait bound and not a `const` assertion). The binding is also the
+link's accepted version: `with_contract::<ReadingV1>()` needs no
+`accepts_from::<1>()`, and the two are not combined.
+
 Static binding is also how a deployed v1 device on a binary codec becomes
 readable without new firmware: the hub binds its link to
 `with_contract::<ReadingV1>()` and upgrades on arrival (§7).
@@ -263,18 +308,37 @@ current version only.
 
 | Condition | Result | Counter |
 |---|---|---|
+| header not an envelope, or cut short | reject | `malformed` |
+| header format, flag or codec this build cannot read | reject | `unsupported_format` |
 | `name_id` ≠ the record's contract | reject | `contract_mismatch` |
-| `version == T::VERSION`, shape absent or equal to the locked shape | decode payload as `T` | |
-| `version == T::VERSION`, shape differs | reject | `shape_mismatch` |
-| `accepted_min ≤ version < T::VERSION` | decode as that version's type, walk `up` | `upgraded{from}` |
 | `version > T::VERSION` | reject (no downgrade on ingest) | `too_new` |
 | `version < accepted_min` | reject | `too_old` |
-| payload decode fails | reject | `decode_error` |
-| header unparseable / not an envelope | reject | `malformed` |
+| shape present and ≠ the locked shape of *that version* | reject | `shape_mismatch` |
+| codec in the header, and ≠ the link's codec | reject | `codec_mismatch` |
+| `version == T::VERSION` | decode payload as `T` | |
+| `accepted_min ≤ version < T::VERSION` | decode as that version's type, walk `up` | `upgraded{from}` |
+| payload decode fails, or leaves bytes on a bound link (§6) | reject | `decode_error` |
 
-Every counter is per route, readable through the existing buffer and route
-metrics (013). Rejections never panic and never stop the route. The
-ingested value is stamped locally (058).
+The rows are checked in this order. Every counter is per route.
+Rejections never panic and never stop the route. The ingested value is
+stamped locally (058).
+
+The shape is checked for every accepted version, not only the current
+one: a v1 device built from a changed `TemperatureV1` is as wrong as a v2
+one. The chain supplies the locked shape per version (§7.2). A header
+that names a codec other than the link's is rejected before the decode,
+because a decode error would hide the cause; a header with codec 0
+(unspecified) is decoded with the link's codec. An unreadable header
+format has its own counter, so "a newer peer" is not reported as
+"garbage".
+
+**Inbound routes have no counters today.** Outbound routes have
+`RouteStats`; an inbound deserializer returns `Result<T, String>`, and the
+router only logs the string (`RouterEvent::IngestFailed`). So phase 3
+adds inbound route stats in core, and the deserializer's error type gains
+a reason the router can count (`IngestError { reason: Rejection, .. }`
+instead of `String`). The spike kept the counters in the link closure,
+which tests can read but tools cannot.
 
 **`shape_mismatch` is the payoff of the lock.** It catches the case the lock
 exists for: a peer built from a contracts crate where someone changed
@@ -292,8 +356,18 @@ fn` (a byte loop over the file, no allocation), emitting:
 impl ContractShape for Temperature { const SHAPE: Option<u64> = Some(0x9c41_e2d0_0000_0a1f); }
 ```
 
-A contract outside a catalog, or a lock not yet written, has `SHAPE =
-None`; the envelope then carries no shape and the check is skipped.
+A contract outside a catalog, or a version missing from the lock, has
+`SHAPE = None`; the envelope then carries no shape and the check is
+skipped.
+
+**The lock file must exist.** `include_str!` of a missing file is a
+compile error, and the lock is written by the crate's own tests, which
+must compile first. So `catalog!` requires an `aimdb.lock`, and a new
+contracts crate starts from a seed that holds only the header
+(`version = 1`). The first `AIMDB_UPDATE_LOCK=1 cargo test` fills it.
+Cargo tracks the included file, so updating the lock rebuilds the
+contracts crate. A version added to the code but not yet to the lock gets
+`None`, and the lock test fails in CI until it is added.
 
 **The hash sent is the locked one, not one computed from the compiled
 struct.** It is true only if the lock test ran against the code that was
@@ -311,6 +385,8 @@ payload:
 ```rust
 pub trait MigrationChain: SchemaType + Sized {
     const MIN_VERSION: u32;
+    /// The locked shape of `version`, for every version in the chain.
+    fn shape_of(version: u32) -> Option<u64>;
     /// Decode `payload`, written as `version`, and upgrade to `Self`.
     fn migrate_from<D: PayloadDecoder>(version: u32, payload: &[u8], d: &D)
         -> Result<Self, MigrationError>;
@@ -342,6 +418,17 @@ An outbound link that declares an older contract version
 bare v1 payload on a statically bound link. The choice is made once at
 registration; there is no per-message lookup (045's rule).
 
+The header of a downgraded value carries the shape of the version sent,
+from `shape_of` (§7.2), so the older peer can check it.
+
+`MigrationStep::down` takes the newer value by value, so a downgraded
+send clones the current value first: one allocation per value for
+contracts with heap fields, on a path 054 keeps allocation-free. A
+`down_ref(&Newer)` is a later option.
+
+The scratch buffer of an inline outbound link must hold the header too:
+the codec's `N` plus up to 19 bytes (no stamp, no extensions).
+
 ## 8. Deferred
 
 None of these is needed to read a v1 device from a v2 hub. Each builds on
@@ -365,7 +452,7 @@ the envelope without changing the header format.
 | `migration_chain!` | `version_field` removed (accepted and ignored with a deprecation warning for one minor) |
 | `MigrationChain` | `migrate_from_bytes`/`migrate_to_version` replaced by `migrate_from`/`migrate_into` |
 | Contract structs | `schema_version` field no longer needed; keeping it is harmless but it is no longer read |
-| Connector SPI | inbound callbacks receive `Envelope<'_>` instead of `&[u8]`; outbound scratch writers write the header first on inline links |
+| Inbound deserializer error | `String` becomes an error with a countable reason (§7) |
 | Link builders | `envelope = "inline"` and `with_contract` (additive) |
 
 Nothing changes on the wire for a link that does not opt in.
@@ -385,10 +472,12 @@ see when the last old device is gone.
    wire change.
 2. **Identity.** `name_id`, `ContractShape` via `catalog!`; catalog check
    fails on a `name_id` collision.
-3. **Admission.** `admit` and its counters; new `MigrationChain` with
+3. **Admission.** `admit` and its counters; inbound route stats in core
+   and a countable ingest error (§7); new `MigrationChain` with
    `PayloadDecoder`/`Encoder`; legacy probe behind its feature.
 4. **Carriers.** `with_contract` static binding; inline header on MQTT,
-   both backends; connector SPI change.
+   both backends. Both run inside the link's codec closures; no connector
+   change (§6).
 5. **Proof.** The rolling-upgrade test of 063 §7 passes. Remove
    `schema_version` fields from the examples it touches.
 
@@ -402,6 +491,8 @@ see when the last old device is gone.
   extension tags parses, and the value is admitted; unknown flag bits or
   format nibble are rejected as `UnsupportedFormat`.
 - Admission table (§7): one test per row, counters checked.
+- Carrier mismatch (§6): each row of the table, including an inline frame
+  on a bound Postcard link.
 - Shape: a contract changed under the same `NAME@VERSION` in a second
   contracts crate is rejected as `shape_mismatch` by a peer built from the
   first.
@@ -452,3 +543,43 @@ see when the last old device is gone.
    must carry several versions at once: the deferred `c` field, or the
    inline header in front of the value's bytes? Not needed for the
    acceptance test.
+
+## 13. Spike
+
+A throwaway branch implemented the envelope module in `aimdb-core`,
+admission, probe-free migration, the shape lookup and the 063 link
+declarations in a separate crate, and the rolling upgrade of 063 §7 over
+MQTT. A second pass reviewed the code against this document, which found
+the last four findings below. It did not implement the `migration_chain!`
+changes (the chain was written by hand, as the macro would generate it),
+the whole-payload rule of §6, inbound route stats in core, the legacy
+probe, the alloc benches, cargo-fuzz or the AimX, MQTT 5 and Zenoh
+carriers.
+
+| Claim | Result |
+|---|---|
+| Header sizes: contract only 7 bytes, with shape 15 | hold; the largest without stamp or extensions is 19 (version ≥ 2²⁸) |
+| Round trip for every codec, version 0 to `u32::MAX`, with and without shape | holds |
+| A stamp and unknown extension tags are skipped; unknown flag bit, codec or format nibble → `UnsupportedFormat` | holds |
+| `parse` never panics or reads past the frame | holds for 2 million pseudo-random frames (a unit test in place of the fuzz target) |
+| `no_std`, no allocation, builds for `thumbv7em-none-eabihf` | holds; `parse` 788 B, `HeaderWriter::finish` 264 B, LEB128 256 B in a release build |
+| `0xA1` can start a Postcard payload | confirmed: a `u32` first field of `0xA1` encodes as `A1 01` |
+| `name_id` collisions are caught where all names are known | holds as a `const` assertion; `costarring` and `liquid` collide |
+| Shape hash read from `aimdb.lock` in a `const fn` | holds; a byte loop over the file. A missing lock file fails to compile (§7.1) |
+| v1 → v2 upgrade with no probe, on Postcard, CDR and JSON, inline and statically bound | holds |
+| Admission table: every row of §7 except the remainder check | holds |
+| Inline header over MQTT, MCU on `mountain-mqtt`, hub on `rumqttc` | holds; 19-byte frame (15 header + 4 payload), upgraded on the hub, no connector change (§6) |
+| Over MQTT into the hub: `too_new`, `too_old`, `shape_mismatch`, `contract_mismatch`; upgrade with CDR; bare Postcard on a link bound to v1 | hold |
+| `sends_as::<1>()` over MQTT; the v1 side decodes it | holds; the header carries v1's locked shape (§7.3) |
+| A carrier mismatch is rejected, not mis-decoded | bare → inline: `malformed`. Inline → bound CDR: `decode_error`. Inline → bound Postcard: **admitted with a wrong value** (§6) |
+| Per-route rejection counters through the existing metrics | does not hold: inbound routes have none (§7) |
+| `PayloadDecoder` as the generic half of the built-in codecs | holds; a 15-line delegation to `LinkCodec<U>`. A user codec that implements `LinkCodec<T>` for one `T` only cannot migrate |
+
+Findings that changed this document: no connector SPI change for the two
+carriers (§6, §9); inbound counters and a countable ingest error (§7); the
+lock file must exist (§7.1); the hash bytes (§4); the clone on downgrade
+and the scratch size (§7.3). From the review: the Postcard carrier
+mismatch and the whole-payload rule (§6); the shape check for older
+versions and `shape_of` (§7, §7.2, §7.3); the `codec_mismatch` and
+`unsupported_format` rows and the order of the table (§7); `VersionOf`
+and the binding as the accepted version (§6.1).
