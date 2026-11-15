@@ -59,9 +59,10 @@ log = ["dep:log"]
 # Observability: buffer introspection counters (produced/consumed/dropped/
 # occupancy) plus automatic stage profiling (.source()/.tap()/.link() timing).
 # Works in no_std (heap + atomics + a runtime clock).
-# Its 64-bit counters use the same `portable-atomic` fallback as the always-on
-# inbound route counters (see the dependency below).
-observability = ["alloc"]
+# Its 64-bit counters need `portable-atomic/fallback` on targets without
+# native 64-bit atomics (e.g. thumbv7em); it is a no-op where they exist.
+# The always-on inbound route counters do not: they use native atomics only.
+observability = ["alloc", "portable-atomic/fallback", "portable-atomic/critical-section"]
 
 # Testing features
 test-utils = ["std"]
@@ -108,15 +109,8 @@ thiserror = { version = "2.0.16", default-features = false }
 # remote); the no_std `connector-session` contracts build never sees it.
 serde_json = { workspace = true, optional = true, features = ["raw_value"] }
 
-# Atomic operations for all platforms. Inbound route counters are always
-# recorded as 64-bit atomics: `fallback` provides them on targets without
-# native 64-bit atomics (e.g. thumbv7em) through `critical-section`, which is
-# interrupt-safe and which embedded binaries already supply. Where native
-# atomics exist both features are no-ops.
-portable-atomic = { version = "1.9", default-features = false, features = [
-    "fallback",
-    "critical-section",
-] }
+# Atomic operations for all platforms
+portable-atomic = { version = "1.9", default-features = false }
 
 # Observability (optional)
 tracing = { workspace = true, optional = true }
