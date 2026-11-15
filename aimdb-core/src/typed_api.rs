@@ -1594,10 +1594,6 @@ where
 {
     /// Validates and registers an outbound link, or records why not.
     fn push_outbound(&mut self, mut link: OutboundLink<T>) {
-        if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
-        }
-
         let wire_url = link.url.clone();
         if let Err(message) = link.wire.read_carrier(&link.config) {
             self.rec.push_config_error(crate::ConfigError::new(
@@ -1859,10 +1855,6 @@ where
 
     /// Validates and registers an inbound link, or records why not.
     fn push_inbound(&mut self, mut link: InboundLink<T>) {
-        if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
-        }
-
         let wire_url = link.url.clone();
         if let Err(message) = link.wire.read_carrier(&link.config) {
             self.rec.push_config_error(crate::ConfigError::new(
