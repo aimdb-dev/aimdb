@@ -117,7 +117,7 @@
 //!            .link_to("knx://1/0/11")
 //!            .with_serializer(|_ctx, data| data.to_knx_bytes())
 //!            .finish();
-//!     }))
+//!     })
 //!     .build().await?;
 //! ```
 //!

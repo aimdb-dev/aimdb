@@ -97,13 +97,13 @@
 //!            .source(sensor_producer)
 //!            // Outbound: Publish to MQTT
 //!            .link_to("mqtt://sensors/data")
-//!            .with_serializer(|_ctx, data| postcard::to_vec(data).map_err(|_| /* ... */))
+//!            .with_serializer(|_ctx, data| postcard::to_vec(data).map_err(|_| "serialization failed".into()))
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/sensor")
 //!            .with_deserializer(|_ctx, data| SensorCommand::from_bytes(data).map_err(Into::into))
 //!            .finish();
-//!     }))
+//!     })
 //!     .build().await?;
 //! ```
 
