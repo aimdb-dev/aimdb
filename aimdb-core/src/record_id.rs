@@ -725,7 +725,45 @@ pub trait TypedKey: TypedName + RecordKey + Copy {
     /// Contract name and version reported as the record's schema; `None` for
     /// a record without a data contract.
     const SCHEMA: Option<(&'static str, u32)>;
+    /// [`Declared`] when [`SCHEMA`](Self::SCHEMA) is `Some`, [`Undeclared`]
+    /// otherwise. `configure` hands out a registrar in this state, so
+    /// contract-only verbs (`linked_to`, `publish`, `observe`, …) exist only
+    /// on records whose key declares their contract.
+    type Schema: SchemaState;
 }
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Whether a record's key declares a data contract: [`Declared`] or
+/// [`Undeclared`]. The third type parameter of
+/// [`RecordRegistrar`](crate::typed_api::RecordRegistrar).
+pub trait SchemaState: sealed::Sealed + Send + Sync + 'static {}
+
+/// The record's key declares its contract (`Key<T>`,
+/// `#[record_key(contract = T)]`): contract-only verbs are available.
+#[derive(Debug)]
+pub enum Declared {}
+
+/// The record's key declares no contract (`Name<T>`,
+/// `#[record_key(payload = T)]`): contract-only verbs do not compile.
+#[derive(Debug)]
+pub enum Undeclared {}
+
+impl sealed::Sealed for Declared {}
+impl sealed::Sealed for Undeclared {}
+impl SchemaState for Declared {}
+impl SchemaState for Undeclared {}
+
+/// Implemented only by [`Declared`]: the bound contract-only verbs put on a
+/// registrar's schema state.
+#[diagnostic::on_unimplemented(
+    message = "this record's key declares no data contract",
+    note = "contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`"
+)]
+pub trait ContractDeclared: SchemaState {}
+impl ContractDeclared for Declared {}
 /// A record name with its payload type and no data contract.
 ///
 /// `Name<'static, T>` is a key: a `const` for a record without a contract, or
@@ -801,6 +839,7 @@ impl<T: 'static> RecordKey for Name<'static, T> {
 }
 impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedKey for Name<'static, T> {
     const SCHEMA: Option<(&'static str, u32)> = None;
+    type Schema = Undeclared;
 }
 impl<T> AsRef<str> for Name<'_, T> {
     fn as_ref(&self) -> &str {

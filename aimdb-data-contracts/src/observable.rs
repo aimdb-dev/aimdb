@@ -8,6 +8,7 @@
 extern crate alloc;
 
 use aimdb_core::typed_api::RecordRegistrar;
+use aimdb_core::{ContractDeclared, SchemaState};
 
 use crate::Observable;
 
@@ -49,14 +50,19 @@ pub async fn log_tap<T>(
 
 /// Adds `.observe()` and `.log(node_id)` to [`RecordRegistrar`] for
 /// [`Observable`] types.
-pub trait ObservableRegistrarExt<'a, T>
+///
+/// `S` is the registrar's [`SchemaState`]: `.observe()` exists only on a
+/// record whose key declares `T` as its contract; `.log()` on any record.
+pub trait ObservableRegistrarExt<'a, T, S>
 where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
 {
     /// Feed `T::signal()` into the record's signal gauge (last/min/max/mean),
     /// visible via `record.list` / `record.get` / stage profiling.
-    /// The record's key must declare `T` as its contract (`Key<T>` or
-    /// `#[record_key(contract = T)]`), or `build()` fails.
+    /// Only on a record whose key declares `T` as its contract (`Key<T>` or
+    /// `#[record_key(contract = T)]`); on a `Name<T>` record it does not
+    /// compile.
     ///
     /// Recording requires `aimdb-core`'s `observability` feature: without it
     /// [`RecordRegistrar::signal_gauge`] hands back an inert gauge and this
@@ -66,25 +72,27 @@ where
     /// Bounded `T::Signal: Into<f64>` here (not on the trait), so `f32`/`i32`/
     /// `u32` signals qualify while a type with an exotic signal can still
     /// implement `Observable` and write its own tap.
-    fn observe(&mut self) -> &mut RecordRegistrar<'a, T>
+    fn observe(&mut self) -> &mut Self
     where
-        T::Signal: Into<f64>;
+        T::Signal: Into<f64>,
+        S: ContractDeclared;
 
     /// Log each value to the runtime log, formatted from `Debug` +
     /// `SIGNAL`/`UNIT`. For humans watching a console; `.observe()` is the
     /// metrics path.
-    fn log(&mut self, node_id: &'static str) -> &mut RecordRegistrar<'a, T>;
+    fn log(&mut self, node_id: &'static str) -> &mut Self;
 }
 
-impl<'a, T> ObservableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+impl<'a, T, S> ObservableRegistrarExt<'a, T, S> for RecordRegistrar<'a, T, S>
 where
     T: Observable + Send + Sync + Clone + core::fmt::Debug + 'static,
+    S: SchemaState,
 {
-    fn observe(&mut self) -> &mut RecordRegistrar<'a, T>
+    fn observe(&mut self) -> &mut Self
     where
         T::Signal: Into<f64>,
+        S: ContractDeclared,
     {
-        self.require_contract(T::NAME, T::VERSION);
         let gauge = self.signal_gauge(T::SIGNAL, T::UNIT);
         self.tap(move |_ctx, consumer| async move {
             let mut reader = consumer.subscribe();
@@ -95,7 +103,7 @@ where
         .with_name("observe")
     }
 
-    fn log(&mut self, node_id: &'static str) -> &mut RecordRegistrar<'a, T> {
+    fn log(&mut self, node_id: &'static str) -> &mut Self {
         self.tap(move |ctx, consumer| log_tap(ctx, consumer, node_id))
             .with_name("log")
     }

@@ -264,11 +264,11 @@ impl From<ButtonEvent> for ButtonPress {
 /// type built `From<ButtonEvent>`. It owns its pin.
 struct PushButton(Pin<'static>);
 
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         let PushButton(mut pin) = self;
         reg.source(move |ctx, producer| async move {
             let mut press = 0;
@@ -735,11 +735,11 @@ there; the MQTT demos
 generic over its record and bounded by `T: From<Event>`:
 
 ```rust
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.source(move |ctx, producer| async move {
             /* wait for an edge, debounce */
             producer.produce(T::from(ButtonEvent { /* … */ }));

@@ -80,7 +80,9 @@ fn value() -> V2 {
         quality: 300,
     }
 }
-async fn db(configure: impl FnOnce(&mut RecordRegistrar<'_, V2>)) -> (AimDb, Capture<V2>) {
+async fn db(
+    configure: impl FnOnce(&mut RecordRegistrar<'_, V2, aimdb_core::Declared>),
+) -> (AimDb, Capture<V2>) {
     let key_reading_1 = aimdb_data_contracts::Key::<V2>::new("reading");
     let captured: Capture<V2> = Default::default();
     let mut b = builder();
@@ -235,7 +237,7 @@ fn outbound_headers_downgrades_shapes_and_owned_fallback() {
     });
 }
 
-fn invalid(configure: impl FnOnce(&mut RecordRegistrar<'_, V2>)) -> String {
+fn invalid(configure: impl FnOnce(&mut RecordRegistrar<'_, V2, aimdb_core::Declared>)) -> String {
     futures::executor::block_on(async {
         let key_reading_2 = aimdb_data_contracts::Key::<V2>::new("reading");
         let mut b = builder();

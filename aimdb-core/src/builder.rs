@@ -558,7 +558,7 @@ impl AimDbBuilder {
     pub fn configure<K: crate::record_id::TypedKey>(
         &mut self,
         key: K,
-        f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract>),
+        f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract, K::Schema>),
     ) -> &mut Self {
         type Payload<K> = <K as crate::TypedName>::Contract;
         // Convert any RecordKey to StringKey for internal storage
@@ -633,6 +633,7 @@ impl AimDbBuilder {
             key_link_address: key.link_address().map(ToString::to_string),
             extensions: &self.extensions,
             last_stage: None,
+            _schema: core::marker::PhantomData,
         };
         if let Some((name, version)) = K::SCHEMA {
             reg.rec.set_schema(name, version);

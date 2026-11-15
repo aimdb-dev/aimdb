@@ -226,11 +226,11 @@ impl PushButton {
     }
 }
 
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         let PushButton {
             button: UserButton(mut pin),
         } = self;
