@@ -872,7 +872,8 @@ async fn server_write_reaches_inbound_record() {
             .with_remote_access()
             .link_from("ws://cfg")
             .with_deserializer(|_ctx, d: &[u8]| {
-                serde_json::from_slice::<Temp>(d).map_err(|e| aimdb_core::IngestError::from(e.to_string()))
+                serde_json::from_slice::<Temp>(d)
+                    .map_err(|e| aimdb_core::IngestError::from(e.to_string()))
             })
             .finish();
     });

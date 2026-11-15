@@ -302,7 +302,9 @@ async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option
     builder.configure::<u64>("temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
-            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
+            .with_deserializer(|_ctx, data: &[u8]| {
+                Ok::<u64, aimdb_core::IngestError>(data.len() as u64)
+            })
             .finish();
     });
     let (db, runner) = builder.build().await.expect("build db");
@@ -368,7 +370,9 @@ async fn the_embedded_backend_dispatches_inbound_on_its_session_task() {
     builder.configure::<u64>("temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
-            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
+            .with_deserializer(|_ctx, data: &[u8]| {
+                Ok::<u64, aimdb_core::IngestError>(data.len() as u64)
+            })
             .finish();
     });
     let (db, _runner) = builder.build().await.expect("build db");
@@ -494,7 +498,9 @@ async fn a_subscribe_too_large_for_the_write_ring_fails_the_build() {
             builder.configure::<u64>("in", move |reg| {
                 reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                     .link_from(&format!("mqtt://{topic}"))
-                    .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
+                    .with_deserializer(|_ctx, data: &[u8]| {
+                        Ok::<u64, aimdb_core::IngestError>(data.len() as u64)
+                    })
                     .finish();
             });
         }

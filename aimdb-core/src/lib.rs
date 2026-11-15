@@ -109,7 +109,10 @@ pub mod identity;
 pub mod link_wire;
 pub use link_wire::EnvelopeCarrier;
 mod ingest;
-pub use ingest::{InboundRouteMetrics, InboundRouteStats, IngestError, IngestOutcome, IngestValue, Rejection, UpgradeCount};
+pub use ingest::{
+    InboundRouteMetrics, InboundRouteStats, IngestError, IngestOutcome, IngestValue, Rejection,
+    UpgradeCount,
+};
 mod inbound_dispatch;
 mod inbound_key;
 mod outbound;

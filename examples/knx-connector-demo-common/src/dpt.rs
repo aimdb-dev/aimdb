@@ -23,8 +23,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use aimdb_core::{IngestError, RuntimeContext};
 use aimdb_core::connector::SerializeError;
+use aimdb_core::{IngestError, RuntimeContext};
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 
 use crate::types::{LightControl, LightState, TemperatureReading};
@@ -33,7 +33,8 @@ use crate::types::{LightControl, LightState, TemperatureReading};
 /// that does not decode reads as 0.0 °C.
 pub fn temperature_at(
     location: &'static str,
-) -> impl Fn(RuntimeContext, &[u8]) -> Result<TemperatureReading, IngestError> + Send + Sync + 'static {
+) -> impl Fn(RuntimeContext, &[u8]) -> Result<TemperatureReading, IngestError> + Send + Sync + 'static
+{
     move |_ctx, data| {
         let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
         Ok(TemperatureReading::new(location, celsius))
