@@ -526,6 +526,32 @@ named `schema_version` is ordinary data and is never inspected for dispatch.
 `migratable` does not enable JSON. Custom codecs implement `PayloadDecoder`
 and `PayloadEncoder`; the built-in codec features provide them too.
 
+### Envelope admission
+
+With `migratable` enabled, `LinkContract<T, D>` holds a registration-time
+admission policy and its concrete `PayloadDecoder`. `inline(codec, decoder)`
+accepts only the current version; `inline_from::<V>(codec, decoder)` accepts
+`V..=T::VERSION` and requires the chain's `Reaches<V>` proof.
+`bound_current(codec, decoder)` is a bare current-version policy;
+`bound::<U>(codec, decoder)` binds a bare payload to exactly `U::VERSION`
+and requires `U: VersionOf<T>`. The codec ID must describe the decoder.
+
+`admit_frame(bytes, &policy)` parses the configured inline carrier or builds
+a static envelope, then calls `admit(&envelope, &policy)`. It checks name,
+version, the locked shape of the received version, and codec before decoding
+once. Missing locked shapes skip the shape comparison. An unspecified
+header codec uses the link's decoder. Bound payloads must be consumed in
+full, including JSON whitespace; trailing values or bytes are rejected.
+
+`Admit<T>` is `Result<IngestValue<T>, IngestError>`, directly usable with
+`with_admitting_deserializer`. Success carries the upgraded source version;
+core stamps the value locally when producing it and then counts the outcome.
+Received wire stamps are ignored. Rejections include the received identity
+and expected version range; core's router adds the record key and topic to
+its diagnostic. Decoder and migration conversion failures are `decode_error`.
+Neither admission nor its successful result allocates beyond allocations
+required by the chosen decoder or the contract's own conversion steps.
+
 ### Links as values
 
 `link_to` / `link_from` build a link on the record being configured.

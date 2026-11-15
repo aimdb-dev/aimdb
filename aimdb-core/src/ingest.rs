@@ -101,6 +101,17 @@ pub struct IngestValue<T> {
     pub(crate) outcome: IngestOutcome,
 }
 impl<T> IngestValue<T> {
+    /// The admitted value, before core stamps and produces it.
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+    pub const fn outcome(&self) -> IngestOutcome {
+        self.outcome
+    }
+    pub fn into_value(self) -> T {
+        self.value
+    }
+
     pub fn current(value: T) -> Self {
         Self {
             value,

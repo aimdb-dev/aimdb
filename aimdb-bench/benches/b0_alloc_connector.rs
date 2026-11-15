@@ -52,6 +52,8 @@ const KEY_CAPACITY: u16 = 4096;
 const EXPECTED: &[(&str, u64)] = &[
     ("inbound_dispatch", 0),
     ("inbound_dispatch_upgraded", 0),
+    ("inbound_admit_inline", 0),
+    ("inbound_admit_bound", 0),
     ("inbound_dispatch_pattern", 0),
     ("inbound_dispatch_keyed_known", 0),
     ("inbound_dispatch_keyed_new", 1),
@@ -65,11 +67,50 @@ const EXPECTED: &[(&str, u64)] = &[
 /// Routes in the `outbound_next_round_robin` row.
 const ROUND_ROBIN_ROUTES: usize = 8;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Reading {
     id: u32,
     value: f32,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyReading {
+    value: f32,
+    id: u32,
+}
+impl aimdb_data_contracts::SchemaType for LegacyReading {
+    const NAME: &'static str = "bench.reading";
+}
+impl aimdb_data_contracts::ContractShape for LegacyReading {
+    const SHAPE: Option<u64> = Some(0x1234);
+}
+impl aimdb_data_contracts::SchemaType for Reading {
+    const NAME: &'static str = "bench.reading";
+    const VERSION: u32 = 2;
+}
+impl aimdb_data_contracts::ContractShape for Reading {
+    const SHAPE: Option<u64> = Some(0x5678);
+}
+struct UpgradeReading;
+impl aimdb_data_contracts::MigrationStep for UpgradeReading {
+    type Older = LegacyReading;
+    type Newer = Reading;
+    const FROM_VERSION: u32 = 1;
+    const TO_VERSION: u32 = 2;
+    fn up(v: LegacyReading) -> Result<Reading, aimdb_data_contracts::MigrationError> {
+        Ok(Reading {
+            id: v.id,
+            value: v.value,
+        })
+    }
+    fn down(v: Reading) -> Result<LegacyReading, aimdb_data_contracts::MigrationError> {
+        Ok(LegacyReading {
+            id: v.id,
+            value: v.value,
+        })
+    }
+}
+aimdb_data_contracts::migration_chain! { type Current = Reading; steps { UpgradeReading: LegacyReading => Reading } }
 
 fn reading(i: usize) -> Reading {
     Reading {
@@ -215,6 +256,63 @@ async fn measure_dispatch(upgraded: bool) -> (u64, u64) {
             (WARMUP_ITERS + MEASURE_ITERS) as u64
         );
     }
+    measured
+}
+
+/// Full admission of a historical binary payload, including identity/shape checks.
+async fn measure_admission(inline: bool) -> (u64, u64) {
+    use aimdb_core::envelope::{ContractRef, HeaderWriter, PayloadCodec};
+    use aimdb_data_contracts::{admit_frame, link_codecs::Postcard, LinkContract, PayloadEncoder};
+    let codec = Postcard::<64>;
+    let policy = if inline {
+        LinkContract::<Reading, _>::inline_from::<1>(PayloadCodec::Postcard, codec)
+    } else {
+        LinkContract::<Reading, _>::bound::<LegacyReading>(PayloadCodec::Postcard, codec)
+    };
+    let mut payload = [0; 32];
+    let header = if inline {
+        HeaderWriter::new(&mut payload)
+            .contract(ContractRef::new(
+                aimdb_data_contracts::name_id("bench.reading"),
+                1,
+                Some(0x1234),
+            ))
+            .codec(PayloadCodec::Postcard)
+            .finish()
+            .unwrap()
+    } else {
+        0
+    };
+    let len = codec
+        .encode_payload(
+            &LegacyReading { id: 1, value: 21.5 },
+            &mut payload[header..],
+        )
+        .unwrap()
+        + header;
+    let db = build_db(|b| {
+        b.configure::<Reading>("admission", |reg| {
+            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_from("bench://admission")
+                .with_admitting_deserializer(&[1], move |_, _, bytes| admit_frame(bytes, &policy))
+                .finish();
+        });
+        add_decoys(b);
+    })
+    .await;
+    let inbound = InboundDispatch::new(&db, SCHEME, &ExactGrammar).unwrap();
+    for _ in 0..WARMUP_ITERS {
+        inbound.dispatch("admission", &payload[..len]);
+    }
+    reset();
+    for _ in 0..MEASURE_ITERS {
+        inbound.dispatch("admission", black_box(&payload[..len]));
+    }
+    let measured = snapshot();
+    assert_eq!(
+        inbound.stats(0).unwrap().upgraded[0].count,
+        (WARMUP_ITERS + MEASURE_ITERS) as u64
+    );
     measured
 }
 
@@ -413,6 +511,16 @@ fn main() {
                 "inbound_dispatch_upgraded",
                 "SpmcRing",
                 measure_dispatch(true).await,
+            ),
+            (
+                "inbound_admit_inline",
+                "SpmcRing",
+                measure_admission(true).await,
+            ),
+            (
+                "inbound_admit_bound",
+                "SpmcRing",
+                measure_admission(false).await,
             ),
             (
                 "inbound_dispatch_pattern",

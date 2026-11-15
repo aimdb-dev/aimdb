@@ -18,6 +18,24 @@
     "bytes_per_msg": 0.0
   },
   {
+    "profile": "inbound_admit_inline",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
+    "profile": "inbound_admit_bound",
+    "buffer_type": "SpmcRing",
+    "total_allocs": 0,
+    "total_bytes": 0,
+    "batch_size": 2000,
+    "allocs_per_msg": 0.0,
+    "bytes_per_msg": 0.0
+  },
+  {
     "profile": "inbound_dispatch_pattern",
     "buffer_type": "SpmcRing",
     "total_allocs": 0,

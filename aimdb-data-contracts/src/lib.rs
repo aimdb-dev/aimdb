@@ -141,6 +141,12 @@ mod simulatable;
 #[cfg(feature = "migratable")]
 mod migratable;
 
+#[cfg(feature = "migratable")]
+mod admission;
+
+#[cfg(feature = "migratable")]
+pub use admission::{admit, admit_frame, Admit, LinkContract};
+
 #[cfg(feature = "simulatable")]
 pub use simulatable::{RandomWalkParams, SimProfile, Simulatable, SimulatableRegistrarExt};
 

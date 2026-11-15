@@ -120,3 +120,20 @@ mod sim {
         }
     }
 }
+
+/// Build-only proof: the same envelope admission compiles on Cortex-M.
+/// In an application this policy is created once while registering the link.
+pub fn temperature_admission(
+) -> aimdb_data_contracts::LinkContract<Temperature, aimdb_data_contracts::link_codecs::Json> {
+    aimdb_data_contracts::LinkContract::inline_from::<1>(
+        aimdb_core::envelope::PayloadCodec::Json,
+        aimdb_data_contracts::link_codecs::Json,
+    )
+}
+
+pub fn admit_temperature_frame(
+    frame: &[u8],
+    link: &aimdb_data_contracts::LinkContract<Temperature, aimdb_data_contracts::link_codecs::Json>,
+) -> aimdb_data_contracts::Admit<Temperature> {
+    aimdb_data_contracts::admit_frame(frame, link)
+}
