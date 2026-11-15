@@ -70,8 +70,7 @@ use {defmt_rtt as _, panic_probe as _};
 use board::PushButton;
 // Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    LightControl, LightControlKey, LightKey, LightState, TemperatureKey, TemperatureReading, dpt,
-    light_monitor, temperature_monitor,
+    LightControlKey, LightKey, TemperatureKey, dpt, light_monitor, temperature_monitor,
 };
 
 // ============================================================================

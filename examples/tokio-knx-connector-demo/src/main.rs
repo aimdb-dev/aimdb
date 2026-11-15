@@ -45,8 +45,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 // Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    dpt, light_monitor, temperature_monitor, ButtonEvent, LightControl, LightControlKey, LightKey,
-    LightState, TemperatureKey, TemperatureReading,
+    dpt, light_monitor, temperature_monitor, ButtonEvent, LightControlKey, LightKey, TemperatureKey,
 };
 
 // ============================================================================

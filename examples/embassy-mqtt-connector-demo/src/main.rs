@@ -99,8 +99,8 @@ use aimdb_mqtt_connector::TlsOptions;
 use board::PushButton;
 // Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    ButtonKey, ButtonPress, CommandKey, SensorKey, SimThermometers, Temperature,
-    TemperatureCommand, Thermometer, button_logger, command_consumer, temperature_logger,
+    ButtonKey, CommandKey, SensorKey, SimThermometers, Thermometer, button_logger,
+    command_consumer, temperature_logger,
 };
 
 // ============================================================================

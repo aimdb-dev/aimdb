@@ -66,8 +66,7 @@ use std::sync::Arc;
 
 // Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    command_consumer, temperature_logger, CommandKey, SensorKey, SimThermometers, Temperature,
-    TemperatureCommand, Thermometer,
+    command_consumer, temperature_logger, CommandKey, SensorKey, SimThermometers, Thermometer,
 };
 
 /// Readings per thermometer before it stops.
