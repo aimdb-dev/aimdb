@@ -1,0 +1,7 @@
+error: key_prefix was removed; use prefix inside record_key
+ --> tests/compile-fail/typed_key_removed_prefix.rs:2:1
+  |
+2 | / #[record_key(payload = u32)]
+3 | | #[key_prefix = "reading."]
+4 | | enum Record { #[key = "value"] Value }
+  | |______________________________________^

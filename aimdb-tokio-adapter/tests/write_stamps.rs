@@ -21,11 +21,11 @@ struct Output(u32);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Other(u32);
 
-const INPUT: &str = "stamps::Input";
-const OUTPUT: &str = "stamps::Output";
-const JOINED: &str = "stamps::Joined";
-const OTHER: &str = "stamps::Other";
-const CONFIG: &str = "stamps::Config";
+const INPUT: aimdb_core::Name<Input> = aimdb_core::Name::new("stamps::Input");
+const OUTPUT: aimdb_core::Name<Output> = aimdb_core::Name::new("stamps::Output");
+const JOINED: aimdb_core::Name<Output> = aimdb_core::Name::new("stamps::Joined");
+const OTHER: aimdb_core::Name<Other> = aimdb_core::Name::new("stamps::Other");
+const CONFIG: aimdb_core::Name<Input> = aimdb_core::Name::new("stamps::Config");
 
 fn ms(n: u64) -> Stamp {
     Stamp::from_nanos(n * 1_000_000)
@@ -53,33 +53,33 @@ async fn db(
 ) -> (AimDb, tokio::sync::mpsc::UnboundedReceiver<(u32, Stamp)>) {
     let (trigger_tx, trigger_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut builder = AimDbBuilder::new().runtime(Arc::new(ops.clone()));
-    builder.configure::<Input>(INPUT, |reg| {
+    builder.configure(INPUT, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
-    builder.configure::<Other>(OTHER, |reg| {
+    builder.configure(OTHER, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
-    builder.configure::<Output>(OUTPUT, |reg| {
+    builder.configure(OUTPUT, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
-            .transform::<Input, _>(INPUT, |b| b.map(|i: &Input| Some(Output(i.0 * 10))));
+            .transform(INPUT, |b| b.map(|i: &Input| Some(Output(i.0 * 10))));
     });
-    builder.configure::<Output>(JOINED, |reg| {
+    builder.configure(JOINED, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .transform_join(|b| {
-                b.input::<Input>(INPUT).input::<Other>(OTHER).on_triggers(
-                    move |mut rx, producer| async move {
+                b.input(INPUT)
+                    .input(OTHER)
+                    .on_triggers(move |mut rx, producer| async move {
                         while let Ok(trigger) = rx.recv().await {
                             if let Some(input) = trigger.as_input::<Input>() {
                                 trigger_tx.send((input.0, trigger.stamp())).unwrap();
                                 producer.produce(Output(input.0));
                             }
                         }
-                    },
-                )
+                    })
             });
     });
-    builder.configure::<Input>(CONFIG, |reg| {
+    builder.configure(CONFIG, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.unwrap();
@@ -98,8 +98,8 @@ async fn db(
 async fn source_writes_are_stamped_and_every_read_returns_the_stamp() {
     let ops = ManualClockRuntimeOps::default();
     let (db, _triggers) = db(&ops).await;
-    let mut reader = db.subscribe::<Input>(INPUT).unwrap();
-    let producer = db.producer::<Input>(INPUT).unwrap();
+    let mut reader = db.subscribe(INPUT).unwrap();
+    let producer = db.producer(INPUT).unwrap();
 
     set(&ops, ms(5));
     db.produce(INPUT, Input(1)).unwrap();
@@ -117,13 +117,13 @@ async fn source_writes_are_stamped_and_every_read_returns_the_stamp() {
     set(&ops, ms(11));
     db.produce(CONFIG, Input(4)).unwrap();
     set(&ops, ms(12));
-    let latest = db.latest::<Input>(CONFIG).unwrap().unwrap();
+    let latest = db.latest(CONFIG).unwrap().unwrap();
     assert_eq!((&latest.value, latest.stamp()), (&Input(4), ms(11)));
-    let json = db.try_latest_as_json(CONFIG).unwrap();
+    let json = db.try_latest_as_json(CONFIG.as_ref()).unwrap();
     assert_eq!((&json.value, json.stamp()), (&serde_json::json!(4), ms(11)));
-    let bytes = db.try_latest_as_json_bytes(CONFIG).unwrap();
+    let bytes = db.try_latest_as_json_bytes(CONFIG.as_ref()).unwrap();
     assert_eq!((&bytes.value, bytes.stamp()), (&b"4".to_vec(), ms(11)));
-    let mut config_reader = db.subscribe::<Input>(CONFIG).unwrap();
+    let mut config_reader = db.subscribe(CONFIG).unwrap();
     assert_eq!(recv(&mut config_reader).await.stamp(), ms(11));
 }
 
@@ -133,8 +133,8 @@ async fn source_writes_are_stamped_and_every_read_returns_the_stamp() {
 async fn derived_outputs_carry_their_own_write_time() {
     let ops = ManualClockRuntimeOps::default();
     let (db, mut triggers) = db(&ops).await;
-    let mut output = db.subscribe::<Output>(OUTPUT).unwrap();
-    let mut joined = db.subscribe::<Output>(JOINED).unwrap();
+    let mut output = db.subscribe(OUTPUT).unwrap();
+    let mut joined = db.subscribe(JOINED).unwrap();
 
     set(&ops, ms(5));
     db.produce(INPUT, Input(2)).unwrap();
@@ -165,9 +165,9 @@ async fn a_remote_set_is_stamped_when_applied() {
     let (db, _triggers) = db(&ops).await;
 
     set(&ops, ms(3));
-    db.set_record_from_json(CONFIG, serde_json::json!(9))
+    db.set_record_from_json(CONFIG.as_ref(), serde_json::json!(9))
         .unwrap();
-    let latest = db.latest::<Input>(CONFIG).unwrap().unwrap();
+    let latest = db.latest(CONFIG).unwrap().unwrap();
     assert_eq!((&latest.value, latest.stamp()), (&Input(9), ms(3)));
 }
 
@@ -177,12 +177,12 @@ async fn a_remote_set_is_stamped_when_applied() {
 async fn under_paused_time_stamps_follow_tokio_time_exactly() {
     let mut builder =
         AimDbBuilder::new().runtime(Arc::new(aimdb_tokio_adapter::TokioAdapter::new().unwrap()));
-    builder.configure::<Input>(INPUT, |reg| {
+    builder.configure(INPUT, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
     });
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut reader = db.subscribe::<Input>(INPUT).unwrap();
+    let mut reader = db.subscribe(INPUT).unwrap();
 
     db.produce(INPUT, Input(1)).unwrap();
     db.produce(INPUT, Input(2)).unwrap();

@@ -23,6 +23,7 @@ impl Display for Temperature {
 // Main function
 #[tokio::main]
 async fn main() -> Result<(), DbError> {
+    let key_sensor_temp_1 = aimdb_core::Name::<Temperature>::new("sensor.temp");
     println!("=== hello-spmc-ring-async: SPMC ring buffer demo ===\n");
     println!("Ring size:          10");
     println!("Producer at rate    20.0 messages/sec");
@@ -35,7 +36,7 @@ async fn main() -> Result<(), DbError> {
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
     // Two observers consuming at different rates
-    builder.configure::<Temperature>("sensor.temp", |reg| {
+    builder.configure(key_sensor_temp_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .source(rollout_source)
             .tap(rollout_observer01)

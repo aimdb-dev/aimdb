@@ -83,6 +83,9 @@ fn gid(token: &str) -> [u8; 16] {
     out
 }
 
+const RECORD_READING: aimdb_data_contracts::Key<Reading> =
+    aimdb_data_contracts::Key::new("reading");
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_record_appears_as_a_ros_publisher() {
     let endpoint = format!("tcp/127.0.0.1:{}", free_port());
@@ -100,7 +103,7 @@ async fn a_record_appears_as_a_ros_publisher() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2(&endpoint));
-    builder.configure::<Reading>("reading", |reg| {
+    builder.configure(RECORD_READING, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
         reg.linked_to("ros2://cell4/reading");
         reg.link_to("ros2://cell4/reading_fast")
@@ -117,7 +120,7 @@ async fn a_record_appears_as_a_ros_publisher() {
     };
     let deadline = tokio::time::Instant::now() + WAIT;
     let first = loop {
-        db.produce("reading", value.clone()).unwrap();
+        db.produce(RECORD_READING, value.clone()).unwrap();
         if let Ok(Ok(sample)) =
             tokio::time::timeout(Duration::from_millis(200), data.recv_async()).await
         {
@@ -125,7 +128,7 @@ async fn a_record_appears_as_a_ros_publisher() {
         }
         assert!(tokio::time::Instant::now() < deadline, "no ROS sample");
     };
-    db.produce("reading", value.clone()).unwrap();
+    db.produce(RECORD_READING, value.clone()).unwrap();
     let second = tokio::time::timeout(WAIT, data.recv_async())
         .await
         .unwrap()
@@ -186,12 +189,14 @@ async fn a_record_appears_as_a_ros_publisher() {
 /// returns the build error.
 async fn refused(
     connector: Ros2Connector,
-    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading>) + Send + 'static,
+    link: impl FnOnce(&mut aimdb_core::RecordRegistrar<'_, Reading, aimdb_core::Declared>)
+        + Send
+        + 'static,
 ) -> String {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(connector);
-    builder.configure::<Reading>("reading", move |reg| {
+    builder.configure(RECORD_READING, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         link(reg);
     });
@@ -300,7 +305,7 @@ async fn without_a_ros2_connector_the_scheme_is_unregistered() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ZenohConnector::new(""));
-    builder.configure::<Reading>("reading", |reg| {
+    builder.configure(RECORD_READING, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         reg.linked_to("ros2://cell4/reading");
     });

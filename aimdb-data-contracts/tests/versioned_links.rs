@@ -80,10 +80,13 @@ fn value() -> V2 {
         quality: 300,
     }
 }
-async fn db(configure: impl FnOnce(&mut RecordRegistrar<'_, V2>)) -> (AimDb, Capture<V2>) {
+async fn db(
+    configure: impl FnOnce(&mut RecordRegistrar<'_, V2, aimdb_core::Declared>),
+) -> (AimDb, Capture<V2>) {
+    let key_reading_1 = aimdb_data_contracts::Key::<V2>::new("reading");
     let captured: Capture<V2> = Default::default();
     let mut b = builder();
-    b.configure::<V2>("reading", |r| {
+    b.configure(key_reading_1, |r| {
         r.buffer_raw(Box::new(Buffer {
             value: value(),
             captured: captured.clone(),
@@ -234,10 +237,11 @@ fn outbound_headers_downgrades_shapes_and_owned_fallback() {
     });
 }
 
-fn invalid(configure: impl FnOnce(&mut RecordRegistrar<'_, V2>)) -> String {
+fn invalid(configure: impl FnOnce(&mut RecordRegistrar<'_, V2, aimdb_core::Declared>)) -> String {
     futures::executor::block_on(async {
+        let key_reading_2 = aimdb_data_contracts::Key::<V2>::new("reading");
         let mut b = builder();
-        b.configure::<V2>("reading", |r| {
+        b.configure(key_reading_2, |r| {
             r.buffer_raw(Box::new(Buffer {
                 value: value(),
                 captured: Default::default(),
@@ -412,9 +416,10 @@ fn replacing_bounded_codec_with_json_clears_scratch_and_encodes_inline() {
 #[test]
 fn cdr_inline_payload_and_foreign_bare_publication_match_the_codec() {
     futures::executor::block_on(async {
+        let key_reading_3 = aimdb_data_contracts::Key::<V2>::new("reading");
         use aimdb_data_contracts::link_codecs::Cdr;
         let mut b = builder().with_connector(Noop("ros2"));
-        b.configure::<V2>("reading", |r| {
+        b.configure(key_reading_3, |r| {
             r.buffer_raw(Box::new(Buffer {
                 value: value(),
                 captured: Default::default(),
@@ -496,8 +501,9 @@ aimdb_data_contracts::migration_chain! { type Current = Large; steps {} }
 #[test]
 fn custom_owned_fallback_has_no_scratch_size_ceiling() {
     futures::executor::block_on(async {
+        let key_large_4 = aimdb_data_contracts::Key::<Large>::new("large");
         let mut b = builder();
-        b.configure::<Large>("large", |r| {
+        b.configure(key_large_4, |r| {
             r.buffer_raw(Box::new(Buffer {
                 value: Large {
                     message: "x".repeat(2048),
@@ -540,8 +546,9 @@ impl LinkCodec<V2> for SingleType {
 #[test]
 fn foreign_single_type_codec_stays_bare_and_cannot_claim_versioned_support() {
     futures::executor::block_on(async {
+        let key_reading_5 = aimdb_data_contracts::Key::<V2>::new("reading");
         let mut b = builder().with_connector(Noop("knx"));
-        b.configure::<V2>("reading", |r| {
+        b.configure(key_reading_5, |r| {
             r.buffer_raw(Box::new(Buffer {
                 value: value(),
                 captured: Default::default(),
@@ -561,4 +568,80 @@ fn foreign_single_type_codec_stays_bare_and_cannot_claim_versioned_support() {
             .finish();
     })
     .contains("select a builtin codec"));
+}
+
+#[test]
+fn typed_keys_keep_schema_on_downgrade_and_plain_names_stay_schema_free() {
+    const CONTRACT: aimdb_data_contracts::Key<V2> =
+        aimdb_data_contracts::Key::new("contract").with_link("test://contract");
+    const PLAIN: aimdb_core::Name<V2> = aimdb_core::Name::new("plain");
+    futures::executor::block_on(async {
+        let mut b = builder();
+        b.configure(CONTRACT, |r| {
+            r.buffer_raw(Box::new(Buffer {
+                value: value(),
+                captured: Default::default(),
+            }));
+            r.link_to_key()
+                .with_link_codec(Postcard::<32>)
+                .sends_as::<1>()
+                .finish();
+        });
+        b.configure(PLAIN, |r| {
+            r.buffer_raw(Box::new(Buffer {
+                value: value(),
+                captured: Default::default(),
+            }));
+            r.link_to("test://plain")
+                .with_link_codec(Postcard::<32>)
+                .sends_as::<1>()
+                .finish();
+        });
+        let (db, _) = b.build().await.unwrap();
+        let graph = db.inner().dependency_graph();
+        assert_eq!(
+            graph
+                .node("contract")
+                .unwrap()
+                .schema
+                .as_ref()
+                .unwrap()
+                .version,
+            2
+        );
+        assert!(graph.node("plain").unwrap().schema.is_none());
+        let metadata = db.list_records();
+        assert_eq!(
+            metadata
+                .iter()
+                .find(|m| m.record_key == "contract")
+                .unwrap()
+                .schema_version,
+            Some(2)
+        );
+        assert_eq!(
+            metadata
+                .iter()
+                .find(|m| m.record_key == "plain")
+                .unwrap()
+                .schema_version,
+            None
+        );
+    });
+}
+
+#[test]
+fn key_link_without_address_fails_at_build() {
+    const RECORD: aimdb_data_contracts::Key<V2> = aimdb_data_contracts::Key::new("missing");
+    futures::executor::block_on(async {
+        let mut b = builder();
+        b.configure(RECORD, |r| {
+            r.buffer_raw(Box::new(Buffer {
+                value: value(),
+                captured: Default::default(),
+            }));
+            r.link_to_key().with_link_codec(Postcard::<32>).finish();
+        });
+        assert!(b.build().await.is_err());
+    });
 }

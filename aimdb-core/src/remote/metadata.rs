@@ -272,10 +272,11 @@ mod tests {
 
     #[test]
     fn test_record_metadata_creation() {
+        let key_test_record_1 = StringKey::new("test.record");
         let type_id = TypeId::of::<i32>();
         let metadata = RecordMetadata::new(
             RecordId::new(0),
-            StringKey::new("test.record"),
+            key_test_record_1,
             type_id,
             "i32".to_string(),
             RecordOrigin::Source,
@@ -301,10 +302,11 @@ mod tests {
 
     #[test]
     fn test_record_metadata_serialization() {
+        let key_app_config_2 = StringKey::new("app.config");
         let type_id = TypeId::of::<String>();
         let metadata = RecordMetadata::new(
             RecordId::new(1),
-            StringKey::new("app.config"),
+            key_app_config_2,
             type_id,
             "String".to_string(),
             RecordOrigin::Passive,
@@ -329,9 +331,10 @@ mod tests {
 
     #[test]
     fn inbound_keys_are_optional_on_the_wire() {
+        let key_sensors_readings_3 = StringKey::new("sensors.readings");
         let mut metadata = RecordMetadata::new(
             RecordId::new(0),
-            StringKey::new("sensors.readings"),
+            key_sensors_readings_3,
             TypeId::of::<i32>(),
             "i32".to_string(),
             RecordOrigin::Passive,

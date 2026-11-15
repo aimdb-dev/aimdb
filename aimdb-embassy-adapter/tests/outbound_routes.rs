@@ -43,7 +43,8 @@ fn db(buffers: Vec<Box<dyn DynBuffer<Stamped<u32>>>>) -> AimDb {
         .runtime(Arc::new(NoopRuntimeOps))
         .with_connector(TestConnector);
     for (i, buffer) in buffers.into_iter().enumerate() {
-        builder.configure::<u32>(KEYS[i], move |reg| {
+        let record_key_1 = aimdb_core::Name::<u32>::interned(KEYS[i]);
+        builder.configure(record_key_1, move |reg| {
             reg.buffer_raw(buffer)
                 .link_to(&format!("test://r{i}"))
                 .with_serializer(|_ctx, v: &u32| Ok(v.to_le_bytes().to_vec()))
@@ -83,7 +84,8 @@ fn outage_semantics_per_buffer_type() {
     let mut o = OutboundRoutes::new(&db, "test").unwrap();
     for v in 0..5 {
         for key in KEYS {
-            db.produce::<u32>(key, v).unwrap();
+            let record_key_2 = aimdb_core::Name::<u32>::new(key);
+            db.produce(record_key_2, v).unwrap();
         }
     }
     let got = drain(&mut o);
@@ -99,7 +101,8 @@ fn an_spmc_ring_that_overflows_reports_lag_then_recovers() {
     )]);
     let mut o = OutboundRoutes::new(&db, "test").unwrap();
     for v in 0..10 {
-        db.produce::<u32>("r0", v).unwrap();
+        let record_key_3 = aimdb_core::Name::<u32>::new("r0");
+        db.produce(record_key_3, v).unwrap();
     }
     assert_eq!(values(&drain(&mut o), 0), [6, 7, 8, 9]);
     assert_eq!(o.stats(0).unwrap().lagged, 6);

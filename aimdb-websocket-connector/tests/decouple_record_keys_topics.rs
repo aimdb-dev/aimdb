@@ -182,7 +182,8 @@ async fn outbound_routes_preserve_record_order() {
         .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
 
     keys_topics.iter().for_each(|(k, t)| {
-        sb.configure::<Msg>(*k, |reg| {
+        let record_key_1 = aimdb_core::Name::<Msg>::interned(k);
+        sb.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .with_remote_access()
                 .link_to(format!("ws://{}", t).as_str())
@@ -223,7 +224,8 @@ async fn the_server_contributes_two_futures_whatever_the_route_count() {
             .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
         for i in 0..routes {
             let key = aimdb_core::StringKey::intern(format!("r{i}"));
-            sb.configure::<Msg>(key, move |reg| {
+            let record_key_2 = aimdb_core::Name::<Msg>::interned(key.as_ref());
+            sb.configure(record_key_2, move |reg| {
                 reg.buffer(BufferCfg::SingleLatest)
                     .with_remote_access()
                     .link_to(&format!("ws://t{i}"))
@@ -350,6 +352,7 @@ async fn test_fixture(
     grant_type: GrantType,
     query_handler: Option<CustomQueryHandler>,
 ) -> AimDb {
+    let key_cfg_1 = aimdb_core::Name::<Msg>::new("cfg");
     // Different pair of record - topic
     let keys_topics = [
         ("public.ledger", "public_info"),
@@ -476,7 +479,8 @@ async fn test_fixture(
     };
 
     keys_topics.iter().for_each(|(k, t)| {
-        sb.configure::<Msg>(*k, |reg| {
+        let record_key_3 = aimdb_core::Name::<Msg>::interned(k);
+        sb.configure(record_key_3, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .with_remote_access()
                 .link_to(format!("ws://{}", t).as_str())
@@ -487,7 +491,8 @@ async fn test_fixture(
 
     // Extra keys for the topic writer test
     for key in ["injected.granted", "injected.denied"] {
-        sb.configure::<Inject>(key, |reg| {
+        let record_key_4 = aimdb_core::Name::<Inject>::interned(key);
+        sb.configure(record_key_4, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 64 }) // don't coalesce successive values
                 .with_remote_access()
                 .link_to("ws://_") // placeholder; the writer sets it per value
@@ -500,7 +505,7 @@ async fn test_fixture(
     }
 
     // Write need different config
-    sb.configure::<Msg>("cfg", |reg| {
+    sb.configure(key_cfg_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://writable_topic")

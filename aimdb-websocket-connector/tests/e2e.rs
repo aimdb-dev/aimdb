@@ -148,11 +148,13 @@ async fn wait_for_listen(addr: SocketAddr) {
 /// Stand up a WS server (with the injector record) on an ephemeral port. The
 /// caller pre-configures `ws` (auth / late-join / …); we add `bind`/`path`.
 async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
+    let key_inject_1 = aimdb_core::Name::<Inject>::new("inject");
+    let key_moving_2 = aimdb_core::Name::<Inject>::new("moving");
     let addr = free_addr();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(ws.bind(addr).path("/ws"));
-    sb.configure::<Inject>("inject", |reg| {
+    sb.configure(key_inject_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 1024 })
             .with_remote_access()
             .link_to("ws://_") // overridden per-value by the topic writer
@@ -165,7 +167,8 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
     // Records with a current value, which late-join snapshots are built from
     // (a ring like `inject` has none). Each sends on its own key.
     for key in LATEST {
-        sb.configure::<Value>(key, |reg| {
+        let record_key_1 = aimdb_core::Name::<Value>::interned(key);
+        sb.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .with_remote_access()
                 .link_to(&format!("ws://{key}"))
@@ -174,7 +177,7 @@ async fn spawn(ws: WebSocketConnector) -> (SocketAddr, Arc<AimDb>) {
         });
     }
     // A current value whose topic its writer picks per value.
-    sb.configure::<Inject>("moving", |reg| {
+    sb.configure(key_moving_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://_")
@@ -436,6 +439,7 @@ async fn server_wildcard_late_join_snapshots_per_match() {
 
 #[tokio::test]
 async fn server_query_and_record_list() {
+    let key_temp_3 = aimdb_core::Name::<Temp>::new("temp");
     let addr = free_addr();
     let mut ws = WebSocketConnector::new();
     ws.register::<Temp>();
@@ -452,7 +456,7 @@ async fn server_query_and_record_list() {
         })
     });
     sb.extensions_mut().insert(handler);
-    sb.configure::<Temp>("temp", |reg| {
+    sb.configure(key_temp_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://temp")
@@ -575,6 +579,8 @@ async fn query_rows_are_filtered_by_the_client_grant() {
 /// same database, two clients — the grant is the only difference.
 #[tokio::test]
 async fn record_list_and_query_answer_to_the_client_grants() {
+    let key_temp_4 = aimdb_core::Name::<Temp>::new("temp");
+    let key_ledger_5 = aimdb_core::Name::<Ledger>::new("ledger");
     let addr = free_addr();
     let mut ws = WebSocketConnector::new().with_auth(GrantByQuery);
     ws.register::<Temp>();
@@ -594,14 +600,14 @@ async fn record_list_and_query_answer_to_the_client_grants() {
     });
     sb.extensions_mut().insert(handler);
 
-    sb.configure::<Temp>("temp", |reg| {
+    sb.configure(key_temp_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://temp")
             .with_serializer(|_ctx, t: &Temp| Ok(serde_json::to_vec(t).unwrap()))
             .finish();
     });
-    sb.configure::<Ledger>("ledger", |reg| {
+    sb.configure(key_ledger_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = sb.build().await.expect("build db");
@@ -863,11 +869,12 @@ async fn server_survives_malformed_frame() {
 
 #[tokio::test]
 async fn server_write_reaches_inbound_record() {
+    let key_cfg_6 = aimdb_core::Name::<Temp>::new("cfg");
     let addr = free_addr();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
-    sb.configure::<Temp>("cfg", |reg| {
+    sb.configure(key_cfg_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://cfg")
@@ -1031,13 +1038,14 @@ async fn topic_writer_snapshot_is_on_the_current_topic() {
 /// resolved first, then the value is serialized for a match.
 #[tokio::test]
 async fn snapshots_serialize_only_matching_links() {
+    let key_counted_7 = aimdb_core::Name::<Inject>::new("counted");
     static SERIALIZED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     let addr = free_addr();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WebSocketConnector::new().bind(addr).path("/ws"));
-    sb.configure::<Inject>("counted", |reg| {
+    sb.configure(key_counted_7, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://_")

@@ -62,11 +62,13 @@ fn build_db(
     connector: impl aimdb_core::ConnectorBuilder + 'static,
     value: u64,
 ) -> impl std::future::Future<Output = (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner)> {
+    let key_inbound_1 = aimdb_core::Name::<u64>::new("inbound");
+    let key_outbound_2 = aimdb_core::Name::<u64>::new("outbound");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
 
-    builder.configure::<u64>("inbound", |reg| {
+    builder.configure(key_inbound_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(INBOUND)
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -78,7 +80,7 @@ fn build_db(
             .finish();
     });
 
-    builder.configure::<u64>("outbound", move |reg| {
+    builder.configure(key_outbound_2, move |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(move |_ctx, producer| async move {
                 loop {
@@ -98,6 +100,7 @@ fn build_db(
 /// and a record round-trips through each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_backends_round_trip_against_one_broker() {
+    let key_inbound_3 = aimdb_core::Name::<u64>::new("inbound");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let url = format!("mqtt://127.0.0.1:{port}");
@@ -114,11 +117,11 @@ async fn both_backends_round_trip_against_one_broker() {
     let (embedded_db, embedded_runner) = build_db(embedded, 2).await;
 
     let mut native_in = native_db
-        .consumer::<u64>("inbound")
+        .consumer(key_inbound_3)
         .expect("native consumer")
         .subscribe();
     let mut embedded_in = embedded_db
-        .consumer::<u64>("inbound")
+        .consumer(key_inbound_3)
         .expect("embedded consumer")
         .subscribe();
 
@@ -203,12 +206,14 @@ fn build_pattern_db(
     connector: impl aimdb_core::ConnectorBuilder + 'static,
     calls: Arc<Calls>,
 ) -> impl std::future::Future<Output = (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner)> {
+    let key_readings_4 = aimdb_core::Name::<u64>::new("readings");
+    let key_kitchen_5 = aimdb_core::Name::<u64>::new("kitchen");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
 
     let pattern_calls = calls.clone();
-    builder.configure::<u64>("readings", move |reg| {
+    builder.configure(key_readings_4, move |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://parity/{device}/in")
             .key("device", 4)
@@ -222,7 +227,7 @@ fn build_pattern_db(
             .finish();
     });
 
-    builder.configure::<u64>("kitchen", move |reg| {
+    builder.configure(key_kitchen_5, move |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://parity/kitchen/in")
             .with_deserializer(move |_ctx, data: &[u8]| {
@@ -256,7 +261,8 @@ async fn pattern_link_covers_exact_link_on_both_backends() {
     let mut inbound = Vec::new();
     for db in [&native_db, &embedded_db] {
         for record in ["readings", "kitchen"] {
-            inbound.push(db.consumer::<u64>(record).expect("consumer").subscribe());
+            let record_key_1 = aimdb_core::Name::<u64>::new(record);
+            inbound.push(db.consumer(record_key_1).expect("consumer").subscribe());
         }
     }
 
@@ -314,7 +320,8 @@ fn build_qos_db(
         ("kitchen", "mqtt://parity/kitchen/in", Some(2)),
         ("telemetry", "mqtt://parity/telemetry", Some(0)),
     ] {
-        builder.configure::<u64>(key, move |reg| {
+        let record_key_2 = aimdb_core::Name::<u64>::interned(key);
+        builder.configure(record_key_2, move |reg| {
             let mut link = reg
                 .buffer(BufferCfg::SingleLatest)
                 .link_from(topic)
@@ -587,6 +594,7 @@ async fn both_backends_promise_the_keep_alive_they_were_given() {
 /// A keep-alive too short to halve is refused at build, not quietly adjusted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keep_alive_below_the_floor_fails_the_build() {
+    let key_outbound_6 = aimdb_core::Name::<u64>::new("outbound");
     // Port 1 is never listened on here: the build must fail on the keep-alive
     // before anything is dialled.
     let connector = MqttConnector::new("mqtt://127.0.0.1:1")
@@ -596,7 +604,7 @@ async fn a_keep_alive_below_the_floor_fails_the_build() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("outbound", |reg| {
+    builder.configure(key_outbound_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(|_ctx, producer| async move { producer.produce(1) })
             .link_to(OUTBOUND)
@@ -671,6 +679,8 @@ async fn a_hostname_is_a_broker_address_on_both_backends() {
 async fn carried_under_scheme<C: aimdb_core::ConnectorBuilder + 'static>(
     connector: impl FnOnce(String) -> C,
 ) -> (Vec<String>, String) {
+    let key_command_7 = aimdb_core::Name::<u64>::new("command");
+    let key_flow_avg_8 = aimdb_core::Name::<u64>::new("flow_avg");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));
@@ -678,13 +688,13 @@ async fn carried_under_scheme<C: aimdb_core::ConnectorBuilder + 'static>(
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector(format!("mqtt://127.0.0.1:{port}")));
-    builder.configure::<u64>("command", |reg| {
+    builder.configure(key_command_7, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt-cloud://parity/command")
             .with_deserializer(|_ctx, data: &[u8]| parse(data))
             .finish();
     });
-    builder.configure::<u64>("flow_avg", |reg| {
+    builder.configure(key_flow_avg_8, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(|_ctx, producer| async move {
                 loop {
@@ -790,10 +800,12 @@ async fn inline_envelopes_upgrade_and_downgrade_on_both_backends() {
         connector: impl aimdb_core::ConnectorBuilder + 'static,
         celsius: f32,
     ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+        let key_in_9 = aimdb_core::Name::<V2>::new("in");
+        let key_out_10 = aimdb_core::Name::<V2>::new("out");
         let mut b = AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter))
             .with_connector(connector);
-        b.configure::<V2>("in", |r| {
+        b.configure(key_in_9, |r| {
             r.buffer(BufferCfg::SingleLatest)
                 .link_from("mqtt://parity/envelope/in")
                 .with_qos(1)
@@ -802,7 +814,7 @@ async fn inline_envelopes_upgrade_and_downgrade_on_both_backends() {
                 .with_envelope(EnvelopeCarrier::Inline)
                 .finish();
         });
-        b.configure::<V2>("out", |r| {
+        b.configure(key_out_10, |r| {
             r.buffer(BufferCfg::SingleLatest)
                 .source(move |_, tx| async move {
                     loop {
@@ -834,8 +846,10 @@ async fn inline_envelopes_upgrade_and_downgrade_on_both_backends() {
         26.0,
     )
     .await;
-    let mut a = native.consumer::<V2>("in").unwrap().subscribe();
-    let mut b = embedded.consumer::<V2>("in").unwrap().subscribe();
+    let record_key_3 = aimdb_core::Name::<V2>::new("in");
+    let mut a = native.consumer(record_key_3).unwrap().subscribe();
+    let record_key_4 = aimdb_core::Name::<V2>::new("in");
+    let mut b = embedded.consumer(record_key_4).unwrap().subscribe();
     let broker =
         fake_broker_concurrent(listener, seen.clone(), Some(("parity/envelope/in", input)));
     let values = tokio::select! {

@@ -60,6 +60,7 @@ use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 /// tests, which hold the `OutboundRoutes`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_oversize_publish_is_skipped_and_the_session_stays_up() {
+    let key_blob_1 = aimdb_core::Name::<u64>::new("blob");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));
@@ -70,7 +71,7 @@ async fn an_oversize_publish_is_skipped_and_the_session_stays_up() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("blob", |reg| {
+    builder.configure(key_blob_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(|_ctx, producer| async move {
                 loop {

@@ -117,7 +117,8 @@ async fn main(spawner: Spawner) {
                 .transport(EmbassyNet::tcp(*stack, rx_buf, tx_buf)),
         );
 
-    builder.configure::<SensorData>("sensor-data", |reg| {
+    let record_1 = aimdb_core::Name::<SensorData>::new("sensor-data");
+    builder.configure(record_1, |reg| {
         reg.buffer_sized::<4, 1>(EmbassyBufferType::SingleLatest)
            .source(sensor_producer)
            // Outbound: Publish to MQTT

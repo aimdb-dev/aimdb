@@ -336,6 +336,7 @@ mod event_tests {
     use super::*;
     #[tokio::test]
     async fn ingest_panics_are_contained_and_typed() {
+        let key_value_1 = aimdb_core::Name::<u32>::new("value");
         use aimdb_core::ConnectorBuilder;
         use aimdb_tokio_adapter::TokioRecordRegistrarExt;
         struct Noop;
@@ -350,7 +351,7 @@ mod event_tests {
         let mut builder = aimdb_core::AimDbBuilder::new()
             .runtime(Arc::new(aimdb_tokio_adapter::TokioAdapter::new().unwrap()))
             .with_connector(Noop);
-        builder.configure::<u32>("value", |reg| {
+        builder.configure(key_value_1, |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest);
             reg.link_from("zenoh://tele")
                 .with_deserializer(|_, _| -> Result<u32, aimdb_core::IngestError> {

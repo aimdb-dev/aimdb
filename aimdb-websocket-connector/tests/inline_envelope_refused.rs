@@ -33,10 +33,11 @@ migration_chain! { type Current = Reading; steps {} }
 async fn build(
     link: impl FnOnce(&mut RecordRegistrar<'_, Reading>) + Send + 'static,
 ) -> Result<(), String> {
+    let key_reading_1 = aimdb_core::Name::<Reading>::new("reading");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WsClientConnector::new("ws://127.0.0.1:9/ws"));
-    builder.configure::<Reading>("reading", move |reg| {
+    builder.configure(key_reading_1, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         link(reg);
     });
@@ -89,10 +90,11 @@ async fn a_bare_link_still_builds() {
 async fn build_server(
     link: impl FnOnce(&mut RecordRegistrar<'_, Reading>) + Send + 'static,
 ) -> Result<(), String> {
+    let key_reading_2 = aimdb_core::Name::<Reading>::new("reading");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(WebSocketConnector::new().bind("127.0.0.1:0"));
-    builder.configure::<Reading>("reading", move |reg| {
+    builder.configure(key_reading_2, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         link(reg);
     });

@@ -15,7 +15,8 @@ async fn topo_order(seed: Option<u64>) -> Vec<String> {
         builder = builder.start_order_seed(seed);
     }
     for key in KEYS {
-        builder.configure::<u32>(key, |_reg| {});
+        let record_key_1 = aimdb_core::Name::<u32>::interned(key);
+        builder.configure(record_key_1, |_reg| {});
     }
     let (db, _runner) = builder.build().await.expect("build");
     db.inner().dependency_graph().topo_order().to_vec()

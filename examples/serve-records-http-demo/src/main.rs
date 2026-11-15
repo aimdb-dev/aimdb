@@ -13,47 +13,33 @@ struct Temperature(f32);
 struct Humidity(f32);
 #[derive(Clone, Debug)]
 struct WindowContact(bool);
+const WINDOW: aimdb_core::Name<WindowContact> = aimdb_core::Name::new("room.window");
+const HUMIDITY: aimdb_core::Name<Humidity> = aimdb_core::Name::new("room.humidity");
+const TEMPERATURE: aimdb_core::Name<Temperature> = aimdb_core::Name::new("room.temperature");
 
-fn current<T: Send + Clone + std::fmt::Debug + 'static>(
-    db: &AimDb,
-    key: &str,
-) -> Result<T, StatusCode> {
-    db.latest::<T>(key)
+fn current<N: aimdb_core::TypedName>(db: &AimDb, key: N) -> Result<N::Contract, StatusCode> {
+    db.latest(key)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map(|sample| sample.value)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
 async fn temperature(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
-    Ok(format!(
-        "{:.1}",
-        current::<Temperature>(&db, "room.temperature")?.0
-    ))
+    Ok(format!("{:.1}", current(&db, TEMPERATURE)?.0))
 }
 
 async fn humidity(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
-    Ok(format!(
-        "{:.1}",
-        current::<Humidity>(&db, "room.humidity")?.0
-    ))
+    Ok(format!("{:.1}", current(&db, HUMIDITY)?.0))
 }
 
 async fn window(Extension(db): Extension<AimDb>) -> Result<String, StatusCode> {
-    Ok(if current::<WindowContact>(&db, "room.window")?.0 {
-        "1"
-    } else {
-        "0"
-    }
-    .into())
+    Ok(if current(&db, WINDOW)?.0 { "1" } else { "0" }.into())
 }
 
 fn update(db: &AimDb, tick: u32) -> aimdb_core::DbResult<()> {
-    db.produce(
-        "room.temperature",
-        Temperature(21.5 + (tick % 10) as f32 * 0.1),
-    )?;
-    db.produce("room.humidity", Humidity(45.0 + (tick % 20) as f32 * 0.5))?;
-    db.produce("room.window", WindowContact((tick / 5) % 2 == 1))?;
+    db.produce(TEMPERATURE, Temperature(21.5 + (tick % 10) as f32 * 0.1))?;
+    db.produce(HUMIDITY, Humidity(45.0 + (tick % 20) as f32 * 0.5))?;
+    db.produce(WINDOW, WindowContact((tick / 5) % 2 == 1))?;
     Ok(())
 }
 
@@ -72,13 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .bind(addr)
                 .with_additional_routes(routes),
         );
-    builder.configure::<Temperature>("room.temperature", |reg| {
+    builder.configure(TEMPERATURE, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
-    builder.configure::<Humidity>("room.humidity", |reg| {
+    builder.configure(HUMIDITY, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
-    builder.configure::<WindowContact>("room.window", |reg| {
+    builder.configure(WINDOW, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
     let (db, runner) = builder.build().await?;

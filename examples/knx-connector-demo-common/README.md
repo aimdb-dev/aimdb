@@ -59,7 +59,7 @@ use knx_connector_demo_common::{dpt, temperature_monitor, TemperatureKey, Temper
 
 let knx = builder.connect(KnxConnector::new(TokioNet::udp(Ipv4Addr::UNSPECIFIED), TokioDelay, gateway_url));
 
-builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+builder.configure(TemperatureKey::LivingRoom, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
        .tap(temperature_monitor)
        .input(
@@ -73,7 +73,7 @@ builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
 
 ```rust
 // Same business logic, different buffer configuration
-builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+builder.configure(TemperatureKey::LivingRoom, |reg| {
     reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
        .tap(temperature_monitor)  // Same monitor works!
        .input(

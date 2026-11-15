@@ -28,8 +28,9 @@ struct Reading {
 }
 
 fn attach() -> aimdb_sync::AimDbHandle {
+    let key_sensor_reading_1 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Reading>("sensor.reading", |reg| {
+    builder.configure(key_sensor_reading_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
             .tap(|_ctx, _consumer| async move {});
     });
@@ -39,10 +40,9 @@ fn attach() -> aimdb_sync::AimDbHandle {
 /// The whole point: the child is refused, not quietly accepted.
 #[test]
 fn a_forked_child_is_refused_rather_than_silently_dropped() {
+    let key_sensor_reading_2 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let handle = attach();
-    let producer = handle
-        .producer::<Reading>("sensor.reading")
-        .expect("producer");
+    let producer = handle.producer(key_sensor_reading_2).expect("producer");
     let inherited = producer.clone();
 
     let code = in_forked_child(move || {
@@ -80,16 +80,17 @@ fn a_forked_child_is_refused_rather_than_silently_dropped() {
 /// backtrace on stderr during teardown.
 #[test]
 fn dropping_an_inherited_handle_does_not_panic() {
+    let key_sensor_reading_3 = aimdb_core::Name::<Reading>::new("sensor.reading");
     let to_detach = attach();
     let to_drop = attach();
 
     // Made before the fork, so the child inherits a consumer that was
     // legitimate when created — and allocated in the parent, where that is safe.
-    let mut inherited = to_drop
-        .consumer::<Reading>("sensor.reading")
-        .expect("consumer");
+    let mut inherited = to_drop.consumer(key_sensor_reading_3).expect("consumer");
 
     let code = in_forked_child(move || {
+        let key_sensor_reading_1 = aimdb_core::Name::<Reading>::new("sensor.reading");
+        let key_sensor_reading_4 = aimdb_core::Name::<Reading>::new("sensor.reading");
         // A binding asks this from a signal handler, before acting.
         let reports_closed = to_detach.is_closed() && to_drop.is_closed();
 
@@ -101,12 +102,12 @@ fn dropping_an_inherited_handle_does_not_panic() {
         // `producer` succeeds — it touches nothing, exactly as it does for an
         // unregistered key — and the refusal lands on first use instead. Both
         // are safe; what matters is that neither silently accepts a value.
-        let producer_defers = match to_drop.producer::<Reading>("sensor.reading") {
+        let producer_defers = match to_drop.producer(key_sensor_reading_4) {
             Ok(p) => matches!(p.set(Reading { value: 9 }), Err(SyncError::ForkedChild)),
             Err(_) => false,
         };
         let no_consumer = matches!(
-            to_drop.consumer::<Reading>("sensor.reading"),
+            to_drop.consumer(key_sensor_reading_1),
             Err(SyncError::ForkedChild)
         );
 

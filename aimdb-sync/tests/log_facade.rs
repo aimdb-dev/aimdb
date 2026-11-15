@@ -45,11 +45,12 @@ static CAPTURE: Capture = Capture {
 
 #[test]
 fn aimdb_sync_events_reach_the_log_destination() {
+    let key_sensor_reading_1 = aimdb_core::Name::<Reading>::new("sensor.reading");
     log::set_logger(&CAPTURE).expect("no other logger may be installed in this binary");
     log::set_max_level(log::LevelFilter::Trace);
 
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Reading>("sensor.reading", |reg| {
+    builder.configure(key_sensor_reading_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
             .tap(|_ctx, _consumer| async move {});
     });

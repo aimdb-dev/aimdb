@@ -33,7 +33,8 @@
 //! // client: mirror a record to a peer over the socket
 //! let mut b = AimDbBuilder::new().runtime(rt)
 //!     .with_connector(UdsClient::new("/run/aimdb.sock"));
-//! b.configure::<Temp>("temp", |r| {
+//! let record_1 = aimdb_core::Name::<Temp>::new("temp");
+//! b.configure(record_1, |r| {
 //!     r.buffer(BufferCfg::SingleLatest)
 //!         .with_remote_access()
 //!         .link_to("uds://temp")

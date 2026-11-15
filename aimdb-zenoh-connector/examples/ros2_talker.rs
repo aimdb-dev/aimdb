@@ -27,6 +27,8 @@ struct StringMsg {
     data: String,
 }
 
+const CHATTER: aimdb_data_contracts::Key<StringMsg> = aimdb_data_contracts::Key::new("chatter");
+
 #[tokio::main]
 async fn main() {
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
@@ -36,7 +38,7 @@ async fn main() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2);
-    builder.configure::<StringMsg>("chatter", |reg| {
+    builder.configure(CHATTER, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
         reg.linked_to("ros2://aimdb_chatter");
     });
@@ -47,7 +49,7 @@ async fn main() {
     loop {
         n += 1;
         db.produce(
-            "chatter",
+            CHATTER,
             StringMsg {
                 data: format!("aimdb {n}"),
             },

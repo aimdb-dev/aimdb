@@ -292,6 +292,7 @@ fn the_session_loop_connects_and_subscribes() {
     let outcome = drive(|broker_stack, client_stack| {
         let seen = &seen;
         async move {
+            let key_temperature_1 = aimdb_core::Name::<u64>::new("temperature");
             let stack: &'static Stack<'static> = leak(client_stack);
 
             let connector =
@@ -306,7 +307,7 @@ fn the_session_loop_connects_and_subscribes() {
             let mut builder = AimDbBuilder::new()
                 .runtime(Arc::new(TokioAdapter))
                 .with_connector(connector);
-            builder.configure::<u64>("temperature", |reg| {
+            builder.configure(key_temperature_1, |reg| {
                 reg.buffer(BufferCfg::SingleLatest)
                     .link_from("mqtt://sensors/temperature")
                     .with_deserializer(|_ctx, data: &[u8]| {

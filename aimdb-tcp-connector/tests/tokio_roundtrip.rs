@@ -23,8 +23,9 @@ struct Setting {
 
 #[tokio::test]
 async fn aimx_roundtrips_over_tcp_loopback() {
+    let key_setting_1 = aimdb_core::Name::<Setting>::new("setting");
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");

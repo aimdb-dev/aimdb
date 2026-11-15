@@ -34,20 +34,21 @@ impl Settable for Temperature {
 
 #[test]
 fn set_value_constructs_produces_and_is_consumed() {
+    let key_temperature_1 = aimdb_core::Name::<Temperature>::new("temperature");
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Temperature>("temperature", |reg| {
+    builder.configure(key_temperature_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {});
     });
 
     let handle = builder.attach().expect("failed to attach");
     let producer = handle
-        .producer::<Temperature>("temperature")
+        .producer(key_temperature_1)
         .expect("failed to create producer");
     let mut consumer = handle
-        .consumer::<Temperature>("temperature")
+        .consumer(key_temperature_1)
         .expect("failed to create consumer");
 
     producer.set_value(22.5).expect("set_value should succeed");
@@ -64,20 +65,21 @@ fn set_value_constructs_produces_and_is_consumed() {
 
 #[test]
 fn set_value_at_stamps_the_explicit_timestamp() {
+    let key_temperature_2 = aimdb_core::Name::<Temperature>::new("temperature");
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Temperature>("temperature", |reg| {
+    builder.configure(key_temperature_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {});
     });
 
     let handle = builder.attach().expect("failed to attach");
     let producer = handle
-        .producer::<Temperature>("temperature")
+        .producer(key_temperature_2)
         .expect("failed to create producer");
     let mut consumer = handle
-        .consumer::<Temperature>("temperature")
+        .consumer(key_temperature_2)
         .expect("failed to create consumer");
 
     // Explicit timestamp, not wall-clock — deterministic regardless of when the

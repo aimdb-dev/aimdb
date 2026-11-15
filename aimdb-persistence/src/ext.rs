@@ -27,14 +27,15 @@ where
     /// Rows are stored under the record key. That key is also the `topic` a
     /// history query returns, so history is authorized against the same name
     /// as live reads.
-    fn persist(&mut self) -> &mut RecordRegistrar<'a, T>;
+    fn persist(&mut self) -> &mut Self;
 }
 
-impl<'a, T> RecordRegistrarPersistExt<'a, T> for RecordRegistrar<'a, T>
+impl<'a, T, S: aimdb_core::SchemaState> RecordRegistrarPersistExt<'a, T>
+    for RecordRegistrar<'a, T, S>
 where
     T: serde::Serialize + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
-    fn persist(&mut self) -> &mut RecordRegistrar<'a, T> {
+    fn persist(&mut self) -> &mut Self {
         let record_name = self.record_key().to_owned();
         // Retrieve the backend from the builder's Extensions TypeMap, if configured.
         let backend: Option<Arc<dyn PersistenceBackend>> = self

@@ -1,0 +1,17 @@
+error[E0597]: `name` does not live long enough
+ --> tests/compile-fail/typed_key_borrowed_registration.rs:4:44
+  |
+3 |     let name = String::from("reading");
+  |         ---- binding `name` declared here
+4 |     let key = aimdb_core::Name::<u32>::new(&name);
+  |                                            ^^^^^ borrowed value does not live long enough
+5 |     b.configure(key, |_| {});
+  |     ------------------------ argument requires that `name` is borrowed for `'static`
+6 | }
+  | - `name` dropped here while still borrowed
+  |
+note: requirement that the value outlives `'static` introduced here
+ --> $WORKSPACE/aimdb-core/src/builder.rs
+  |
+  |     pub fn configure<K: crate::record_id::TypedKey>(
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -31,12 +31,13 @@ struct Setting {
 
 #[tokio::test]
 async fn aimx_roundtrips_over_the_serial_transport() {
+    let key_setting_1 = aimdb_core::Name::<Setting>::new("setting");
     let (server_end, client_end) = tokio::io::duplex(8192);
 
     // A real server db with one remotely-readable record (no connector — we drive
     // `serve` directly over the duplex below).
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");

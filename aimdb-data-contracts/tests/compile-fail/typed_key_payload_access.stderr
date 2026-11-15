@@ -1,0 +1,84 @@
+error[E0631]: type mismatch in closure arguments
+ --> tests/compile-fail/typed_key_payload_access.rs:5:7
+  |
+5 |     b.configure(READING, |_: &mut aimdb_core::RecordRegistrar<'_, contracts::V1>| {});
+  |       ^^^^^^^^^          -------------------------------------------------------- found signature defined here
+  |       |
+  |       expected due to this
+  |
+  = note: expected closure signature `for<'a, 'b> fn(&'a mut RecordRegistrar<'b, V2, Declared>) -> _`
+             found closure signature `fn(&mut RecordRegistrar<'_, V1, Undeclared>) -> _`
+note: required by a bound in `AimDbBuilder::configure`
+ --> $WORKSPACE/aimdb-core/src/builder.rs
+  |
+  |     pub fn configure<K: crate::record_id::TypedKey>(
+  |            --------- required by a bound in this associated function
+...
+  |         f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract, K::Schema>),
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `AimDbBuilder::configure`
+
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_payload_access.rs:6:50
+  |
+6 |     let _: aimdb_core::Consumer<contracts::V1> = db.consumer(READING).unwrap();
+  |            -----------------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Consumer<V1>`, found `Consumer<V2>`
+  |            |
+  |            expected due to this
+  |
+  = note: expected struct `Consumer<V1>`
+             found struct `Consumer<V2>`
+
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_payload_access.rs:7:33
+  |
+7 |     let _ = db.produce(READING, contracts::V1 { temp: 1.0 });
+  |                -------          ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `V2`, found `V1`
+  |                |
+  |                arguments to this method are incorrect
+  |
+note: method defined here
+ --> $WORKSPACE/aimdb-core/src/builder.rs
+  |
+  |     pub fn produce<N: crate::TypedName>(&self, key: N, value: N::Contract) -> DbResult<()> {
+  |            ^^^^^^^
+
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_payload_access.rs:8:57
+  |
+8 |     let _: Option<aimdb_core::Stamped<contracts::V1>> = db.latest(READING).unwrap();
+  |            ------------------------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<Stamped<V1>>`, found `Option<Stamped<V2>>`
+  |            |
+  |            expected due to this
+  |
+  = note: expected enum `std::option::Option<Stamped<V1>>`
+             found enum `std::option::Option<Stamped<V2>>`
+
+error[E0308]: mismatched types
+ --> tests/compile-fail/typed_key_payload_access.rs:9:56
+  |
+9 |     let _: aimdb_core::buffer::Reader<contracts::V1> = db.subscribe(READING).unwrap();
+  |            -----------------------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Reader<V1>`, found `Reader<V2>`
+  |            |
+  |            expected due to this
+  |
+  = note: expected struct `Reader<V1>`
+             found struct `Reader<V2>`
+
+error[E0631]: type mismatch in closure arguments
+  --> tests/compile-fail/typed_key_payload_access.rs:11:33
+   |
+11 |         r.link_to("test://out").with_serializer(|_, _: &contracts::V1| Ok(Vec::new())).finish();
+   |                                 ^^^^^^^^^^^^^^^ ---------------------- found signature defined here
+   |                                 |
+   |                                 expected due to this
+   |
+   = note: expected closure signature `for<'a> fn(RuntimeContext, &'a V2) -> _`
+              found closure signature `fn(RuntimeContext, &V1) -> _`
+note: required by a bound in `OutboundLinkBuilder::<T, R>::with_serializer`
+  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+   |
+   |     pub fn with_serializer<F>(mut self, f: F) -> Self
+   |            --------------- required by a bound in this associated function
+   |     where
+   |         F: Fn(crate::RuntimeContext, &T) -> Result<Vec<u8>, crate::connector::SerializeError>
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `OutboundLinkBuilder::<T, R>::with_serializer`

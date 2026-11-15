@@ -43,7 +43,8 @@
 //!     .with_connector(MqttConnector::new("mqtt://localhost:1883"));
 //!
 //! // Outbound: publish to MQTT (QoS/retain via the MqttLinkExt traits)
-//! builder.configure::<Temperature>("sensor.temp", |reg| {
+//! let record_1 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! builder.configure(record_1, |reg| {
 //!     reg.source(temperature_producer)
 //!        .link_to("mqtt://sensors/temperature")
 //!        .with_qos(1)
@@ -53,7 +54,8 @@
 //! });
 //!
 //! // Inbound: subscribe from MQTT
-//! builder.configure::<TempCommand>("command.temp", |reg| {
+//! let record_2 = aimdb_core::Name::<TempCommand>::new("command.temp");
+//! builder.configure(record_2, |reg| {
 //!     reg.link_from("mqtt://commands/temperature")
 //!        .with_deserializer(|_ctx, data| match data.try_into() {
 //!            Ok(bytes) => Ok(TempCommand { target: f32::from_be_bytes(bytes) }),
@@ -82,6 +84,7 @@
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
+//! let sensor = aimdb_core::Name::<SensorData>::new("sensor.data");
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
 //!     .with_connector(
@@ -89,12 +92,12 @@
 //!             .transport(EmbassyNet::tcp(stack, rx, tx))
 //!             .with_client_id("my-unique-device-id"),
 //!     )
-//!     .configure::<SensorData>(|reg| {
+//!     .configure(sensor, |reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
 //!            // Outbound: Publish to MQTT
 //!            .link_to("mqtt://sensors/data")
-//!            .with_serializer(|_ctx, data| postcard::to_vec(data).map_err(|_| /* ... */))
+//!            .with_serializer(|_ctx, data| postcard::to_vec(data).map_err(|_| "serialization failed".into()))
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/sensor")

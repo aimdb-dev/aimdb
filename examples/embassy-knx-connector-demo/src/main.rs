@@ -70,8 +70,7 @@ use {defmt_rtt as _, panic_probe as _};
 use board::PushButton;
 // Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    LightControl, LightControlKey, LightKey, LightState, TemperatureKey, TemperatureReading, dpt,
-    light_monitor, temperature_monitor,
+    LightControlKey, LightKey, TemperatureKey, dpt, light_monitor, temperature_monitor,
 };
 
 // ============================================================================
@@ -136,7 +135,7 @@ async fn main(spawner: Spawner) {
     // Using shared types and monitors from knx-connector-demo-common
     // ========================================================================
 
-    builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+    builder.configure(TemperatureKey::LivingRoom, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -146,7 +145,7 @@ async fn main(spawner: Spawner) {
             );
     });
 
-    builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
+    builder.configure(TemperatureKey::Bedroom, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -156,7 +155,7 @@ async fn main(spawner: Spawner) {
             );
     });
 
-    builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
+    builder.configure(TemperatureKey::Kitchen, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -171,7 +170,7 @@ async fn main(spawner: Spawner) {
     // Using shared types and monitors from knx-connector-demo-common
     // ========================================================================
 
-    builder.configure::<LightState>(LightKey::Main, |reg| {
+    builder.configure(LightKey::Main, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
@@ -181,7 +180,7 @@ async fn main(spawner: Spawner) {
             );
     });
 
-    builder.configure::<LightState>(LightKey::Hallway, |reg| {
+    builder.configure(LightKey::Hallway, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
@@ -196,7 +195,7 @@ async fn main(spawner: Spawner) {
     // Using shared LightControl type from knx-connector-demo-common
     // ========================================================================
 
-    builder.configure::<LightControl>(LightControlKey::Control, |reg| {
+    builder.configure(LightControlKey::Control, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access()
             .input(PushButton::on(b1))

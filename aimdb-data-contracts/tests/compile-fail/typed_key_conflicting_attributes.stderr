@@ -1,0 +1,6 @@
+error: use `contract = T` or `payload = T`, not both
+ --> tests/compile-fail/typed_key_conflicting_attributes.rs:2:1
+  |
+2 | / #[record_key(payload = u32, contract = u32)]
+3 | | enum Record { #[key = "reading"] Reading }
+  | |__________________________________________^

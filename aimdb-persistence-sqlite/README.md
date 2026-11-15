@@ -51,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime(runtime)
         .with_persistence(backend, Duration::from_secs(7 * 24 * 3600));
 
-    builder.configure::<Accuracy>("accuracy.vienna", |reg| {
+    let record_1 = aimdb_core::Name::<Accuracy>::new("accuracy.vienna");
+    builder.configure(record_1, |reg| {
         reg.persist();
     });
 

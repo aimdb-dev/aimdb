@@ -78,6 +78,7 @@ async fn build_db(
     dialer: CountingDialer,
     publish: Option<(Duration, u8)>,
 ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+    let key_temperature_1 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
@@ -92,7 +93,7 @@ async fn build_db(
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
 
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(&format!("mqtt://{SCRIPT_TOPIC}"))
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -105,7 +106,8 @@ async fn build_db(
     });
 
     if let Some((every, qos)) = publish {
-        builder.configure::<u64>("uptime", move |reg| {
+        let key_uptime_2 = aimdb_core::Name::<u64>::new("uptime");
+        builder.configure(key_uptime_2, move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .source(move |_ctx, producer| async move {
                     let mut n = 0u64;
@@ -171,6 +173,7 @@ async fn an_idle_session_wakes_at_the_ping_cadence() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_partial_packet_stops_neither_pings_nor_publishes() {
+    let key_temperature_3 = aimdb_core::Name::<u64>::new("temperature");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let log = Arc::new(Mutex::new(Log::default()));
@@ -182,7 +185,7 @@ async fn a_partial_packet_stops_neither_pings_nor_publishes() {
     let dialer = CountingDialer::new();
     let (db, runner) = build_db(port, dialer, Some((Duration::from_millis(100), 0))).await;
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_3)
         .expect("temperature consumer")
         .subscribe();
 
@@ -275,6 +278,7 @@ async fn a_slow_puback_does_not_block_the_ping() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbound_keeps_moving_under_an_inbound_flood() {
+    let key_temperature_4 = aimdb_core::Name::<u64>::new("temperature");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let log = Arc::new(Mutex::new(Log::default()));
@@ -286,7 +290,7 @@ async fn outbound_keeps_moving_under_an_inbound_flood() {
     // saturated too and the two are genuinely competing.
     let (db, runner) = build_db(port, dialer, Some((Duration::from_millis(2), 1))).await;
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_4)
         .expect("temperature consumer")
         .subscribe();
 
@@ -345,6 +349,7 @@ async fn outbound_keeps_moving_under_an_inbound_flood() {
 /// Failed at 19 of 40 while every packet went out through `try_send`-and-forget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_qos1_push_is_acknowledged() {
+    let key_temperature_5 = aimdb_core::Name::<u64>::new("temperature");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let log = Arc::new(Mutex::new(Log::default()));
@@ -356,7 +361,7 @@ async fn every_qos1_push_is_acknowledged() {
     let dialer = CountingDialer::new();
     let (db, runner) = build_db(port, dialer, None).await;
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_5)
         .expect("temperature consumer")
         .subscribe();
 
@@ -446,6 +451,7 @@ async fn a_qos2_route_is_visible_to_the_build_time_scan() {
 /// nine values a connector queue would have held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_a_stall_a_single_latest_record_sends_only_its_newest_value() {
+    let key_uptime_6 = aimdb_core::Name::<u64>::new("uptime");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
@@ -463,7 +469,7 @@ async fn after_a_stall_a_single_latest_record_sends_only_its_newest_value() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("uptime", |reg| {
+    builder.configure(key_uptime_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to("mqtt://sensors/uptime")
             .with_qos(1)
@@ -471,7 +477,7 @@ async fn after_a_stall_a_single_latest_record_sends_only_its_newest_value() {
             .finish();
     });
     let (db, runner) = builder.build().await.expect("build db");
-    let producer = db.producer::<u64>("uptime").expect("producer");
+    let producer = db.producer(key_uptime_6).expect("producer");
 
     let published = |log: &Mutex<Log>| -> Vec<String> {
         log.lock()

@@ -13,75 +13,78 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // No serde traits and no remote-access registration.
 #[derive(Clone, Debug, PartialEq)]
 struct Reading(i32);
+const FIRST: aimdb_core::Name<Reading> = aimdb_core::Name::new("first");
+const SECOND: aimdb_core::Name<Reading> = aimdb_core::Name::new("second");
+const RING: aimdb_core::Name<Reading> = aimdb_core::Name::new("ring");
+const MAILBOX: aimdb_core::Name<Reading> = aimdb_core::Name::new("mailbox");
+const UNBUFFERED: aimdb_core::Name<Reading> = aimdb_core::Name::new("unbuffered");
+const MISSING: aimdb_core::Name<Reading> = aimdb_core::Name::new("missing");
+const VALUE: aimdb_core::Name<Reading> = aimdb_core::Name::new("value");
+const WRONG_FIRST: aimdb_core::Name<u32> = aimdb_core::Name::new("first");
 
 #[tokio::test]
 async fn typed_latest_preserves_lookup_and_buffer_semantics() {
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    for key in ["first", "second"] {
-        builder.configure::<Reading>(key, |reg| {
+    for key in [FIRST, SECOND] {
+        builder.configure(key, |reg| {
             reg.buffer(BufferCfg::SingleLatest);
         });
     }
-    builder.configure::<Reading>("ring", |reg| {
+    builder.configure(RING, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 4 });
     });
-    builder.configure::<Reading>("mailbox", |reg| {
+    builder.configure(MAILBOX, |reg| {
         reg.buffer(BufferCfg::Mailbox);
     });
-    builder.configure::<Reading>("unbuffered", |_| {});
+    builder.configure(UNBUFFERED, |_| {});
     let (db, _runner) = builder.build().await.unwrap();
-    assert_eq!(
-        db.latest::<Reading>("first").unwrap().map(|s| s.value),
-        None
-    );
-    assert_eq!(
-        db.latest::<Reading>("unbuffered").unwrap().map(|s| s.value),
-        None
-    );
+
+    assert_eq!(db.latest(FIRST).unwrap().map(|s| s.value), None);
+
+    assert_eq!(db.latest(UNBUFFERED).unwrap().map(|s| s.value), None);
+
     assert!(matches!(
-        db.latest::<Reading>("missing"),
+        db.latest(MISSING),
         Err(DbError::RecordKeyNotFound { .. })
     ));
+
     assert!(matches!(
-        db.latest::<u32>("first"),
+        db.latest(WRONG_FIRST),
         Err(DbError::TypeMismatch { .. })
     ));
-    let mut reader = db.subscribe::<Reading>("first").unwrap();
-    db.produce("first", Reading(1)).unwrap();
-    db.produce("first", Reading(2)).unwrap();
-    db.produce("second", Reading(3)).unwrap();
+    let mut reader = db.subscribe(FIRST).unwrap();
+    db.produce(FIRST, Reading(1)).unwrap();
+    db.produce(FIRST, Reading(2)).unwrap();
+    db.produce(SECOND, Reading(3)).unwrap();
     for _ in 0..2 {
-        assert_eq!(
-            db.latest::<Reading>("first").unwrap().map(|s| s.value),
-            Some(Reading(2))
-        );
+        assert_eq!(db.latest(FIRST).unwrap().map(|s| s.value), Some(Reading(2)));
     }
     assert_eq!(reader.try_recv().unwrap().value, Reading(2));
+
+    assert_eq!(db.latest(FIRST).unwrap().map(|s| s.value), Some(Reading(2)));
+
     assert_eq!(
-        db.latest::<Reading>("first").unwrap().map(|s| s.value),
-        Some(Reading(2))
-    );
-    assert_eq!(
-        db.latest::<Reading>("second").unwrap().map(|s| s.value),
+        db.latest(SECOND).unwrap().map(|s| s.value),
         Some(Reading(3))
     );
-    db.produce("ring", Reading(4)).unwrap();
-    assert_eq!(db.latest::<Reading>("ring").unwrap().map(|s| s.value), None);
-    let mut mailbox = db.subscribe::<Reading>("mailbox").unwrap();
-    db.produce("mailbox", Reading(5)).unwrap();
+    db.produce(RING, Reading(4)).unwrap();
+
+    assert_eq!(db.latest(RING).unwrap().map(|s| s.value), None);
+    let mut mailbox = db.subscribe(MAILBOX).unwrap();
+    db.produce(MAILBOX, Reading(5)).unwrap();
+
     assert_eq!(
-        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
+        db.latest(MAILBOX).unwrap().map(|s| s.value),
         Some(Reading(5))
     );
+
     assert_eq!(
-        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
+        db.latest(MAILBOX).unwrap().map(|s| s.value),
         Some(Reading(5))
     );
     assert_eq!(mailbox.try_recv().unwrap().value, Reading(5));
-    assert_eq!(
-        db.latest::<Reading>("mailbox").unwrap().map(|s| s.value),
-        None
-    );
+
+    assert_eq!(db.latest(MAILBOX).unwrap().map(|s| s.value), None);
 }
 
 struct DenyAuth;
@@ -98,7 +101,7 @@ async fn value(
     Extension(db): Extension<AimDb>,
     State(prefix): State<String>,
 ) -> Result<String, StatusCode> {
-    db.latest::<Reading>("value")
+    db.latest(VALUE)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map(|r| format!("{prefix}{}", r.value.0))
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
@@ -146,7 +149,7 @@ async fn additional_routes_receive_live_db_and_preserve_state_without_ws_auth() 
                 .with_auth(DenyAuth)
                 .with_additional_routes(routes),
         );
-    builder.configure::<Reading>("value", |reg| {
+    builder.configure(VALUE, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
     });
     let (db, runner) = builder.build().await.unwrap();
@@ -154,7 +157,7 @@ async fn additional_routes_receive_live_db_and_preserve_state_without_ws_auth() 
     let response = http_get(addr, "/value").await;
     assert!(response.starts_with("HTTP/1.1 503"), "{response}");
     for n in [7, 9] {
-        db.produce("value", Reading(n)).unwrap();
+        db.produce(VALUE, Reading(n)).unwrap();
         let response = http_get(addr, "/value").await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.ends_with(&format!("value={n}")), "{response}");

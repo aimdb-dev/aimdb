@@ -42,6 +42,7 @@
 //! use aimdb_derive::RecordKey;
 //!
 //! #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
+//! #[record_key(payload = Temperature)]
 //! pub enum AppKey {
 //!     #[key = "temp.indoor"]
 //!     TempIndoor,
@@ -50,7 +51,7 @@
 //! }
 //!
 //! // Compile-time typo detection!
-//! builder.configure::<Temperature>(AppKey::TempIndoor, |reg| { /* … */ });
+//! builder.configure(AppKey::TempIndoor, |reg| { /* … */ });
 //! ```
 
 use alloc::{boxed::Box, collections::BTreeSet, string::ToString};
@@ -101,6 +102,7 @@ pub use aimdb_derive::RecordKey;
 ///
 /// ```rust,ignore
 /// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
+/// #[record_key(payload = Temperature)]
 /// pub enum AppKey {
 ///     #[key = "temp.indoor"]
 ///     TempIndoor,
@@ -113,6 +115,7 @@ pub use aimdb_derive::RecordKey;
 ///
 /// ```rust,ignore
 /// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
+/// #[record_key(payload = Temperature)]
 /// pub enum SensorKey {
 ///     #[key = "temp.indoor"]
 ///     #[link_address = "mqtt://sensors/temp/indoor"]
@@ -189,14 +192,6 @@ pub trait RecordKey:
     #[inline]
     fn link_address(&self) -> Option<&str> {
         None
-    }
-}
-
-// Blanket implementation for &'static str
-impl RecordKey for &'static str {
-    #[inline]
-    fn as_str(&self) -> &'static str {
-        self
     }
 }
 
@@ -643,10 +638,10 @@ mod tests {
     }
 
     #[test]
-    fn test_static_str_record_key() {
-        // &'static str implements RecordKey
-        let key: &'static str = "sensors.temp";
-        assert_eq!(<&str as RecordKey>::as_str(&key), "sensors.temp");
+    fn test_name_record_key() {
+        // A `Name<T>` with a static name implements RecordKey
+        let key = Name::<u32>::new("sensors.temp");
+        assert_eq!(key.as_str(), "sensors.temp");
     }
 
     #[test]
@@ -700,5 +695,154 @@ mod tests {
         assert_eq!(map.get("key.one"), Some(&1));
         assert_eq!(map.get("key.two"), Some(&2));
         assert_eq!(map.get("key.nonexistent"), None);
+    }
+}
+// ============================================================================
+// Typed keys (063): the one way to name a record
+// ============================================================================
+/// Names a record and its payload type: what `producer` and `consumer` take.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not name a record and its payload type",
+    note = "pass a `Key<T>`, or a `Name<T>` for a record without a data contract or a name known only at run time"
+)]
+pub trait TypedName {
+    /// The payload type of the record.
+    type Contract: Send + Sync + Clone + core::fmt::Debug + 'static;
+    fn name(&self) -> &str;
+}
+/// A typed name that can be stored: what `configure`, `transform` and join
+/// inputs take.
+///
+/// `aimdb-core` does not know `SchemaType` (it lives in
+/// `aimdb-data-contracts`, which depends on core), so the contract's identity
+/// is carried as a const here and filled from `SchemaType` by whoever
+/// implements this trait.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a typed record key",
+    note = "declare the record once as a `Key<T>` (or a `Name<T>` without a data contract) and pass that"
+)]
+pub trait TypedKey: TypedName + RecordKey + Copy {
+    /// Contract name and version reported as the record's schema; `None` for
+    /// a record without a data contract.
+    const SCHEMA: Option<(&'static str, u32)>;
+    /// [`Declared`] when [`SCHEMA`](Self::SCHEMA) is `Some`, [`Undeclared`]
+    /// otherwise. `configure` hands out a registrar in this state, so
+    /// contract-only verbs (`linked_to`, `publish`, `observe`, …) exist only
+    /// on records whose key declares their contract.
+    type Schema: SchemaState;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Whether a record's key declares a data contract: [`Declared`] or
+/// [`Undeclared`]. The third type parameter of
+/// [`RecordRegistrar`](crate::typed_api::RecordRegistrar).
+pub trait SchemaState: sealed::Sealed + Send + Sync + 'static {}
+
+/// The record's key declares its contract (`Key<T>`,
+/// `#[record_key(contract = T)]`): contract-only verbs are available.
+#[derive(Debug)]
+pub enum Declared {}
+
+/// The record's key declares no contract (`Name<T>`,
+/// `#[record_key(payload = T)]`): contract-only verbs do not compile.
+#[derive(Debug)]
+pub enum Undeclared {}
+
+impl sealed::Sealed for Declared {}
+impl sealed::Sealed for Undeclared {}
+impl SchemaState for Declared {}
+impl SchemaState for Undeclared {}
+
+/// Implemented only by [`Declared`]: the bound contract-only verbs put on a
+/// registrar's schema state.
+#[diagnostic::on_unimplemented(
+    message = "this record's key declares no data contract",
+    note = "contract verbs (`linked_to`, `linked_from`, `publish`, `subscribe`, `observe`) need the record declared with `Key<T>` or `#[record_key(contract = T)]`, not `Name<T>` or `payload = T`"
+)]
+pub trait ContractDeclared: SchemaState {}
+impl ContractDeclared for Declared {}
+/// A record name with its payload type and no data contract.
+///
+/// `Name<'static, T>` is a key: a `const` for a record without a contract, or
+/// [`interned`](Self::interned) for a name learned at run time. A shorter
+/// borrow is enough to look a record up.
+pub struct Name<'a, T> {
+    name: &'a str,
+    link: Option<&'a str>,
+    _payload: core::marker::PhantomData<fn() -> T>,
+}
+impl<'a, T> Name<'a, T> {
+    pub const fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            link: None,
+            _payload: core::marker::PhantomData,
+        }
+    }
+    pub const fn with_link(self, address: &'a str) -> Self {
+        Self {
+            link: Some(address),
+            ..self
+        }
+    }
+}
+impl<T> Name<'static, T> {
+    /// A key for a name learned at run time. The name is interned (leaked),
+    /// so this is for registration at startup; a lookup borrows instead.
+    pub fn interned(name: &str) -> Self {
+        Self::new(StringKey::intern(name).as_str())
+    }
+}
+impl<T> Clone for Name<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Name<'_, T> {}
+impl<T> PartialEq for Name<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+impl<T> Eq for Name<'_, T> {}
+impl<T> core::hash::Hash for Name<'_, T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
+}
+impl<T> core::fmt::Debug for Name<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+impl<T> core::borrow::Borrow<str> for Name<'_, T> {
+    fn borrow(&self) -> &str {
+        self.name
+    }
+}
+impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedName for Name<'_, T> {
+    type Contract = T;
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+impl<T: 'static> RecordKey for Name<'static, T> {
+    fn as_str(&self) -> &'static str {
+        self.name
+    }
+    fn link_address(&self) -> Option<&str> {
+        self.link
+    }
+}
+impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedKey for Name<'static, T> {
+    const SCHEMA: Option<(&'static str, u32)> = None;
+    type Schema = Undeclared;
+}
+impl<T> AsRef<str> for Name<'_, T> {
+    fn as_ref(&self) -> &str {
+        self.name
     }
 }

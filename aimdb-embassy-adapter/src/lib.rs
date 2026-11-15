@@ -182,7 +182,8 @@ where
 }
 
 #[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
-impl<T> EmbassyRecordRegistrarExt<T> for aimdb_core::RecordRegistrar<'_, T>
+impl<T, S: aimdb_core::SchemaState> EmbassyRecordRegistrarExt<T>
+    for aimdb_core::RecordRegistrar<'_, T, S>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {
@@ -272,7 +273,7 @@ where
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &mut self,
         buffer_type: EmbassyBufferType,
-    ) -> &mut aimdb_core::RecordRegistrar<'a, T>;
+    ) -> &mut Self;
 
     /// Registers a producer with additional context (e.g., hardware peripherals)
     ///
@@ -291,7 +292,8 @@ where
     /// ```ignore
     /// use embassy_stm32::exti::ExtiInput;
     ///
-    /// builder.configure::<LightControl>(|reg| {
+    /// let light = aimdb_core::Name::<LightControl>::new("light.control");
+    /// builder.configure(light, |reg| {
     ///     reg.buffer_sized::<8, 2>(EmbassyBufferType::SingleLatest)
     ///         .link_to("knx://1/0/6")
     ///         .source_with_context(button, button_handler)
@@ -308,11 +310,7 @@ where
     ///     // Produce data...
     /// }
     /// ```
-    fn source_with_context<Ctx, F, Fut>(
-        &mut self,
-        context: Ctx,
-        f: F,
-    ) -> &mut aimdb_core::RecordRegistrar<'a, T>
+    fn source_with_context<Ctx, F, Fut>(&mut self, context: Ctx, f: F) -> &mut Self
     where
         Ctx: Send + 'static,
         F: FnOnce(aimdb_core::RuntimeContext, aimdb_core::Producer<T>, Ctx) -> Fut + Send + 'static,
@@ -320,14 +318,15 @@ where
 }
 
 #[cfg(all(feature = "embassy-runtime", feature = "embassy-sync"))]
-impl<'a, T> EmbassyRecordRegistrarExtCustom<'a, T> for aimdb_core::RecordRegistrar<'a, T>
+impl<'a, T, S: aimdb_core::SchemaState> EmbassyRecordRegistrarExtCustom<'a, T>
+    for aimdb_core::RecordRegistrar<'a, T, S>
 where
     T: Send + Sync + Clone + core::fmt::Debug + 'static,
 {
     fn buffer_sized<const CAP: usize, const CONSUMERS: usize>(
         &mut self,
         buffer_type: EmbassyBufferType,
-    ) -> &mut aimdb_core::RecordRegistrar<'a, T> {
+    ) -> &mut Self {
         use aimdb_core::buffer::{Buffer, BufferCfg};
         use alloc::boxed::Box;
 
@@ -359,11 +358,7 @@ where
         self.buffer_with_cfg(buffer, cfg)
     }
 
-    fn source_with_context<Ctx, F, Fut>(
-        &mut self,
-        context: Ctx,
-        f: F,
-    ) -> &mut aimdb_core::RecordRegistrar<'a, T>
+    fn source_with_context<Ctx, F, Fut>(&mut self, context: Ctx, f: F) -> &mut Self
     where
         Ctx: Send + 'static,
         F: FnOnce(aimdb_core::RuntimeContext, aimdb_core::Producer<T>, Ctx) -> Fut + Send + 'static,

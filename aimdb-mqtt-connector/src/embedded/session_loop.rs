@@ -849,13 +849,14 @@ mod proofs {
     /// One route to `t` whose owned serializer emits as many bytes as the
     /// value says, with a message of `payload_len` bytes staged.
     async fn staged(payload_len: usize) -> (aimdb_core::AimDb, OutboundRoutes, RouteId) {
+        let key_blob_1 = aimdb_core::Name::<usize>::new("blob");
         use aimdb_core::buffer::BufferCfg;
         use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
         let mut builder = aimdb_core::AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter))
             .with_connector(NoTransport);
-        builder.configure::<usize>("blob", |reg| {
+        builder.configure(key_blob_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_to("mqtt://t")
                 .with_serializer(|_ctx, n: &usize| Ok(alloc::vec![b'x'; *n]))
@@ -863,7 +864,7 @@ mod proofs {
         });
         let (db, _runner) = builder.build().await.expect("build");
         let mut outbound = OutboundRoutes::new(&db, "mqtt").expect("routes");
-        db.produce("blob", payload_len).expect("produce");
+        db.produce(key_blob_1, payload_len).expect("produce");
         let id = poll_fn(|cx| outbound.poll_stage(cx))
             .await
             .expect("route open");

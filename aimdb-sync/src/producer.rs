@@ -32,7 +32,7 @@ use core::marker::PhantomData;
 #[derive(Clone)]
 pub struct SyncProducer<T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Sync + 'static + Debug + Clone,
 {
     /// The runtime this producer publishes into.
     ///
@@ -66,7 +66,7 @@ where
 
 impl<T> SyncProducer<T>
 where
-    T: Send + 'static + Debug + Clone,
+    T: Send + Sync + 'static + Debug + Clone,
 {
     /// Create a new sync producer (internal use only)
     pub(crate) fn new(rt: Weak<Runtime>, key: impl AsRef<str>) -> Self {
@@ -130,14 +130,16 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let producer = handle.producer::<MyData>("my_data")?;
+    /// let record_1 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let producer = handle.producer(record_1)?;
     /// producer.set(MyData { value: 42 })?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn set(&self, value: T) -> SyncResult<()> {
         let rt = self.runtime()?;
-        rt.db()?.produce(&self.key, value).map_err(SyncError::Db)
+        let record_key_1 = aimdb_core::Name::<T>::new(&self.key);
+        rt.db()?.produce(record_key_1, value).map_err(SyncError::Db)
     }
 }
 
@@ -150,7 +152,7 @@ where
 #[cfg(feature = "data-contracts")]
 impl<T> SyncProducer<T>
 where
-    T: aimdb_data_contracts::Settable + Send + 'static + Debug + Clone,
+    T: aimdb_data_contracts::Settable + Send + Sync + 'static + Debug + Clone,
 {
     /// Construct via `T::set(value, now)` and send via [`set`](Self::set).
     ///
@@ -184,7 +186,8 @@ where
     /// }
     ///
     /// let handle = AimDbBuilder::new().runtime(Arc::new(TokioAdapter)).attach()?;
-    /// let producer = handle.producer::<Temperature>("temperature")?;
+    /// let record_2 = aimdb_core::Name::<Temperature>::new("temperature");
+    /// let producer = handle.producer(record_2)?;
     /// producer.set_value(22.5)?; // constructs Temperature::set(22.5, now_ms) and sends
     /// # Ok(())
     /// # }
@@ -213,7 +216,7 @@ mod tests {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
     #[allow(dead_code)]
-    fn check<X: Send + 'static + core::fmt::Debug + Clone>() {
+    fn check<X: Send + Sync + 'static + core::fmt::Debug + Clone>() {
         assert_send::<crate::SyncProducer<X>>();
         assert_sync::<crate::SyncProducer<X>>();
     }

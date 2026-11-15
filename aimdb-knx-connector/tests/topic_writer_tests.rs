@@ -314,12 +314,14 @@ fn connector() -> KnxConnector<TokioUdpBinder, TokioDelay> {
 /// Running it would need a KNX gateway.
 #[tokio::test]
 async fn test_knx_topic_writer_with_connector_registration() {
+    let key_knx_dimmer_living_1 = aimdb_core::Name::<DimmerValue>::new("knx.dimmer.living");
+    let key_knx_hvac_setpoint_2 = aimdb_core::Name::<TemperatureSetpoint>::new("knx.hvac.setpoint");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(connector());
 
-    builder.configure::<DimmerValue>("knx.dimmer.living", |reg| {
+    builder.configure(key_knx_dimmer_living_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext, producer: Producer<DimmerValue>| async move {
@@ -331,7 +333,7 @@ async fn test_knx_topic_writer_with_connector_registration() {
             .with_serializer(|_ctx, dimmer: &DimmerValue| Ok(dimmer.to_knx_bytes()))
             .finish();
     });
-    builder.configure::<TemperatureSetpoint>("knx.hvac.setpoint", |reg| {
+    builder.configure(key_knx_hvac_setpoint_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to("knx://5/0/0") // Fallback for invalid zones
             .with_topic_writer(GROUP_ADDRESS_CAPACITY, HvacZone)
@@ -344,6 +346,7 @@ async fn test_knx_topic_writer_with_connector_registration() {
 
 #[tokio::test]
 async fn test_knx_topic_resolver_with_connector_registration() {
+    let key_knx_switch_zone1_3 = aimdb_core::Name::<SwitchState>::new("knx.switch.zone1");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     std::env::set_var("KNX_SWITCH_INPUT", "1/2/10");
@@ -353,7 +356,7 @@ async fn test_knx_topic_resolver_with_connector_registration() {
         .with_connector(connector());
 
     // Register switch with dynamic group address resolver
-    builder.configure::<SwitchState>("knx.switch.zone1", |reg| {
+    builder.configure(key_knx_switch_zone1_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("knx://1/2/0") // Fallback group address
             .with_topic_resolver(|| {

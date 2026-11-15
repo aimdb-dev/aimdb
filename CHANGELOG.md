@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- Typed record declarations infer payload types across the in-process API; keys now own schema metadata, including records without links.
+
 ### Added — codec-independent value envelopes (design 062)
 
 - Opt-in inline headers and explicit static bindings identify each linked value

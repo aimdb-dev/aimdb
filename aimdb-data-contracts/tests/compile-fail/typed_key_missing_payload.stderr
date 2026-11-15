@@ -1,0 +1,5 @@
+error: RecordKey requires contract = T or payload = T
+ --> tests/compile-fail/typed_key_missing_payload.rs:2:1
+  |
+2 | enum Record { #[key = "reading"] Reading }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

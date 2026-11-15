@@ -217,6 +217,7 @@ async fn run_set_mode(device: String, baud: u32) {
 
 /// Serve a `counter` record (incrementing once per second) over the serial line.
 async fn run_server(device: String, baud: u32) {
+    let key_counter_1 = aimdb_core::Name::<Counter>::new("counter");
     println!("[server] serving AimX over {device} @ {baud} baud (Ctrl-C to stop)");
 
     // The application opens the device; the connector only frames it.
@@ -226,14 +227,14 @@ async fn run_server(device: String, baud: u32) {
         .with_connector(
             SerialServer::new(TokioByteStream(port)).with_config(AimxConfig::uds_default()),
         );
-    builder.configure::<Counter>("counter", |reg| {
+    builder.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, runner) = builder.build().await.expect("build db");
     let db = Arc::new(db);
 
     // Drive a value into the record once per second.
-    let producer = db.producer::<Counter>("counter").expect("producer");
+    let producer = db.producer(key_counter_1).expect("producer");
     tokio::spawn(async move {
         let mut value = 0u64;
         loop {

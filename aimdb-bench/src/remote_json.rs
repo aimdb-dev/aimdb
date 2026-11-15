@@ -83,13 +83,15 @@ impl RemoteJsonHarness {
     /// are registered.
     pub async fn new() -> Self {
         let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-        builder.configure::<RemoteJsonSample>(RECORD_KEY, |record: &mut RecordRegistrar<_>| {
+        let record_key_1 = aimdb_core::Name::<RemoteJsonSample>::interned(RECORD_KEY);
+        builder.configure(record_key_1, |record: &mut RecordRegistrar<_>| {
             record.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
 
         let (db, _runner) = builder.build().await.expect("remote JSON bench db");
+        let record_key_2 = aimdb_core::Name::<RemoteJsonSample>::new(RECORD_KEY);
         let producer = db
-            .producer::<RemoteJsonSample>(RECORD_KEY)
+            .producer(record_key_2)
             .expect("remote JSON bench producer");
         producer.produce(sample(0));
 

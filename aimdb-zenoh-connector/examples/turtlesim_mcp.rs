@@ -183,6 +183,11 @@ async fn main() {
 }
 
 async fn run<P: TurtlePose>() {
+    let key_turtle_goal_1 = aimdb_core::Name::<Goal>::new("turtle.goal");
+    // Pose and Twist are ROS contracts: `Key<T>` declares their schema, which
+    // `linked_from` / `linked_to` require. Goal is plain app state: `Name<T>`.
+    let pose_key = aimdb_data_contracts::Key::<P>::new("turtle.pose");
+    let cmd_vel_key = aimdb_data_contracts::Key::<Twist>::new("turtle.cmd_vel");
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
     let socket =
         std::env::var("AIMX_SOCKET").unwrap_or_else(|_| "/tmp/aimdb-turtlesim.sock".into());
@@ -206,22 +211,21 @@ async fn run<P: TurtlePose>() {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2)
         .with_connector(aimx);
-    builder.configure::<Goal>("turtle.goal", |reg| {
+    builder.configure(key_turtle_goal_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure::<P>("turtle.pose", |reg| {
+    builder.configure(pose_key, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from("ros2://turtle1/pose");
     });
     // Only the newest velocity command matters.
-    builder.configure::<Twist>("turtle.cmd_vel", |reg| {
+    builder.configure(cmd_vel_key, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .transform_join(|join| {
-                join.input::<Goal>("turtle.goal")
-                    .input::<P>("turtle.pose")
-                    .on_triggers(|mut rx, producer| async move {
+                join.input(key_turtle_goal_1).input(pose_key).on_triggers(
+                    |mut rx, producer| async move {
                         let mut goal = Goal::Stop;
                         let mut pose = None;
                         let mut moving = false;
@@ -248,7 +252,8 @@ async fn run<P: TurtlePose>() {
                                 None => {}
                             }
                         }
-                    })
+                    },
+                )
             })
             .linked_to("ros2://turtle1/cmd_vel");
     });

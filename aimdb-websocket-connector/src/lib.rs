@@ -40,7 +40,8 @@
 //!             .path("/ws")
 //!             .with_late_join(true),
 //!     );
-//! builder.configure::<Temperature>("sensors.temp.vienna", |reg| {
+//! let record_1 = aimdb_core::Name::<Temperature>::new("sensors.temp.vienna");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!         .link_to("ws://sensors/temperature/vienna")
 //!         .with_serializer(|_ctx, t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))
@@ -67,7 +68,8 @@
 //!     .with_connector(
 //!         WsClientConnector::new("wss://cloud.example.com/ws"),
 //!     );
-//! builder.configure::<Temperature>("sensors.temp", |reg| {
+//! let record_2 = aimdb_core::Name::<Temperature>::new("sensors.temp");
+//! builder.configure(record_2, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 100 })
 //!         .link_to("ws-client://sensors/temp")
 //!         .with_serializer(|_ctx, t: &Temperature| Ok(serde_json::to_vec(t).expect("serialize")))

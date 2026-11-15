@@ -1,0 +1,32 @@
+error[E0277]: `&str` is not a typed record key
+ --> tests/compile-fail/typed_key_bare_string.rs:3:17
+  |
+3 |     b.configure("reading", |_| {});
+  |       --------- ^^^^^^^^^ the trait `TypedKey` is not implemented for `&str`
+  |       |
+  |       required by a bound introduced by this call
+  |
+  = note: declare the record once as a `Key<T>` (or a `Name<T>` without a data contract) and pass that
+help: the trait `TypedKey` is implemented for `aimdb_core::Name<'static, T>`
+ --> $WORKSPACE/aimdb-core/src/record_id.rs
+  |
+  | impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedKey for Name<'static, T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `AimDbBuilder::configure`
+ --> $WORKSPACE/aimdb-core/src/builder.rs
+  |
+  |     pub fn configure<K: crate::record_id::TypedKey>(
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `AimDbBuilder::configure`
+
+error[E0277]: `&str` is not a typed record key
+ --> tests/compile-fail/typed_key_bare_string.rs:3:5
+  |
+3 |     b.configure("reading", |_| {});
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `TypedKey` is not implemented for `&str`
+  |
+  = note: declare the record once as a `Key<T>` (or a `Name<T>` without a data contract) and pass that
+help: the trait `TypedKey` is implemented for `aimdb_core::Name<'static, T>`
+ --> $WORKSPACE/aimdb-core/src/record_id.rs
+  |
+  | impl<T: Send + Sync + Clone + core::fmt::Debug + 'static> TypedKey for Name<'static, T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

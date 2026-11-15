@@ -1,23 +1,31 @@
 # 063 — Typed record keys
 
-**Status:** 📝 Proposed
+**Status:** 📝 Proposed (typed keys); versioned links and wire proof landed in 062
+
+**Implementation baseline:** `main` at
+[`07c15e8` — value envelopes for versioned links (#477)](https://github.com/aimdb-dev/aimdb/commit/07c15e833ccd2dffe2e55a5c35ceb5d679c2c757).
+This document specifies the remaining typed-key change. Its `TypedName`,
+`TypedKey`, `Key<T>`, `Name<T>` and derive attributes are proposed APIs;
+the carrier, migration and version-selection APIs in §6 already exist.
 
 **Goal:** One contracts crate declares each record once, and that
 declaration compiles for MCU, edge and cloud. A hub states which older
 contract versions it still reads, and the compiler checks that statement.
-The design is done when the rolling-upgrade test in §7 passes.
+The design is done when the existing rolling-upgrade fixture uses those
+declarations and the typed-key checks in §7 pass in CI.
 
 **Scope:** A record is declared as a key bound to its payload type
 (`Key<T>`, or a `RecordKey` derive with `contract = T`). `configure`,
 `producer`, `consumer`, `transform`, join inputs, links and `aimdb-sync`
 take that declaration and infer the payload type from it, so a key used
-with the wrong type does not compile. Links declare which contract
-versions they accept from or send to peers, and that declaration is
-checked against the contract's migration chain at compile time.
+with the wrong type does not compile. The versioned links delivered by
+062 retain their compile-time migration-chain checks and infer their
+current payload type from the record's key.
 
-**The typed key is the only way to name a record.** The string-keyed
-functions are removed, not renamed: there is no `configure::<T>("name")`
-and no `_dyn` variant. There are two key types: `Key<T>` for a record with
+**The typed key is the only way to configure, read or write a record through
+the in-process typed API.** The string-keyed functions are removed, not
+renamed: there is no `configure::<T>("name")` and no `_dyn` variant.
+There are two key types: `Key<T>` for a record with
 a data contract, and `Name<T>` for everything else, which is a record
 without a contract or a name learned at run time (§5.2). Breaking for every call site
 that names a record; §5.4 measures the conversion.
@@ -28,12 +36,35 @@ deferred (§8).
 **Related:** 015 (record ID architecture), 016 (`RecordKey` trait), 039
 (`no_std` migrations), 041 (data contracts), 055 (wildcard inbound
 links). **Wire half:** [062](062-value-envelope.md). This design says
-what a record *accepts*; 062 says what a value *is*. The acceptance test
-(§7) needs both.
+what a record *declares* and how callers reference it; 062 supplies value
+identity and the implemented link admission rules. The acceptance test
+(§7) builds on both.
 
-A throwaway spike tested this design together with 062, including the
-rolling upgrade of §7 over both MQTT backends. §12 lists what it showed;
-the corrections are already in the text above it.
+### Landed work and remaining work
+
+| Area | State at the implementation baseline |
+|---|---|
+| `TypedName`, `TypedKey`, `Key<T>`, `Name<T>` | Not implemented; defined here in §4–§5 |
+| `RecordKey` derive with `contract` / `payload` | Not implemented; the current derive remains untyped |
+| Key-inferred record APIs and schema without a link | Not implemented; string keys and explicit payload type parameters remain |
+| Inline/static envelopes, explicit-version migration, locked shapes | Implemented by 062 |
+| `accepts_from`, `sends_as`, `with_contract`, `Reaches<V>`, `VersionOf<T>` | Implemented by 062, including compile-fail coverage |
+| Local ingress stamps, per-route rejections and upgrade counters | Implemented by 062 |
+| Rolling upgrade across MQTT backends and Cortex-M declarations | Implemented with string keys; convert the existing fixture to typed declarations |
+
+Implementation and proof:
+[versioned links](../../aimdb-data-contracts/src/versioned_links.rs),
+[admission](../../aimdb-data-contracts/src/admission.rs),
+[compile-fail checks](../../aimdb-data-contracts/tests/compile_fail.rs),
+[rolling-upgrade fixture](../../tools/rolling-upgrade-fixture/README.md).
+Its independently compiled contracts revisions and conflicting-shape peer
+already have committed locks. `make test` runs their lock tests and MQTT
+parity tests; `make test-embedded` builds the shared declarations for
+Cortex-M; `make bench-gate` covers envelope allocations and single-decode
+migration. These prove the wire path, not the proposed typed-key API.
+
+A throwaway spike tested this design together with 062. §12 preserves
+those historical results; it is not an implementation report for `main`.
 
 ---
 
@@ -60,13 +91,14 @@ pub fn producer<T>(&self, key: impl Into<String>) -> DbResult<Producer<T>>
   place that says what a fleet's records are.
 - **The schema is optional and set as a side effect.** A record reports its
   contract to the graph and `record.list` only if something calls
-  `RecordRegistrar::schema()`: in practice a `Linkable` link
-  (`linkable.rs:22`, `with_schema(T::NAME, T::VERSION)`). A record with no
-  link shows no contract, even when `T: SchemaType`.
-- **Version compatibility is implicit.** Which old firmware a hub can still
-  read follows from a `migration_chain!` somewhere and a JSON field probe
-  at run time (062 §1). No link says "I accept v1 and v2", so nothing can
-  check that statement or report against it.
+  `RecordRegistrar::schema()`: a `Linkable` link, `.observe()`, or an
+  explicit `.contract_schema()` call. `T: SchemaType` alone does not set
+  it, so a record without those calls has no reported contract.
+- **Link compatibility is checked, but keys remain untyped.** Since 062,
+  links explicitly declare accepted and sent versions, migration uses
+  the envelope's version without a JSON probe, and rejection counters
+  report the outcome. Those links still hang off
+  `configure::<T>(key, …)`: nothing binds the key to `T` at the call site.
 
 So the promise "producers and consumers can't disagree about the shape of
 the data" holds at `build()` or at run time, and only for the parts that
@@ -92,19 +124,22 @@ target.
 
 | # | Requirement |
 |---|---|
-| R1 | Using a declared key with the wrong payload type is a compile error in `configure`, `producer`, `consumer`, `transform`, join inputs, links and `aimdb-sync`. |
+| R1 | Using a declared key with the wrong payload type is a compile error in `configure`, `producer`, `consumer`, direct `produce`/`latest`/`subscribe`, `transform`, join inputs, links and `aimdb-sync`. |
 | R2 | Declarations are `const`, `no_std` and allocation-free, so the same contracts crate serves MCU, edge and cloud. |
 | R3 | Every record declared with a typed key reports its contract name and version to the graph and `record.list`, link or no link. |
 | R4 | Several keys may share one contract (a second sensor), each its own record. |
-| R5 | A link that accepts or sends an older version declares it; the declaration fails to compile if the chain does not reach it. |
-| R6 | Rejections at ingress name key, link, received contract and version, and accepted range, and are counted per route (062 §7). |
-| R7 | One path: no public function takes a record name without its payload type. Names learned at run time (the WASM bindings, generated configuration) and records without a contract use the same functions. |
+| R5 | Preserve 062's compile-time checks for accepted and sent versions when the link's current payload type comes from a typed key. |
+| R6 | Preserve 062's per-route rejection and upgrade counters and diagnostics when routes are registered through typed keys. Diagnostics identify the record and route; parsed identities report the received contract ID/version and accepted range, and malformed headers report the parse failure. |
+| R7 | One path: no public payload-bearing in-process function takes a record name without its payload type. Names learned at run time (the WASM bindings, generated configuration) and records without a contract use the same functions. |
 
 **Non-goals:**
 
 - Typing remote access. `aimdb-client`, the CLI and MCP address records
   by name over AimX and exchange JSON; that path is type-erased inside
   the instance and does not use the functions of this design.
+- Typing control-plane name resolution and metadata inspection. Those
+  APIs may retain names and record IDs; they must not expose a second
+  public way to perform typed payload access with a separate name and type.
 - Version negotiation between peers. Links state what they accept and send;
   nothing is negotiated.
 - Per-variant contracts in one key enum (§10.6).
@@ -237,10 +272,10 @@ let tx = db.producer(INDOOR_TEMP)?;              // Producer<Temperature>
 let rx = db.consumer(StationTemp::Alpha)?;       // Consumer<Temperature>
 ```
 
-The type parameter of the typed functions is the key, not the payload. So
+The type parameter of the typed functions is the key/name, not the payload. So
 `db.producer::<Temperature>(INDOOR_TEMP)`, a natural thing to write, does
 not compile even when the type is right: the error says `Temperature` does
-not implement `TypedKey`. Call sites leave the turbofish out.
+not implement `TypedName`. Call sites leave the turbofish out.
 
 ```rust
 // AimDbBuilder, AimDb
@@ -248,6 +283,9 @@ pub fn configure<K: TypedKey>(&mut self, key: K,
     f: impl FnOnce(&mut RecordRegistrar<'_, K::Contract>)) -> &mut Self;
 pub fn producer<N: TypedName>(&self, key: N) -> DbResult<Producer<N::Contract>>;
 pub fn consumer<N: TypedName>(&self, key: N) -> DbResult<Consumer<N::Contract>>;
+pub fn produce<N: TypedName>(&self, key: N, value: N::Contract) -> DbResult<()>;
+pub fn latest<N: TypedName>(&self, key: N) -> DbResult<Option<Stamped<N::Contract>>>;
+pub fn subscribe<N: TypedName>(&self, key: N) -> DbResult<Reader<N::Contract>>;
 
 // RecordRegistrar<T>, JoinBuilder<T>
 pub fn transform<K: TypedKey, F>(&mut self, input: K, build: F) -> &mut Self
@@ -266,16 +304,28 @@ r.transform_join(|j| j.input(INDOOR_TEMP).input(OUTDOOR_TEMP).on_triggers(…));
 ```
 
 - `configure` sets the record's schema from `K::SCHEMA` (R3).
-  `RecordRegistrar::schema()` and the link builders' `with_schema` are
-  removed from the public API: nothing else may set a schema.
-- `producer`/`consumer` on a declared key can still fail, with
-  `MissingConfiguration` (the key was never configured), but never with
-  `TypeMismatch`.
+  `RecordRegistrar::schema()`, `SchemaRegistrarExt::contract_schema()`
+  and the link builders' `with_schema` are removed from the public API:
+  nothing else may set a schema. The contract-link helpers, 062
+  finalizers and `.observe()` currently call those setters; adapt them
+  to preserve the key's schema, validating contract identity internally
+  where needed.
+  A historical wire version must not replace the record's current schema,
+  and a link must not add a schema to a `Name<T>` record.
+- `producer`/`consumer` infer the payload type from the declaration. Lookup
+  still checks that the key is configured and has the required buffer.
+  A missing record or buffer remains an error. Separately authored
+  declarations of the same name can still disagree at run time (§5.5).
 - A bare string is not a key. `configure("temp.indoor", …)` fails with
   "`&str` is not a typed record key" and a note that points at `Key<T>`
   and `Name<T>` (`#[diagnostic::on_unimplemented]` on both traits).
 - The same signatures compile on Tokio, Embassy and WASM: nothing here
   depends on the runtime.
+
+The direct `produce`, `latest` and `subscribe` methods follow the same
+key-inferred rule as the handle factories. Internal downcast helpers used
+by these methods and `aimdb-sync` must not remain a public string-and-type
+payload access path through `AimDb::inner()`.
 
 ### 5.2 `Name<T>`: everything that is not a contract key
 
@@ -326,7 +376,7 @@ carry a custom note, so the documentation of `configure` and of
 A lookup by `Name` works for any record, with or without a contract,
 because a lookup needs only the name and the type. It can claim the wrong
 type, since nothing ties a run-time string to a declaration. That stays a
-run-time `TypeMismatch`, and it is the only place one remains. For the
+run-time `TypeMismatch`, as can conflicting declarations (§5.5). For the
 same reason `Name::<Humidity>::new("temp.indoor")` written out at a call
 site compiles; the protection of R1 is for keys that are declared once
 and used by name.
@@ -350,11 +400,13 @@ string and a type at the call site become a key that carries both.
 |---|---|
 | `b.configure::<T>("k", f)` | `b.configure(K, f)` |
 | `db.producer::<T>("k")` | `db.producer(K)` |
+| `db.produce::<T>("k", value)` | `db.produce(K, value)` |
+| `db.latest::<T>("k")` / `db.subscribe::<T>("k")` | `db.latest(K)` / `db.subscribe(K)` |
 | `r.transform::<I, _>("k", f)` | `r.transform(K, f)` |
 | `j.input::<I>("k")` | `j.input(K)` |
 | `handle.producer::<T>("k")` (`aimdb-sync`) | `handle.producer(K)` |
 
-In the spike a script rewrote 463 call sites in 118 Rust files to this
+In the historical spike a script rewrote 463 call sites in 118 Rust files to this
 form, building the key in place (`Name::<T>::new("k")`, or a spike-only
 helper that wraps an existing enum key). Every workspace
 crate then compiled, including the WASM adapter for
@@ -365,8 +417,10 @@ crate then compiled, including the WASM adapter for
 conversion declares each key once as a `const` and uses it at every site;
 the script's in-place form is the fallback for tests that use a name
 once. The existing key enums already hold one payload type each, so each
-gains one attribute. Left to convert by hand: 111 sites in 26 Markdown
-files outside `docs/design`.
+gains one attribute. The spike also counted 111 sites in 26 Markdown
+files outside `docs/design` that still needed conversion. These are spike
+measurements, not a current inventory: recount against the implementation
+branch, including the string-keyed rolling-upgrade fixture added by 062.
 
 ### 5.5 Two declarations of one name
 
@@ -374,15 +428,35 @@ Two consts can declare `"temp.indoor"` with different contracts. That
 cannot be a compile error across crates. It stays a `build()` error
 (`key already registered with a different type`).
 
+If only one declaration is configured and a caller looks up the other,
+the lookup can still return `TypeMismatch`. Typed keys prevent supplying
+a separate, conflicting payload type with a particular declaration; they
+do not prove that every independently authored declaration names the same
+type. Keep the runtime downcast check as well as the build-time duplicate
+registration check.
+
 ## 6. Links and versions
 
 A link states which versions it exchanges with its peer. The default is
-the current version only.
+the current version only. This API and its migration-chain proofs already
+landed in 062; typed keys change how the record's `T` is selected.
 
 ```rust
+use aimdb_data_contracts::{
+    link_codecs::Postcard, EnvelopeCarrier, EnvelopeLinkExt,
+    LinkCodecBuilderExt, VersionedInboundExt, VersionedOutboundExt,
+};
+
 builder.configure(INDOOR_TEMP, |r| {
-    r.link_from_key().accepts_from::<1>().finish();      // v1 and v2 firmware
-    r.link_to("mqtt://legacy-dash/indoor").sends_as::<1>().finish();
+    r.link_from_key()
+        .with_link_codec(Postcard::<128>)
+        .with_envelope(EnvelopeCarrier::Inline)
+        .accepts_from::<1>()                         // v1 and v2 firmware
+        .finish();
+    r.link_to("mqtt://legacy-dash/indoor")
+        .with_link_codec(Postcard::<128>)
+        .sends_as::<1>()                            // bare v1 payload
+        .finish();
 });
 ```
 
@@ -398,11 +472,12 @@ pub trait Reaches<const V: u32> {}
 
 // Extension traits: the builders are core types, so this crate cannot add
 // inherent methods to them.
-pub trait VersionedInboundExt<T: MigrationChain> {
+pub trait VersionedInboundExt<T: MigrationChain>: Sized {
     fn accepts_from<const V: u32>(self) -> Self where T: Reaches<V>;
 }
-pub trait VersionedOutboundExt<T: MigrationChain> {
+pub trait VersionedOutboundExt<T: MigrationChain>: Sized {
     fn sends_as<const V: u32>(self) -> Self where T: Reaches<V>;   // downgrade on send
+    fn without_shape(self) -> Self;
 }
 ```
 
@@ -430,16 +505,35 @@ links only. Removing a step from the chain breaks
 every link that relied on it, at compile time, in the hub that relied on
 it.
 
+**Carrier and option checks.** Bare/static binding remains the default.
+`accepts_from` requires an explicit inline carrier; using it on a bound
+link, or combining it with `with_contract`, is a `build()` error, not a
+compile-time error. A bare legacy sender uses
+`.with_contract::<TemperatureV1>()` on the inbound link instead. On an
+outbound bound link, `with_contract::<U>()` and `sends_as::<V>()` may
+combine only when they select the same version. Reachability and binding
+family are checked by traits; conflicting options are checked when the
+link is registered and reported by `build()`.
+
+Use link builders to set these options before `.finish()`; the shorthand
+`linked_from_with` / `linked_to_with` already registers the link and
+returns the registrar. Inline links include the locked shape by default;
+`without_shape()` omits it. AimX links (serial, TCP, UDS and WebSocket)
+reject inline envelopes. `ros2://` links require bare CDR of the current
+contract version and reject historical bindings or downgrades. Use an
+opaque byte carrier such as MQTT for the versioned examples here.
+
 **Default "current only" is deliberate.** Accepting every version in the
 chain silently would hide old firmware that should have been upgraded. A
 hub that is mid-rollout says so on the link, and the 062 counters
 (`upgraded{from}`) show when the last old sender is gone.
 
-**At ingress** the link builds the admission input from its declaration:
-the record's contract (`K::Contract::NAME`, current version, locked shape)
-and the accepted range. 062 §7 supplies the received contract and version,
+**At ingress** the existing link finalizer builds the admission policy for
+`T = K::Contract`: its contract name, current version, locked shapes and
+accepted range. 062 §7 supplies the received contract and version,
 from the inline header or from the link's static binding. A rejection
-reads:
+reports the following information (illustrative text, not a new log
+format):
 
 ```text
 temp.indoor via mqtt://sensors/indoor/temperature:
@@ -452,17 +546,25 @@ temp.indoor via mqtt://sensors/indoor/temperature:
 
 A foreign contract is shown by its 32-bit ID, because the binary header
 does not carry the name (062 §4). The text goes to the log, next to the
-per-reason counters (R6).
+per-reason counters (R6). Malformed headers cannot report an identity
+that was not parsed. Admission returns
+`Result<IngestValue<T>, IngestError>`; core produces and locally stamps
+successful values before the router records the outcome. Complete-payload
+consumption is required on inline and bound admission and on ordinary
+`with_link_codec` inbound links. Preserve that behavior during conversion.
 
 ## 7. Acceptance test: a rolling firmware upgrade
 
-The design is done when this test passes, in CI, as one workspace test
-plus compile-fail cases. It runs the path that does not work today: a
-binary codec, two versions, two platforms' MQTT stacks.
+The design is done when the existing 062 fixture passes in CI after
+conversion to typed keys, together with the compile-fail and schema cases
+below. The binary-codec, version-migration and cross-backend MQTT path
+already works on `main`; passing it with string keys does not complete 063.
 
 **Setup.** A fixture contracts crate at two revisions, `contracts_n` and
 `contracts_n1` (two crates under `tools/rolling-upgrade-fixture/`, the
-second a copy of the first plus v2):
+second preserving the first's locked v1 layout and adding v2). Keep the
+separate `contracts_changed` crate for the conflicting-shape peer. Convert
+the existing string constants to the declarations below:
 
 | | `contracts_n` (MCU firmware) | `contracts_n1` (hub) |
 |---|---|---|
@@ -477,8 +579,11 @@ second a copy of the first plus v2):
 | Codec | `Postcard` | `Postcard` |
 | Carrier | inline header (062 §6) | inline header |
 
-Both run in one process against the test broker, as
-`aimdb-mqtt-connector/tests/backend_parity.rs` does today. The MCU side's
+Both run in one process against the forwarding TCP test broker in
+`aimdb-mqtt-connector/tests/common/mod.rs`, as the current tests in
+`aimdb-mqtt-connector/tests/rolling_upgrade/mod.rs` already do. Real
+producers and consumers exchange opaque frames; the main case needs no
+manual capture and replay. The MCU side's
 declarations and link setup are also built for `thumbv7em-none-eabihf` in
 the embedded check lane, so the same code provably compiles for the
 target. Both fixture crates run their lock test (062 §7.1).
@@ -486,7 +591,9 @@ target. Both fixture crates run their lock test (062 §7.1).
 **Main case.**
 
 1. MCU: `producer(INDOOR_TEMP)` writes `TemperatureV1 { temp: 21.5 }`.
-2. Hub: `link_from_key().accepts_from::<1>()` on `INDOOR_TEMP`.
+2. Hub: `link_from_key().with_link_codec(Postcard::<128>)`
+   `.with_envelope(EnvelopeCarrier::Inline).accepts_from::<1>()` on
+   `INDOOR_TEMP`.
 3. Assert: the hub's `consumer(INDOOR_TEMP)` yields
    `TemperatureV2 { celsius: 21.5, .. }`, stamped by the hub (058).
 4. Assert: `upgraded{from: 1}` = 1 on that route; no rejections.
@@ -504,12 +611,29 @@ target. Both fixture crates run their lock test (062 §7.1).
 | V3 | A peer sends `temperature@3` | rejected: `received temperature@3, accepts temperature@1..=2` |
 | V4 | A peer built from a crate where `TemperatureV2` gained a field without a bump | rejected: `shape_mismatch` with both hashes |
 | V5 | A peer publishes `humidity@1` on the indoor topic | rejected: `contract_mismatch` |
-| V6 | `db.producer::<Humidity>(INDOOR_TEMP)` | compile error |
+| V6 | `let _: Producer<Humidity> = db.producer(INDOOR_TEMP)?;` | compile error: the key infers `Producer<Temperature>` |
 | V7 | Hub `sends_as::<1>()` to a v1 consumer | the v1 consumer decodes the downgraded value |
 | V8 | Same as the main case with `Cdr` | upgraded |
 | V9 | MCU sends bare Postcard, no header; hub link `with_contract::<TemperatureV1>()` | upgraded: a deployed binary device is read without new firmware |
-| V11 | MCU sends the inline header; hub link is bound, Postcard | rejected: `decode_error` (062 §6, whole-payload rule) |
 | V10 | MCU sends bare JSON whose v1 struct has a `schema_version` field; hub link `with_contract::<TemperatureV1>()` | upgraded: the field is ordinary data of v1, and nothing probes it (062 §9) |
+| V11 | MCU sends the inline header; hub link is bound, Postcard | rejected: `decode_error` (062 §6, whole-payload rule) |
+| V12 | Configure `INDOOR_TEMP` with a buffer and no link | graph and `record.list` still report `temperature` v2 from the key |
+| V13 | Configure a `Name<Temperature>` record, with and without a contract link | no schema is inferred from its payload or link; the key is authoritative |
+
+V1–V5 and V7–V11 reuse 062's runtime and compile-fail coverage; extend it
+where the fixture-specific missing-step case is not yet represented.
+V6 and V12–V13 are new typed-key acceptance cases. Add compile-fail
+coverage for wrong payload types in `configure`, `consumer`, `transform`,
+direct `produce`/`latest`/`subscribe`, join inputs, links and `aimdb-sync`,
+bare-string calls, a derive without a payload type, and registration
+through a borrowed `Name`. Keep successful cases for borrowed lookup,
+interned registration, `payload = T` derives,
+and runtime errors for conflicting declarations (§5.5). Compile the
+converted declarations for Cortex-M and WASM as well as the host.
+
+Keep locked historical payload layouts unchanged. V10 can use an ignored
+extra JSON field, as the landed fixture does; if a frozen struct declares
+`schema_version`, it remains ordinary payload data, never a dispatch probe.
 
 ## 8. Deferred
 
@@ -528,26 +652,37 @@ removed in the release that adds the new ones.
 
 | Item | Change |
 |---|---|
-| `AimDbBuilder::configure`, `AimDb::producer`/`consumer` | take a typed key; the string forms are removed |
+| `AimDbBuilder::configure`, `AimDb::producer`/`consumer` and direct `produce`/`latest`/`subscribe` | take a typed key/name; the string forms are removed |
 | `RecordRegistrar::transform`, `JoinBuilder::input` | take a typed key; the input type parameter is removed |
 | `aimdb-sync` `producer`/`consumer` | take a typed key |
 | `#[derive(RecordKey)]` | requires `#[record_key(contract = T)]` or `(payload = T)`; `#[key_prefix]` removed in favour of `prefix` |
 | `impl RecordKey for &'static str` | removed |
-| `RecordRegistrar::schema()`, link builders' `with_schema` | removed from the public API; the key sets the schema |
-| Inbound/outbound link builders | `accepts_from`, `sends_as` (new) |
+| `RecordRegistrar::schema()`, `SchemaRegistrarExt::contract_schema()`, link builders' `with_schema` | removed from the public API; the key sets the schema |
+| Internal typed registry/downcast helpers | no public string-and-type payload access path |
+| Inbound/outbound link builders | retain 062's `accepts_from`, `sends_as` and carrier rules; infer the current payload from the key |
 | Graph, `record.list` | schema always set for records with a contract |
 
 ### 9.1 Phases
 
-1. `TypedKey`, `TypedName` and `Name` in core; `Key<T>` in
-   data-contracts; the derive attributes; typed `configure`, `producer`,
-   `consumer`, `transform`, join `input`, and `aimdb-sync`. The string
+1. **Typed declarations and API conversion.** `TypedKey`, `TypedName` and
+   `Name` in core; `Key<T>` in data-contracts; the derive attributes; typed
+   `configure`, `producer`, `consumer`, direct `produce`/`latest`/`subscribe`,
+   `transform`, join `input`, and `aimdb-sync`. The string
    forms are removed in the same change, and the workspace, examples and
    README are converted with it.
-2. `accepts_from`/`sends_as` on the link builders. Needs the
-   `MigrationChain` of 062 §7.2 and its admission procedure.
-3. The rolling-upgrade fixture (§7), gated in CI: the main case first,
-   then the variants.
+2. **Schema ownership and link integration.** Make the key the sole source
+   of record schema and remove the public schema setters. Adapt the
+   existing contract helpers, `.observe()` and 062 finalizers without
+   replacing 062's migration, admission, carrier validation or counter
+   implementations. Preserve
+   current-schema metadata on historical-version links and no schema on
+   `Name<T>` records.
+3. **Proof.** Convert the existing independently compiled rolling-upgrade
+   contracts, host tests and embedded declarations to typed keys (§7).
+   Add the typed-key compile-fail and link-free schema cases, retain the
+   landed wire variants, and run the existing CI/benchmark gates. The
+   fixture's keys must be exported typed constants, not in-place
+   `Name::<T>::new("…")` wrappers that merely make old call sites compile.
 
 ## 10. Alternatives considered
 
@@ -600,12 +735,19 @@ removed in the release that adds the new ones.
 2. Should the derive's `link_address` and `Key::with_link` converge on one
    attribute that also carries the link's codec and carrier, making the
    contracts crate the single place a fleet's links are declared?
-3. Which carrier a link uses by default is open in 062 §12.3. If the
-   inline header becomes the default, `accepts_from` applies to every
-   link without further setup; if not, it needs `envelope = "inline"`
-   next to it, as in §6 today.
+3. A future change to the carrier default remains a separate discussion
+   in 062 §12.3. For this implementation, retain the landed bare default
+   and explicitly select inline on links using `accepts_from`; no carrier
+   default change is part of 063.
 
-## 12. Spike
+## 12. Historical spike
+
+This section records the pre-merge experiment, not the current state of
+`main`. In particular, its hand-written chain, capture/replay broker and
+missing Postcard remainder check were replaced in the landed 062 work by
+the generated macro, forwarding broker and full-consumption checks. The
+typed-key conversion itself has not landed. Use the implementation
+baseline above and §9.1 for the remaining work.
 
 A throwaway branch implemented the typed keys (`TypedKey`, `TypedName`,
 `Key<T>`, `Name<T>`), the derive attributes, the typed

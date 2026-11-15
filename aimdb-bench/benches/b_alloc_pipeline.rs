@@ -125,7 +125,8 @@ where
 
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
-    builder.configure::<T>(key, {
+    let record_key_1 = aimdb_core::Name::<T>::interned(key);
+    builder.configure(record_key_1, {
         let state = Arc::clone(&state);
         move |reg| {
             let source_state = Arc::clone(&state);

@@ -2,6 +2,57 @@
 
 This guide shows how to use AimDB in your own projects, whether you're building for standard platforms (Linux, macOS) or embedded systems.
 
+## Declare records before configuring the builder
+
+Enable `aimdb-data-contracts`' `aimdb-core` feature for `Key<T>`;
+`linkable`, `migratable` and `observable` already enable it.
+
+A record declaration binds its name to its payload type. Declare it once,
+then reuse it for registration, reads, writes, transforms and links:
+
+```rust,ignore
+use aimdb_data_contracts::Key;
+use aimdb_core::Name;
+
+// Temperature implements SchemaType. The key supplies its schema metadata,
+// even when no connector or observation is configured.
+const INDOOR: Key<Temperature> = Key::new("temp.indoor");
+const COUNT: Name<u64> = Name::new("internal.count");
+
+builder.configure(INDOOR, |r| { r.buffer(BufferCfg::SingleLatest); });
+builder.configure(COUNT, |r| { r.buffer(BufferCfg::SingleLatest); });
+let producer = db.producer(INDOOR)?;
+let sample = db.latest(INDOOR)?;
+```
+
+`RecordKey` enums require `#[record_key(contract = Temperature, prefix = "temp.")]`
+or `#[record_key(payload = u64)]`; `key_prefix` is removed. Public record APIs
+infer the payload from the declaration, so omit the payload turbofish.
+`configure`, transforms and joins require a static typed key. For runtime
+registration declare a `Key::<Temperature>::interned(&name)` or
+`Name::<u64>::interned(&name)` before calling the builder. For repeated
+lookups declare a borrowed `Name::<Temperature>::new(&name)`; lookups do not
+intern names. A `Name<T>` declaration reports no contract schema, including
+when its payload happens to implement `SchemaType`.
+
+The key is the only source of a record's schema: link helpers and
+`.observe()` no longer assign one. Instead, `configure` hands the closure a
+registrar typed by whether the key declares a contract
+(`RecordRegistrar<'_, T, Declared>` for `Key<T>` / `contract = T`,
+`RecordRegistrar<'_, T, Undeclared>` for `Name<T>` / `payload = T`). The
+contract verbs — `publish`, `subscribe`, `linked_to`, `linked_from`, their
+`_with` forms and `.observe()` — exist only on `Declared` registrars, so using
+one on a `Name<T>` record is a compile error ("this record's key declares no
+data contract") rather than a record silently reported without a schema. The
+raw `.link_to()` / `.link_from()` builders work in both states. Helper
+functions that take a registrar name the state they need
+(`&mut RecordRegistrar<'_, T, Declared>`) or are generic over
+`S: SchemaState`; custom `Input` / `Output` implementations are generic over
+`S` too. `contract_schema()` and public schema setters are removed. Existing envelope and version options
+are unchanged: select inline explicitly before `accepts_from`, and use a
+static `with_contract` binding for a bare legacy sender. A historical wire
+version does not change the record's current schema.
+
 ## Runtime Selection
 
 AimDB supports two async runtime environments:
@@ -92,7 +143,8 @@ async fn main() -> DbResult<()> {
     let runtime = Arc::new(TokioAdapter::new()?);
 
     let mut builder = AimDbBuilder::new().runtime(runtime);
-    builder.configure::<SensorData>("sensor.data", |reg| {
+    let record_1 = aimdb_core::Name::<SensorData>::new("sensor.data");
+    builder.configure(record_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             // Simulate a temperature sensor reading every second
             .source(|ctx, producer| async move {
@@ -218,11 +270,11 @@ impl From<ButtonEvent> for ButtonPress {
 /// type built `From<ButtonEvent>`. It owns its pin.
 struct PushButton(Pin<'static>);
 
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         let PushButton(mut pin) = self;
         reg.source(move |ctx, producer| async move {
             let mut press = 0;
@@ -247,7 +299,8 @@ async fn main(_spawner: Spawner) {
 
     let runtime = alloc::sync::Arc::new(EmbassyAdapter::new());
     let mut builder = AimDbBuilder::new().runtime(runtime);
-    builder.configure::<ButtonPress>("button.press", |reg| {
+    let record_2 = aimdb_core::Name::<ButtonPress>::new("button.press");
+    builder.configure(record_2, |reg| {
         reg.buffer_sized::<1, 1>(EmbassyBufferType::SingleLatest)
             .input(button)
             .tap(|_, consumer| async move {
@@ -319,7 +372,8 @@ async fn main() -> DbResult<()> {
         "knx://192.168.1.19:3671",
     ));
 
-    builder.configure::<LightState>("light.state", |reg| {
+    let record_3 = aimdb_core::Name::<LightState>::new("light.state");
+    builder.configure(record_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("knx://1/0/7")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -402,7 +456,8 @@ async fn main() -> DbResult<()> {
     // `connect` registers the connector and returns a handle to link through.
     let mqtt = builder.connect(MqttConnector::new("mqtt://broker.example.com:1883"));
 
-    builder.configure::<SensorReading>("sensor.reading", |reg| {
+    let record_4 = aimdb_data_contracts::Key::<SensorReading>::new("sensor.reading");
+    builder.configure(record_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .input(subscribe(mqtt, "sensor/room1").with_qos(1))
             .output(publish(mqtt, "sensor/room1/latest").with_qos(1))
@@ -451,11 +506,13 @@ let mut builder = AimDbBuilder::new()
     .with_connector(zenoh)
     .with_connector(ros2);
 
-builder.configure::<MachineState>("cell4.state", |reg| {
+let record_5 = aimdb_data_contracts::Key::<MachineState>::new("cell4.state");
+builder.configure(record_5, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .linked_to_with("zenoh://aimdb/cell4/state", Postcard::<128>);
 });
-builder.configure::<Temperature>("cell4.temperature", |reg| {
+let record_6 = aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
+builder.configure(record_6, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
         .linked_to("ros2://cell4/temperature");
 });
@@ -650,7 +707,8 @@ let report = OutboundLink::on(mqtt, "cell4/setpoint")
     .with_qos(1)
     .with_retain(true);
 
-builder.configure::<Setpoint>("cell4.setpoint", |reg| {
+let record_7 = aimdb_core::Name::<Setpoint>::new("cell4.setpoint");
+builder.configure(record_7, |reg| {
     reg.buffer(BufferCfg::SingleLatest).input(command).output(report);
 });
 ```
@@ -683,11 +741,11 @@ there; the MQTT demos
 generic over its record and bounded by `T: From<Event>`:
 
 ```rust
-impl<T> Input<T> for PushButton
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for PushButton
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.source(move |ctx, producer| async move {
             /* wait for an edge, debounce */
             producer.produce(T::from(ButtonEvent { /* … */ }));
@@ -711,7 +769,7 @@ inputs once, as struct fields, and an input takes one by value:
 let board = board::init(spawner).await;
 let NucleoInputs { b1 } = board.inputs;
 
-builder.configure::<ButtonPress>(ButtonKey::B1, |reg| {
+builder.configure(ButtonKey::B1, |reg| {
     reg.buffer_sized::<8, 3>(EmbassyBufferType::SpmcRing)
         .input(PushButton::on(b1))
         .output(publish(mqtt, ButtonKey::B1.link_address().unwrap()));

@@ -148,7 +148,8 @@ mod tests {
             .with_connector(crate::MqttConnector::new("mqtt://127.0.0.1:1"));
         for (i, &(topic, qos)) in links.iter().enumerate() {
             let key = aimdb_core::StringKey::intern(alloc::format!("in{i}"));
-            builder.configure::<u64>(key, move |reg| {
+            let record_key_1 = aimdb_core::Name::<u64>::interned(key.as_ref());
+            builder.configure(record_key_1, move |reg| {
                 let mut link = reg
                     .buffer(BufferCfg::SingleLatest)
                     .link_from(&alloc::format!("mqtt://{topic}"))

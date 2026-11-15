@@ -56,7 +56,7 @@ use mqtt_connector_demo_common::{SensorKey, SimThermometers, Temperature, Thermo
 let mqtt = builder.connect(MqttConnector::new(broker_url));
 let SimThermometers { indoor, .. } = SimThermometers::new();
 
-builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+builder.configure(SensorKey::TempIndoor, |reg| {
     reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
        .input(Thermometer::on(indoor))
        .tap(temperature_logger)  // Shared monitor
@@ -67,7 +67,7 @@ builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
 ### Embassy (MCU)
 
 ```rust
-builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+builder.configure(SensorKey::TempIndoor, |reg| {
     reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
        .input(Thermometer::on(indoor))  // Same input works!
        .tap(temperature_logger)         // Same monitor works!

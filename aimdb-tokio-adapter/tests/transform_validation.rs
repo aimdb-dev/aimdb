@@ -38,7 +38,8 @@ where
 {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            db.produce::<I>(input, value.clone()).unwrap();
+            let record_key_1 = aimdb_core::Name::<I>::new(input);
+            db.produce(record_key_1, value.clone()).unwrap();
             if let Ok(Ok(v)) = tokio::time::timeout(Duration::from_millis(50), out.recv()).await {
                 return v.value;
             }
@@ -54,16 +55,19 @@ where
 
 #[tokio::test]
 async fn transform_with_mistyped_input_is_rejected_by_build() {
+    let key_temp_1 = aimdb_core::Name::<Celsius>::new("temp");
+    let key_temp_doubled_2 = aimdb_core::Name::<Celsius>::new("temp_doubled");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Celsius>("temp", |reg| {
+    builder.configure(key_temp_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 });
     });
-    builder.configure::<Celsius>("temp_doubled", |reg| {
+    builder.configure(key_temp_doubled_2, |reg| {
+        let key_temp_3 = aimdb_core::Name::<Pascal>::new("temp");
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
             // Wrong input type: "temp" holds Celsius, not Pascal.
-            .transform::<Pascal, _>("temp", |b| b.map(|p: &Pascal| Some(Celsius(p.0 * 2.0))));
+            .transform(key_temp_3, |b| b.map(|p: &Pascal| Some(Celsius(p.0 * 2.0))));
     });
 
     let Err(DbError::InvalidConfiguration { errors }) = builder.build().await else {
@@ -79,21 +83,26 @@ async fn transform_with_mistyped_input_is_rejected_by_build() {
 
 #[tokio::test]
 async fn join_with_one_mistyped_input_is_rejected_by_build() {
+    let key_temp_4 = aimdb_core::Name::<Celsius>::new("temp");
+    let key_pressure_5 = aimdb_core::Name::<Pascal>::new("pressure");
+    let key_combined_6 = aimdb_core::Name::<Celsius>::new("combined");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Celsius>("temp", |reg| {
+    builder.configure(key_temp_4, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 });
     });
-    builder.configure::<Pascal>("pressure", |reg| {
+    builder.configure(key_pressure_5, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 });
     });
-    builder.configure::<Celsius>("combined", |reg| {
+    builder.configure(key_combined_6, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
             .transform_join(|b| {
-                b.input::<Celsius>("temp")
+                let key_temp_7 = aimdb_core::Name::<Celsius>::new("temp");
+                let key_pressure_8 = aimdb_core::Name::<Celsius>::new("pressure");
+                b.input(key_temp_7)
                     // Wrong input type: "pressure" holds Pascal, not Celsius.
-                    .input::<Celsius>("pressure")
+                    .input(key_pressure_8)
                     .on_triggers(
                         |mut rx, _producer| async move { while rx.recv().await.is_ok() {} },
                     )
@@ -114,20 +123,26 @@ async fn join_with_one_mistyped_input_is_rejected_by_build() {
 
 #[tokio::test]
 async fn transform_with_matching_input_type_builds_and_runs() {
+    let key_temp_9 = aimdb_core::Name::<Celsius>::new("temp");
+    let key_temp_doubled_10 = aimdb_core::Name::<Celsius>::new("temp_doubled");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Celsius>("temp", |reg| {
+    builder.configure(key_temp_9, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 });
     });
-    builder.configure::<Celsius>("temp_doubled", |reg| {
+    builder.configure(key_temp_doubled_10, |reg| {
+        let key_temp_11 = aimdb_core::Name::<Celsius>::new("temp");
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
-            .transform::<Celsius, _>("temp", |b| b.map(|c: &Celsius| Some(Celsius(c.0 * 2.0))));
+            .transform(key_temp_11, |b| {
+                b.map(|c: &Celsius| Some(Celsius(c.0 * 2.0)))
+            });
     });
 
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut out = db.subscribe::<Celsius>("temp_doubled").unwrap();
+    let record_key_2 = aimdb_core::Name::<Celsius>::new("temp_doubled");
+    let mut out = db.subscribe(record_key_2).unwrap();
 
     let got = first_output(&db, "temp", Celsius(21.0), &mut out).await;
     assert_eq!(got, Celsius(42.0));
@@ -139,22 +154,26 @@ async fn transform_with_matching_input_type_builds_and_runs() {
 /// check must allow — it compares the input only against the input record.
 #[tokio::test]
 async fn unit_conversion_transform_builds_and_runs() {
+    let key_temp_12 = aimdb_core::Name::<Celsius>::new("temp");
+    let key_temp_f_13 = aimdb_core::Name::<Fahrenheit>::new("temp_f");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
-    builder.configure::<Celsius>("temp", |reg| {
+    builder.configure(key_temp_12, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 });
     });
-    builder.configure::<Fahrenheit>("temp_f", |reg| {
+    builder.configure(key_temp_f_13, |reg| {
+        let key_temp_14 = aimdb_core::Name::<Celsius>::new("temp");
         reg.buffer(BufferCfg::SpmcRing { capacity: 8 })
-            .transform::<Celsius, _>("temp", |b| {
+            .transform(key_temp_14, |b| {
                 b.map(|c: &Celsius| Some(Fahrenheit(c.0 * 9.0 / 5.0 + 32.0)))
             });
     });
 
     let (db, runner) = builder.build().await.unwrap();
     tokio::spawn(runner.run());
-    let mut out = db.subscribe::<Fahrenheit>("temp_f").unwrap();
+    let record_key_3 = aimdb_core::Name::<Fahrenheit>::new("temp_f");
+    let mut out = db.subscribe(record_key_3).unwrap();
 
     let got = first_output(&db, "temp", Celsius(100.0), &mut out).await;
     assert_eq!(got, Fahrenheit(212.0));

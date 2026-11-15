@@ -19,13 +19,14 @@ struct Led {
 // Main function
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let key_actuator_led_1 = aimdb_core::Name::<Led>::new("actuator.led");
     println!("=== hello-mailbox-async: Mailbox buffer demo ===\n");
 
     // configuration
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Led>("actuator.led", |reg| {
+    builder.configure(key_actuator_led_1, |reg| {
         reg.buffer(BufferCfg::Mailbox)
             .source(|ctx, producer| async move {
                 // Produce quickly BEFORE creating the consumer

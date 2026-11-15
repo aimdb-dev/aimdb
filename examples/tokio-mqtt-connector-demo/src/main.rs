@@ -66,8 +66,7 @@ use std::sync::Arc;
 
 // Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    command_consumer, temperature_logger, CommandKey, SensorKey, SimThermometers, Temperature,
-    TemperatureCommand, Thermometer,
+    command_consumer, temperature_logger, CommandKey, SensorKey, SimThermometers, Thermometer,
 };
 
 /// Readings per thermometer before it stops.
@@ -98,7 +97,7 @@ async fn main() -> DbResult<()> {
     } = SimThermometers::new();
 
     // Temperature sensors (outbound to MQTT), topics from the keys' `#[link_address]`.
-    builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+    builder.configure(SensorKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .input(Thermometer::on(indoor).readings(READINGS))
             .tap(temperature_logger)
@@ -109,7 +108,7 @@ async fn main() -> DbResult<()> {
             );
     });
 
-    builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
+    builder.configure(SensorKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .input(Thermometer::on(outdoor).readings(READINGS))
             .tap(temperature_logger)
@@ -119,7 +118,7 @@ async fn main() -> DbResult<()> {
             ));
     });
 
-    builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
+    builder.configure(SensorKey::TempServerRoom, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .input(Thermometer::on(server_room).readings(READINGS))
             .tap(temperature_logger)
@@ -130,13 +129,13 @@ async fn main() -> DbResult<()> {
     });
 
     // Command consumers (inbound from MQTT).
-    builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
+    builder.configure(CommandKey::TempIndoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .input(subscribe(mqtt, CommandKey::TempIndoor.link_address().unwrap()).with_qos(1))
             .tap(command_consumer);
     });
 
-    builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
+    builder.configure(CommandKey::TempOutdoor, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .input(subscribe(
                 mqtt,

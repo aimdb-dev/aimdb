@@ -26,7 +26,8 @@ async fn get_buffer_metrics_finds_the_configured_record_key() {
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsServer::from_config(config));
     for key in ["sensor.indoor", "sensor.outdoor"] {
-        builder.configure::<Reading>(key, |reg| {
+        let record_key_1 = aimdb_core::Name::<Reading>::interned(key);
+        builder.configure(record_key_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
     }

@@ -136,6 +136,9 @@ type Board = aimdb_core::AimDb;
 /// A board behind a pty: a ring of events, a state record and a writable
 /// record. Returns the board, its `serial://` endpoint and the `hello` count.
 async fn start_board() -> (Board, String, Arc<AtomicUsize>) {
+    let key_events_1 = aimdb_core::Name::<Reading>::new("events");
+    let key_state_2 = aimdb_core::Name::<Reading>::new("state");
+    let key_config_3 = aimdb_core::Name::<Reading>::new("config");
     let (board_end, line_end) = tokio::io::duplex(64 * 1024);
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
@@ -143,20 +146,20 @@ async fn start_board() -> (Board, String, Arc<AtomicUsize>) {
             SerialServer::new(TokioByteStream(board_end))
                 .security_policy(SecurityPolicy::read_write().with_writable_key("config")),
         );
-    builder.configure::<Reading>("events", |reg| {
+    builder.configure(key_events_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
-    builder.configure::<Reading>("state", |reg| {
+    builder.configure(key_state_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure::<Reading>("config", |reg| {
+    builder.configure(key_config_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (board, runner) = builder.build().await.expect("build board");
     tokio::spawn(runner.run());
     board
-        .producer::<Reading>("state")
+        .producer(key_state_2)
         .unwrap()
         .produce(Reading { n: 42 });
 
@@ -173,6 +176,7 @@ async fn start_board() -> (Board, String, Arc<AtomicUsize>) {
 
 #[tokio::test]
 async fn get_record_shares_the_drain_session_over_serial() {
+    let key_events_4 = aimdb_core::Name::<Reading>::new("events");
     let (board, endpoint, hellos) = start_board().await;
     let drain = || {
         tools::drain_record(Some(
@@ -187,7 +191,7 @@ async fn get_record_shares_the_drain_session_over_serial() {
     assert_eq!(first["count"], 0);
 
     // 2. The board publishes events.
-    let events = board.producer::<Reading>("events").unwrap();
+    let events = board.producer(key_events_4).unwrap();
     for n in 1..=3 {
         events.produce(Reading { n });
     }
@@ -243,6 +247,7 @@ async fn get_record_shares_the_drain_session_over_serial() {
 
 #[tokio::test]
 async fn every_tool_shares_the_drain_session_over_serial() {
+    let key_events_5 = aimdb_core::Name::<Reading>::new("events");
     let (board, endpoint, hellos) = start_board().await;
     let at = |extra: Value| {
         let mut args = json!({ "endpoint": endpoint });
@@ -258,7 +263,7 @@ async fn every_tool_shares_the_drain_session_over_serial() {
     assert_eq!(first["count"], 0);
 
     // 2. The board publishes events.
-    let events = board.producer::<Reading>("events").unwrap();
+    let events = board.producer(key_events_5).unwrap();
     for n in 1..=3 {
         events.produce(Reading { n });
     }

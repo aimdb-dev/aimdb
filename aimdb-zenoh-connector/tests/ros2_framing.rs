@@ -79,13 +79,14 @@ migration_chain! {
 async fn build(
     link: impl FnOnce(&mut RecordRegistrar<'_, Move>) + Send + 'static,
 ) -> Result<(), String> {
+    let key_move_1 = aimdb_core::Name::<Move>::new("move");
     let connector = Ros2Connector::new("", Ros2Node::new("aimdb_test").namespace("/cell4"))
         .domain_id(0)
         .register::<Move>();
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(connector);
-    builder.configure::<Move>("move", move |reg| {
+    builder.configure(key_move_1, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         link(reg);
     });

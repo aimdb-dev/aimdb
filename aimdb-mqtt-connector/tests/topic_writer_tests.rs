@@ -252,6 +252,7 @@ fn test_topic_resolver_with_config() {
 /// but don't test actual MQTT connectivity (that requires a broker).
 #[tokio::test]
 async fn test_topic_writer_registration_api() {
+    let key_test_sensor_dynamic_1 = aimdb_core::Name::<Temperature>::new("test.sensor.dynamic");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let produced_count = Arc::new(AtomicU32::new(0));
     let produced_count_clone = produced_count.clone();
@@ -259,7 +260,7 @@ async fn test_topic_writer_registration_api() {
     let mut builder = AimDbBuilder::new().runtime(runtime);
 
     // Register without link_to (no connector needed) - just source and tap
-    builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
+    builder.configure(key_test_sensor_dynamic_1, |reg| {
         let counter = produced_count_clone.clone();
         reg.buffer(BufferCfg::SingleLatest).source(
             move |_ctx: RuntimeContext, producer: Producer<Temperature>| {
@@ -284,6 +285,7 @@ async fn test_topic_writer_registration_api() {
 /// works correctly. Runtime requires actual MQTT broker.
 #[tokio::test]
 async fn test_topic_writer_with_connector_registration() {
+    let key_test_sensor_dynamic_2 = aimdb_core::Name::<Temperature>::new("test.sensor.dynamic");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
@@ -292,7 +294,7 @@ async fn test_topic_writer_with_connector_registration() {
     );
 
     // Register with a dynamic topic writer
-    builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
+    builder.configure(key_test_sensor_dynamic_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext, producer: Producer<Temperature>| async move {
@@ -314,6 +316,7 @@ async fn test_topic_writer_with_connector_registration() {
 
 #[tokio::test]
 async fn test_topic_resolver_with_connector_registration() {
+    let key_test_command_dynamic_3 = aimdb_core::Name::<Command>::new("test.command.dynamic");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
@@ -322,7 +325,7 @@ async fn test_topic_resolver_with_connector_registration() {
     );
 
     // Register with dynamic topic resolver
-    builder.configure::<Command>("test.command.dynamic", |reg| {
+    builder.configure(key_test_command_dynamic_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://commands/default") // Fallback topic
             .with_topic_resolver(|| {
@@ -339,6 +342,8 @@ async fn test_topic_resolver_with_connector_registration() {
 
 #[tokio::test]
 async fn test_mixed_static_and_dynamic_topics() {
+    let key_test_sensor_static_4 = aimdb_core::Name::<Temperature>::new("test.sensor.static");
+    let key_test_sensor_dynamic_5 = aimdb_core::Name::<Temperature>::new("test.sensor.dynamic");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
 
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
@@ -347,7 +352,7 @@ async fn test_mixed_static_and_dynamic_topics() {
     );
 
     // Static topic (traditional approach)
-    builder.configure::<Temperature>("test.sensor.static", |reg| {
+    builder.configure(key_test_sensor_static_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext, producer: Producer<Temperature>| async move {
@@ -360,7 +365,7 @@ async fn test_mixed_static_and_dynamic_topics() {
     });
 
     // Dynamic topic (new approach)
-    builder.configure::<Temperature>("test.sensor.dynamic", |reg| {
+    builder.configure(key_test_sensor_dynamic_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(
                 |_ctx: RuntimeContext, producer: Producer<Temperature>| async move {

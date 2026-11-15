@@ -34,18 +34,17 @@ impl Server {
         let thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
+                let key_state_1 = aimdb_core::Name::<State>::new("state");
                 let _ = std::fs::remove_file(&sock);
                 let config = AimxConfig::uds_default().socket_path(sock.to_str().unwrap());
                 let mut builder = AimDbBuilder::new()
                     .runtime(Arc::new(TokioAdapter))
                     .with_connector(UdsServer::from_config(config));
-                builder.configure::<State>("state", |reg| {
+                builder.configure(key_state_1, |reg| {
                     reg.buffer(BufferCfg::SingleLatest).with_remote_access();
                 });
                 let (db, runner) = builder.build().await.expect("build");
-                db.producer::<State>("state")
-                    .unwrap()
-                    .produce(State { n: 1 });
+                db.producer(key_state_1).unwrap().produce(State { n: 1 });
                 tokio::spawn(runner.run());
                 while !sock.exists() {
                     tokio::time::sleep(Duration::from_millis(5)).await;

@@ -40,12 +40,13 @@ impl Linkable for Reading {
 
 #[tokio::test]
 async fn outbound_knobs_push_exact_config_keys() {
+    let key_test_reading_out_1 = aimdb_core::Name::<Reading>::new("test.reading.out");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext"));
 
-    builder.configure::<Reading>("test.reading.out", |reg| {
+    builder.configure(key_test_reading_out_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_to("mqtt://sensors/reading")
             .with_qos(2)
@@ -72,12 +73,13 @@ async fn outbound_knobs_push_exact_config_keys() {
 
 #[tokio::test]
 async fn inbound_qos_pushes_exact_config_key() {
+    let key_test_reading_in_2 = aimdb_core::Name::<Reading>::new("test.reading.in");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new()
         .runtime(runtime)
         .with_connector(MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-in"));
 
-    builder.configure::<Reading>("test.reading.in", |reg| {
+    builder.configure(key_test_reading_in_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://commands/reading")
             .with_qos(0)
@@ -99,12 +101,13 @@ async fn inbound_qos_pushes_exact_config_key() {
 
 #[tokio::test]
 async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
+    let key_test_reading_codec_3 = aimdb_core::Name::<Reading>::new("test.reading.codec");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-codec"),
     );
 
-    builder.configure::<Reading>("test.reading.codec", |reg| {
+    builder.configure(key_test_reading_codec_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
 
         reg.link_to("mqtt://sensors/codec")
@@ -141,9 +144,8 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
     let encoded = link_codecs::Postcard::<64>
         .encode(&Reading { value: 17.5 })
         .expect("Postcard encode must succeed");
-    let mut reader = db
-        .subscribe::<Reading>("test.reading.codec")
-        .expect("subscribe");
+    let record_key_1 = aimdb_core::Name::<Reading>::new("test.reading.codec");
+    let mut reader = db.subscribe(record_key_1).expect("subscribe");
     inbound.dispatch("commands/codec", &encoded);
     assert_eq!(
         reader.try_recv().expect("Postcard ingest").value.value,
@@ -155,12 +157,14 @@ async fn per_link_codec_preserves_mqtt_extensions_and_wiring() {
 /// same config as on `link_to` / `link_from`.
 #[tokio::test]
 async fn detached_links_take_the_same_knobs() {
+    let key_test_reading_attached_4 = aimdb_core::Name::<Reading>::new("test.reading.attached");
+    let key_test_reading_detached_5 = aimdb_core::Name::<Reading>::new("test.reading.detached");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
         MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-detached"),
     );
 
-    builder.configure::<Reading>("test.reading.attached", |reg| {
+    builder.configure(key_test_reading_attached_4, |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         reg.link_to("mqtt://sensors/attached")
             .with_link_codec(link_codecs::Postcard::<64>)
@@ -172,7 +176,7 @@ async fn detached_links_take_the_same_knobs() {
             .with_qos(0)
             .finish();
     });
-    builder.configure::<Reading>("test.reading.detached", |reg| {
+    builder.configure(key_test_reading_detached_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .output(
                 OutboundLink::new("mqtt://sensors/detached")
@@ -221,12 +225,14 @@ async fn detached_links_take_the_same_knobs() {
 /// `publish` / `subscribe` take the MQTT knobs like any other link.
 #[tokio::test]
 async fn publish_and_subscribe_take_the_knobs() {
+    let key_test_reading_contract_6 =
+        aimdb_data_contracts::Key::<Reading>::new("test.reading.contract");
     let runtime = Arc::new(TokioAdapter::new().unwrap());
     let mut builder = AimDbBuilder::new().runtime(runtime);
     let mqtt = builder
         .connect(MqttConnector::new("mqtt://localhost:1883").with_client_id("link-ext-publish"));
 
-    builder.configure::<Reading>("test.reading.contract", move |reg| {
+    builder.configure(key_test_reading_contract_6, move |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .output(
                 publish(mqtt, "sensors/contract")

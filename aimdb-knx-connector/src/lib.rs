@@ -67,7 +67,8 @@
 //!         TokioDelay,
 //!         "knx://192.168.1.19:3671",
 //!     ));
-//! builder.configure::<LightState>("light.state", |reg| {
+//! let record_1 = aimdb_core::Name::<LightState>::new("light.state");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(BufferCfg::SingleLatest)
 //!        // Inbound: Monitor KNX bus
 //!        .link_from("knx://1/0/7")
@@ -101,10 +102,11 @@
 //!
 //! let runtime = Arc::new(EmbassyAdapter::new());
 //!
+//! let sensor = aimdb_core::Name::<SensorData>::new("sensor.data");
 //! let db = AimDbBuilder::new()
 //!     .runtime(runtime)
 //!     .with_connector(KnxConnector::new(binder, EmbassyDelay, gateway))
-//!     .configure::<SensorData>(|reg| {
+//!     .configure(sensor, |reg| {
 //!         reg.buffer_sized::<16, 2>(EmbassyBufferType::SpmcRing)
 //!            .source(sensor_producer)
 //!            // Inbound: Monitor KNX bus

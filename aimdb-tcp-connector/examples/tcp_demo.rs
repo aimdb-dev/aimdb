@@ -65,6 +65,8 @@ async fn main() {
 }
 
 async fn run_server(bind_addr: String) {
+    let key_counter_1 = aimdb_core::Name::<Counter>::new("counter");
+    let key_setting_2 = aimdb_core::Name::<Setting>::new("setting");
     println!("[server] serving AimX over tcp://{bind_addr} (Ctrl-C to stop)");
 
     let mut policy = SecurityPolicy::read_write();
@@ -80,10 +82,10 @@ async fn run_server(bind_addr: String) {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(TcpServer::new(listener).with_config(config));
-    builder.configure::<Counter>("counter", |reg| {
+    builder.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
 
@@ -92,7 +94,7 @@ async fn run_server(bind_addr: String) {
     db.set_record_from_json("setting", json!({ "level": 0 }))
         .expect("seed setting");
 
-    let producer = db.producer::<Counter>("counter").expect("producer");
+    let producer = db.producer(key_counter_1).expect("producer");
     tokio::spawn(async move {
         let mut value = 0u64;
         loop {

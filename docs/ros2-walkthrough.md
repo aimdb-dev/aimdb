@@ -94,7 +94,8 @@ let ros2 = zenoh
     .ros2(Ros2Node::new("telemetry_gateway").namespace("/aimdb"))
     .register::<Twist>();
 
-builder.configure::<Twist>("robot.cmd_vel", |reg| {
+let record_1 = aimdb_data_contracts::Key::<Twist>::new("robot.cmd_vel");
+builder.configure(record_1, |reg| {
     reg.buffer(BufferCfg::SingleLatest)
         .with_remote_access()
         .linked_from("ros2://cmd_vel") // CDR, as a ROS subscription

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking — typed record keys (design 063)
+
+- Add Key<T>; contract identity comes from SchemaType. Link and observation helpers require the schema declared by the key: `publish`, `subscribe`, `linked_to`, `linked_from`, their `_with` forms and `observe` do not compile on a record declared with `Name<T>` or `payload = T`. `publish` / `subscribe` return `ContractOutboundLink` / `ContractInboundLink`. `LinkableRegistrarExt`, `LinkCodecRegistrarExt` and `ObservableRegistrarExt` take the registrar's schema state as a third parameter and return `&mut Self`.
+
 ### Changed — value envelopes (design 062)
 
 - `MigrationChain` now takes explicit versions and generic payload codecs:

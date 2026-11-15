@@ -144,6 +144,7 @@ async fn a_one_shot_dialer_refuses_a_second_connect() {
 /// future dropped before it is polled must leave the stream in place.
 #[tokio::test]
 async fn the_server_guards_its_moved_in_stream() {
+    let key_counter_1 = aimdb_core::Name::<u64>::new("counter");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::connector::ConnectorBuilder;
     use aimdb_core::AimDbBuilder;
@@ -151,7 +152,7 @@ async fn the_server_guards_its_moved_in_stream() {
     use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
     let mut builder = AimDbBuilder::new().runtime(std::sync::Arc::new(TokioAdapter));
-    builder.configure::<u64>("counter", |reg| {
+    builder.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, _runner) = builder.build().await.expect("build db");
@@ -203,6 +204,7 @@ async fn a_serial_client_is_a_registrable_connector() {
 /// the timeout, which is what a board would do forever.
 #[tokio::test]
 async fn a_one_shot_client_stops_instead_of_redialing_forever() {
+    let key_counter_2 = aimdb_core::Name::<u64>::new("counter");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::connector::ConnectorBuilder;
     use aimdb_core::AimDbBuilder;
@@ -219,7 +221,7 @@ async fn a_one_shot_client_stops_instead_of_redialing_forever() {
     let mut builder = AimDbBuilder::new()
         .runtime(std::sync::Arc::new(TokioAdapter))
         .with_connector(SerialServer::new(TokioByteStream(server_end)));
-    builder.configure::<u64>("counter", |reg| {
+    builder.configure(key_counter_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("serial://counter")
@@ -252,6 +254,7 @@ async fn a_one_shot_client_stops_instead_of_redialing_forever() {
 /// out a connection that was already consumed.
 #[tokio::test]
 async fn the_client_guards_its_moved_in_dialer() {
+    let key_counter_3 = aimdb_core::Name::<u64>::new("counter");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::connector::ConnectorBuilder;
     use aimdb_core::AimDbBuilder;
@@ -259,7 +262,7 @@ async fn the_client_guards_its_moved_in_dialer() {
     use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 
     let mut builder = AimDbBuilder::new().runtime(std::sync::Arc::new(TokioAdapter));
-    builder.configure::<u64>("counter", |reg| {
+    builder.configure(key_counter_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest).with_remote_access();
     });
     let (db, _runner) = builder.build().await.expect("build db");

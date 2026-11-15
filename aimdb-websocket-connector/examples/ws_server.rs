@@ -40,6 +40,8 @@ struct Echo {
 
 #[tokio::main]
 async fn main() {
+    let key_counter_1 = aimdb_core::Name::<Counter>::new("counter");
+    let key_echo_2 = aimdb_core::Name::<Echo>::new("echo");
     let addr = "127.0.0.1:8080";
 
     let mut sb = AimDbBuilder::new()
@@ -52,7 +54,7 @@ async fn main() {
         );
 
     // Outbound: pushed to every subscribed client.
-    sb.configure::<Counter>("counter", |reg| {
+    sb.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://counter")
@@ -60,7 +62,7 @@ async fn main() {
             .finish();
     });
     // Inbound: clients may `write` to it.
-    sb.configure::<Echo>("echo", |reg| {
+    sb.configure(key_echo_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws://echo")

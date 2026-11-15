@@ -21,20 +21,22 @@ struct Led {
 
 // Main function
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let key_actuator_led_1 = aimdb_core::Name::<Led>::new("actuator.led");
     println!("=== hello-mailbox: Mailbox buffer demo ===\n");
 
     // configuration
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<Led>("actuator.led", |reg| {
+    builder.configure(key_actuator_led_1, |reg| {
         reg.buffer(BufferCfg::Mailbox);
     });
 
     let handle = builder.attach()?;
-    let producer = handle.producer::<Led>("actuator.led")?;
+    let producer = handle.producer(key_actuator_led_1)?;
 
     {
+        let key_actuator_led_2 = aimdb_core::Name::<Led>::new("actuator.led");
         // Produce quickly BEFORE creating the consumer
         println!("   Round 1 ");
         println!("1. Firing three rapid commands BEFORE consumer exists: Red → Green → Blue");
@@ -47,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Now we create the consumer — it will only see the last value in the Mailbox
         println!("2. Consumer created AFTER the burst — reads once:");
-        let mut consumer = handle.consumer::<Led>("actuator.led")?;
+        let mut consumer = handle.consumer(key_actuator_led_2)?;
         thread::sleep(Duration::from_millis(100));
 
         match consumer.try_get() {
@@ -71,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::sleep(Duration::from_millis(100));
 
     println!("2. Consumer created AFTER the burst — reads once:");
-    let mut consumer2 = handle.consumer::<Led>("actuator.led")?;
+    let mut consumer2 = handle.consumer(key_actuator_led_1)?;
     thread::sleep(Duration::from_millis(100));
 
     match consumer2.try_get() {

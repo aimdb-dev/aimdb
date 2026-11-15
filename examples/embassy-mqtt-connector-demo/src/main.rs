@@ -99,8 +99,8 @@ use aimdb_mqtt_connector::TlsOptions;
 use board::PushButton;
 // Shared contracts, keys, thermometers and monitors from the common crate
 use mqtt_connector_demo_common::{
-    ButtonKey, ButtonPress, CommandKey, SensorKey, SimThermometers, Temperature,
-    TemperatureCommand, Thermometer, button_logger, command_consumer, temperature_logger,
+    ButtonKey, CommandKey, SensorKey, SimThermometers, Thermometer, button_logger,
+    command_consumer, temperature_logger,
 };
 
 // ============================================================================
@@ -240,7 +240,7 @@ async fn main(spawner: Spawner) {
     // Three subscriber slots per sensor: the logger tap, the MQTT link and one
     // remote-access subscriber (`aimdb watch` over the serial port). With two,
     // a remote subscribe finds no slot left.
-    builder.configure::<Temperature>(SensorKey::TempIndoor, |reg| {
+    builder.configure(SensorKey::TempIndoor, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .input(Thermometer::on(indoor))
@@ -248,7 +248,7 @@ async fn main(spawner: Spawner) {
             .output(publish(mqtt, SensorKey::TempIndoor.link_address().unwrap()));
     });
 
-    builder.configure::<Temperature>(SensorKey::TempOutdoor, |reg| {
+    builder.configure(SensorKey::TempOutdoor, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .input(Thermometer::on(outdoor))
@@ -259,7 +259,7 @@ async fn main(spawner: Spawner) {
             ));
     });
 
-    builder.configure::<Temperature>(SensorKey::TempServerRoom, |reg| {
+    builder.configure(SensorKey::TempServerRoom, |reg| {
         reg.buffer_sized::<16, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .input(Thermometer::on(server_room))
@@ -274,7 +274,7 @@ async fn main(spawner: Spawner) {
     // USER BUTTON B1 (outbound: AimDB → MQTT)
     // ========================================================================
 
-    builder.configure::<ButtonPress>(ButtonKey::B1, |reg| {
+    builder.configure(ButtonKey::B1, |reg| {
         reg.buffer_sized::<8, 3>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .input(PushButton::on(b1))
@@ -287,7 +287,7 @@ async fn main(spawner: Spawner) {
     // Using compile-time safe CommandKey enum
     // ========================================================================
 
-    builder.configure::<TemperatureCommand>(CommandKey::TempIndoor, |reg| {
+    builder.configure(CommandKey::TempIndoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .tap(command_consumer)
@@ -297,7 +297,7 @@ async fn main(spawner: Spawner) {
             ));
     });
 
-    builder.configure::<TemperatureCommand>(CommandKey::TempOutdoor, |reg| {
+    builder.configure(CommandKey::TempOutdoor, |reg| {
         reg.buffer_sized::<8, 2>(EmbassyBufferType::SpmcRing)
             .with_remote_access()
             .tap(command_consumer)

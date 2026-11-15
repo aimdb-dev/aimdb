@@ -123,8 +123,9 @@ mod tests {
     use std::net::Ipv4Addr;
 
     async fn db() -> AimDb {
+        let key_light_1 = aimdb_core::Name::<u64>::new("light");
         let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-        builder.configure::<u64>("light", |reg| {
+        builder.configure(key_light_1, |reg| {
             reg.buffer(BufferCfg::SingleLatest).with_remote_access();
         });
         builder.build().await.expect("build db").0
@@ -154,6 +155,8 @@ mod tests {
     /// connector registered for scheme 'knx'"). Nothing here is ever driven —
     /// `build` only collects futures.
     async fn routed_db() -> AimDb {
+        let key_switch_2 = aimdb_core::Name::<u64>::new("switch");
+        let key_lamp_3 = aimdb_core::Name::<u64>::new("lamp");
         let mut builder = AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter))
             .with_connector(KnxConnector::new(
@@ -161,7 +164,7 @@ mod tests {
                 TokioDelay,
                 "knx://127.0.0.1:3671",
             ));
-        builder.configure::<u64>("switch", |reg| {
+        builder.configure(key_switch_2, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("knx://1/0/7")
                 .with_deserializer(
@@ -169,7 +172,7 @@ mod tests {
                 )
                 .finish();
         });
-        builder.configure::<u64>("lamp", |reg| {
+        builder.configure(key_lamp_3, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_to("knx://1/0/6")
                 .with_serializer(|_ctx, v: &u64| Ok(vec![*v as u8]))

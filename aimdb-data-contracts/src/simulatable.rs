@@ -98,24 +98,16 @@ where
     /// Installs a **source**, so single-writer-per-key is enforced by `build()`
     /// exactly as for a hardware `.source()` — the two are mutually exclusive by
     /// the app's `#[cfg]`, never both present in one binary.
-    fn simulate<R>(
-        &mut self,
-        profile: SimProfile<T::Params>,
-        rng: R,
-    ) -> &mut RecordRegistrar<'a, T>
+    fn simulate<R>(&mut self, profile: SimProfile<T::Params>, rng: R) -> &mut Self
     where
         R: rand::Rng + Send + 'static;
 }
 
-impl<'a, T> SimulatableRegistrarExt<'a, T> for RecordRegistrar<'a, T>
+impl<'a, T, S: aimdb_core::SchemaState> SimulatableRegistrarExt<'a, T> for RecordRegistrar<'a, T, S>
 where
     T: Simulatable + Send + Sync + Clone + core::fmt::Debug + 'static,
 {
-    fn simulate<R>(
-        &mut self,
-        profile: SimProfile<T::Params>,
-        mut rng: R,
-    ) -> &mut RecordRegistrar<'a, T>
+    fn simulate<R>(&mut self, profile: SimProfile<T::Params>, mut rng: R) -> &mut Self
     where
         R: rand::Rng + Send + 'static,
     {

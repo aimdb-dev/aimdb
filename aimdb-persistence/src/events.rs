@@ -125,6 +125,8 @@ mod tests {
     }
     #[tokio::test]
     async fn persistence_reports_missing_backend_skipped_rows_store_and_cleanup_failures() {
+        let key_value_2 = aimdb_core::Name::<u32>::new("value");
+        let key_encode_3 = aimdb_core::Name::<Unencodable>::new("encode");
         use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
         let runtime = Arc::new(TokioAdapter::new().unwrap());
         let mut missing = aimdb_core::AimDbBuilder::new().runtime(runtime.clone());
@@ -154,18 +156,19 @@ mod tests {
             })
         };
         capture::with(observer.clone(), || {
-            missing.configure::<u32>("missing", |reg| {
+            let key_missing_1 = aimdb_core::Name::<u32>::new("missing");
+            missing.configure(key_missing_1, |reg| {
                 reg.persist();
             });
         });
         let mut builder = aimdb_core::AimDbBuilder::new()
             .runtime(runtime)
             .with_persistence(Arc::new(BrokenBackend), core::time::Duration::from_secs(1));
-        builder.configure::<u32>("value", |reg| {
+        builder.configure(key_value_2, |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                 .persist();
         });
-        builder.configure::<Unencodable>("encode", |reg| {
+        builder.configure(key_encode_3, |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                 .persist();
         });
@@ -174,11 +177,9 @@ mod tests {
             .await
             .unwrap();
         assert!(values.is_empty());
-        let producer = db.producer::<u32>("value").unwrap();
+        let producer = db.producer(key_value_2).unwrap();
         producer.produce(7);
-        db.producer::<Unencodable>("encode")
-            .unwrap()
-            .produce(Unencodable);
+        db.producer(key_encode_3).unwrap().produce(Unencodable);
         // Stop as soon as both background failure paths have run; no sleeps or
         // process-global subscriber is needed to observe the decisions.
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();

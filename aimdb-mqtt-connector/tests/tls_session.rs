@@ -135,6 +135,7 @@ async fn build_tls_db(
     options: aimdb_mqtt_connector::TlsOptions,
     publish: Option<(Duration, u8)>,
 ) -> (aimdb_core::AimDb, aimdb_core::builder::AimDbRunner) {
+    let key_temperature_1 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::{MqttConnector, MqttLinkExt};
@@ -149,7 +150,7 @@ async fn build_tls_db(
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
 
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(&format!("mqtt://{SCRIPT_TOPIC}"))
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -162,7 +163,8 @@ async fn build_tls_db(
     });
 
     if let Some((every, qos)) = publish {
-        builder.configure::<u64>("uptime", move |reg| {
+        let key_uptime_2 = aimdb_core::Name::<u64>::new("uptime");
+        builder.configure(key_uptime_2, move |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .source(move |_ctx, producer| async move {
                     let mut n = 0u64;
@@ -223,6 +225,7 @@ async fn an_idle_tls_session_wakes_at_the_ping_cadence() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
+    let key_temperature_3 = aimdb_core::Name::<u64>::new("temperature");
     let (listener, acceptor, options, port) = tls_setup();
     let log = Arc::new(Mutex::new(Log::default()));
 
@@ -235,7 +238,7 @@ async fn a_partial_packet_over_tls_stops_neither_pings_nor_publishes() {
     let (db, runner) =
         build_tls_db(port, dialer, options, Some((Duration::from_millis(100), 0))).await;
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_3)
         .expect("temperature consumer")
         .subscribe();
 

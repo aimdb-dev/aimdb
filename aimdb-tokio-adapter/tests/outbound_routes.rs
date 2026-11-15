@@ -47,7 +47,8 @@ async fn db(records: Vec<Configure>) -> AimDb {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(TestConnector);
     for (i, configure) in records.into_iter().enumerate() {
-        builder.configure::<V>(KEYS[i], move |reg| configure(reg));
+        let record_key_1 = aimdb_core::Name::<V>::interned(KEYS[i]);
+        builder.configure(record_key_1, move |reg| configure(reg));
     }
     let (db, runner) = builder.build().await.expect("build");
     tokio::spawn(runner.run());
@@ -69,7 +70,8 @@ fn spmc(i: usize, capacity: usize) -> Configure {
 }
 
 fn produce(db: &AimDb, i: usize, v: u32) {
-    db.produce::<V>(KEYS[i], V(v)).unwrap();
+    let record_key_2 = aimdb_core::Name::<V>::new(KEYS[i]);
+    db.produce(record_key_2, V(v)).unwrap();
 }
 
 /// Route, topic and payload of the next message.
@@ -510,7 +512,8 @@ async fn a_rejected_message_is_counted_beside_sent() {
 async fn a_message_carries_the_stamp_of_the_write_it_serialized() {
     let db = db(vec![spmc(0, 16)]).await;
     let mut o = OutboundRoutes::new(&db, "test").unwrap();
-    let mut reader = db.subscribe::<V>(KEYS[0]).unwrap();
+    let record_key_3 = aimdb_core::Name::<V>::new(KEYS[0]);
+    let mut reader = db.subscribe(record_key_3).unwrap();
     for v in 0..3 {
         produce(&db, 0, v);
         // Distinct stamps, so a mix-up between writes would show.

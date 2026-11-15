@@ -59,6 +59,7 @@ embassy_time_driver::time_driver_impl!(static HOST_CLOCK: HostClock = HostClock)
 /// silent — publishes keep working and only inbound routing stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_session_loop_reconnects_and_resubscribes() {
+    let key_temperature_1 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::MqttConnector;
@@ -76,7 +77,7 @@ async fn the_session_loop_reconnects_and_resubscribes() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -128,6 +129,8 @@ async fn the_session_loop_reconnects_and_resubscribes() {
 /// multi-thread runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
+    let key_temperature_2 = aimdb_core::Name::<u64>::new("temperature");
+    let key_uptime_3 = aimdb_core::Name::<u64>::new("uptime");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::MqttConnector;
@@ -147,7 +150,7 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
         .with_connector(connector);
 
     // Inbound: the broker's PUBLISH lands here.
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -160,7 +163,7 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
     });
 
     // Outbound: this record's producer publishes to the broker.
-    builder.configure::<u64>("uptime", |reg| {
+    builder.configure(key_uptime_3, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .source(|_ctx, producer| async move {
                 loop {
@@ -175,7 +178,7 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
 
     let (db, runner) = builder.build().await.expect("build db");
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_2)
         .expect("temperature consumer")
         .subscribe();
 
@@ -237,6 +240,7 @@ async fn two_connectors_in_one_process_keep_their_own_client_ids() {
 
     let mut runners = Vec::new();
     for id in ["first-node", "second-node"] {
+        let key_temperature_4 = aimdb_core::Name::<u64>::new("temperature");
         let mut builder = AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter))
             .with_connector(
@@ -244,7 +248,7 @@ async fn two_connectors_in_one_process_keep_their_own_client_ids() {
                     .transport(TokioNet::tcp())
                     .with_client_id(id),
             );
-        builder.configure::<u64>("temperature", |reg| {
+        builder.configure(key_temperature_4, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("mqtt://sensors/temperature")
                 .with_deserializer(|_ctx, _data: &[u8]| Ok(0u64))
@@ -283,6 +287,7 @@ async fn two_connectors_in_one_process_keep_their_own_client_ids() {
 /// message, and returns what the broker saw after `wait` plus the length the
 /// record last received.
 async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option<u64>) {
+    let key_temperature_5 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::MqttConnector;
@@ -299,7 +304,7 @@ async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_5, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -308,7 +313,8 @@ async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option
             .finish();
     });
     let (db, runner) = builder.build().await.expect("build db");
-    let mut reader = db.subscribe::<u64>("temperature").expect("subscribe");
+    let record_key_1 = aimdb_core::Name::<u64>::new("temperature");
+    let mut reader = db.subscribe(record_key_1).expect("subscribe");
 
     let payload = vec![b'x'; payload_len];
     let broker = fake_broker(
@@ -356,6 +362,7 @@ async fn a_retained_message_over_the_maximum_packet_size_is_withheld() {
 /// links and no outbound ones, the connector contributes one future.
 #[tokio::test]
 async fn the_embedded_backend_dispatches_inbound_on_its_session_task() {
+    let key_temperature_6 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::connector::ConnectorBuilder;
     use aimdb_core::AimDbBuilder;
@@ -367,7 +374,7 @@ async fn the_embedded_backend_dispatches_inbound_on_its_session_task() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector());
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_6, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -413,8 +420,9 @@ fn outbound(
     scratch: Option<usize>,
 ) -> impl FnOnce(&mut aimdb_core::AimDbBuilder) {
     move |builder| {
+        let key_out_7 = aimdb_core::Name::<u64>::new("out");
         use aimdb_tokio_adapter::TokioRecordRegistrarExt;
-        builder.configure::<u64>("out", move |reg| {
+        builder.configure(key_out_7, move |reg| {
             let mut link = reg
                 .buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                 .link_to("mqtt://sensors/out")
@@ -494,8 +502,9 @@ async fn a_subscribe_too_large_for_the_write_ring_fails_the_build() {
     let topic = format!("sensors/{}", "t".repeat(2100));
     let inbound = |topic: String| {
         move |builder: &mut aimdb_core::AimDbBuilder| {
+            let key_in_8 = aimdb_core::Name::<u64>::new("in");
             use aimdb_tokio_adapter::TokioRecordRegistrarExt;
-            builder.configure::<u64>("in", move |reg| {
+            builder.configure(key_in_8, move |reg| {
                 reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                     .link_from(&format!("mqtt://{topic}"))
                     .with_deserializer(|_ctx, data: &[u8]| {
@@ -552,7 +561,8 @@ async fn each_scheme_reaches_only_its_own_broker() {
         ("setpoint", "mqtt-plant://plant/setpoint"),
         ("command", "mqtt-cloud://cloud/command"),
     ] {
-        builder.configure::<u64>(key, |reg| {
+        let record_key_2 = aimdb_core::Name::<u64>::interned(key);
+        builder.configure(record_key_2, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from(address)
                 .with_deserializer(|_ctx, data: &[u8]| {
@@ -568,7 +578,8 @@ async fn each_scheme_reaches_only_its_own_broker() {
         ("flow", "mqtt-plant://plant/flow", 7u64),
         ("flow_avg", "mqtt-cloud://cloud/flow_avg", 8u64),
     ] {
-        builder.configure::<u64>(key, |reg| {
+        let record_key_3 = aimdb_core::Name::<u64>::interned(key);
+        builder.configure(record_key_3, |reg| {
             reg.buffer(BufferCfg::SingleLatest)
                 .source(move |_ctx, producer| async move {
                     loop {

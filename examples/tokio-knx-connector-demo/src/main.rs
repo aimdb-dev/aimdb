@@ -45,8 +45,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 // Shared records, keys, DPT codecs and monitors from the common crate
 use knx_connector_demo_common::{
-    dpt, light_monitor, temperature_monitor, ButtonEvent, LightControl, LightControlKey, LightKey,
-    LightState, TemperatureKey, TemperatureReading,
+    dpt, light_monitor, temperature_monitor, ButtonEvent, LightControlKey, LightKey, TemperatureKey,
 };
 
 // ============================================================================
@@ -57,11 +56,11 @@ use knx_connector_demo_common::{
 /// every record type built `From<ButtonEvent>`.
 struct EnterKey;
 
-impl<T> Input<T> for EnterKey
+impl<T, S: aimdb_core::SchemaState> Input<T, S> for EnterKey
 where
     T: From<ButtonEvent> + Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.source(|ctx, producer| async move {
             let log = ctx.log();
             log.info("\n⌨️  Press ENTER to toggle light on 1/0/6");
@@ -129,7 +128,7 @@ async fn main() -> DbResult<()> {
     ));
 
     // Temperature sensors (inbound) - using link_address() from key metadata
-    builder.configure::<TemperatureReading>(TemperatureKey::LivingRoom, |reg| {
+    builder.configure(TemperatureKey::LivingRoom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -139,7 +138,7 @@ async fn main() -> DbResult<()> {
             );
     });
 
-    builder.configure::<TemperatureReading>(TemperatureKey::Bedroom, |reg| {
+    builder.configure(TemperatureKey::Bedroom, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -149,7 +148,7 @@ async fn main() -> DbResult<()> {
             );
     });
 
-    builder.configure::<TemperatureReading>(TemperatureKey::Kitchen, |reg| {
+    builder.configure(TemperatureKey::Kitchen, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(temperature_monitor)
@@ -160,7 +159,7 @@ async fn main() -> DbResult<()> {
     });
 
     // Light monitors (inbound) - using link_address() from key metadata
-    builder.configure::<LightState>(LightKey::Main, |reg| {
+    builder.configure(LightKey::Main, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
@@ -170,7 +169,7 @@ async fn main() -> DbResult<()> {
             );
     });
 
-    builder.configure::<LightState>(LightKey::Hallway, |reg| {
+    builder.configure(LightKey::Hallway, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .tap(light_monitor)
@@ -181,7 +180,7 @@ async fn main() -> DbResult<()> {
     });
 
     // Light control (outbound) - using link_address() from key metadata
-    builder.configure::<LightControl>(LightControlKey::Control, |reg| {
+    builder.configure(LightControlKey::Control, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .input(EnterKey)

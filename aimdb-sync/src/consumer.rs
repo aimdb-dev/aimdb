@@ -118,7 +118,8 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
+    /// let record_1 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let mut consumer = handle.consumer(record_1)?;
     /// let data = consumer.get()?; // blocks until value available
     /// println!("Got: {:?}", data);
     /// # Ok(())
@@ -164,7 +165,8 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
+    /// let record_2 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let mut consumer = handle.consumer(record_2)?;
     /// match consumer.get_with_timeout(Duration::from_millis(100)) {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data available"),
@@ -208,7 +210,8 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
+    /// let record_3 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let mut consumer = handle.consumer(record_3)?;
     /// match consumer.try_get() {
     ///     Ok(data) => println!("Got: {:?}", data),
     ///     Err(_) => println!("No data yet"),
@@ -265,7 +268,8 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
+    /// let record_4 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let mut consumer = handle.consumer(record_4)?;
     ///
     /// // Get the latest value, skipping any queued intermediate values
     /// let latest = consumer.get_latest()?;
@@ -324,7 +328,8 @@ where
     /// let handle = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter))
     ///     .attach()?;
-    /// let mut consumer = handle.consumer::<MyData>("my_data")?;
+    /// let record_5 = aimdb_core::Name::<MyData>::new("my_data");
+    /// let mut consumer = handle.consumer(record_5)?;
     ///
     /// // Get the latest value within 100ms
     /// match consumer.get_latest_with_timeout(Duration::from_millis(100)) {

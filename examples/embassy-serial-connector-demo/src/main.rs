@@ -81,6 +81,8 @@ async fn counter_task(producer: Producer<Counter>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    let key_counter_1 = aimdb_core::Name::<Counter>::new("counter");
+    let key_setting_2 = aimdb_core::Name::<Setting>::new("setting");
     // Initialize the heap for the allocator.
     {
         use core::mem::MaybeUninit;
@@ -154,11 +156,11 @@ async fn main(spawner: Spawner) {
         .build_info(aimdb_build_info::section!())
         .instance_uid(&embassy_stm32::uid::uid())
         .with_connector(SerialServer::new(EmbassyUart::new(rx, tx)).security_policy(policy));
-    builder.configure::<Counter>("counter", |reg| {
+    builder.configure(key_counter_1, |reg| {
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
     });
-    builder.configure::<Setting>("setting", |reg| {
+    builder.configure(key_setting_2, |reg| {
         // No producer → remotely writable.
         reg.buffer_sized::<4, 2>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
@@ -168,7 +170,7 @@ async fn main(spawner: Spawner) {
     let (db, db_runner) = builder.build().await.expect("build db");
     let db = DB_CELL.init(db);
 
-    let producer = db.producer::<Counter>("counter").expect("producer");
+    let producer = db.producer(key_counter_1).expect("producer");
     spawner.spawn(unwrap!(counter_task(producer)));
 
     info!(

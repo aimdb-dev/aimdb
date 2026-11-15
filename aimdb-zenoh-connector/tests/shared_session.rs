@@ -78,6 +78,8 @@ async fn counting_proxy(router_port: u16) -> (u16, Arc<AtomicUsize>) {
 
 /// The gateway (053 §4.8): `zenoh://` in, `ros2://` out, on one session.
 async fn gateway(zenoh_first: bool) {
+    let key_cell4_temperature_1 =
+        aimdb_data_contracts::Key::<Temperature>::new("cell4.temperature");
     let router_port = free_port();
     let router = format!("tcp/127.0.0.1:{router_port}");
     let _router = zenoh::open(config("router", &router, true)).await.unwrap();
@@ -105,7 +107,7 @@ async fn gateway(zenoh_first: bool) {
     } else {
         builder.with_connector(ros2).with_connector(zenoh)
     };
-    builder.configure::<Temperature>("cell4.temperature", |reg| {
+    builder.configure(key_cell4_temperature_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .linked_from("zenoh://cell4/probe/temperature")
             .linked_to("ros2://cell4/temperature");
@@ -145,6 +147,9 @@ async fn gateway(zenoh_first: bool) {
     );
 }
 
+const RECORD_STATE: aimdb_data_contracts::Key<Temperature> =
+    aimdb_data_contracts::Key::new("state");
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_opens_one_connection_with_zenoh_registered_first() {
     gateway(true).await;
@@ -173,7 +178,7 @@ async fn an_unregistered_ros2_view_does_not_stop_the_zenoh_connector() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(zenoh);
-    builder.configure::<Temperature>("state", |reg| {
+    builder.configure(RECORD_STATE, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .linked_to("zenoh://cell4/state");
     });
@@ -182,7 +187,8 @@ async fn an_unregistered_ros2_view_does_not_stop_the_zenoh_connector() {
 
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        db.produce("state", Temperature { celsius: 1.0 }).unwrap();
+        db.produce(RECORD_STATE, Temperature { celsius: 1.0 })
+            .unwrap();
         if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(200), out.recv_async()).await
         {
             break;
@@ -210,6 +216,7 @@ async fn two_ros2_views_on_one_session_are_refused() {
 /// connections through the same proxy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_connectors_open_two_connections() {
+    let key_t_3 = aimdb_data_contracts::Key::<Temperature>::new("t");
     let router_port = free_port();
     let router = format!("tcp/127.0.0.1:{router_port}");
     let _router = zenoh::open(config("router", &router, true)).await.unwrap();
@@ -232,7 +239,7 @@ async fn separate_connectors_open_two_connections() {
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(zenoh)
         .with_connector(ros2);
-    builder.configure::<Temperature>("t", |reg| {
+    builder.configure(key_t_3, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .linked_from("zenoh://cell4/probe/temperature")
             .linked_to("ros2://cell4/temperature");

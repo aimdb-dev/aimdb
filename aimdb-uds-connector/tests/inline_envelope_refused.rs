@@ -30,10 +30,11 @@ migration_chain! { type Current = Reading; steps {} }
 async fn build(
     link: impl FnOnce(&mut RecordRegistrar<'_, Reading>) + Send + 'static,
 ) -> Result<(), String> {
+    let key_reading_1 = aimdb_core::Name::<Reading>::new("reading");
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(UdsClient::new("/nonexistent/aimdb-test.sock"));
-    builder.configure::<Reading>("reading", move |reg| {
+    builder.configure(key_reading_1, move |reg| {
         reg.buffer(BufferCfg::SingleLatest);
         link(reg);
     });

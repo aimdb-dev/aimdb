@@ -51,7 +51,8 @@
 //! registrar extension trait, which `aimdb-core` cannot depend on):
 //!
 //! ```rust,ignore
-//! builder.configure::<Temperature>("sensors.outdoor", |reg| {
+//! let record_1 = aimdb_core::Name::<Temperature>::new("sensors.outdoor");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(cfg)
 //!        .source(temperature_producer)
 //!        .tap(temperature_monitor)
@@ -465,7 +466,20 @@ pub enum StageKind {
 /// Registrar for configuring a typed record
 ///
 /// Provides a fluent API for registering producer and consumer functions.
-pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
+///
+/// `S` is the record's [`SchemaState`](crate::SchemaState): `configure`
+/// hands out [`Declared`](crate::Declared) for a key that declares a data
+/// contract (`Key<T>`, `#[record_key(contract = T)]`) and
+/// [`Undeclared`](crate::Undeclared) otherwise. Contract-only verbs
+/// (`linked_to`, `publish`, `observe`, …) are implemented only for
+/// `Declared`, so using one on a `Name<T>` record does not compile.
+/// Everything else works in both states; extension traits implement for any
+/// `S: SchemaState`.
+pub struct RecordRegistrar<
+    'a,
+    T: Send + Sync + 'static + Debug + Clone,
+    S: crate::SchemaState = crate::Undeclared,
+> {
     /// The typed record being configured
     pub(crate) rec: &'a mut TypedRecord<T>,
     /// Connector builders indexed by scheme
@@ -475,6 +489,7 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     pub(crate) builder_id: u32,
     /// The record key for this record
     pub(crate) record_key: String,
+    pub(crate) key_link_address: Option<String>,
     /// Extension storage from the builder — allows external crates (e.g.
     /// `aimdb-persistence`) to retrieve typed state inside `.persist()`.
     pub(crate) extensions: &'a crate::extensions::Extensions,
@@ -482,9 +497,10 @@ pub struct RecordRegistrar<'a, T: Send + Sync + 'static + Debug + Clone> {
     /// Tracked even when the `observability` feature is off (then it's just unused).
     #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) last_stage: Option<(StageKind, usize)>,
+    pub(crate) _schema: core::marker::PhantomData<fn() -> S>,
 }
 
-impl<'a, T> RecordRegistrar<'a, T>
+impl<'a, T, S: crate::SchemaState> RecordRegistrar<'a, T, S>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -550,10 +566,11 @@ where
     /// Sets the data-contract schema this record carries, reported in the
     /// dependency graph (`graph.nodes`) and in `record.list`.
     ///
-    /// `aimdb-data-contracts` calls this from `SchemaType` (`linked_to`,
-    /// `linked_from`, `observe`, `contract_schema`). Setting the same schema
-    /// again does nothing; a different one fails `build()`.
-    pub fn schema(&mut self, name: &str, version: u32) -> &mut Self {
+    /// Only `configure` calls this, from the key's [`TypedKey::SCHEMA`](crate::TypedKey::SCHEMA):
+    /// the key is the one source of a record's schema (063). Setting the same
+    /// schema again does nothing; a different one fails `build()`.
+    #[cfg(test)]
+    pub(crate) fn schema(&mut self, name: &str, version: u32) -> &mut Self {
         self.rec.set_schema(name, version);
         self
     }
@@ -669,15 +686,15 @@ where
     /// # Arguments
     /// * `input_key` - The record key to subscribe to as input
     /// * `build_fn` - Closure that configures the transform pipeline via `TransformBuilder`
-    pub fn transform<I, F>(&mut self, input_key: impl crate::RecordKey, build_fn: F) -> &mut Self
+    pub fn transform<K, F>(&mut self, input_key: K, build_fn: F) -> &mut Self
     where
-        I: Send + Sync + Clone + Debug + 'static,
+        K: crate::record_id::TypedKey,
         F: FnOnce(
-            crate::transform::TransformBuilder<I, T>,
-        ) -> crate::transform::TransformPipeline<I, T>,
+            crate::transform::TransformBuilder<K::Contract, T>,
+        ) -> crate::transform::TransformPipeline<K::Contract, T>,
     {
         let input_key_str = input_key.as_str().to_string();
-        let builder = crate::transform::TransformBuilder::<I, T>::new(input_key_str);
+        let builder = crate::transform::TransformBuilder::<K::Contract, T>::new(input_key_str);
         let pipeline = build_fn(builder);
         let descriptor = pipeline.into_descriptor();
         self.rec.set_transform(descriptor);
@@ -717,18 +734,30 @@ where
         }
         self
     }
+    /// Builds a link using the address declared on this record's typed key.
+    /// A missing address is reported by `build()`.
+    pub fn link_to_key(&mut self) -> OutboundConnectorBuilder<'_, 'a, T, S> {
+        let address = self.key_link_address.clone().unwrap_or_default();
+        self.link_to(&address)
+    }
+    /// Builds a link using the address declared on this record's typed key.
+    /// A missing address is reported by `build()`.
+    pub fn link_from_key(&mut self) -> InboundConnectorBuilder<'_, 'a, T, S> {
+        let address = self.key_link_address.clone().unwrap_or_default();
+        self.link_from(&address)
+    }
 
     /// Link TO external system (outbound: AimDB → External)
     ///
     /// Subscribes to buffer updates and publishes them to an external system.
-    pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T> {
+    pub fn link_to(&mut self, url: &str) -> OutboundConnectorBuilder<'_, 'a, T, S> {
         OutboundLink::new(url).attach(self)
     }
 
     /// Link FROM external system (inbound: External → AimDB)
     ///
     /// Subscribes to an external data source and produces values into this record's buffer.
-    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T> {
+    pub fn link_from(&mut self, url: &str) -> InboundConnectorBuilder<'_, 'a, T, S> {
         InboundLink::new(url).attach(self)
     }
 
@@ -738,7 +767,7 @@ where
     /// Conflicting writers are reported by `build()`, exactly as for
     /// `.source()` and `.link_from()`; several inbound links on one record
     /// are allowed (fan-in).
-    pub fn input(&mut self, input: impl Input<T>) -> &mut Self {
+    pub fn input(&mut self, input: impl Input<T, S>) -> &mut Self {
         input.wire(self);
         self
     }
@@ -748,7 +777,7 @@ where
     /// Takes anything implementing [`Output<T>`], such as an
     /// [`OutboundLink`]. A following [`with_name`](Self::with_name) names the
     /// stage the output registered, as after `.link_to(..).finish()`.
-    pub fn output(&mut self, output: impl Output<T>) -> &mut Self {
+    pub fn output(&mut self, output: impl Output<T, S>) -> &mut Self {
         output.wire(self);
         self
     }
@@ -781,11 +810,11 @@ where
 /// /// Produces 0, 1, 2 into any record built from an `i32`.
 /// struct Counter;
 ///
-/// impl<T> Input<T> for Counter
+/// impl<T, S: aimdb_core::SchemaState> Input<T, S> for Counter
 /// where
 ///     T: From<i32> + Send + Sync + 'static + Debug + Clone,
 /// {
-///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
 ///         reg.source(|_ctx, producer| async move {
 ///             for i in 0..3 {
 ///                 producer.produce(T::from(i));
@@ -806,11 +835,11 @@ where
 /// /// An input on one channel.
 /// struct Sensor(Channel);
 ///
-/// impl<T> Input<T> for Sensor
+/// impl<T, S: aimdb_core::SchemaState> Input<T, S> for Sensor
 /// where
 ///     T: From<u8> + Send + Sync + 'static + Debug + Clone,
 /// {
-///     fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+///     fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
 ///         reg.source(|_ctx, producer| async move { producer.produce(T::from(0)) });
 ///     }
 /// }
@@ -838,9 +867,9 @@ where
     label = "not an input for `{T}`",
     note = "an input implements `Input<{T}>`; device inputs usually do so for every `T: From<Event>`"
 )]
-pub trait Input<T: Send + Sync + 'static + Debug + Clone> {
+pub trait Input<T: Send + Sync + 'static + Debug + Clone, S: crate::SchemaState> {
     /// Registers this input's writer on the record.
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>);
 }
 
 /// Something that can read from a `T` record, passed to
@@ -852,26 +881,48 @@ pub trait Input<T: Send + Sync + 'static + Debug + Clone> {
     message = "`{Self}` cannot be an output of a `{T}` record",
     label = "not an output for `{T}`"
 )]
-pub trait Output<T: Send + Sync + 'static + Debug + Clone> {
+pub trait Output<T: Send + Sync + 'static + Debug + Clone, S: crate::SchemaState> {
     /// Registers this output's reader on the record.
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>);
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>);
 }
 
-impl<T> Input<T> for InboundLink<T>
+impl<T, S: crate::SchemaState> Input<T, S> for InboundLink<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.push_inbound(self);
     }
 }
 
-impl<T> Output<T> for OutboundLink<T>
+impl<T, S: crate::SchemaState> Output<T, S> for OutboundLink<T>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
-    fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
         reg.push_outbound(self);
+    }
+}
+
+/// A contract link is an input only of a record whose key declares the
+/// contract: `subscribe(..)` on a `Name<T>` record does not compile.
+impl<T, S: crate::ContractDeclared> Input<T, S> for ContractInboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
+        reg.push_inbound(self.attach(Detached));
+    }
+}
+
+/// A contract link is an output only of a record whose key declares the
+/// contract: `publish(..)` on a `Name<T>` record does not compile.
+impl<T, S: crate::ContractDeclared> Output<T, S> for ContractOutboundLink<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
+        reg.push_outbound(self.attach(Detached));
     }
 }
 
@@ -885,17 +936,31 @@ where
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Detached;
 
+/// Marks a detached link that carries a data contract: what
+/// `aimdb-data-contracts`' `publish` / `subscribe` return.
+///
+/// It takes every option a [`Detached`] link takes, but is an
+/// [`Input`] / [`Output`] only of a record whose key declares the contract
+/// ([`ContractDeclared`](crate::ContractDeclared)).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DetachedContract;
+
 /// Outbound link builder attached to a record: what
 /// [`RecordRegistrar::link_to`] returns.
 ///
 /// `'r` is the borrow of the registrar taken by `link_to()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub type OutboundConnectorBuilder<'r, 'a, T> =
-    OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+pub type OutboundConnectorBuilder<'r, 'a, T, S = crate::Undeclared> =
+    OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T, S>>;
 
 /// Outbound link not attached to a record yet, built with
 /// [`OutboundLink::new`] and registered by [`RecordRegistrar::output`].
 pub type OutboundLink<T> = OutboundLinkBuilder<T, Detached>;
+
+/// Outbound link carrying a data contract, built by
+/// [`OutboundLink::into_contract`]: an [`Output`] only of a record whose key
+/// declares the contract.
+pub type ContractOutboundLink<T> = OutboundLinkBuilder<T, DetachedContract>;
 
 type OutboundWireFinalizer<T> =
     Arc<dyn Fn(OutboundLink<T>) -> Result<OutboundLink<T>, String> + Send + Sync>;
@@ -924,7 +989,6 @@ pub struct OutboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
-    schema: Option<(String, u32)>,
     config: Vec<(String, String)>,
     context_serializer: Option<TypedContextSerializerFn<T>>,
     context_serializer_into: Option<(usize, TypedContextSerializerIntoFn<T>)>,
@@ -959,7 +1023,6 @@ where
             wire_finalizer: None,
             url: url.to_string(),
             connector: None,
-            schema: None,
             config: Vec::new(),
             context_serializer: None,
             context_serializer_into: None,
@@ -967,6 +1030,18 @@ where
         }
     }
 
+    /// Marks this link as carrying a data contract, so it wires only into a
+    /// record whose key declares the contract. `aimdb-data-contracts`'
+    /// `publish` calls this; the link's options are unchanged.
+    pub fn into_contract(self) -> ContractOutboundLink<T> {
+        self.attach(DetachedContract)
+    }
+}
+
+impl<T, A> OutboundLinkBuilder<T, A>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     fn attach<R>(self, at: R) -> OutboundLinkBuilder<T, R> {
         OutboundLinkBuilder {
             at,
@@ -975,7 +1050,6 @@ where
             wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
-            schema: self.schema,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
@@ -1025,25 +1099,12 @@ where
             wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
-            schema: self.schema,
             config: self.config,
             context_serializer: self.context_serializer,
             context_serializer_into: self.context_serializer_into,
             topic_writer: self.topic_writer,
         };
         (self.at, link)
-    }
-
-    /// Reports `name` / `version` as the record's data-contract schema when
-    /// the link is registered, as [`RecordRegistrar::schema`] would.
-    ///
-    /// Reported even if the link itself is rejected, like a `schema()` call
-    /// before it. A different schema on the same record fails `build()`.
-    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
-    /// contract type.
-    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
-        self.schema = Some((name.to_string(), version));
-        self
     }
 
     /// Adds a configuration option to the connector
@@ -1168,7 +1229,7 @@ where
     }
 }
 
-impl<'r, 'a, T> OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+impl<'r, 'a, T, S: crate::SchemaState> OutboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T, S>>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -1183,7 +1244,7 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_to()` is fine).
-    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, S> {
         let (registrar, link) = self.detach();
         registrar.push_outbound(link);
         registrar
@@ -1207,7 +1268,7 @@ where
 {
     let writer = db
         .inner()
-        .get_typed_record_by_key::<T>(record_key)
+        .get_typed_record_by_key_raw::<T>(record_key)
         .and_then(|rec| rec.writer_handle())
         .unwrap_or_else(|e| {
             panic!(
@@ -1272,11 +1333,17 @@ type InboundWireFinalizer<T> =
 ///
 /// `'r` is the borrow of the registrar taken by `link_from()`; `'a` is the
 /// registrar's own borrow of the record being configured.
-pub type InboundConnectorBuilder<'r, 'a, T> = InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>;
+pub type InboundConnectorBuilder<'r, 'a, T, S = crate::Undeclared> =
+    InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T, S>>;
 
 /// Inbound link not attached to a record yet, built with
 /// [`InboundLink::new`] and registered by [`RecordRegistrar::input`].
 pub type InboundLink<T> = InboundLinkBuilder<T, Detached>;
+
+/// Inbound link carrying a data contract, built by
+/// [`InboundLink::into_contract`]: an [`Input`] only of a record whose key
+/// declares the contract.
+pub type ContractInboundLink<T> = InboundLinkBuilder<T, DetachedContract>;
 
 /// Builder for configuring inbound connector links (External → AimDB)
 ///
@@ -1302,7 +1369,6 @@ pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     at: R,
     url: String,
     connector: Option<crate::ConnectorHandle>,
-    schema: Option<(String, u32)>,
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
@@ -1339,7 +1405,6 @@ where
             wire_finalizer: None,
             url: url.to_string(),
             connector: None,
-            schema: None,
             config: Vec::new(),
             context_deserializer: None,
             match_deserializer: None,
@@ -1349,6 +1414,18 @@ where
         }
     }
 
+    /// Marks this link as carrying a data contract, so it wires only into a
+    /// record whose key declares the contract. `aimdb-data-contracts`'
+    /// `subscribe` calls this; the link's options are unchanged.
+    pub fn into_contract(self) -> ContractInboundLink<T> {
+        self.attach(DetachedContract)
+    }
+}
+
+impl<T, A> InboundLinkBuilder<T, A>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
     fn attach<R>(self, at: R) -> InboundLinkBuilder<T, R> {
         InboundLinkBuilder {
             at,
@@ -1357,7 +1434,6 @@ where
             wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
-            schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1409,7 +1485,6 @@ where
             wire_finalizer: self.wire_finalizer,
             url: self.url,
             connector: self.connector,
-            schema: self.schema,
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
@@ -1418,18 +1493,6 @@ where
             topic_resolver: self.topic_resolver,
         };
         (self.at, link)
-    }
-
-    /// Reports `name` / `version` as the record's data-contract schema when
-    /// the link is registered, as [`RecordRegistrar::schema`] would.
-    ///
-    /// Reported even if the link itself is rejected, like a `schema()` call
-    /// before it. A different schema on the same record fails `build()`.
-    /// `aimdb-data-contracts`' `publish` / `subscribe` set it from the
-    /// contract type.
-    pub fn with_schema(mut self, name: &str, version: u32) -> Self {
-        self.schema = Some((name.to_string(), version));
-        self
     }
 
     /// Adds a configuration option to the connector
@@ -1561,7 +1624,7 @@ where
     }
 }
 
-impl<'r, 'a, T> InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T>>
+impl<'r, 'a, T, S: crate::SchemaState> InboundLinkBuilder<T, &'r mut RecordRegistrar<'a, T, S>>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -1577,7 +1640,7 @@ where
     ///
     /// The buffer requirement is validated by `build()` (calling `.buffer()`
     /// after `.link_from()` is fine).
-    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T> {
+    pub fn finish(self) -> &'r mut RecordRegistrar<'a, T, S> {
         let (registrar, link) = self.detach();
         registrar.push_inbound(link);
         registrar
@@ -1629,7 +1692,7 @@ macro_rules! wire_link {
 wire_link!(OutboundLink);
 wire_link!(InboundLink);
 
-impl<'a, T> RecordRegistrar<'a, T>
+impl<'a, T, S: crate::SchemaState> RecordRegistrar<'a, T, S>
 where
     T: Send + Sync + 'static + Debug + Clone,
 {
@@ -1673,10 +1736,6 @@ where
 
         use crate::connector::{ConnectorLink, LinkAddress};
         use crate::error::ConfigError;
-
-        if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
-        }
 
         let record_key = self.record_key.clone();
 
@@ -1787,7 +1846,7 @@ where
             Arc::new(move |db: &AimDb| {
                 let typed_rec = db
                     .inner()
-                    .get_typed_record_by_key::<T>(&record_key)
+                    .get_typed_record_by_key_raw::<T>(&record_key)
                     .unwrap_or_else(|e| {
                         panic!(
                             "outbound link: record '{record_key}' lookup failed ({e:?}) — \
@@ -1825,7 +1884,7 @@ where
                       accept: &dyn Fn(Option<&str>) -> bool| {
                     let sample = db
                         .inner()
-                        .get_typed_record_by_key::<T>(&record_key)
+                        .get_typed_record_by_key_raw::<T>(&record_key)
                         .ok()?
                         .latest()?
                         .into_stamped();
@@ -1906,9 +1965,6 @@ where
             return;
         };
 
-        if let Some((name, version)) = link.schema.take() {
-            self.schema(&name, version);
-        }
         match self.inbound_link(&mut link) {
             Ok(inbound) => self.rec.add_inbound_connector(inbound),
             Err(message) => {
@@ -2102,8 +2158,10 @@ mod tests {
             connector_builders: builders,
             builder_id: TEST_BUILDER,
             record_key: "test::Record".to_string(),
+            key_link_address: None,
             extensions,
             last_stage: None,
+            _schema: core::marker::PhantomData,
         }
     }
 
@@ -2612,11 +2670,11 @@ mod tests {
     /// A custom input, generic over every record type it can produce.
     struct Counter;
 
-    impl<T> Input<T> for Counter
+    impl<T, S: crate::SchemaState> Input<T, S> for Counter
     where
         T: From<i32> + Send + Sync + 'static + Debug + Clone,
     {
-        fn wire(self, reg: &mut RecordRegistrar<'_, T>) {
+        fn wire(self, reg: &mut RecordRegistrar<'_, T, S>) {
             reg.source(|_ctx, producer| async move {
                 for i in 0..3 {
                     producer.produce(T::from(i));
@@ -2733,10 +2791,11 @@ mod tests {
         let foreign = other.connect(NoopConnectorBuilder);
 
         for (use_foreign, expect_ok) in [(false, true), (true, false)] {
+            let key_temp_indoor_1 = crate::Name::<TestRecord>::new("temp.indoor");
             let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
             let mqtt = builder.connect(NoopConnectorBuilder);
             let on = if use_foreign { foreign } else { mqtt };
-            builder.configure::<TestRecord>("temp.indoor", move |reg| {
+            builder.configure(key_temp_indoor_1, move |reg| {
                 reg.buffer_raw(Box::new(MockBuffer))
                     .input(InboundLink::on(on, "commands/temp/indoor").with_deserializer(de))
                     .output(OutboundLink::on(on, "sensors/temp/indoor").with_serializer(ser));
@@ -2756,68 +2815,14 @@ mod tests {
         }
     }
 
-    /// `with_schema` reports the record's schema on registration, in both
-    /// directions and on both forms, even when the link is rejected; a second
-    /// schema conflicts as with `reg.schema(..)`.
-    #[test]
-    fn with_schema_reports_the_record_schema() {
-        let schema_of = |rec: &crate::typed_record::TypedRecord<TestRecord>| {
-            rec.schema().map(|s| (s.name.clone(), s.version))
-        };
-        let expected = Some(("contract".to_string(), 2));
-
-        let mut detached = registered(|reg| {
-            reg.output(
-                OutboundLink::new("mqtt://out")
-                    .with_serializer(ser)
-                    .with_schema("contract", 2),
-            )
-            .input(
-                InboundLink::new("mqtt://in")
-                    .with_deserializer(de)
-                    .with_schema("contract", 2),
-            );
-        });
-        assert_eq!(schema_of(&detached), expected);
-        assert_eq!(detached.outbound_connectors().len(), 1);
-        assert!(drain_errors(&mut detached).is_empty());
-
-        let mut attached = registered(|reg| {
-            reg.link_from("mqtt://in")
-                .with_deserializer(de)
-                .with_schema("contract", 2)
-                .finish();
-        });
-        assert_eq!(schema_of(&attached), expected);
-        assert!(drain_errors(&mut attached).is_empty());
-
-        // Rejected (no serializer), yet the schema is reported.
-        let mut rejected = registered(|reg| {
-            reg.output(OutboundLink::new("mqtt://out").with_schema("contract", 2));
-        });
-        assert_eq!(schema_of(&rejected), expected);
-        assert!(rejected.outbound_connectors().is_empty());
-        assert_eq!(drain_errors(&mut rejected).len(), 1);
-
-        let mut conflicting = registered(|reg| {
-            reg.schema("contract", 1).output(
-                OutboundLink::new("mqtt://out")
-                    .with_serializer(ser)
-                    .with_schema("contract", 2),
-            );
-        });
-        let errors = drain_errors(&mut conflicting);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].message.contains("already carries contract v1"));
-    }
-
     /// A connector registered with `connect` serves links exactly like one
     /// registered with `with_connector`.
     #[tokio::test]
     async fn connected_connector_serves_links() {
+        let key_rec_in_2 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
         let _mqtt = builder.connect(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_2, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(InboundLink::new("mqtt://a").with_deserializer(de));
         });
@@ -2830,10 +2835,11 @@ mod tests {
     /// through `.link_from()`.
     #[tokio::test]
     async fn two_inbound_inputs_fan_in() {
+        let key_rec_in_3 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_3, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(InboundLink::new("mqtt://a").with_deserializer(de))
                 .input(InboundLink::new("mqtt://b").with_deserializer(de));
@@ -2845,10 +2851,11 @@ mod tests {
 
     #[tokio::test]
     async fn input_source_and_link_conflict() {
+        let key_rec_in_4 = crate::Name::<TestRecord>::new("rec.in");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", |reg| {
+        builder.configure(key_rec_in_4, |reg| {
             reg.buffer_raw(Box::new(MockBuffer))
                 .input(Counter)
                 .input(InboundLink::new("mqtt://a").with_deserializer(de));
@@ -3133,20 +3140,24 @@ mod tests {
     /// mistakes reports all three from one `build()` call.
     #[tokio::test]
     async fn build_reports_all_configuration_mistakes_at_once() {
+        let key_rec_a_5 = crate::Name::<TestRecord>::new("rec.a");
+        let key_rec_b_6 = crate::Name::<TestRecord>::new("rec.b");
+        let key_rec_c_7 = crate::Name::<TestRecord>::new("rec.c");
+        let key_rec_c_8 = crate::Name::<OtherRecord>::new("rec.c");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
 
         // Mistake 1: outbound link with no serializer
-        builder.configure::<TestRecord>("rec.a", |reg| {
+        builder.configure(key_rec_a_5, |reg| {
             reg.link_to("mqtt://broker/a").finish();
         });
         // Mistake 2: two .source() registrations on one record
-        builder.configure::<TestRecord>("rec.b", |reg| {
+        builder.configure(key_rec_b_6, |reg| {
             reg.source(|_ctx, _p| async move {});
             reg.source(|_ctx, _p| async move {});
         });
         // Mistake 3: key re-registered with a different type
-        builder.configure::<TestRecord>("rec.c", |_reg| {});
-        builder.configure::<OtherRecord>("rec.c", |_reg| {});
+        builder.configure(key_rec_c_7, |_reg| {});
+        builder.configure(key_rec_c_8, |_reg| {});
 
         let Err(err) = builder.build().await else {
             panic!("build must fail");
@@ -3170,11 +3181,12 @@ mod tests {
     /// requirement is validated by `build()` instead of `finish()`.
     #[tokio::test]
     async fn buffer_after_link_from_is_valid() {
+        let key_rec_x_9 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
 
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_9, |reg| {
             reg.link_from("mqtt://broker/x")
                 .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
@@ -3189,11 +3201,12 @@ mod tests {
     /// panicked at spawn time, deep inside a connector factory closure.
     #[tokio::test]
     async fn linked_record_without_buffer_fails_build() {
+        let key_rec_x_10 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
 
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_10, |reg| {
             reg.link_from("mqtt://broker/x")
                 .with_deserializer(|_ctx, _b: &[u8]| Ok(TestRecord { value: 0 }))
                 .finish();
@@ -3299,13 +3312,14 @@ mod tests {
     async fn inbound_db(
         links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
     ) -> (crate::AimDb, Arc<AtomicI32>, Arc<AtomicUsize>) {
+        let key_rec_in_11 = crate::Name::<TestRecord>::new("rec.in");
         let last = Arc::new(AtomicI32::new(-1));
         let count = Arc::new(AtomicUsize::new(0));
         let (buf_last, buf_count) = (last.clone(), count.clone());
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
+        builder.configure(key_rec_in_11, move |reg| {
             reg.buffer_raw(Box::new(RecordingBuffer {
                 last: buf_last,
                 count: buf_count,
@@ -3336,13 +3350,14 @@ mod tests {
     /// Design 058 §1: an inbound value is stamped when it is written locally.
     #[tokio::test]
     async fn an_inbound_value_is_stamped_when_written() {
+        let key_rec_in_12 = crate::Name::<TestRecord>::new("rec.in");
         let ops = crate::executor::test_support::ManualClockRuntimeOps::default();
         let stamp = Arc::new(core::sync::atomic::AtomicU64::new(u64::MAX));
         let buf_stamp = stamp.clone();
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(ops.clone()))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.in", move |reg| {
+        builder.configure(key_rec_in_12, move |reg| {
             reg.buffer_raw(Box::new(StampRecordingBuffer(buf_stamp)));
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
@@ -3630,10 +3645,11 @@ mod tests {
         script: Script,
         links: impl FnOnce(&mut RecordRegistrar<'_, TestRecord>) + Send + 'static,
     ) -> (crate::AimDb, crate::OutboundRoutes) {
+        let key_rec_out_13 = crate::Name::<TestRecord>::new("rec.out");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.out", move |reg| {
+        builder.configure(key_rec_out_13, move |reg| {
             reg.buffer_raw(Box::new(ScriptedBuffer(script)));
             links(reg);
         });
@@ -3995,10 +4011,12 @@ mod tests {
     /// graph node and `record.list`.
     #[tokio::test]
     async fn graph_node_carries_schema_and_outbound_links() {
+        let key_rec_out_14 = crate::Name::<TestRecord>::new("rec.out");
+        let key_rec_plain_15 = crate::Name::<TestRecord>::new("rec.plain");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(MockRuntime))
             .with_connector(NoopConnectorBuilder);
-        builder.configure::<TestRecord>("rec.out", |reg| {
+        builder.configure(key_rec_out_14, |reg| {
             reg.buffer_raw(Box::new(MockBuffer));
             reg.schema("flow", 2).schema("flow", 2);
             reg.link_to("mqtt://plant/boiler/flow_avg")
@@ -4008,7 +4026,7 @@ mod tests {
                 .with_serializer(le)
                 .finish();
         });
-        builder.configure::<TestRecord>("rec.plain", |_reg| {});
+        builder.configure(key_rec_plain_15, |_reg| {});
         let (db, _runner) = builder.build().await.expect("build must succeed");
 
         let graph = db.inner().dependency_graph();
@@ -4055,8 +4073,9 @@ mod tests {
     /// #332: two different schemas on one record fail `build()`.
     #[tokio::test]
     async fn conflicting_schemas_fail_build() {
+        let key_rec_x_16 = crate::Name::<TestRecord>::new("rec.x");
         let mut builder = crate::AimDbBuilder::new().runtime(Arc::new(MockRuntime));
-        builder.configure::<TestRecord>("rec.x", |reg| {
+        builder.configure(key_rec_x_16, |reg| {
             reg.schema("flow", 1).schema("flow", 2);
         });
         let Err(crate::DbError::InvalidConfiguration { errors }) = builder.build().await else {

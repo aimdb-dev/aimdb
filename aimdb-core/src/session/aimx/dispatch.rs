@@ -627,10 +627,11 @@ mod tests {
     #[cfg(feature = "std")]
     #[tokio::test]
     async fn protocol_and_wildcard_failures_are_typed() {
+        let key_plain_1 = crate::Name::<u32>::new("plain");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
         // Listed metadata, but no JSON access: wildcard subscribe must skip it.
-        builder.configure::<u32>("plain", |reg| {
+        builder.configure(key_plain_1, |reg| {
             reg.buffer_cfg(crate::buffer::BufferCfg::SingleLatest);
         });
         let (db, _runner) = builder.build().await.expect("build db");

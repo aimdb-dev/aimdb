@@ -168,7 +168,7 @@ pub(crate) async fn run_single_transform<I, O, S>(
     // remain unambiguous when multiple records share type `O`.
     log_info!("🔄 Transform started: '{}' → '{}'", input_key, output_key);
 
-    let consumer = match db.consumer::<I>(&input_key) {
+    let consumer = match db.consumer_dyn::<I>(&input_key) {
         Ok(c) => c,
         Err(_e) => {
             report(TransformEvent::ConsumerResolutionFailed {
@@ -233,11 +233,12 @@ mod event_tests {
     use super::*;
     #[tokio::test]
     async fn missing_input_reports_a_typed_fatal_event() {
+        let key_output_1 = crate::Name::<u32>::new("output");
         let mut builder = crate::AimDbBuilder::new()
             .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
-        builder.configure::<u32>("output", |_| {});
+        builder.configure(key_output_1, |_| {});
         let (db, _runner) = builder.build().await.unwrap();
-        let producer = db.producer::<u32>("output").unwrap();
+        let producer = db.producer(key_output_1).unwrap();
         let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
         let observer = {
             let seen = seen.clone();

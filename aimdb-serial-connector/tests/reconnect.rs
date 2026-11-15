@@ -53,10 +53,11 @@ async fn frames_within(rx: &mut mpsc::UnboundedReceiver<Value>, window: Duration
 
 #[tokio::test]
 async fn every_client_on_one_serial_line_gets_its_events() {
+    let key_temp_1 = aimdb_core::Name::<Temp>::new("temp");
     let (server_end, client_end) = tokio::io::duplex(64 * 1024);
 
     let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
-    builder.configure::<Temp>("temp", |reg| {
+    builder.configure(key_temp_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 })
             .with_remote_access();
     });
@@ -107,7 +108,8 @@ async fn every_client_on_one_serial_line_gets_its_events() {
         // its subscription sent: lost with it.
         for _ in 0..3 {
             value += 1;
-            db.produce::<Temp>("temp", Temp { c: value }).unwrap();
+            let record_key_1 = aimdb_core::Name::<Temp>::new("temp");
+            db.produce(record_key_1, Temp { c: value }).unwrap();
         }
         frames_within(&mut rx, Duration::from_millis(100)).await;
 
@@ -128,7 +130,8 @@ async fn every_client_on_one_serial_line_gets_its_events() {
         let first = value + 1;
         for _ in 0..5 {
             value += 1;
-            db.produce::<Temp>("temp", Temp { c: value }).unwrap();
+            let record_key_2 = aimdb_core::Name::<Temp>::new("temp");
+            db.produce(record_key_2, Temp { c: value }).unwrap();
         }
         let frames = frames_within(&mut rx, Duration::from_millis(300)).await;
         // A fresh subscription numbers its events from 1; the previous

@@ -89,6 +89,7 @@ async fn wait_for_listen(addr: SocketAddr) {
 }
 
 async fn spawn_server() -> (SocketAddr, Arc<AimDb>, JoinHandle<()>) {
+    let key_counter_1 = aimdb_core::Name::<Rec>::new("counter");
     let addr = free_addr();
     let mut sb = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
@@ -98,7 +99,7 @@ async fn spawn_server() -> (SocketAddr, Arc<AimDb>, JoinHandle<()>) {
                 .path("/ws")
                 .with_late_join(true),
         );
-    sb.configure::<Rec>("counter", |reg| {
+    sb.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws://counter")

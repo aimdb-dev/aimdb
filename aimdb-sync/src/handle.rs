@@ -49,7 +49,8 @@ pub trait AimDbBuilderSyncExt {
     /// # fn main() -> SyncResult<()> {
     /// let mut builder = AimDbBuilder::new()
     ///     .runtime(Arc::new(TokioAdapter::new()?));
-    /// builder.configure::<MyData>("my.data", |reg| {
+    /// let record_1 = aimdb_core::Name::<MyData>::new("my.data");
+    /// builder.configure(record_1, |reg| {
     ///     // Configure buffer, sources, taps, etc.
     /// });
     /// let handle = builder.attach()?;  // Build happens in runtime thread
@@ -349,14 +350,29 @@ impl AimDbHandle {
     /// # #[derive(Debug, Clone, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// let producer = handle.producer::<Temperature>("sensor::temp")?;
+    /// let record_2 = aimdb_core::Name::<Temperature>::new("sensor::temp");
+    /// let producer = handle.producer(record_2)?;
     /// producer.set(Temperature { celsius: 25.0 })?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn producer<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncProducer<T>>
+    /// A key cannot be paired with another payload type:
+    ///
+    /// ```compile_fail
+    /// const COUNT: aimdb_core::Name<u32> = aimdb_core::Name::new("count");
+    /// fn wrong(handle: &aimdb_sync::AimDbHandle) {
+    ///     let _: aimdb_sync::SyncProducer<String> = handle.producer(COUNT).unwrap();
+    /// }
+    /// ```
+    pub fn producer<N: aimdb_core::TypedName>(
+        &self,
+        key: N,
+    ) -> SyncResult<crate::SyncProducer<N::Contract>> {
+        self.producer_dyn::<N::Contract>(key.name())
+    }
+    fn producer_dyn<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncProducer<T>>
     where
-        T: Send + 'static + Debug + Clone,
+        T: Send + Sync + 'static + Debug + Clone,
     {
         // No check here, and deliberately none. Creating a producer touches
         // nothing: not the database, not the runtime thread. `test_error_propagation`
@@ -398,21 +414,29 @@ impl AimDbHandle {
     /// # #[derive(Clone, Debug, Serialize, Deserialize)]
     /// # struct Temperature { celsius: f32 }
     /// # fn example(handle: &AimDbHandle) -> SyncResult<()> {
-    /// let mut consumer = handle.consumer::<Temperature>("sensor::temp")?;
+    /// let record_3 = aimdb_core::Name::<Temperature>::new("sensor::temp");
+    /// let mut consumer = handle.consumer(record_3)?;
     /// let temp = consumer.get()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn consumer<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncConsumer<T>>
+    pub fn consumer<N: aimdb_core::TypedName>(
+        &self,
+        key: N,
+    ) -> SyncResult<crate::SyncConsumer<N::Contract>> {
+        self.consumer_dyn::<N::Contract>(key.name())
+    }
+    fn consumer_dyn<T>(&self, key: impl AsRef<str>) -> SyncResult<crate::SyncConsumer<T>>
     where
         T: Send + Sync + 'static + Debug + Clone,
     {
         let record_key = key.as_ref().to_string();
         // `db()` checks, so subscribing is gated the same way publishing is.
+        let record_key_1 = aimdb_core::Name::<T>::new(&record_key);
         let reader = self
             .rt
             .db()?
-            .subscribe::<T>(&record_key)
+            .subscribe(record_key_1)
             .map_err(SyncError::Db)?;
         Ok(crate::SyncConsumer::new(self.rt.view()?, reader))
     }

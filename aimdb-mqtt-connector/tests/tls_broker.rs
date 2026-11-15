@@ -84,6 +84,7 @@ async fn tls_broker(
 /// the pinned root and clocked by `SystemTime` — no SNTP anywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root() {
+    let key_temperature_1 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::{MqttConnector, TlsOptions};
@@ -118,7 +119,7 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, data: &[u8]| {
@@ -132,7 +133,7 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
 
     let (db, runner) = builder.build().await.expect("build db");
     let mut inbound = db
-        .consumer::<u64>("temperature")
+        .consumer(key_temperature_1)
         .expect("temperature consumer")
         .subscribe();
 
@@ -180,6 +181,7 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
 /// Nothing listens on the port: both checks run before anything is dialled, so
 /// a passing build here would hang rather than fail, which is the point.
 async fn build_error_with_buffers(read: usize, write: usize) -> String {
+    let key_temperature_2 = aimdb_core::Name::<u64>::new("temperature");
     use aimdb_core::buffer::BufferCfg;
     use aimdb_core::AimDbBuilder;
     use aimdb_mqtt_connector::{MqttConnector, TlsOptions};
@@ -202,7 +204,7 @@ async fn build_error_with_buffers(read: usize, write: usize) -> String {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter))
         .with_connector(connector);
-    builder.configure::<u64>("temperature", |reg| {
+    builder.configure(key_temperature_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
             .with_deserializer(|_ctx, _d: &[u8]| Ok(0u64))

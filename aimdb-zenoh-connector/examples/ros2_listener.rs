@@ -26,6 +26,8 @@ struct StringMsg {
     data: String,
 }
 
+const COMMAND: aimdb_data_contracts::Key<StringMsg> = aimdb_data_contracts::Key::new("command");
+
 #[tokio::main]
 async fn main() {
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or_else(|_| "tcp/127.0.0.1:7447".into());
@@ -35,12 +37,12 @@ async fn main() {
     let mut builder = AimDbBuilder::new()
         .runtime(Arc::new(TokioAdapter::new().unwrap()))
         .with_connector(ros2);
-    builder.configure::<StringMsg>("command", |reg| {
+    builder.configure(COMMAND, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 16 });
         reg.linked_from("ros2://aimdb_cmd");
     });
     let (db, runner) = builder.build().await.expect("build");
-    let mut reader = db.subscribe::<StringMsg>("command").expect("reader");
+    let mut reader = db.subscribe(COMMAND).expect("reader");
     tokio::spawn(runner.run());
 
     while let Ok(msg) = reader.recv().await {

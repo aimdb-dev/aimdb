@@ -151,8 +151,9 @@ pub fn derive_ros_message(input: TokenStream) -> TokenStream {
 /// Derive the `RecordKey` trait for an enum
 ///
 /// Each variant must have a `#[key = "..."]` attribute specifying its string key.
-/// Optionally, the enum can have a `#[key_prefix = "..."]` attribute to prepend
-/// a common prefix to all keys.
+/// Declare one payload with `#[record_key(contract = T)]` or
+/// `#[record_key(payload = T)]`. An optional `prefix` in that attribute
+/// prepends a common prefix to every key.
 ///
 /// ## Connector Metadata
 ///
@@ -167,7 +168,7 @@ pub fn derive_ros_message(input: TokenStream) -> TokenStream {
 /// ```rust,ignore
 /// // Note: Hash is auto-generated to satisfy the Borrow<str> contract
 /// #[derive(RecordKey, Clone, Copy, PartialEq, Eq)]
-/// #[key_prefix = "sensors."]
+/// #[record_key(payload = f32, prefix = "sensors.")]
 /// pub enum SensorKey {
 ///     #[key = "temp"]           // → "sensors.temp"
 ///     #[link_address = "mqtt://sensors/temp/indoor"]
@@ -185,7 +186,7 @@ pub fn derive_ros_message(input: TokenStream) -> TokenStream {
 /// - `impl aimdb_core::RecordKey for YourEnum` with `as_str()` and `link_address()` methods
 /// - `impl core::borrow::Borrow<str> for YourEnum` for O(1) HashMap lookups
 /// - `impl core::hash::Hash for YourEnum` that hashes the string key (required by Borrow contract)
-#[proc_macro_derive(RecordKey, attributes(key, key_prefix, link_address))]
+#[proc_macro_derive(RecordKey, attributes(key, key_prefix, link_address, record_key))]
 pub fn derive_record_key(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -210,7 +211,44 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
     };
 
     // Get optional key_prefix from enum attributes
-    let prefix = get_key_prefix(&input.attrs)?;
+    if input.attrs.iter().any(|a| a.path().is_ident("key_prefix")) {
+        return Err(Error::new_spanned(
+            &input,
+            "key_prefix was removed; use prefix inside record_key",
+        ));
+    }
+    let mut prefix = None;
+    // Typed record declaration: `#[record_key(contract = T, prefix = "...")]`
+    let mut contract: Option<syn::Type> = None;
+    let mut payload: Option<syn::Type> = None;
+    for attr in &input.attrs {
+        if attr.path().is_ident("record_key") {
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("contract") {
+                    if contract.is_some() {
+                        return Err(meta.error("duplicate contract"));
+                    }
+                    contract = Some(meta.value()?.parse()?);
+                    Ok(())
+                } else if meta.path.is_ident("payload") {
+                    if payload.is_some() {
+                        return Err(meta.error("duplicate payload"));
+                    }
+                    payload = Some(meta.value()?.parse()?);
+                    Ok(())
+                } else if meta.path.is_ident("prefix") {
+                    if prefix.is_some() {
+                        return Err(meta.error("duplicate prefix"));
+                    }
+                    let lit: syn::LitStr = meta.value()?.parse()?;
+                    prefix = Some(lit.value());
+                    Ok(())
+                } else {
+                    Err(meta.error("expected `contract`, `payload` or `prefix`"))
+                }
+            })?;
+        }
+    }
 
     // Collect variant data
     struct VariantData {
@@ -296,8 +334,50 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
         quote! {}
     };
 
+    let typed_impl = match (&contract, &payload) {
+        (Some(_), Some(_)) => {
+            return Err(Error::new_spanned(
+                &input,
+                "use `contract = T` or `payload = T`, not both",
+            ));
+        }
+        (Some(ty), None) => quote! {
+            impl aimdb_core::TypedName for #name {
+                type Contract = #ty;
+                fn name(&self) -> &str {
+                    <Self as aimdb_core::RecordKey>::as_str(self)
+                }
+            }
+            impl aimdb_core::TypedKey for #name {
+                const SCHEMA: Option<(&'static str, u32)> = Some((
+                    <#ty as ::aimdb_data_contracts::SchemaType>::NAME,
+                    <#ty as ::aimdb_data_contracts::SchemaType>::VERSION,
+                ));
+                type Schema = aimdb_core::Declared;
+            }
+        },
+        (None, Some(ty)) => quote! {
+            impl aimdb_core::TypedName for #name {
+                type Contract = #ty;
+                fn name(&self) -> &str {
+                    <Self as aimdb_core::RecordKey>::as_str(self)
+                }
+            }
+            impl aimdb_core::TypedKey for #name {
+                const SCHEMA: Option<(&'static str, u32)> = None;
+                type Schema = aimdb_core::Undeclared;
+            }
+        },
+        (None, None) => {
+            return Err(Error::new_spanned(
+                &input,
+                "RecordKey requires contract = T or payload = T",
+            ))
+        }
+    };
     // Generate the implementations
     let expanded = quote! {
+        #typed_impl
         impl aimdb_core::RecordKey for #name {
             #[inline]
             fn as_str(&self) -> &'static str {
@@ -326,11 +406,6 @@ fn derive_record_key_impl(input: DeriveInput) -> Result<proc_macro2::TokenStream
     };
 
     Ok(expanded)
-}
-
-/// Extract `#[key_prefix = "..."]` from enum attributes
-fn get_key_prefix(attrs: &[syn::Attribute]) -> Result<Option<String>, Error> {
-    get_optional_attr(attrs, "key_prefix")
 }
 
 /// Extract an optional `#[attr_name = "..."]` from attributes

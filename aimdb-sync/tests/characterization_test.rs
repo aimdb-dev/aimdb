@@ -21,11 +21,12 @@ struct TestData {
 /// Characterize sync consumer `get()` behavior
 #[test]
 fn test_consumer_get() {
+    let key_test_data_1 = aimdb_core::Name::<TestData>::new("test-data");
     // Create the tokio runtime adapter, aimdb builder, configure builder
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test-data", |reg| {
+    builder.configure(key_test_data_1, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -40,10 +41,10 @@ fn test_consumer_get() {
 
     // Create sync producer and consumer
     let producer = handle
-        .producer::<TestData>("test-data")
+        .producer(key_test_data_1)
         .expect("Failed to create producer");
     let mut consumer = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_1)
         .expect("Failed to create consumer");
 
     // Instance of record type TestData to send
@@ -85,11 +86,12 @@ fn test_consumer_get() {
 /// Characterize sync consumer `get()` receives the values in the order they were produced
 #[test]
 fn test_consumer_get_ordering() {
+    let key_test_data_2 = aimdb_core::Name::<TestData>::new("test-data");
     // Create the tokio runtime adapter, aimdb builder, configure builder
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test-data", |reg| {
+    builder.configure(key_test_data_2, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -100,10 +102,10 @@ fn test_consumer_get_ordering() {
     let handle = builder.attach().expect("Failed to attach");
 
     let producer = handle
-        .producer::<TestData>("test-data")
+        .producer(key_test_data_2)
         .expect("Failed to create producer");
     let mut consumer = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_2)
         .expect("Failed to create consumer");
 
     // Create mpsc channel to set explicit synchronization
@@ -164,11 +166,12 @@ fn test_consumer_get_ordering() {
 /// Characterize a blocked sync consumer returns `RuntimeShutdown` rather than hanging forever when the handle is detached
 #[test]
 fn test_consumer_shutdown() {
+    let key_test_data_3 = aimdb_core::Name::<TestData>::new("test-data");
     // Create the tokio runtime adapter, aimdb builder, configure builder
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test-data", |reg| {
+    builder.configure(key_test_data_3, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -183,7 +186,7 @@ fn test_consumer_shutdown() {
 
     // Create sync consumer
     let mut consumer = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_3)
         .expect("Failed to create consumer");
 
     // Create consumer thread and wait with `get()`
@@ -209,11 +212,12 @@ fn test_consumer_shutdown() {
 /// Characterize sync consumer `get_with_timeout()` behavior
 #[test]
 fn test_consumer_get_with_timeout() {
+    let key_test_data_4 = aimdb_core::Name::<TestData>::new("test-data");
     // Create the tokio runtime adapter, aimdb builder, configure builder
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test-data", |reg| {
+    builder.configure(key_test_data_4, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -225,7 +229,7 @@ fn test_consumer_get_with_timeout() {
 
     // Create consumer thread, send a ready signal, and wait to receive a value for 100ms
     let mut consumer_timeout = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_4)
         .expect("Failed to create consumer");
 
     let consumer_handle =
@@ -241,10 +245,10 @@ fn test_consumer_get_with_timeout() {
 
     // Create sync producer and consumer to characterize successful get
     let producer_send = handle
-        .producer::<TestData>("test-data")
+        .producer(key_test_data_4)
         .expect("Failed to create producer");
     let mut consumer_get = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_4)
         .expect("Failed to create consumer");
 
     // Create consumer thread, send a ready signal, and wait to receive a value for 100ms
@@ -287,11 +291,12 @@ fn test_consumer_get_with_timeout() {
 /// Characterize sync consumer `try_get()` behavior
 #[test]
 fn test_consumer_try_get() {
+    let key_test_data_5 = aimdb_core::Name::<TestData>::new("test-data");
     // Create the tokio runtime adapter, aimdb builder, configure builder
     let adapter = Arc::new(TokioAdapter);
     let mut builder = AimDbBuilder::new().runtime(adapter);
 
-    builder.configure::<TestData>("test-data", |reg| {
+    builder.configure(key_test_data_5, |reg| {
         reg.buffer(BufferCfg::SpmcRing { capacity: 10 })
             .tap(|_ctx, _consumer| async move {
                 // No-op tap just to satisfy validation
@@ -303,10 +308,10 @@ fn test_consumer_try_get() {
 
     // Create sync producer and consumer
     let producer = handle
-        .producer::<TestData>("test-data")
+        .producer(key_test_data_5)
         .expect("Failed to create producer");
     let mut consumer = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_5)
         .expect("Failed to create consumer");
 
     let test_value = TestData {
@@ -335,7 +340,7 @@ fn test_consumer_try_get() {
 
     // Create sync consumer thread
     let mut consumer_no_val = handle
-        .consumer::<TestData>("test-data")
+        .consumer(key_test_data_5)
         .expect("Failed to create consumer");
 
     // Create consumer thread and try get the value

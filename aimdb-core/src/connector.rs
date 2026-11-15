@@ -17,7 +17,8 @@
 //! # use aimdb_core::AimDbBuilder;
 //! # #[derive(Clone, Debug)] struct WeatherAlert { level: u8 }
 //! # fn wire(builder: &mut AimDbBuilder) {
-//! builder.configure::<WeatherAlert>("weather.alert", |reg| {
+//! let record_1 = aimdb_core::Name::<WeatherAlert>::new("weather.alert");
+//! builder.configure(record_1, |reg| {
 //!     // .buffer(BufferCfg::SingleLatest) — via your runtime adapter's ext trait
 //!     reg.link_to("mqtt://alerts/weather")
 //!         .with_serializer(|_ctx, alert: &WeatherAlert| Ok(vec![alert.level]))

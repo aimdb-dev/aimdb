@@ -34,6 +34,8 @@ struct Echo {
 
 #[tokio::main]
 async fn main() {
+    let key_counter_1 = aimdb_core::Name::<Counter>::new("counter");
+    let key_echo_2 = aimdb_core::Name::<Echo>::new("echo");
     let url = "ws://127.0.0.1:8080/ws";
     println!("ws_client: dialing {url} (start `--example ws_server` first)");
 
@@ -42,7 +44,7 @@ async fn main() {
         .with_connector(WsClientConnector::new(url));
 
     // Subscribe to the server's `counter` and mirror it into a local record.
-    cb.configure::<Counter>("counter", |reg| {
+    cb.configure(key_counter_1, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_from("ws-client://counter")
@@ -54,7 +56,7 @@ async fn main() {
     });
 
     // Produce an `echo` locally; the client connector writes it to the server.
-    cb.configure::<Echo>("echo", |reg| {
+    cb.configure(key_echo_2, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .link_to("ws-client://echo")

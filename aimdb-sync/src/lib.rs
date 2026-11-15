@@ -59,15 +59,18 @@
 //! let adapter = Arc::new(TokioAdapter::new()?);
 //! let mut builder = AimDbBuilder::new().runtime(adapter);
 //!
-//! builder.configure::<Temperature>("sensor.temp", |reg| {
+//! let record_1 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! builder.configure(record_1, |reg| {
 //!     reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
 //! });
 //!
 //! let handle = builder.attach()?;
 //!
 //! // Create producer and consumer
-//! let producer = handle.producer::<Temperature>("sensor.temp")?;
-//! let mut consumer = handle.consumer::<Temperature>("sensor.temp")?;
+//! let record_2 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! let producer = handle.producer(record_2)?;
+//! let record_3 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! let mut consumer = handle.consumer(record_3)?;
 //!
 //! // Producer: synchronous direct write
 //! producer.set(Temperature { celsius: 25.0 })?;
@@ -115,8 +118,10 @@
 //! # use aimdb_sync::{AimDbHandle, SyncResult};
 //! # #[derive(Debug, Clone)] struct Temperature { celsius: f32 }
 //! # fn demo(handle: &AimDbHandle) -> SyncResult<()> {
-//! let consumer1 = handle.consumer::<Temperature>("sensor.temp")?;
-//! let consumer2 = handle.consumer::<Temperature>("sensor.temp")?;
+//! let record_4 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! let consumer1 = handle.consumer(record_4)?;
+//! let record_5 = aimdb_core::Name::<Temperature>::new("sensor.temp");
+//! let consumer2 = handle.consumer(record_5)?;
 //!
 //! // Both receive independent copies of all values
 //! # Ok(())
