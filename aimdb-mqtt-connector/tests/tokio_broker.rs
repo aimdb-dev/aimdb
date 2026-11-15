@@ -83,7 +83,7 @@ async fn the_session_loop_reconnects_and_resubscribes() {
                 core::str::from_utf8(data)
                     .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
-                    .ok_or_else(|| String::from("bad payload"))
+                    .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
             })
             .finish();
     });
@@ -154,7 +154,7 @@ async fn the_embedded_backend_round_trips_records_on_a_multi_thread_runtime() {
                 core::str::from_utf8(data)
                     .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
-                    .ok_or_else(|| String::from("bad payload"))
+                    .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
             })
             .finish();
     });
@@ -302,7 +302,7 @@ async fn with_retained_push(payload_len: usize, wait: Duration) -> (Seen, Option
     builder.configure::<u64>("temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
-            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
+            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
             .finish();
     });
     let (db, runner) = builder.build().await.expect("build db");
@@ -368,7 +368,7 @@ async fn the_embedded_backend_dispatches_inbound_on_its_session_task() {
     builder.configure::<u64>("temperature", |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from("mqtt://sensors/temperature")
-            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
+            .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
             .finish();
     });
     let (db, _runner) = builder.build().await.expect("build db");
@@ -494,7 +494,7 @@ async fn a_subscribe_too_large_for_the_write_ring_fails_the_build() {
             builder.configure::<u64>("in", move |reg| {
                 reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest)
                     .link_from(&format!("mqtt://{topic}"))
-                    .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, String>(data.len() as u64))
+                    .with_deserializer(|_ctx, data: &[u8]| Ok::<u64, aimdb_core::IngestError>(data.len() as u64))
                     .finish();
             });
         }
@@ -553,7 +553,7 @@ async fn each_scheme_reaches_only_its_own_broker() {
                     core::str::from_utf8(data)
                         .ok()
                         .and_then(|s| s.trim().parse::<u64>().ok())
-                        .ok_or_else(|| String::from("bad payload"))
+                        .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
                 })
                 .finish();
         });

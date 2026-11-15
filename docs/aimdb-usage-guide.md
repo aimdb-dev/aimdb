@@ -482,6 +482,29 @@ path. A custom codec implements the generic traits explicitly. Implementing
 `LinkCodec<T>` for one type, or using the `Default` marker that delegates to
 that type's `Linkable`, does not provide generic historical decoding.
 
+### Inbound errors and counters
+
+`with_deserializer` and `with_match_deserializer` return `Result<T, IngestError>`.
+Use `IngestError::new(Rejection::DecodeError, message)` for a decode failure,
+or convert an existing string error with `.map_err(IngestError::from)`.
+The reason identifies the counter; the diagnostic explains the failed value.
+Each matching route counts its own result and continues after a rejection.
+
+`InboundDispatch::stats(route.id)` returns a snapshot with `accepted`, the
+rejection counters, and upgrades grouped by source version. Counters belong
+to the registered link and survive dispatcher clones and reconnects. With
+`observability` enabled they also appear in each record's `inbound_routes`
+metrics in `record.list` and `record.get`.
+
+Contract admission uses `with_admitting_deserializer(versions, callback)`:
+the callback returns `IngestValue::current(value)` or
+`IngestValue::upgraded(value, from)`. Core produces the value before
+reporting the successful outcome. Source-version counters are preallocated
+at registration; custom callbacks reporting undeclared versions increment
+`untracked_upgrades`. Recording outcomes does not allocate; snapshotting
+an upgrade list can allocate. Custom fused `IngestFn` callbacks likewise
+return `IngestOutcome` on success and `IngestError` on failure.
+
 ### Explicit-version migration
 
 Enable `migratable` plus the selected codec feature. `migration_chain!` takes

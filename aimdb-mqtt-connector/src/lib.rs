@@ -98,7 +98,7 @@
 //!            .finish()
 //!            // Inbound: Subscribe from MQTT
 //!            .link_from("mqtt://commands/sensor")
-//!            .with_deserializer(|_ctx, data| SensorCommand::from_bytes(data))
+//!            .with_deserializer(|_ctx, data| SensorCommand::from_bytes(data).map_err(Into::into))
 //!            .finish();
 //!     })
 //!     .build().await?;

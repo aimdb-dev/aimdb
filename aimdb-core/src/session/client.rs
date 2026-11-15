@@ -1623,7 +1623,7 @@ mod tests {
         let recorder = seen.clone();
         let ingest: crate::connector::IngestFn = Arc::new(move |_ctx, _m, bytes: &[u8]| {
             recorder.lock().push(bytes.to_vec());
-            Ok(())
+            Ok(crate::IngestOutcome::current())
         });
         let route = crate::router::CompiledRoute::exact("tele", ingest);
         let router = crate::router::Router::new(&crate::ExactGrammar, alloc::vec![route]);

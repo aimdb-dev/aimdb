@@ -125,7 +125,7 @@ async fn the_embedded_backend_completes_an_mqtts_handshake_against_a_pinned_root
                 core::str::from_utf8(data)
                     .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
-                    .ok_or_else(|| String::from("bad payload"))
+                    .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
             })
             .finish();
     });

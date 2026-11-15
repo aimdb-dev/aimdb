@@ -1382,6 +1382,7 @@ impl AimDb {
                     Ok(route) => {
                         routes.push(route);
                         infos.push(crate::InboundRouteInfo {
+                            id: infos.len(),
                             topic: Arc::from(topic),
                             type_id: entry.type_id,
                             record_index,
@@ -1425,12 +1426,10 @@ impl AimDb {
             _ => None,
         };
 
-        Ok(crate::router::CompiledRoute::pattern(
-            filter,
-            names,
-            key,
-            link.create_ingest(self),
-        ))
+        Ok(
+            crate::router::CompiledRoute::pattern(filter, names, key, link.create_ingest(self))
+                .with_stats(link.stats.clone(), entry.key.as_str()),
+        )
     }
 
     /// The capture value `key` stands for on record `record_key`.

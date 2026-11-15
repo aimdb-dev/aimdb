@@ -73,7 +73,7 @@ fn build_db(
                 core::str::from_utf8(data)
                     .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
-                    .ok_or_else(|| String::from("bad payload"))
+                    .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
             })
             .finish();
     });
@@ -184,11 +184,11 @@ async fn both_backends_round_trip_against_one_broker() {
     );
 }
 
-fn parse(data: &[u8]) -> Result<u64, String> {
+fn parse(data: &[u8]) -> Result<u64, aimdb_core::IngestError> {
     core::str::from_utf8(data)
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
-        .ok_or_else(|| String::from("bad payload"))
+        .ok_or_else(|| aimdb_core::IngestError::from("bad payload"))
 }
 
 /// Deserializer calls per record.
@@ -216,7 +216,7 @@ fn build_pattern_db(
                 pattern_calls.pattern.fetch_add(1, Ordering::SeqCst);
                 match (m.get("device"), m.key().map(|k| k.index())) {
                     (Some("kitchen"), Some(0)) => parse(data),
-                    other => Err(format!("unexpected match {other:?}")),
+                    other => Err(format!("unexpected match {other:?}").into()),
                 }
             })
             .finish();

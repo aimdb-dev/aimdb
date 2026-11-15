@@ -21,10 +21,9 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
-use aimdb_core::RuntimeContext;
+use aimdb_core::{IngestError, RuntimeContext};
 use aimdb_core::connector::SerializeError;
 use aimdb_knx_connector::dpt::{Dpt1, Dpt9, DptDecode, DptEncode};
 
@@ -34,7 +33,7 @@ use crate::types::{LightControl, LightState, TemperatureReading};
 /// that does not decode reads as 0.0 °C.
 pub fn temperature_at(
     location: &'static str,
-) -> impl Fn(RuntimeContext, &[u8]) -> Result<TemperatureReading, String> + Send + Sync + 'static {
+) -> impl Fn(RuntimeContext, &[u8]) -> Result<TemperatureReading, IngestError> + Send + Sync + 'static {
     move |_ctx, data| {
         let celsius = Dpt9::Temperature.decode(data).unwrap_or(0.0);
         Ok(TemperatureReading::new(location, celsius))
@@ -45,7 +44,7 @@ pub fn temperature_at(
 /// that does not decode reads as off.
 pub fn light_state_at(
     group_address: &'static str,
-) -> impl Fn(RuntimeContext, &[u8]) -> Result<LightState, String> + Send + Sync + 'static {
+) -> impl Fn(RuntimeContext, &[u8]) -> Result<LightState, IngestError> + Send + Sync + 'static {
     move |_ctx, data| {
         let is_on = Dpt1::Switch.decode(data).unwrap_or(false);
         Ok(LightState::new(group_address, is_on))

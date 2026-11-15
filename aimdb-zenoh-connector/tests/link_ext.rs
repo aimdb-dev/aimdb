@@ -38,7 +38,10 @@ impl ConnectorBuilder for NoopRos2 {
     }
 }
 
-fn sample(_ctx: aimdb_core::RuntimeContext, _bytes: &[u8]) -> Result<Sample, String> {
+fn sample(
+    _ctx: aimdb_core::RuntimeContext,
+    _bytes: &[u8],
+) -> Result<Sample, aimdb_core::IngestError> {
     Ok(Sample)
 }
 

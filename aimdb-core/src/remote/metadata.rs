@@ -95,6 +95,11 @@ pub struct RecordMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound_keys: Option<InboundKeysInfo>,
 
+    /// Per-link ingress counters, available through record.list / record.get.
+    #[cfg(feature = "observability")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbound_routes: Vec<crate::InboundRouteMetrics>,
+
     // ===== Buffer metrics (feature-gated) =====
     /// Total items pushed to the buffer (metrics feature only).
     ///
@@ -195,6 +200,8 @@ impl RecordMetadata {
             schema_version: None,
             entity,
             inbound_keys: None,
+            #[cfg(feature = "observability")]
+            inbound_routes: Vec::new(),
             #[cfg(feature = "observability")]
             produced_count: None,
             #[cfg(feature = "observability")]

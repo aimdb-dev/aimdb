@@ -503,7 +503,7 @@ mod tests {
             reg.buffer(BufferCfg::SingleLatest)
                 .link_from("knx://1/0/7")
                 .with_deserializer(|_ctx, data: &[u8]| {
-                    data.first().copied().ok_or_else(|| String::from("empty"))
+                    data.first().copied().ok_or_else(|| aimdb_core::IngestError::from("empty"))
                 })
                 .finish();
         });

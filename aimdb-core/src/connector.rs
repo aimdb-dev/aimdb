@@ -526,13 +526,17 @@ impl ConnectorLink {
 ///
 /// Synchronous by design: `Producer<T>::produce` is sync and infallible
 ///, so the only failure is the user
-/// deserializer's — reported as the same `String` the deserializer API uses.
+/// deserializer's — reported as a countable [`crate::IngestError`].
 ///
 /// The [`RuntimeContext`](crate::RuntimeContext) and the
 /// [`TopicMatch`](crate::TopicMatch) the message arrived on are threaded per
 /// call (not captured).
 pub type IngestFn = Arc<
-    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<(), String>
+    dyn Fn(
+            &crate::RuntimeContext,
+            &crate::TopicMatch<'_>,
+            &[u8],
+        ) -> Result<crate::IngestOutcome, crate::IngestError>
         + Send
         + Sync,
 >;
@@ -590,6 +594,8 @@ pub struct InboundConnectorLink {
     /// Available in both `std` and `no_std + alloc` environments.
     pub ingest_factory: IngestFactoryFn,
 
+    pub(crate) stats: Arc<crate::ingest::InboundStats>,
+
     /// Set by `.key(..)`: the keyed capture and the key table's capacity.
     pub key: Option<(String, core::num::NonZeroU16)>,
 
@@ -624,9 +630,21 @@ impl InboundConnectorLink {
             url,
             config: Vec::new(),
             ingest_factory,
+            stats: Arc::new(crate::ingest::InboundStats::new(&[])),
             key: None,
             topic_resolver: None,
         }
+    }
+
+    /// Preallocates upgrade counters. Call only while configuring a link.
+    pub fn with_upgrade_versions(mut self, versions: &[u32]) -> Self {
+        self.stats = Arc::new(crate::ingest::InboundStats::new(versions));
+        self
+    }
+
+    /// Snapshot of this link's counters, shared by all its dispatchers.
+    pub fn stats(&self) -> crate::InboundRouteStats {
+        self.stats.snapshot()
     }
 
     /// Creates the fused ingest callback using the stored factory.
@@ -1032,7 +1050,7 @@ mod tests {
 
     /// Dummy ingest factory for link-construction tests (never invoked).
     fn dummy_ingest_factory() -> super::IngestFactoryFn {
-        Arc::new(|_db| Arc::new(|_ctx, _m, _bytes| Ok(())))
+        Arc::new(|_db| Arc::new(|_ctx, _m, _bytes| Ok(crate::IngestOutcome::current())))
     }
 
     #[test]

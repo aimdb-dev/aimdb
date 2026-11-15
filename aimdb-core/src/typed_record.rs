@@ -1396,6 +1396,20 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
         )
         .with_schema(self.schema.as_ref());
 
+        #[cfg(feature = "observability")]
+        let metadata = {
+            let mut metadata = metadata;
+            metadata.inbound_routes = self
+                .inbound_connectors
+                .iter()
+                .map(|link| crate::InboundRouteMetrics {
+                    link: link.url.to_string(),
+                    stats: link.stats(),
+                })
+                .collect();
+            metadata
+        };
+
         // Add buffer metrics if available
         #[cfg(feature = "observability")]
         let metadata = {

@@ -283,7 +283,8 @@ where
     where
         C: LinkCodec<T>,
     {
-        let builder = self.with_deserializer(move |_ctx, bytes| codec.decode(bytes));
+        let builder =
+            self.with_deserializer(move |_ctx, bytes| codec.decode(bytes).map_err(Into::into));
         match C::WIRE_FORMAT.as_str() {
             Some(format) => builder.with_config(WIRE_FORMAT_KEY, format),
             None => builder,

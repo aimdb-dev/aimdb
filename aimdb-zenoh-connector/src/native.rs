@@ -353,7 +353,7 @@ mod event_tests {
         builder.configure::<u32>("value", |reg| {
             reg.buffer(aimdb_core::buffer::BufferCfg::SingleLatest);
             reg.link_from("zenoh://tele")
-                .with_deserializer(|_, _| -> Result<u32, String> { panic!("bad decoder") })
+                .with_deserializer(|_, _| -> Result<u32, aimdb_core::IngestError> { panic!("bad decoder") })
                 .finish();
         });
         let (db, _runner) = builder.build().await.unwrap();

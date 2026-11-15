@@ -51,6 +51,7 @@ const KEY_CAPACITY: u16 = 4096;
 /// `data/baselines/b0_alloc_connector.json`.
 const EXPECTED: &[(&str, u64)] = &[
     ("inbound_dispatch", 0),
+    ("inbound_dispatch_upgraded", 0),
     ("inbound_dispatch_pattern", 0),
     ("inbound_dispatch_keyed_known", 0),
     ("inbound_dispatch_keyed_new", 1),
@@ -136,13 +137,24 @@ fn add_decoys(b: &mut AimDbBuilder) {
 }
 
 /// One linked record plus the decoys.
-async fn inbound_db() -> AimDb {
+async fn inbound_db(upgraded: bool) -> AimDb {
     build_db(|b| {
         b.configure::<Reading>("in.target", |reg| {
-            reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
-                .link_from("bench://in/target")
-                .with_deserializer(|_ctx, bytes| Ok(reading(bytes[0] as usize)))
+            let link = reg
+                .buffer(BufferCfg::SpmcRing { capacity: 64 })
+                .link_from("bench://in/target");
+            if upgraded {
+                link.with_admitting_deserializer(&[1], |_ctx, _m, bytes| {
+                    Ok(aimdb_core::IngestValue::upgraded(
+                        reading(bytes[0] as usize),
+                        1,
+                    ))
+                })
                 .finish();
+            } else {
+                link.with_deserializer(|_ctx, bytes| Ok(reading(bytes[0] as usize)))
+                    .finish();
+            }
         });
         add_decoys(b);
     })
@@ -184,8 +196,8 @@ fn pattern_topics(n: usize, first_device: usize, distinct: bool) -> Vec<String> 
 }
 
 /// One exact topic among the decoys.
-async fn measure_dispatch() -> (u64, u64) {
-    let db = inbound_db().await;
+async fn measure_dispatch(upgraded: bool) -> (u64, u64) {
+    let db = inbound_db(upgraded).await;
     let inbound = InboundDispatch::new(&db, SCHEME, &ExactGrammar).unwrap();
     let payload = [1u8; 8];
     for _ in 0..WARMUP_ITERS {
@@ -195,7 +207,15 @@ async fn measure_dispatch() -> (u64, u64) {
     for _ in 0..MEASURE_ITERS {
         inbound.dispatch("in/target", black_box(&payload));
     }
-    snapshot()
+    let measured = snapshot();
+    if upgraded {
+        let stats = inbound.stats(0).unwrap();
+        assert_eq!(
+            stats.upgraded[0].count,
+            (WARMUP_ITERS + MEASURE_ITERS) as u64
+        );
+    }
+    measured
 }
 
 /// Dispatches `warmup` then `measured`, counting only the second.
@@ -384,7 +404,16 @@ fn main() {
 
     let measured: Vec<(&str, &str, (u64, u64))> = runtime.block_on(async {
         vec![
-            ("inbound_dispatch", "SpmcRing", measure_dispatch().await),
+            (
+                "inbound_dispatch",
+                "SpmcRing",
+                measure_dispatch(false).await,
+            ),
+            (
+                "inbound_dispatch_upgraded",
+                "SpmcRing",
+                measure_dispatch(true).await,
+            ),
             (
                 "inbound_dispatch_pattern",
                 "SpmcRing",

@@ -105,6 +105,8 @@ pub mod executor;
 pub mod extensions;
 pub mod graph;
 pub mod identity;
+mod ingest;
+pub use ingest::{InboundRouteMetrics, InboundRouteStats, IngestError, IngestOutcome, IngestValue, Rejection, UpgradeCount};
 mod inbound_dispatch;
 mod inbound_key;
 mod outbound;

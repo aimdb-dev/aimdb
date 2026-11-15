@@ -1188,8 +1188,9 @@ where
         let deser = deser.clone();
         Arc::new(
             move |ctx: &crate::RuntimeContext, m: &crate::TopicMatch<'_>, payload: &[u8]| {
-                producer.produce(deser(ctx, m, payload)?);
-                Ok(())
+                let admitted = deser(ctx, m, payload)?;
+                producer.produce(admitted.value);
+                Ok(admitted.outcome)
             },
         ) as crate::connector::IngestFn
     })
@@ -1199,12 +1200,20 @@ where
 ///
 /// Stays typed until registration fuses it with the producer — no
 /// per-message erasure.
-type TypedContextDeserializerFn<T> =
-    Arc<dyn Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static>;
+type TypedContextDeserializerFn<T> = Arc<
+    dyn Fn(crate::RuntimeContext, &[u8]) -> Result<crate::IngestValue<T>, crate::IngestError>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Like [`TypedContextDeserializerFn`], also receiving the topic match.
 type TypedMatchDeserializerFn<T> = Arc<
-    dyn Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+    dyn Fn(
+            &crate::RuntimeContext,
+            &crate::TopicMatch<'_>,
+            &[u8],
+        ) -> Result<crate::IngestValue<T>, crate::IngestError>
         + Send
         + Sync
         + 'static,
@@ -1246,6 +1255,7 @@ pub struct InboundLinkBuilder<T: Send + Sync + 'static + Debug + Clone, R> {
     config: Vec<(String, String)>,
     context_deserializer: Option<TypedContextDeserializerFn<T>>,
     match_deserializer: Option<TypedMatchDeserializerFn<T>>,
+    upgrade_versions: Vec<u32>,
     key: Option<(String, u16)>,
     topic_resolver: Option<crate::connector::TopicResolverFn>,
 }
@@ -1279,6 +1289,7 @@ where
             config: Vec::new(),
             context_deserializer: None,
             match_deserializer: None,
+            upgrade_versions: Vec::new(),
             key: None,
             topic_resolver: None,
         }
@@ -1293,6 +1304,7 @@ where
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
+            upgrade_versions: self.upgrade_versions,
             key: self.key,
             topic_resolver: self.topic_resolver,
         }
@@ -1312,6 +1324,7 @@ where
             config: self.config,
             context_deserializer: self.context_deserializer,
             match_deserializer: self.match_deserializer,
+            upgrade_versions: self.upgrade_versions,
             key: self.key,
             topic_resolver: self.topic_resolver,
         };
@@ -1354,9 +1367,15 @@ where
     /// [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_deserializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, String> + Send + Sync + 'static,
+        F: Fn(crate::RuntimeContext, &[u8]) -> Result<T, crate::IngestError>
+            + Send
+            + Sync
+            + 'static,
     {
-        self.context_deserializer = Some(Arc::new(f));
+        self.context_deserializer = Some(Arc::new(move |ctx, bytes| {
+            f(ctx, bytes).map(crate::IngestValue::current)
+        }));
+        self.upgrade_versions.clear();
         self.clear_wire_format()
     }
 
@@ -1366,12 +1385,38 @@ where
     /// recorded [`WIRE_FORMAT_KEY`](crate::connector::WIRE_FORMAT_KEY).
     pub fn with_match_deserializer<F>(mut self, f: F) -> Self
     where
-        F: Fn(&crate::RuntimeContext, &crate::TopicMatch<'_>, &[u8]) -> Result<T, String>
+        F: Fn(
+                &crate::RuntimeContext,
+                &crate::TopicMatch<'_>,
+                &[u8],
+            ) -> Result<T, crate::IngestError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.match_deserializer = Some(Arc::new(move |ctx, m, bytes| {
+            f(ctx, m, bytes).map(crate::IngestValue::current)
+        }));
+        self.upgrade_versions.clear();
+        self.clear_wire_format()
+    }
+
+    /// Installs contract admission with success metadata and declared source
+    /// versions. Counters are allocated once at registration. Like the match
+    /// deserializer, this borrows the context and receives wildcard captures.
+    pub fn with_admitting_deserializer<F>(mut self, versions: &[u32], f: F) -> Self
+    where
+        F: Fn(
+                &crate::RuntimeContext,
+                &crate::TopicMatch<'_>,
+                &[u8],
+            ) -> Result<crate::IngestValue<T>, crate::IngestError>
             + Send
             + Sync
             + 'static,
     {
         self.match_deserializer = Some(Arc::new(f));
+        self.upgrade_versions = versions.to_vec();
         self.clear_wire_format()
     }
 
@@ -1773,7 +1818,8 @@ where
         }
 
         // Named `inbound`, not `link`, for the same reason as in `push_outbound`.
-        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser));
+        let mut inbound = InboundConnectorLink::new(url, ingest_factory(record_key, deser))
+            .with_upgrade_versions(&link.upgrade_versions);
         inbound.config = core::mem::take(&mut link.config);
         inbound.key = key;
         inbound.topic_resolver = link.topic_resolver.take();
@@ -1973,7 +2019,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord {
             value: m.topic().len() as i32,
         })
@@ -2179,7 +2225,7 @@ mod tests {
         Ok(r.value.to_le_bytes().to_vec())
     }
 
-    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, String> {
+    fn de(_ctx: crate::RuntimeContext, _bytes: &[u8]) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord { value: 0 })
     }
 
@@ -2187,7 +2233,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         _m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord { value: 0 })
     }
 
@@ -2987,7 +3033,7 @@ mod tests {
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
                     if bytes.is_empty() {
-                        return Err("empty payload".to_string());
+                        return Err("empty payload".into());
                     }
                     Ok(TestRecord {
                         value: bytes.len() as i32,
@@ -3079,7 +3125,7 @@ mod tests {
             reg.buffer_raw(Box::new(StampRecordingBuffer(buf_stamp)));
             reg.link_from("mqtt://cmd/in")
                 .with_deserializer(|_ctx, bytes: &[u8]| {
-                    Ok::<_, String>(TestRecord {
+                    Ok::<_, crate::IngestError>(TestRecord {
                         value: bytes.len() as i32,
                     })
                 })
@@ -3097,7 +3143,7 @@ mod tests {
         _ctx: &crate::RuntimeContext,
         m: &crate::TopicMatch<'_>,
         _bytes: &[u8],
-    ) -> Result<TestRecord, String> {
+    ) -> Result<TestRecord, crate::IngestError> {
         Ok(TestRecord {
             value: m.key().map_or(-1, |k| k.index() as i32),
         })
@@ -3226,6 +3272,60 @@ mod tests {
         clone.dispatch("cmd/in", b"abcd");
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(last.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn admission_outcomes_are_counted_after_production_and_survive_reconnect() {
+        let (db, last, count) = inbound_db(|reg| {
+            reg.link_from("mqtt://cmd/in")
+                .with_admitting_deserializer(&[1], |_ctx, _m, bytes| {
+                    if bytes.is_empty() {
+                        return Err(crate::IngestError::new(
+                            crate::Rejection::TooOld,
+                            "received v0, accepts v1..=2",
+                        ));
+                    }
+                    Ok(crate::IngestValue::upgraded(TestRecord { value: 42 }, 1))
+                })
+                .finish();
+        })
+        .await;
+        let inbound = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        let clone = inbound.clone();
+        assert_eq!(inbound.routes()[0].id, 0);
+        clone.dispatch("cmd/in", b"v1");
+        assert_eq!(last.load(Ordering::SeqCst), 42);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        inbound.dispatch("cmd/in", b"");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let snapshot = clone.stats(0).unwrap();
+        assert_eq!(snapshot.accepted, 1);
+        assert_eq!(snapshot.too_old, 1);
+        assert_eq!(
+            snapshot.upgraded[0],
+            crate::UpgradeCount { from: 1, count: 1 }
+        );
+        assert_eq!(inbound.stats(0).unwrap(), snapshot);
+        drop(inbound);
+        drop(clone);
+        let reconnected = crate::InboundDispatch::new(&db, "mqtt", &Plus).unwrap();
+        assert_eq!(reconnected.stats(0).unwrap(), snapshot);
+        reconnected.dispatch("cmd/in", b"v1");
+        assert_eq!(reconnected.stats(0).unwrap().upgraded[0].count, 2);
+        #[cfg(all(feature = "remote", feature = "observability"))]
+        {
+            let records = db.list_records();
+            let metrics = &records
+                .iter()
+                .find(|r| r.record_key == "rec.in")
+                .unwrap()
+                .inbound_routes;
+            assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0].link, "mqtt://cmd/in");
+            assert_eq!(metrics[0].stats, reconnected.stats(0).unwrap());
+            let json = serde_json::to_value(&records).unwrap();
+            assert!(json.to_string().contains("too_old"));
+        }
     }
 
     // ====================================================================

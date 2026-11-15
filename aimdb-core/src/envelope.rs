@@ -255,6 +255,7 @@ impl<'b> HeaderWriter<'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     #[test]
     fn roundtrip_boundaries() {
         for version in [0, 1, 127, 128, 16383, 16384, u32::MAX] {
