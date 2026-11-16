@@ -190,7 +190,10 @@ fn is_closed_never_waits_for_a_shutdown_in_flight() {
     entered_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("shutdown reaches the runtime thread");
-    assert!(!shutting_down.is_finished(), "the shutdown is still in flight");
+    assert!(
+        !shutting_down.is_finished(),
+        "the shutdown is still in flight"
+    );
 
     // Asked from another thread, so a getter that waits on the shutdown's lock
     // shows up as a timeout rather than a hung test.
