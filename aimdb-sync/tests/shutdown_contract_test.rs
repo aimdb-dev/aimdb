@@ -129,49 +129,93 @@ fn shutdown_completes_while_producers_publish() {
     assert!(handle.is_closed());
 }
 
+/// Holds the runtime thread inside shutdown until the test releases it: the
+/// tap future is dropped on that thread as the runtime winds down, before the
+/// shutdown's `join` can return.
+struct HoldShutdown {
+    entered: std::sync::mpsc::Sender<()>,
+    release: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Drop for HoldShutdown {
+    fn drop(&mut self) {
+        let _ = self.entered.send(());
+        // Bounded, so a broken test fails instead of hanging the suite.
+        let _ = self
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+    }
+}
+
 /// `is_closed` keeps answering across a shutdown — a getter that waited on the
 /// shutdown's lock deadlocks a Python door under the GIL.
 #[test]
 fn is_closed_never_waits_for_a_shutdown_in_flight() {
-    let handle = Arc::new(attach());
-    let stop = Arc::new(AtomicBool::new(false));
-    let ticks = Arc::new(AtomicU64::new(0));
-    let saw_closed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
 
-    let reader = {
-        let handle = Arc::clone(&handle);
-        let stop = Arc::clone(&stop);
-        let ticks = Arc::clone(&ticks);
-        let saw_closed = Arc::clone(&saw_closed);
-        thread::spawn(move || {
-            while !stop.load(Ordering::Relaxed) {
-                if handle.is_closed() {
-                    saw_closed.store(true, Ordering::Relaxed);
+    let key = aimdb_core::Name::<Reading>::new("sensor.reading");
+    let mut builder = AimDbBuilder::new().runtime(Arc::new(TokioAdapter));
+    builder.configure(key, |reg| {
+        reg.buffer(BufferCfg::SpmcRing { capacity: 64 })
+            .tap(move |_ctx, _consumer| {
+                let hold = HoldShutdown {
+                    entered: entered_tx.clone(),
+                    release: Arc::clone(&release_rx),
+                };
+                let started = started_tx.clone();
+                async move {
+                    let _hold = hold;
+                    let _ = started.send(());
+                    std::future::pending::<()>().await;
                 }
-                ticks.fetch_add(1, Ordering::Relaxed);
-            }
-        })
+            });
+    });
+    let handle = Arc::new(builder.attach().expect("attach"));
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the tap starts");
+    assert!(!handle.is_closed(), "a fresh handle is open");
+
+    let shutting_down = {
+        let handle = Arc::clone(&handle);
+        thread::spawn(move || handle.shutdown())
     };
 
-    while ticks.load(Ordering::Relaxed) < 16 {
-        thread::yield_now();
-    }
-    let before = ticks.load(Ordering::Relaxed);
-
-    handle.shutdown().expect("shutdown");
-
-    // Ticked across the shutdown rather than parking in it.
+    // The runtime thread is now parked inside the shutdown.
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("shutdown reaches the runtime thread");
     assert!(
-        ticks.load(Ordering::Relaxed) > before,
-        "is_closed stopped answering while a shutdown was in flight"
+        !shutting_down.is_finished(),
+        "the shutdown is still in flight"
     );
 
-    stop.store(true, Ordering::Relaxed);
-    reader.join().expect("the reader thread should not panic");
+    // Asked from another thread, so a getter that waits on the shutdown's lock
+    // shows up as a timeout rather than a hung test.
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+    {
+        let handle = Arc::clone(&handle);
+        thread::spawn(move || {
+            let _ = answer_tx.send(handle.is_closed());
+        });
+    }
+    let answer = answer_rx.recv_timeout(Duration::from_secs(5));
 
-    assert!(
-        saw_closed.load(Ordering::Relaxed),
-        "the reader never observed the shutdown"
+    release_tx.send(()).expect("release the runtime thread");
+    shutting_down
+        .join()
+        .expect("the shutting-down thread should not panic")
+        .expect("shutdown");
+
+    assert_eq!(
+        answer,
+        Ok(true),
+        "is_closed stopped answering while a shutdown was in flight"
     );
     assert!(handle.is_closed());
 }
