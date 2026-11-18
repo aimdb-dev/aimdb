@@ -554,6 +554,9 @@ fn map_post_link_err(e: crate::remote::PostLinkError) -> RpcError {
 fn map_db_err(e: DbError) -> RpcError {
     match e {
         DbError::RecordKeyNotFound { .. } | DbError::InvalidRecordId { .. } => RpcError::NotFound,
+        DbError::InvalidRecordValue { type_name, reason } => RpcError::InvalidValue(
+            alloc::format!("invalid value for record type '{type_name}': {reason}"),
+        ),
         DbError::PermissionDenied { .. } => RpcError::Denied,
         _ => RpcError::Internal,
     }
@@ -750,6 +753,85 @@ mod tests {
     ) -> Result<Value, RpcError> {
         let reply = call_raw(session, method, &serde_json::to_vec(&params).unwrap()).await?;
         Ok(serde_json::from_slice(&reply).expect("reply is JSON"))
+    }
+
+    #[tokio::test]
+    async fn record_set_reports_a_rejected_value_without_blaming_the_engine() {
+        struct LatestBuffer(Mutex<Option<Stamped<u32>>>);
+        struct EmptyReader;
+
+        impl crate::buffer::BufferReader<Stamped<u32>> for EmptyReader {
+            fn poll_recv(
+                &mut self,
+                _cx: &mut core::task::Context<'_>,
+            ) -> core::task::Poll<Result<Stamped<u32>, DbError>> {
+                core::task::Poll::Ready(Err(DbError::BufferEmpty))
+            }
+
+            fn try_recv(&mut self) -> Result<Stamped<u32>, DbError> {
+                Err(DbError::BufferEmpty)
+            }
+        }
+
+        impl crate::buffer::DynBuffer<Stamped<u32>> for LatestBuffer {
+            fn push(&self, value: Stamped<u32>) {
+                *self.0.lock().expect("latest buffer lock") = Some(value);
+            }
+
+            fn subscribe_boxed(&self) -> Box<dyn crate::buffer::BufferReader<Stamped<u32>> + Send> {
+                Box::new(EmptyReader)
+            }
+
+            fn as_any(&self) -> &dyn core::any::Any {
+                self
+            }
+
+            fn peek(&self) -> Option<Stamped<u32>> {
+                self.0.lock().expect("latest buffer lock").clone()
+            }
+        }
+
+        let key = crate::Name::<u32>::new("config.value");
+        let mut builder = crate::AimDbBuilder::new()
+            .runtime(Arc::new(crate::executor::test_support::NoopRuntimeOps));
+        builder.configure(key, |reg| {
+            reg.buffer_with_cfg(
+                Box::new(LatestBuffer(Mutex::new(None))),
+                crate::buffer::BufferCfg::SingleLatest,
+            )
+            .with_remote_access();
+        });
+        let (db, _runner) = builder.build().await.expect("build db");
+        let config = AimxConfig::uds_default()
+            .security_policy(SecurityPolicy::read_write().with_writable_key("config.value"));
+        let dispatch = AimxDispatch::new(Arc::new(db), config);
+        let mut session = dispatch.open(&SessionCtx::default());
+
+        let err = call(
+            &mut session,
+            "record.set",
+            json!({ "name": "config.value", "value": "not a number" }),
+        )
+        .await
+        .expect_err("the record must reject the value");
+        match err {
+            RpcError::InvalidValue(message) => {
+                assert!(message.contains("u32"), "{message}");
+                assert!(message.contains("invalid type"), "{message}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+
+        // A caller mistake must not tear down the session or poison later writes.
+        let reply = call(
+            &mut session,
+            "record.set",
+            json!({ "name": "config.value", "value": 7 }),
+        )
+        .await
+        .expect("the session remains usable");
+        assert_eq!(reply["status"], "success");
+        assert_eq!(reply["value"], json!(7));
     }
 
     const PAYLOAD: &[u8] =

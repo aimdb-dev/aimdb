@@ -589,6 +589,9 @@ fn rpc_err(e: RpcError) -> ClientError {
              use drain_record for unread events or subscribe for new ones)",
             None,
         ),
+        RpcError::InvalidValue(message) => {
+            ClientError::server_error("invalid_value", message, None)
+        }
         // `Internal` today, plus any future non-exhaustive variant.
         _ => ClientError::server_error("internal", "engine/transport failure", None),
     }
@@ -846,5 +849,19 @@ mod tests {
             sub_err(RpcError::Denied),
             ClientError::ServerError { code, .. } if code == "denied"
         ));
+    }
+
+    #[test]
+    fn a_rejected_record_value_keeps_its_own_code_and_detail() {
+        let err = rpc_err(RpcError::InvalidValue(
+            "list exceeds maximum length of 2".to_string(),
+        ));
+        match err {
+            ClientError::ServerError { code, message, .. } => {
+                assert_eq!(code, "invalid_value");
+                assert_eq!(message, "list exceeds maximum length of 2");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
     }
 }

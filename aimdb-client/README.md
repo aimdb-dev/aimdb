@@ -61,6 +61,16 @@ frames mapping onto the session engine's role-neutral message set. It declares
 version, so a 3.x peer is refused at the handshake (and a WebSocket upgrade
 with `?v=3.x`).
 
+### RPC errors
+
+Error replies have the shape `{"t":"reply","id":N,"err":CODE,"msg"?}`.
+`not_found`, `unsupported`, `denied` and `internal` describe record lookup,
+capability, permission and engine/transport failures. `invalid_value` means the
+request was understood but the record's type or codec rejected the supplied
+value; the optional `msg` carries the deserializer's explanation, and no write
+was applied. Decoders map an unknown future `err` code to `internal`, so adding
+codes remains backward-compatible.
+
 ### Write timestamps (AimX 4.0)
 
 Every record value on the wire carries `ts`, the time it was written into the

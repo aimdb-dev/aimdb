@@ -167,6 +167,76 @@ async fn aimx_roundtrip_over_uds_production_server() {
     drop(conn); // stops the client engine
 }
 
+/// A value the record rejects is a caller error, not an engine/transport
+/// failure, and the healthy session accepts a corrected write afterwards.
+#[tokio::test]
+async fn rejected_record_value_is_invalid_value_and_keeps_the_session_alive() {
+    let key_setting = aimdb_core::Name::<Setting>::new("setting");
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("aimdb.sock");
+
+    let mut policy = SecurityPolicy::read_write();
+    policy.allow_write_key("setting");
+    let config = AimxConfig::uds_default()
+        .socket_path(sock.to_str().unwrap())
+        .security_policy(policy);
+
+    let mut builder = AimDbBuilder::new()
+        .runtime(Arc::new(TokioAdapter))
+        .with_connector(UdsServer::from_config(config));
+    builder.configure(key_setting, |reg| {
+        reg.buffer(BufferCfg::SingleLatest).with_remote_access();
+    });
+    let (_db, runner) = builder.build().await.expect("build db");
+    tokio::spawn(runner.run());
+
+    let conn = tokio::time::timeout(
+        Duration::from_secs(5),
+        AimxConnection::connect(sock.to_str().unwrap()),
+    )
+    .await
+    .expect("connect timed out")
+    .expect("connect");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.set_record("setting", json!({ "level": 7 })),
+    )
+    .await
+    .expect("initial accepted set timed out")
+    .expect("the initial value succeeds");
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.set_record("setting", json!({ "level": "seven" })),
+    )
+    .await
+    .expect("rejected set timed out")
+    .expect_err("the record rejects a string for u64");
+    match err {
+        aimdb_client::ClientError::ServerError { code, message, .. } => {
+            assert_eq!(code, "invalid_value");
+            assert!(message.contains("invalid type"), "{message}");
+        }
+        other => panic!("expected a typed server error, got {other:?}"),
+    }
+
+    let unchanged = tokio::time::timeout(Duration::from_secs(5), conn.get_record("setting"))
+        .await
+        .expect("read after rejected set timed out")
+        .expect("read after rejected set");
+    assert_eq!(unchanged.value["level"], 7);
+
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.set_record("setting", json!({ "level": 8 })),
+    )
+    .await
+    .expect("accepted set timed out")
+    .expect("a corrected value succeeds on the same connection");
+    assert_eq!(reply["value"], json!({ "level": 8 }));
+
+    drop(conn);
+}
+
 /// One wildcard subscription fans in every matching record: events arrive
 /// tagged with the concrete record topic, and matched records with a current
 /// value are delivered up front as snapshots.
