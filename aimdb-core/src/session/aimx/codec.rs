@@ -22,6 +22,8 @@
 //! verbatim via [`serde_json::value::RawValue`] — no intermediate `Value` tree,
 //! no re-escaping.
 
+use alloc::borrow::Cow;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -70,6 +72,10 @@ struct Frame<'a> {
     ok: Option<&'a RawValue>,
     #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
     err: Option<&'a str>,
+    /// Optional human-readable explanation alongside `err`. Reserved by the
+    /// AimX envelope and currently used for `invalid_value`.
+    #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
+    msg: Option<Cow<'a, str>>,
 }
 
 impl<'a> Frame<'a> {
@@ -89,6 +95,7 @@ impl<'a> Frame<'a> {
             data: None,
             ok: None,
             err: None,
+            msg: None,
         }
     }
 }
@@ -148,6 +155,7 @@ fn err_code(e: &RpcError) -> &'static str {
     match e {
         RpcError::NotFound => "not_found",
         RpcError::Unsupported => "unsupported",
+        RpcError::InvalidValue(_) => "invalid_value",
         RpcError::Denied => "denied",
         RpcError::Internal => "internal",
         RpcError::VersionMismatch => "version_mismatch",
@@ -156,10 +164,22 @@ fn err_code(e: &RpcError) -> &'static str {
     }
 }
 
-fn code_err(s: &str) -> RpcError {
+fn err_msg(e: &RpcError) -> Option<&str> {
+    match e {
+        RpcError::InvalidValue(message) => Some(message.as_str()),
+        _ => None,
+    }
+}
+
+fn code_err(s: &str, msg: Option<&str>) -> RpcError {
     match s {
         "not_found" => RpcError::NotFound,
         "unsupported" => RpcError::Unsupported,
+        "invalid_value" => RpcError::InvalidValue(
+            msg.filter(|message| !message.is_empty())
+                .unwrap_or("the record rejected the value")
+                .to_string(),
+        ),
         "denied" => RpcError::Denied,
         "version_mismatch" => RpcError::VersionMismatch,
         _ => RpcError::Internal,
@@ -272,6 +292,7 @@ impl EnvelopeCodec for AimxCodec {
                     }
                     Err(e) => {
                         frame.err = Some(err_code(e));
+                        frame.msg = err_msg(e).map(Cow::Borrowed);
                         write_frame(out, &frame)
                     }
                 }
@@ -367,7 +388,7 @@ impl EnvelopeCodec for AimxCodec {
                 let id = f.id.ok_or(CodecError::Malformed)?;
                 let result = match (f.ok, f.err) {
                     (Some(_), _) => Ok(payload_of(f.ok)),
-                    (None, Some(code)) => Err(code_err(code)),
+                    (None, Some(code)) => Err(code_err(code, f.msg.as_deref())),
                     (None, None) => return Err(CodecError::Malformed),
                 };
                 Ok(Outbound::Reply { id, result })
@@ -518,6 +539,7 @@ mod tests {
         for err in [
             RpcError::NotFound,
             RpcError::Unsupported,
+            RpcError::InvalidValue("expected u32".to_string()),
             RpcError::Denied,
             RpcError::Internal,
             RpcError::VersionMismatch,
@@ -531,6 +553,57 @@ mod tests {
                 _ => panic!("expected Reply"),
             }
         }
+    }
+
+    #[test]
+    fn invalid_value_carries_its_reason_and_unknown_codes_stay_compatible() {
+        let frame = encode_outbound(Outbound::Reply {
+            id: 9,
+            result: Err(RpcError::InvalidValue(
+                "invalid type: string \"seven\", expected u64".to_string(),
+            )),
+        });
+        let text = core::str::from_utf8(&frame).unwrap();
+        assert!(text.contains(r#""err":"invalid_value""#), "{text}");
+        assert!(
+            text.contains(r#""msg":"invalid type: string \"seven\", expected u64""#),
+            "{text}"
+        );
+        match AimxCodec.decode_outbound(&frame).unwrap() {
+            Outbound::Reply { id, result } => {
+                assert_eq!(id, 9);
+                assert_eq!(
+                    result.unwrap_err(),
+                    RpcError::InvalidValue(
+                        "invalid type: string \"seven\", expected u64".to_string()
+                    )
+                );
+            }
+            _ => panic!("expected Reply"),
+        }
+
+        // A server can omit the detail; the client still gets the typed code.
+        let without_detail =
+            AimxCodec.decode_outbound(br#"{"t":"reply","id":9,"err":"invalid_value"}"#);
+        assert!(matches!(
+            without_detail,
+            Ok(Outbound::Reply {
+                result: Err(RpcError::InvalidValue(_)),
+                ..
+            })
+        ));
+
+        // Older clients, and this codec against a future server, preserve the
+        // historical fallback instead of failing the frame.
+        let future_code = AimxCodec
+            .decode_outbound(br#"{"t":"reply","id":9,"err":"some_future_code","msg":"detail"}"#);
+        assert!(matches!(
+            future_code,
+            Ok(Outbound::Reply {
+                result: Err(RpcError::Internal),
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -273,6 +273,12 @@ pub enum RpcError {
     /// The method exists but the target cannot serve it, e.g. `record.get` on
     /// a ring buffer, which has no current value to read.
     Unsupported,
+    /// The caller supplied a value the record's type or codec rejected.
+    ///
+    /// The request was understood and the session/transport are healthy; no
+    /// write was applied. The string carries the codec's explanation when the
+    /// server provides one.
+    InvalidValue(String),
     /// The caller lacks permission for this operation.
     Denied,
     /// The handler failed.

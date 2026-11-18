@@ -23,6 +23,7 @@
 //!   `RecordValue::as_json` route through it. This mirrors the connector
 //!   layer's typed route and `IngestFn` callbacks.
 
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -38,6 +39,17 @@ pub trait RemoteSerialize: Sized {
 
     /// Deserialize a JSON value into `Self`, or `None` on schema mismatch.
     fn from_json(value: &serde_json::Value) -> Option<Self>;
+
+    /// Deserialize a JSON value into `Self`, or explain why it was rejected.
+    ///
+    /// The default keeps manual [`RemoteSerialize`] implementations source-
+    /// compatible but cannot recover a specific reason from [`from_json`].
+    /// The blanket Serde implementation overrides this and preserves the
+    /// deserializer's message for remote-callers.
+    fn from_json_with_error(value: &serde_json::Value) -> Result<Self, String> {
+        Self::from_json(value)
+            .ok_or_else(|| String::from("the record's JSON codec rejected the value"))
+    }
 
     /// Serialize this value to owned JSON bytes.
     ///
@@ -59,6 +71,17 @@ pub trait RemoteSerialize: Sized {
         let value = serde_json::from_slice(bytes).ok()?;
         Self::from_json(&value)
     }
+
+    /// Deserialize one complete JSON value from `bytes`, or explain the
+    /// rejection. The blanket Serde implementation preserves both parse and
+    /// deserialize errors; manual codecs inherit the generic fallback.
+    fn from_json_slice_with_error(bytes: &[u8]) -> Result<Self, String> {
+        if let Some(value) = Self::from_json_slice(bytes) {
+            return Ok(value);
+        }
+        let value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        Self::from_json_with_error(&value)
+    }
 }
 
 impl<T> RemoteSerialize for T
@@ -73,12 +96,20 @@ where
         serde_json::from_value(value.clone()).ok()
     }
 
+    fn from_json_with_error(value: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(value.clone()).map_err(|e| e.to_string())
+    }
+
     fn to_json_vec(&self) -> Option<Vec<u8>> {
         serde_json::to_vec(self).ok()
     }
 
     fn from_json_slice(bytes: &[u8]) -> Option<Self> {
         serde_json::from_slice(bytes).ok()
+    }
+
+    fn from_json_slice_with_error(bytes: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(bytes).map_err(|e| e.to_string())
     }
 }
 
@@ -95,6 +126,16 @@ pub trait JsonCodec<T>: Send + Sync {
     /// Decode a JSON value into `T`, or `None` on schema mismatch.
     fn decode(&self, value: &serde_json::Value) -> Option<T>;
 
+    /// Decode a JSON value into `T`, or explain why the codec rejected it.
+    ///
+    /// Existing custom codecs keep implementing only [`decode`](Self::decode);
+    /// they inherit a generic error. [`SerdeJsonCodec`] overrides this to carry
+    /// the underlying deserializer message.
+    fn decode_with_error(&self, value: &serde_json::Value) -> Result<T, String> {
+        self.decode(value)
+            .ok_or_else(|| String::from("the record's JSON codec rejected the value"))
+    }
+
     /// Encode a typed value into owned JSON bytes.
     ///
     /// Defaulted through [`encode`](Self::encode) so existing custom codecs
@@ -110,6 +151,17 @@ pub trait JsonCodec<T>: Send + Sync {
     fn decode_slice(&self, bytes: &[u8]) -> Option<T> {
         let value = serde_json::from_slice(bytes).ok()?;
         self.decode(&value)
+    }
+
+    /// Decode one complete JSON value from a byte slice, or explain the
+    /// rejection. Custom codecs inherit a parser error followed by the generic
+    /// [`decode_with_error`](Self::decode_with_error) fallback.
+    fn decode_slice_with_error(&self, bytes: &[u8]) -> Result<T, String> {
+        if let Some(value) = self.decode_slice(bytes) {
+            return Ok(value);
+        }
+        let value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        self.decode_with_error(&value)
     }
 }
 
@@ -129,12 +181,20 @@ impl<T: RemoteSerialize> JsonCodec<T> for SerdeJsonCodec {
         T::from_json(value)
     }
 
+    fn decode_with_error(&self, value: &serde_json::Value) -> Result<T, String> {
+        T::from_json_with_error(value)
+    }
+
     fn encode_to_vec(&self, value: &T) -> Option<Vec<u8>> {
         value.to_json_vec()
     }
 
     fn decode_slice(&self, bytes: &[u8]) -> Option<T> {
         T::from_json_slice(bytes)
+    }
+
+    fn decode_slice_with_error(&self, bytes: &[u8]) -> Result<T, String> {
+        T::from_json_slice_with_error(bytes)
     }
 }
 
@@ -242,5 +302,30 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    fn serde_codec_preserves_the_rejection_reason() {
+        let value_error = <SerdeJsonCodec as JsonCodec<u32>>::decode_with_error(
+            &SerdeJsonCodec,
+            &json!("not a number"),
+        )
+        .unwrap_err();
+        assert!(value_error.contains("invalid type"), "{value_error}");
+
+        let parse_error = <SerdeJsonCodec as JsonCodec<u32>>::decode_slice_with_error(
+            &SerdeJsonCodec,
+            b"not json",
+        )
+        .unwrap_err();
+        assert!(parse_error.contains("expected ident"), "{parse_error}");
+    }
+
+    #[test]
+    fn custom_codecs_keep_working_with_a_generic_rejection_reason() {
+        let reason = TreeOnlyCodec
+            .decode_with_error(&json!({ "name": 7 }))
+            .unwrap_err();
+        assert_eq!(reason, "the record's JSON codec rejected the value");
     }
 }

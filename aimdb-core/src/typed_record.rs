@@ -1534,13 +1534,9 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
 
         let codec = self.remote_write_codec("set_from_json")?;
 
-        let value: T = codec.decode(&json_value).ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Failed to deserialize JSON to type '{}'. \
-                 JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ))
-        })?;
+        let value: T = codec
+            .decode_with_error(&json_value)
+            .map_err(|reason| DbError::invalid_record_value(core::any::type_name::<T>(), reason))?;
 
         self.commit_remote_write(value)
     }
@@ -1554,13 +1550,9 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
         );
 
         let codec = self.remote_write_codec("set_from_json_bytes")?;
-        let value: T = codec.decode_slice(bytes).ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Failed to deserialize JSON to type '{}'. \
-                 JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ))
-        })?;
+        let value: T = codec
+            .decode_slice_with_error(bytes)
+            .map_err(|reason| DbError::invalid_record_value(core::any::type_name::<T>(), reason))?;
 
         self.commit_remote_write(value)
     }
@@ -1736,5 +1728,33 @@ mod tests {
         };
         assert!(capture::with(observer, || record.set_from_json(serde_json::json!(7))).is_err());
         assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn remote_write_decode_failures_are_invalid_values_with_details() {
+        let mut record = TypedRecord::<u32>::new();
+        record.with_remote_access();
+        record.buffer = Some(Arc::new(PeekBuffer(0)));
+
+        let err = record
+            .set_from_json(serde_json::json!("not a number"))
+            .unwrap_err();
+        match err {
+            crate::DbError::InvalidRecordValue { type_name, reason } => {
+                assert_eq!(type_name, core::any::type_name::<u32>());
+                assert!(reason.contains("invalid type"), "{reason}");
+            }
+            other => panic!("expected InvalidRecordValue, got {other:?}"),
+        }
+
+        let err = record
+            .set_from_json_bytes(br#""not a number""#)
+            .unwrap_err();
+        match err {
+            crate::DbError::InvalidRecordValue { reason, .. } => {
+                assert!(reason.contains("invalid type"), "{reason}");
+            }
+            other => panic!("expected InvalidRecordValue, got {other:?}"),
+        }
     }
 }

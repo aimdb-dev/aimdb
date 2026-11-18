@@ -151,6 +151,19 @@ pub enum DbError {
     #[error("Invalid operation '{operation}': {reason}")]
     InvalidOperation { operation: String, reason: String },
 
+    /// A remote value did not match the record's type or failed its validation.
+    ///
+    /// This is a caller error: the engine and transport are healthy, and the
+    /// write was not applied. `reason` is the codec/deserializer's explanation
+    /// when available.
+    #[error("Invalid value for record type '{type_name}': {reason}")]
+    InvalidRecordValue {
+        /// Fully qualified record value type, for diagnostics.
+        type_name: String,
+        /// Why the record's codec rejected the value.
+        reason: String,
+    },
+
     /// Permission denied for operation
     #[error("Permission denied: {operation}")]
     PermissionDenied { operation: String },
@@ -249,6 +262,14 @@ impl DbError {
         }
     }
 
+    /// Builds an [`InvalidRecordValue`](DbError::InvalidRecordValue).
+    pub fn invalid_record_value(type_name: impl Into<String>, reason: impl Into<String>) -> Self {
+        DbError::InvalidRecordValue {
+            type_name: type_name.into(),
+            reason: reason.into(),
+        }
+    }
+
     /// Builds a [`RecordKeyNotFound`](DbError::RecordKeyNotFound).
     pub fn record_key_not_found(key: impl Into<String>) -> Self {
         DbError::RecordKeyNotFound { key: key.into() }
@@ -322,6 +343,8 @@ impl DbError {
             | Self::TypeMismatch { .. }
             | Self::InvalidOperation { .. }
             | Self::PermissionDenied { .. } => DbErrorKind::Usage,
+
+            Self::InvalidRecordValue { .. } => DbErrorKind::Data,
 
             Self::RuntimeError { .. } | Self::Internal { .. } => DbErrorKind::Internal,
 
@@ -402,6 +425,10 @@ mod tests {
         assert!(matches!(
             DbError::permission_denied("write"),
             DbError::PermissionDenied { .. }
+        ));
+        assert!(matches!(
+            DbError::invalid_record_value("Temperature", "expected f32"),
+            DbError::InvalidRecordValue { .. }
         ));
         assert!(matches!(
             DbError::record_key_not_found("k"),
@@ -509,6 +536,10 @@ mod tests {
             Usage
         );
         assert_eq!(DbError::permission_denied("op").kind(), Usage);
+        assert_eq!(
+            DbError::invalid_record_value("Temperature", "expected f32").kind(),
+            Data
+        );
 
         assert_eq!(DbError::runtime_error("m").kind(), Internal);
         assert_eq!(
