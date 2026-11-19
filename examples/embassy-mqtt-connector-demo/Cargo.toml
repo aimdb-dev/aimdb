@@ -93,7 +93,7 @@ embedded-io-async = { workspace = true }
 embedded-storage = { workspace = true }
 
 # Embedded utilities  
-heapless = { workspace = true }
+heapless = { version = "0.8", default-features = false }
 micromath = { workspace = true }
 stm32-fmc = { workspace = true }
 embedded-alloc = { version = "0.7", features = ["llff"] }
