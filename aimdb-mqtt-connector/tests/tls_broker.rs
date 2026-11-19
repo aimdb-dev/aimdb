@@ -47,7 +47,7 @@ fn self_signed() -> (
     let cert = rcgen::generate_simple_self_signed(vec![BROKER_HOST.to_string()])
         .expect("generate self-signed certificate");
     let der = cert.cert.der().to_vec();
-    let key = PrivateKeyDer::try_from(cert.key_pair.serialize_der()).expect("server key");
+    let key = PrivateKeyDer::try_from(cert.signing_key.serialize_der()).expect("server key");
     // `&'static` because `TlsOptions` holds the trust root for the session's
     // whole life; one leak per test process.
     let ca: &'static [u8] = Box::leak(der.clone().into_boxed_slice());

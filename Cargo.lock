@@ -298,7 +298,7 @@ dependencies = [
  "embedded-tls",
  "futures",
  "heapless 0.8.0",
- "rand 0.10.1",
+ "rand 0.8.8",
  "rcgen",
  "rolling-contracts-changed",
  "rolling-contracts-n",
