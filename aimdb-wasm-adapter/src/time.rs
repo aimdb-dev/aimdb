@@ -8,11 +8,11 @@
 //! accessing `globalThis` via `js_sys::global()` instead of `web_sys::window()`.
 
 use crate::runtime::WasmAdapter;
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 use core::future::Future;
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 use core::pin::Pin;
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 use core::task::{Context, Poll};
 
 /// A wrapper that implements `Send` for a future **on wasm32 only**, so a
@@ -22,16 +22,9 @@ use core::task::{Context, Poll};
 /// # Safety
 ///
 /// The blanket `unsafe impl Send for SendFuture<F>` is sound only where
-/// execution is single-threaded, so it is gated on `target_arch = "wasm32"`
-/// (matching the per-type `unsafe impl Send` gates in `ws_bridge` and
-/// `buffer`). The gate is the guarantee, not the incidental fact that the
-/// crate's JS bridge fails to compile off-wasm: on any other target
-/// `SendFuture` remains a plain `Future` that is only `Send` when `F: Send`,
-/// the correct default. The `compile_error!` guard below is the backstop for
-/// the one unsound wasm configuration — `wasm32` *with* the `atomics` /
-/// shared-memory proposal (multi-threaded) — failing the build rather than
-/// silently producing UB.
-#[cfg(feature = "wasm-runtime")]
+/// execution is single-threaded. The wrapper is available only on wasm32,
+/// and the atomics guard below rejects builds with wasm threads enabled.
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 pub(crate) struct SendFuture<F>(pub(crate) F);
 
 // Guard: detect wasm32 + threads (atomics target feature). The shared-memory
@@ -48,7 +41,7 @@ compile_error!(
 #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 unsafe impl<F> Send for SendFuture<F> {}
 
-#[cfg(feature = "wasm-runtime")]
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 impl<F: Future> Future for SendFuture<F> {
     type Output = F::Output;
 
@@ -188,7 +181,7 @@ impl aimdb_core::RuntimeOps for WasmAdapter {
     }
 
     fn log(&self, level: aimdb_core::LogLevel, msg: &str) {
-        #[cfg(feature = "wasm-runtime")]
+        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
         {
             use aimdb_core::LogLevel;
             match level {
@@ -199,7 +192,7 @@ impl aimdb_core::RuntimeOps for WasmAdapter {
             }
         }
 
-        #[cfg(not(feature = "wasm-runtime"))]
+        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
         {
             let _ = (level, msg);
         }
