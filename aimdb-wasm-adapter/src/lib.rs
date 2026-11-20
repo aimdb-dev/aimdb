@@ -30,6 +30,11 @@
 
 #![no_std]
 
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+compile_error!(
+    "The WASM adapter requires single-threaded execution. Disable the atomics target feature."
+);
+
 extern crate alloc;
 #[cfg(not(target_arch = "wasm32"))]
 extern crate std;
@@ -40,6 +45,9 @@ pub mod time;
 
 #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 pub mod bindings;
+
+#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
+mod cancellation;
 
 #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
 pub(crate) mod schema_registry;

@@ -636,7 +636,7 @@ where
         .map_err(|e| JsError::new(&format!("{e:?}")))?;
 
     let callback = callback.clone();
-    let (cancel_token, cancel_handle) = crate::buffer::cancel_pair();
+    let (cancel_token, cancel_handle) = crate::cancellation::cancel_pair();
 
     wasm_bindgen_futures::spawn_local(async move {
         use core::task::Poll;
