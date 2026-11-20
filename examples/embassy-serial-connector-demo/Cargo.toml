@@ -66,7 +66,7 @@ static_cell = { workspace = true }
 
 # Embedded HAL / heap
 embedded-io-async = { workspace = true }
-embedded-alloc = { version = "0.6", features = ["llff"] }
+embedded-alloc = { version = "0.7", features = ["llff"] }
 
 [build-dependencies]
 aimdb-build-info = { path = "../../aimdb-build-info", features = ["build"] }

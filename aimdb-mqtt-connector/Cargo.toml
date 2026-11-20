@@ -157,7 +157,7 @@ rustls-native-certs = { version = "0.8", optional = true }
 embassy-time = { version = "0.5.1", optional = true }
 embassy-sync = { version = "0.8.0", optional = true }
 embassy-futures = { workspace = true, optional = true }
-heapless = { workspace = true, optional = true }
+heapless = { version = "0.8", default-features = false, optional = true }
 # Byte ring the embedded session encodes outbound packets into. `AtomicCoord`
 # needs atomic CAS, which every supported embedded target has.
 bbqueue = { version = "0.7", default-features = false, features = ["alloc"], optional = true }
@@ -191,11 +191,12 @@ critical-section = { version = "1.1", optional = true }
 [dev-dependencies]
 embedded-io-async = { workspace = true }
 # The `mqtts://` host smoke: a self-signed certificate and a real TLS server.
+# embedded-tls 0.19 requires RNGs implementing rand_core 0.6.
 rand = "0.8"
-rcgen = "0.13"
+rcgen = "0.14"
 tokio-rustls = "0.26"
 tokio = { workspace = true, features = ["full"] }
-heapless = { workspace = true }
+heapless = { version = "0.8", default-features = false }
 futures = "0.3"
 embassy-time-driver = "0.2.2"
 # The loopback harness must supply the defmt symbols smoltcp references.
