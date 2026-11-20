@@ -36,7 +36,7 @@ use aimdb_core::{
 };
 
 use crate::schema_registry::SchemaRegistry;
-use crate::time::SendFuture;
+use crate::time::platform::SendFuture;
 use crate::WasmAdapter;
 
 // ─── Connection status ────────────────────────────────────────────────────

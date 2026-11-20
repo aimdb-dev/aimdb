@@ -8,149 +8,12 @@
 //! accessing `globalThis` via `js_sys::global()` instead of `web_sys::window()`.
 
 use crate::runtime::WasmAdapter;
-#[cfg(feature = "wasm-runtime")]
-use core::future::Future;
-#[cfg(feature = "wasm-runtime")]
-use core::pin::Pin;
-#[cfg(feature = "wasm-runtime")]
-use core::task::{Context, Poll};
-
-/// A wrapper that implements `Send` for a future **on wasm32 only**, so a
-/// JS-touching (`!Send`) future can satisfy the engine's `Send` bounds and box
-/// into the `dyn Future + Send` transport shapes.
-///
-/// # Safety
-///
-/// The blanket `unsafe impl Send for SendFuture<F>` is sound only where
-/// execution is single-threaded, so it is gated on `target_arch = "wasm32"`
-/// (matching the per-type `unsafe impl Send` gates in `ws_bridge` and
-/// `buffer`). The gate is the guarantee, not the incidental fact that the
-/// crate's JS bridge fails to compile off-wasm: on any other target
-/// `SendFuture` remains a plain `Future` that is only `Send` when `F: Send`,
-/// the correct default. The `compile_error!` guard below is the backstop for
-/// the one unsound wasm configuration — `wasm32` *with* the `atomics` /
-/// shared-memory proposal (multi-threaded) — failing the build rather than
-/// silently producing UB.
-#[cfg(feature = "wasm-runtime")]
-pub(crate) struct SendFuture<F>(pub(crate) F);
-
-// Guard: detect wasm32 + threads (atomics target feature). The shared-memory
-// proposal makes wasm multi-threaded, which invalidates the Send blanket impl.
-#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
-compile_error!(
-    "SendFuture's blanket `impl Send` is unsound with wasm threads enabled. \
-     Disable the `atomics` target feature or provide a thread-safe implementation."
-);
-
-// SAFETY: single-threaded wasm32 (without atomics) — the future is never
-// actually sent between threads. Arch-gated so it can't satisfy a `Send` bound
-// on a multi-threaded native target.
 #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-unsafe impl<F> Send for SendFuture<F> {}
-
-#[cfg(feature = "wasm-runtime")]
-impl<F: Future> Future for SendFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: We only project to the inner field, preserving Pin guarantees.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
-        inner.poll(cx)
-    }
-}
-
-// ─── globalThis helpers (Window + Worker compatible) ──────────────────────
-
-/// Get `performance.now()` from `globalThis`.
-///
-/// Works in Window, Worker, and ServiceWorker contexts.
-#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-fn global_performance_now() -> f64 {
-    use wasm_bindgen::JsCast;
-
-    let global = js_sys::global();
-    let perf = js_sys::Reflect::get(&global, &"performance".into())
-        .expect("globalThis.performance not available");
-    let now = js_sys::Reflect::get(&perf, &"now".into())
-        .expect("globalThis.performance.now not available");
-    let now_fn: js_sys::Function = now.unchecked_into();
-    now_fn
-        .call0(&perf)
-        .expect("performance.now() call failed")
-        .as_f64()
-        .expect("performance.now() did not return a number")
-}
-
-/// Call `globalThis.setTimeout(callback, delay)`.
-///
-/// Works in Window, Worker, and ServiceWorker contexts.
-#[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-fn global_set_timeout(callback: &js_sys::Function, delay_ms: i32) {
-    use wasm_bindgen::JsCast;
-
-    let global = js_sys::global();
-    let set_timeout: js_sys::Function = js_sys::Reflect::get(&global, &"setTimeout".into())
-        .expect("globalThis.setTimeout not available")
-        .unchecked_into();
-    let _ = set_timeout.call2(&global, callback, &delay_ms.into());
-}
-
-// ─── Instance clock ───────────────────────────────────────────────────────
-
-/// The instance clock (design 058 §3.2): the realm's `performance.now()`,
-/// measured from `build()`.
-struct WasmClock {
-    /// `performance.now()` at `build()`, in milliseconds.
-    #[cfg_attr(
-        not(all(feature = "wasm-runtime", target_arch = "wasm32")),
-        allow(dead_code)
-    )]
-    origin_ms: f64,
-}
-
-impl WasmClock {
-    fn new() -> Self {
-        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-        let origin_ms = global_performance_now();
-        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
-        let origin_ms = 0.0;
-        Self { origin_ms }
-    }
-}
-
-impl aimdb_core::InstanceClock for WasmClock {
-    fn now(&self) -> aimdb_core::Stamp {
-        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-        {
-            aimdb_core::clock::stamp_from_millis_f64(global_performance_now() - self.origin_ms)
-        }
-
-        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
-        {
-            // Fallback for native-target unit tests — clock pinned at 0
-            aimdb_core::Stamp::from_nanos(0)
-        }
-    }
-
-    fn unix_time(&self) -> Option<(u64, u32)> {
-        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-        {
-            // `Date.now()` is wall-clock milliseconds since the Unix epoch.
-            let ms = js_sys::Date::now();
-            if ms <= 0.0 {
-                return None;
-            }
-            let secs = (ms / 1000.0) as u64;
-            let sub_nanos = ((ms % 1000.0) * 1_000_000.0) as u32;
-            Some((secs, sub_nanos))
-        }
-
-        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
-        {
-            None
-        }
-    }
-}
+#[path = "time/browser.rs"]
+pub(crate) mod platform;
+#[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
+#[path = "time/fallback.rs"]
+mod platform;
 
 // ─── RuntimeOps (dyn-safe capability surface) ─────────────────────────────
 
@@ -160,53 +23,15 @@ impl aimdb_core::RuntimeOps for WasmAdapter {
     }
 
     fn sleep(&self, d: core::time::Duration) -> aimdb_core::BoxFuture {
-        extern crate alloc;
-        let ms = d.as_secs_f64() * 1000.0;
-
-        #[cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
-        {
-            use futures_util::FutureExt;
-            // Convert setTimeout Promise to a Rust Future.
-            // setTimeout never rejects, so the Ok/Err result is safe to discard.
-            let fut = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
-                &mut |resolve, _reject| {
-                    global_set_timeout(&resolve, ms as i32);
-                },
-            ))
-            .map(|_result| ());
-            // SAFETY: wasm32 without atomics is single-threaded — JsFuture
-            // (which contains Rc<RefCell>) cannot be accessed concurrently, so
-            // the required Send bound is vacuously satisfied.
-            alloc::boxed::Box::pin(SendFuture(fut))
-        }
-
-        #[cfg(not(all(feature = "wasm-runtime", target_arch = "wasm32")))]
-        {
-            let _ = ms;
-            alloc::boxed::Box::pin(core::future::ready(()))
-        }
+        platform::sleep(d)
     }
 
     fn log(&self, level: aimdb_core::LogLevel, msg: &str) {
-        #[cfg(feature = "wasm-runtime")]
-        {
-            use aimdb_core::LogLevel;
-            match level {
-                LogLevel::Debug => web_sys::console::debug_1(&msg.into()),
-                LogLevel::Info => web_sys::console::log_1(&msg.into()),
-                LogLevel::Warn => web_sys::console::warn_1(&msg.into()),
-                LogLevel::Error => web_sys::console::error_1(&msg.into()),
-            }
-        }
-
-        #[cfg(not(feature = "wasm-runtime"))]
-        {
-            let _ = (level, msg);
-        }
+        platform::log(level, msg)
     }
 
     fn new_clock(&self) -> alloc::sync::Arc<dyn aimdb_core::InstanceClock> {
-        alloc::sync::Arc::new(WasmClock::new())
+        alloc::sync::Arc::new(platform::WasmClock::new())
     }
 }
 

@@ -41,6 +41,22 @@ aimdb-data-contracts = { version = "0.3.0", path = "../aimdb-data-contracts", de
     "alloc", "aimdb-core",
 ] }
 
+# Serialization (no_std + alloc)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async utilities (minimal, no_std compatible)
+futures-util = { version = "0.3", default-features = false, features = [
+    "alloc",
+    "sink",
+] }
+
+# Bounded MPSC channel for join fan-in.
+# Note: futures-channel mpsc requires "std" because its internal BiLock uses std::sync.
+# The "alloc"-only path does not expose mpsc; "std" is the minimum required feature.
+futures-channel = { version = "0.3", default-features = false, features = ["std", "sink"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 # WASM bindings
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
@@ -56,28 +72,14 @@ web-sys = { version = "0.3", optional = true, features = [
     "Window",
 ] }
 
-# Serialization (no_std + alloc)
-serde = { workspace = true }
-serde_json = { workspace = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
-
-# Async utilities (minimal, no_std compatible)
-futures-util = { version = "0.3", default-features = false, features = [
-    "alloc",
-    "sink",
-] }
-
-# Bounded MPSC channel for join fan-in.
-# Note: futures-channel mpsc requires "std" because its internal BiLock uses std::sync.
-# The "alloc"-only path does not expose mpsc; "std" is the minimum required feature.
-futures-channel = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("std"))',
 ] }
 
-[dev-dependencies]
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
 # Host-only: drives the async `aimdb-core` buffer contract suite via

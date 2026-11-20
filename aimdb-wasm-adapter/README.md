@@ -130,14 +130,12 @@ Two rules follow from how the registry is keyed:
 
 ## Target support
 
-With `wasm-runtime` (the default) enabled this crate builds for `wasm32-*` only:
-the bridge holds `web_sys` closures across await points, so its futures are
-`!Send` and rely on an `unsafe impl` sound only on single-threaded wasm. A host
-build stops on one `compile_error!` saying so. For the portable buffer/runtime
-unit tests, drop the feature:
+The default `wasm-runtime` feature enables browser integration on `wasm32`.
+Native builds include the portable buffer and runtime implementations. Run their
+unit tests with:
 
 ```bash
-cargo test -p aimdb-wasm-adapter --no-default-features --lib
+cargo test -p aimdb-wasm-adapter --lib
 ```
 
 ## Build

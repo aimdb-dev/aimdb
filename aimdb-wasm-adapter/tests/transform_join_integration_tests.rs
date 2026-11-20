@@ -5,6 +5,8 @@
 //!
 //! Run with: wasm-pack test --headless --chrome (or --firefox)
 
+#![cfg(all(feature = "wasm-runtime", target_arch = "wasm32"))]
+
 use std::sync::Arc;
 
 use aimdb_core::buffer::BufferCfg;
