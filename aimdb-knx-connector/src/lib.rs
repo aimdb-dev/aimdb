@@ -43,7 +43,11 @@
 //!
 //! ## Tokio Usage (Standard Library)
 //!
+//! Requires the `connector` feature.
+//!
 //! ```no_run
+//! # #[cfg(feature = "connector")]
+//! # mod example {
 //! use aimdb_core::buffer::BufferCfg;
 //! use aimdb_core::AimDbBuilder;
 //! use aimdb_knx_connector::KnxConnector;
@@ -86,6 +90,7 @@
 //! });
 //! let (db, runner) = builder.build().await?;
 //! # Ok(())
+//! # }
 //! # }
 //! ```
 //!

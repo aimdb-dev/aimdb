@@ -19,6 +19,7 @@ confidence-threshold = 0.8
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"
+deny = [{ name = "heapless", version = ">=0.9.0, <0.9.4", reason = "Keep the 0.8 advisory exceptions from masking vulnerable 0.9 releases" }]
 
 [advisories]
 version = 2
@@ -33,6 +34,19 @@ ignore = [
     "RUSTSEC-2024-0449", # unsafe-libyaml unmaintained, via serde_yaml from zenoh-config (zenoh connector never parses YAML config) and aimdb-cli's optional yaml feature
     "RUSTSEC-2026-0041", # lz4_flex decompression, via zenoh-transport: compiled only with transport_compression, which the zenoh connector never enables (see .cargo/audit.toml)
     "RUSTSEC-2026-0441", # pin-utils unmaintained, via hyper 1.8.1 (axum, reqwest); no safe upgrade, hyper itself depends on it
+    "RUSTSEC-2026-0543", # chrono unmaintained, no safe upgrade; via embassy-stm32 (embedded examples) and aimdb-cli/aimdb-mcp
+    "RUSTSEC-2026-0542", # humantime unmaintained (follows chrono), no safe upgrade; via uhlc from zenoh (zenoh connector)
+    # TEMP: heapless 0.8 unsound advisories, fixed only in >=0.9.4 (our 0.9 graph is on 0.9.4).
+    # 0.8 stays until aimdb-mountain-mqtt (heapless ^0.8 in its public API) is republished on 0.9.
+    "RUSTSEC-2026-0574", # FindMutView::pop use after free
+    "RUSTSEC-2026-0575", # Spsc::peek Relaxed ordering
+    "RUSTSEC-2026-0576", # IndexMap::truncate inconsistent state
+    "RUSTSEC-2026-0577", # panicking Drop
+    "RUSTSEC-2026-0578", # SortedLinkedList::zeroize inconsistent state
+    "RUSTSEC-2026-0579", # Deque TryFrom when full
+    "RUSTSEC-2026-0580", # treiber stack race
+    "RUSTSEC-2026-0581", # Deque::make_contiguous broken invariants
+    "RUSTSEC-2026-0582", # IndexMap::insert at u16::MAX elements
 ]
 
 [sources]

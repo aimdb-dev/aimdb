@@ -191,7 +191,7 @@ struct PendingAck {
 struct ChannelState {
     channel_id: u8,
     outbound_seq: u8,
-    pending_acks: heapless::FnvIndexMap<u8, PendingAck, PENDING_ACK_CAPACITY>,
+    pending_acks: heapless::index_map::FnvIndexMap<u8, PendingAck, PENDING_ACK_CAPACITY>,
     next_heartbeat: Millis,
     /// Set when a CONNECTIONSTATE_REQUEST goes out; cleared by the gateway's
     /// OK response. A pending entry older than
@@ -205,7 +205,7 @@ impl ChannelState {
         Self {
             channel_id,
             outbound_seq: 0,
-            pending_acks: heapless::FnvIndexMap::new(),
+            pending_acks: heapless::index_map::FnvIndexMap::new(),
             next_heartbeat: now + cfg.heartbeat_ms,
             heartbeat_pending_since: None,
             next_ack_sweep: now + cfg.ack_sweep_ms,
@@ -305,7 +305,7 @@ impl TunnelEngine {
                             return;
                         };
                         // Unexpected (untracked) ACKs are ignored.
-                        let _ = state.pending_acks.remove(&seq);
+                        let _ = state.pending_acks.swap_remove(&seq);
                     }
                     ServiceType::TunnellingRequest => {
                         // A parseable connection header is required before
@@ -377,7 +377,7 @@ impl TunnelEngine {
             // is ever silently untracked. Eviction is overflow, not confirmed
             // loss, so it never tears the connection down.
             if let Some((&oldest, _)) = state.pending_acks.iter().next() {
-                state.pending_acks.remove(&oldest);
+                state.pending_acks.swap_remove(&oldest);
                 self.actions.push_back(Action::AckTimeout { seq: oldest });
             }
             let _ = state.pending_acks.insert(seq, pending);
@@ -394,7 +394,7 @@ impl TunnelEngine {
     /// misreport the local send failure as a gateway ACK loss.
     fn send_failed(&mut self, seq: u8) {
         if let Phase::Connected(state) = &mut self.phase {
-            let _ = state.pending_acks.remove(&seq);
+            let _ = state.pending_acks.swap_remove(&seq);
         }
     }
 
@@ -478,7 +478,7 @@ impl TunnelEngine {
                                 await_ack: Some(*seq),
                             });
                         } else {
-                            state.pending_acks.remove(seq);
+                            state.pending_acks.swap_remove(seq);
                             self.actions.push_back(Action::AckTimeout { seq: *seq });
                             // Spec: tear the connection down once the repeat
                             // also went unanswered, so queued commands stop
