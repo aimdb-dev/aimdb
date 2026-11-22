@@ -1,7 +1,8 @@
-//! Single-threaded buffer implementation for the WASM runtime.
+//! Buffer implementation for the WASM runtime.
 //!
-//! Uses `Rc<RefCell<…>>` instead of atomics or channels — zero overhead for
-//! the browser's single-threaded execution model.
+//! On wasm32 it uses `Rc<RefCell<…>>` instead of atomics or channels — zero
+//! overhead for the browser's single-threaded execution model. Native (host)
+//! builds, used for the unit tests, use `Arc<Mutex<…>>` instead.
 //!
 //! All three buffer types are supported:
 //! - **SPMC Ring** — bounded `VecDeque` with per-reader cursors
@@ -10,17 +11,26 @@
 //!
 //! # Safety
 //!
-//! `WasmBuffer<T>` and `WasmBufferReader<T>` implement `Send + Sync` via
-//! `unsafe impl` because `wasm32-unknown-unknown` is single-threaded.
+//! On wasm32, `WasmBuffer<T>` and `WasmBufferReader<T>` implement
+//! `Send + Sync` via `unsafe impl` because `wasm32-unknown-unknown` is
+//! single-threaded (wasm32 with `atomics` is rejected at compile time). The impls
+//! are arch-gated: on native targets, which are multi-threaded, the types are
+//! built on `Arc<Mutex<…>>` and get `Send + Sync` from the compiler instead.
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+#[cfg(feature = "wasm-runtime")]
 use alloc::rc::Rc;
+#[cfg(target_arch = "wasm32")]
+use alloc::rc::Rc as Shared;
+#[cfg(not(target_arch = "wasm32"))]
+use alloc::sync::Arc as Shared;
 use alloc::vec::Vec;
 #[cfg(feature = "wasm-runtime")]
 use core::cell::Cell;
+#[cfg(any(target_arch = "wasm32", feature = "wasm-runtime"))]
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 
@@ -30,24 +40,53 @@ use aimdb_core::DbError;
 #[cfg(feature = "observability")]
 use aimdb_core::buffer::{BufferCounters, BufferMetrics, BufferMetricsSnapshot};
 
+/// Interior-mutable buffer state: a `RefCell` on single-threaded wasm32, a
+/// `Mutex` on (multi-threaded) native targets.
+#[cfg(target_arch = "wasm32")]
+type BufferState<T> = RefCell<WasmBufferInner<T>>;
+#[cfg(not(target_arch = "wasm32"))]
+type BufferState<T> = std::sync::Mutex<WasmBufferInner<T>>;
+
+#[cfg(target_arch = "wasm32")]
+fn lock_state<T>(
+    state: &BufferState<T>,
+) -> impl core::ops::DerefMut<Target = WasmBufferInner<T>> + '_ {
+    state.borrow_mut()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn lock_state<T>(
+    state: &BufferState<T>,
+) -> impl core::ops::DerefMut<Target = WasmBufferInner<T>> + '_ {
+    // Every mutation leaves the state consistent before anything that can
+    // panic (e.g. a user `T::clone`), so a poisoned lock is safe to reuse.
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // ============================================================================
 // Buffer
 // ============================================================================
 
-/// Single-threaded buffer for the WASM runtime.
+/// Buffer for the WASM runtime.
 ///
-/// Wraps an `Rc<RefCell<…>>` inner enum that holds the actual buffer state.
+/// Wraps a shared, interior-mutable inner enum that holds the actual buffer state.
 /// All three AimDB buffer types (SPMC Ring, SingleLatest, Mailbox) share
 /// this outer struct — the variant is determined by [`BufferCfg`] at
 /// construction time.
 pub struct WasmBuffer<T> {
-    inner: Rc<RefCell<WasmBufferInner<T>>>,
+    inner: Shared<BufferState<T>>,
     #[cfg(feature = "observability")]
-    metrics: Rc<BufferCounters>,
+    metrics: Shared<BufferCounters>,
 }
 
-// SAFETY: wasm32 is single-threaded — Rc<RefCell<…>> cannot be accessed concurrently
+// SAFETY: wasm32 is single-threaded — Rc<RefCell<…>> cannot be accessed
+// concurrently. Arch-gated: native targets are multi-threaded and use
+// Arc<Mutex<…>>, which is Send + Sync on its own.
+#[cfg(target_arch = "wasm32")]
 unsafe impl<T> Send for WasmBuffer<T> {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl<T> Sync for WasmBuffer<T> {}
 
 /// Internal buffer state — one variant per buffer type.
@@ -113,9 +152,9 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
         };
 
         WasmBuffer {
-            inner: Rc::new(RefCell::new(inner)),
+            inner: Shared::new(BufferState::new(inner)),
             #[cfg(feature = "observability")]
-            metrics: Rc::new(BufferCounters::new(capacity)),
+            metrics: Shared::new(BufferCounters::new(capacity)),
         }
     }
 
@@ -123,7 +162,7 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
         #[cfg(feature = "observability")]
         self.metrics.increment_produced();
 
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = lock_state(&self.inner);
         match &mut *inner {
             WasmBufferInner::SpmcRing {
                 ring,
@@ -155,7 +194,7 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
     }
 
     fn subscribe(&self) -> Self::Reader {
-        let inner = self.inner.borrow();
+        let inner = lock_state(&self.inner);
         let state = match &*inner {
             WasmBufferInner::SpmcRing { write_seq, .. } => {
                 // New readers start at the current write position (no backfill).
@@ -179,10 +218,10 @@ impl<T: Clone + Send + 'static> Buffer<T> for WasmBuffer<T> {
         };
 
         WasmBufferReader {
-            buffer: Rc::clone(&self.inner),
+            buffer: Shared::clone(&self.inner),
             state,
             #[cfg(feature = "observability")]
-            metrics: Rc::clone(&self.metrics),
+            metrics: Shared::clone(&self.metrics),
         }
     }
 }
@@ -202,7 +241,7 @@ impl<T: Clone + Send + 'static> DynBuffer<T> for WasmBuffer<T> {
     }
 
     fn peek(&self) -> Option<T> {
-        match &*self.inner.borrow() {
+        match &*lock_state(&self.inner) {
             // The single slot holds the current value non-destructively.
             WasmBufferInner::SingleLatest { value, .. } => value.clone(),
             // The pending slot, cloned without taking it (drained on recv).
@@ -227,7 +266,7 @@ impl<T: Clone + Send + 'static> DynBuffer<T> for WasmBuffer<T> {
 #[cfg(feature = "observability")]
 impl<T: Clone + Send + 'static> BufferMetrics for WasmBuffer<T> {
     fn metrics(&self) -> BufferMetricsSnapshot {
-        let current_occupancy = match &*self.inner.borrow() {
+        let current_occupancy = match &*lock_state(&self.inner) {
             WasmBufferInner::SpmcRing { ring, .. } => ring.len(),
             WasmBufferInner::SingleLatest { value, .. } => usize::from(value.is_some()),
             WasmBufferInner::Mailbox { slot, .. } => usize::from(slot.is_some()),
@@ -246,19 +285,22 @@ impl<T: Clone + Send + 'static> BufferMetrics for WasmBuffer<T> {
 // Reader
 // ============================================================================
 
-/// Single-threaded buffer reader for the WASM runtime.
+/// Buffer reader for the WASM runtime.
 ///
 /// Created by [`WasmBuffer::subscribe()`]. Each reader maintains independent
 /// state (cursor position, last-seen version) and can advance at its own pace.
 pub struct WasmBufferReader<T> {
-    buffer: Rc<RefCell<WasmBufferInner<T>>>,
+    buffer: Shared<BufferState<T>>,
     state: ReaderState,
     #[cfg(feature = "observability")]
-    metrics: Rc<BufferCounters>,
+    metrics: Shared<BufferCounters>,
 }
 
-// SAFETY: wasm32 is single-threaded — no concurrent access possible
+// SAFETY: wasm32 is single-threaded — no concurrent access possible.
+// Arch-gated for the same reason as `WasmBuffer`.
+#[cfg(target_arch = "wasm32")]
 unsafe impl<T> Send for WasmBufferReader<T> {}
+#[cfg(target_arch = "wasm32")]
 unsafe impl<T> Sync for WasmBufferReader<T> {}
 
 /// Per-reader tracking state.
@@ -289,25 +331,34 @@ impl<T: Clone + Send + 'static> BufferReader<T> for WasmBufferReader<T> {
             Err(e @ DbError::BufferLagged { .. }) => Poll::Ready(Err(e)),
             Err(DbError::BufferEmpty) => {
                 // Register waker so we get woken on next push
-                let mut inner = self.buffer.borrow_mut();
-                let wakers = match &mut *inner {
-                    WasmBufferInner::SpmcRing { wakers, .. } => wakers,
-                    WasmBufferInner::SingleLatest { wakers, .. } => wakers,
-                    WasmBufferInner::Mailbox { wakers, .. } => wakers,
-                };
-                // Deduplicate: only add if no existing waker will wake the same task.
-                // Prevents unbounded growth when a single reader is polled repeatedly.
-                if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
-                    wakers.push(cx.waker().clone());
+                {
+                    let mut inner = lock_state(&self.buffer);
+                    let wakers = match &mut *inner {
+                        WasmBufferInner::SpmcRing { wakers, .. } => wakers,
+                        WasmBufferInner::SingleLatest { wakers, .. } => wakers,
+                        WasmBufferInner::Mailbox { wakers, .. } => wakers,
+                    };
+                    // Deduplicate: only add if no existing waker will wake the same task.
+                    // Prevents unbounded growth when a single reader is polled repeatedly.
+                    if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                        wakers.push(cx.waker().clone());
+                    }
                 }
-                Poll::Pending
+                // Re-check after registering: on native targets a push on
+                // another thread may have landed between the read above and
+                // the registration, and its wake would otherwise be lost. A
+                // leftover waker only causes a spurious wake later.
+                match self.try_recv() {
+                    Err(DbError::BufferEmpty) => Poll::Pending,
+                    result => Poll::Ready(result),
+                }
             }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
 
     fn try_recv(&mut self) -> Result<T, DbError> {
-        let mut inner = self.buffer.borrow_mut();
+        let mut inner = lock_state(&self.buffer);
         match (&mut *inner, &mut self.state) {
             (
                 WasmBufferInner::SpmcRing {
@@ -471,8 +522,8 @@ impl CancelHandle {
 // Tests
 // ============================================================================
 //
-// `WasmBuffer` is pure `core` + `alloc` (`Rc<RefCell<…>>`, no `wasm_bindgen` in
-// this module), so these run under the host `cargo test` lane — no wasm-pack or
+// `WasmBuffer` has no `wasm_bindgen` in this module (`Arc<Mutex<…>>` on the
+// host), so these run under the host `cargo test` lane — no wasm-pack or
 // headless browser needed. They are plain `#[test]` fns (not
 // `#[wasm_bindgen_test]`); the browser lane covers the bindings/bridge layer.
 #[cfg(test)]
@@ -536,6 +587,38 @@ mod tests {
 
         Buffer::push(&buffer, 3);
         assert!(matches!(reader.poll_recv(&mut cx), Poll::Ready(Ok(3))));
+    }
+
+    // ── Native thread safety ────────────────────────────────────────────────
+    // Off wasm32 the buffer is `Send + Sync` through `Arc<Mutex<…>>`, not an
+    // `unsafe impl`; a reader parked on one thread must see a push made on
+    // another.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_cross_thread_push_wakes_reader() {
+        use futures::executor::block_on;
+        use std::sync::Arc;
+
+        let buffer = Arc::new(WasmBuffer::<u32>::new(&BufferCfg::SpmcRing {
+            capacity: 1024,
+        }));
+        let mut reader = buffer.subscribe();
+
+        let producer = {
+            let buffer = Arc::clone(&buffer);
+            std::thread::spawn(move || {
+                for i in 0..500 {
+                    Buffer::push(&*buffer, i);
+                    std::thread::yield_now();
+                }
+            })
+        };
+
+        for expected in 0..500 {
+            let got = block_on(core::future::poll_fn(|cx| reader.poll_recv(cx))).unwrap();
+            assert_eq!(got, expected);
+        }
+        producer.join().unwrap();
     }
 
     // ── Shared cross-runtime buffer contract ────────────────────────────────

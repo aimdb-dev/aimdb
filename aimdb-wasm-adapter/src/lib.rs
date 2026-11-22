@@ -19,7 +19,8 @@
 //! # Buffer Implementation
 //!
 //! Buffers use `Rc<RefCell<…>>` instead of atomics — zero-overhead for the
-//! single-threaded browser environment. All three buffer types are supported:
+//! single-threaded browser environment (native host builds, used for unit
+//! tests, use `Arc<Mutex<…>>`). All three buffer types are supported:
 //! SPMC Ring, SingleLatest, and Mailbox.
 //!
 //! # Feature Flags
@@ -48,6 +49,9 @@ compile_error!(
 );
 
 extern crate alloc;
+// Native builds (host unit tests) back buffers with `std::sync::Mutex`.
+#[cfg(not(target_arch = "wasm32"))]
+extern crate std;
 
 pub mod buffer;
 pub mod runtime;
