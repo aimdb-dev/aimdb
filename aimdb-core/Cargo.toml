@@ -120,7 +120,7 @@ defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 
 # Synchronization primitives for no_std
-spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.12", default-features = false, features = ["mutex", "spin_mutex"] }
 
 # Hash map for no_std (same implementation as std::collections::HashMap)
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
