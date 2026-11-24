@@ -8,19 +8,19 @@ error[E0277]: `OutboundLinkBuilder<Temp, Detached>` cannot be an output of a `Ot
    |
    = help: the trait `aimdb_core::Output<Other, Undeclared>` is not implemented for `OutboundLinkBuilder<Temp, Detached>`
 help: the following other types implement trait `aimdb_core::Output<T, S>`
-  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  --> $WORKSPACE/aimdb-core/src/typed_api/link_outbound.rs
    |
-   | / impl<T, S: crate::SchemaState> Output<T, S> for OutboundLink<T>
-   | | where
-   | |     T: Send + Sync + 'static + Debug + Clone,
-   | |_____________________________________________^ `OutboundLinkBuilder<T, Detached>`
-...
    | / impl<T, S: crate::ContractDeclared> Output<T, S> for ContractOutboundLink<T>
    | | where
    | |     T: Send + Sync + 'static + Debug + Clone,
    | |_____________________________________________^ `OutboundLinkBuilder<T, DetachedContract>`
+...
+   | / impl<T, S: crate::SchemaState> Output<T, S> for OutboundLink<T>
+   | | where
+   | |     T: Send + Sync + 'static + Debug + Clone,
+   | |_____________________________________________^ `OutboundLinkBuilder<T, Detached>`
 note: required by a bound in `RecordRegistrar::<'a, T, S>::output`
-  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  --> $WORKSPACE/aimdb-core/src/typed_api/registrar.rs
    |
    |     pub fn output(&mut self, output: impl Output<T, S>) -> &mut Self {
    |                                           ^^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::output`
