@@ -77,7 +77,7 @@ help: the trait `ContractDeclared` is implemented for `Declared`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: required for `OutboundLinkBuilder<Temp, DetachedContract>` to implement `aimdb_core::Output<Temp, Undeclared>`
 note: required by a bound in `RecordRegistrar::<'a, T, S>::output`
-  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  --> $WORKSPACE/aimdb-core/src/typed_api/registrar.rs
    |
    |     pub fn output(&mut self, output: impl Output<T, S>) -> &mut Self {
    |                                           ^^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::output`
@@ -98,7 +98,7 @@ help: the trait `ContractDeclared` is implemented for `Declared`
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: required for `InboundLinkBuilder<Temp, DetachedContract>` to implement `aimdb_core::Input<Temp, Undeclared>`
 note: required by a bound in `RecordRegistrar::<'a, T, S>::input`
-  --> $WORKSPACE/aimdb-core/src/typed_api.rs
+  --> $WORKSPACE/aimdb-core/src/typed_api/registrar.rs
    |
    |     pub fn input(&mut self, input: impl Input<T, S>) -> &mut Self {
    |                                         ^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::input`

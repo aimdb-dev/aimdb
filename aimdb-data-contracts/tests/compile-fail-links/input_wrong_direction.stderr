@@ -9,19 +9,19 @@ error[E0277]: `OutboundLinkBuilder<Temp, Detached>` cannot be the input of a `Te
   = help: the trait `aimdb_core::Input<Temp, Undeclared>` is not implemented for `OutboundLinkBuilder<Temp, Detached>`
   = note: an input implements `Input<Temp>`; device inputs usually do so for every `T: From<Event>`
 help: the following other types implement trait `aimdb_core::Input<T, S>`
- --> $WORKSPACE/aimdb-core/src/typed_api.rs
+ --> $WORKSPACE/aimdb-core/src/typed_api/link_inbound.rs
   |
-  | / impl<T, S: crate::SchemaState> Input<T, S> for InboundLink<T>
-  | | where
-  | |     T: Send + Sync + 'static + Debug + Clone,
-  | |_____________________________________________^ `InboundLinkBuilder<T, Detached>`
-...
   | / impl<T, S: crate::ContractDeclared> Input<T, S> for ContractInboundLink<T>
   | | where
   | |     T: Send + Sync + 'static + Debug + Clone,
   | |_____________________________________________^ `InboundLinkBuilder<T, DetachedContract>`
+...
+  | / impl<T, S: crate::SchemaState> Input<T, S> for InboundLink<T>
+  | | where
+  | |     T: Send + Sync + 'static + Debug + Clone,
+  | |_____________________________________________^ `InboundLinkBuilder<T, Detached>`
 note: required by a bound in `RecordRegistrar::<'a, T, S>::input`
- --> $WORKSPACE/aimdb-core/src/typed_api.rs
+ --> $WORKSPACE/aimdb-core/src/typed_api/registrar.rs
   |
   |     pub fn input(&mut self, input: impl Input<T, S>) -> &mut Self {
   |                                         ^^^^^^^^^^^ required by this bound in `RecordRegistrar::<'a, T, S>::input`

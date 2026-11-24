@@ -1,68 +1,34 @@
-//! Type-safe record storage using TypeId
-//!
-//! Provides type-safe record identification using Rust's `TypeId` for compile-time safety.
-//!
-//! # Feature Support
-//!
-//! All layers below work on both `std` and `no_std + alloc`; they are gated by
-//! capability feature, not by `std`:
-//!
-//! - **always**: Core API (`TypedRecord`, `latest()`, `RecordValue`, producer/consumer).
-//! - **`remote`**: the JSON value codec — `.with_remote_access()` installs it
-//!   and `record.latest()?.as_json()` reads it.
-//! - **`remote`**: record metadata (`collect_metadata` → `RecordMetadata`,
-//!   the `writable` flag) plus the type-erased JSON read/write/subscribe methods
-//!   (`latest_json[_bytes]` / `set_from_json[_bytes]` / `subscribe_json`) used
-//!   by the AimX server.
-//!
-//! Without `remote`, use `record.latest()` + `Deref` for value access and
-//! implement custom serialization for embedded protocols (CBOR, MessagePack, etc.).
-
-#[cfg(feature = "remote")]
-mod events;
-
-#[cfg(feature = "remote")]
-use crate::typed_record::events::{report, RemoteWriteEvent};
-
-use core::any::Any;
-use core::fmt::Debug;
-#[cfg(feature = "remote")]
-use core::task::{Context, Poll};
-
 use alloc::{
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
 };
+use core::{any::Any, fmt::Debug};
+
+use crate::{
+    buffer::DynBuffer,
+    typed_record::{lock, BoxFuture, ConsumerServiceFn, Mutex, ProducerServiceFn},
+    AnyRecord,
+};
+
+#[cfg(feature = "remote")]
+use crate::JsonRecordAccess;
+
+#[cfg(feature = "remote")]
+use crate::typed_record::events::{report, RemoteWriteEvent};
 
 #[cfg(feature = "observability")]
 use crate::profiling::RecordProfilingMetrics;
 
-#[cfg(feature = "std")]
-type Mutex<T> = std::sync::Mutex<T>;
-#[cfg(not(feature = "std"))]
-type Mutex<T> = spin::Mutex<T>;
+use crate::transform::TransformProfiling;
 
-/// Locks one of the `TypedRecord` field mutexes, hiding the std/spin API
-/// difference (`std::sync::Mutex::lock` returns a `LockResult`; `spin` returns
-/// the guard directly). A poisoned std mutex is unrecoverable in this code, so
-/// `.unwrap()` is the correct response. The returned guard derefs to `T` on
-/// both sides, so call sites are identical.
-#[cfg(feature = "std")]
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-#[cfg(not(feature = "std"))]
-fn lock<T>(m: &Mutex<T>) -> spin::MutexGuard<'_, T> {
-    m.lock()
-}
-
-use crate::buffer::DynBuffer;
+#[cfg(feature = "remote")]
+use crate::typed_record::json_adapters::JsonReaderAdapter;
 
 /// Type alias for a record's type-erased JSON codec (feature `remote`)
 #[cfg(feature = "remote")]
-type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
+pub(super) type RecordCodec<T> = Arc<dyn crate::codec::JsonCodec<T>>;
 
 /// Wrapper for a record's latest value with optional serialization.
 ///
@@ -131,352 +97,6 @@ impl<T> core::ops::Deref for RecordValue<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner.value
-    }
-}
-
-/// Adapter that wraps a typed `BufferReader` and serializes values to JSON.
-///
-/// Bridges the gap between typed buffers and type-erased JSON streaming for
-/// remote access subscriptions. Each receive:
-/// 1. Receives one `Stamped<T>` from the buffer
-/// 2. Serializes its value through the configured codec
-/// 3. Returns either a JSON tree (compatibility API) or owned JSON bytes,
-///    with the write metadata of that same sample
-///
-/// Used internally by `TypedRecord::subscribe_json()`.
-#[cfg(feature = "remote")]
-struct JsonReaderAdapter<T: Clone + Send + 'static> {
-    /// The underlying typed buffer reader
-    inner: Box<dyn crate::buffer::BufferReader<crate::Stamped<T>> + Send>,
-    /// JSON codec (from .with_remote_access())
-    codec: RecordCodec<T>,
-}
-
-#[cfg(feature = "remote")]
-impl<T: Clone + Send + 'static> JsonReaderAdapter<T> {
-    /// Encodes one received sample, keeping its write metadata whole.
-    fn encode<U>(
-        &self,
-        sample: crate::Stamped<T>,
-        encode: impl FnOnce(&RecordCodec<T>, &T) -> Option<U>,
-    ) -> Result<crate::Stamped<U>, crate::DbError> {
-        sample.as_ref().try_map(|value| {
-            encode(&self.codec, value)
-                .ok_or_else(|| crate::DbError::runtime_error("Failed to serialize value to JSON"))
-        })
-    }
-}
-
-#[cfg(feature = "remote")]
-impl<T: Clone + Send + 'static> crate::buffer::JsonBufferReader for JsonReaderAdapter<T> {
-    fn poll_recv_json(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<crate::Stamped<serde_json::Value>, crate::DbError>> {
-        // Poll the inner typed reader (allocation-free), then serialize on the
-        // ready value — no per-message boxing.
-        match self.inner.poll_recv(cx) {
-            Poll::Ready(Ok(sample)) => Poll::Ready(self.encode(sample, |c, v| c.encode(v))),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn try_recv_json(&mut self) -> Result<crate::Stamped<serde_json::Value>, crate::DbError> {
-        let sample = self.inner.try_recv()?;
-        self.encode(sample, |c, v| c.encode(v))
-    }
-
-    fn poll_recv_json_bytes(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<crate::Stamped<Vec<u8>>, crate::DbError>> {
-        match self.inner.poll_recv(cx) {
-            Poll::Ready(Ok(sample)) => Poll::Ready(self.encode(sample, |c, v| c.encode_to_vec(v))),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn try_recv_json_bytes(&mut self) -> Result<crate::Stamped<Vec<u8>>, crate::DbError> {
-        let sample = self.inner.try_recv()?;
-        self.encode(sample, |c, v| c.encode_to_vec(v))
-    }
-}
-
-// Type alias for boxed futures
-pub(crate) type BoxFuture<'a, T> =
-    core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;
-
-/// Type alias for consumer service closure stored in TypedRecord
-/// Each consumer receives the [`RuntimeContext`](crate::RuntimeContext) and a
-/// Consumer<T> handle for subscribing to the buffer
-type ConsumerServiceFn<T> =
-    Box<dyn FnOnce(crate::RuntimeContext, crate::Consumer<T>) -> BoxFuture<'static, ()> + Send>;
-
-/// Type alias for producer service closure stored in TypedRecord
-/// Takes (RuntimeContext, Producer<T>) and returns a Future
-/// This will be auto-spawned during build().
-/// `Send` only — `Sync` is not required because the closure is taken out of
-/// `Mutex<Option<...>>` exactly once via `.take()`, and `Mutex<T>: Sync`
-/// already holds when `T: Send`. Matches the consumer-side `ConsumerServiceFn`.
-type ProducerServiceFn<T> =
-    Box<dyn FnOnce(crate::RuntimeContext, crate::Producer<T>) -> BoxFuture<'static, ()> + Send>;
-
-/// Type-erased trait for records — the storage and lifecycle contract.
-///
-/// Allows storage of heterogeneous record types in a single collection
-/// while maintaining type safety through downcast operations.
-///
-/// This trait carries the storage/lifecycle
-/// surface, plus graph/metadata introspection and observability counter
-/// resets. JSON remote access is the one genuinely optional capability: it
-/// lives in `JsonRecordAccess`, reachable via `json_access`, both behind the
-/// `remote` feature.
-///
-/// Consumers: `AimDbBuilder::build()` (config-error draining, the dependency
-/// graph fed to [`crate::graph`], typed downcasts via [`AnyRecordExt`]),
-/// the builder's inbound/outbound route collection, `AimDbInner::list_records`
-/// (remote introspection metadata), and connectors applying the remote-access
-/// security policy (`set_writable_erased`).
-///
-/// # Thread Safety Requirements
-///
-/// This trait requires both `Send` and `Sync` because:
-/// - Records are stored in `Arc<Box<dyn AnyRecord>>` and shared across threads
-/// - The router system needs to access records from multiple connector tasks
-/// - Emitter needs to be `Send+Sync` to work in async contexts
-/// - The `FnOnce` consumers are moved out during spawning, so they don't affect `Sync`
-///
-/// **BREAKING CHANGE (v0.2.0):** Added `Sync` bound to `AnyRecord` trait.
-/// Record types must now be both `Send + Sync`. Types that were previously
-/// `Send` but not `Sync` can no longer be used as records. This change enables:
-/// - Concurrent access to records from multiple connector tasks
-/// - Safe sharing of record metadata across thread boundaries
-/// - Type-safe routing in the bidirectional connector system
-///
-/// **Migration:** If your record type `T` is not `Sync`, wrap non-`Sync` fields
-/// in `Arc<Mutex<_>>` or `Arc<RwLock<_>>` to achieve interior mutability with
-/// thread-safe sharing.
-pub trait AnyRecord: Send + Sync {
-    /// Returns self as Any for downcasting
-    fn as_any(&self) -> &dyn Any;
-
-    /// Returns self as mutable Any for downcasting
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-
-    /// Drains the configuration mistakes recorded during registration, plus
-    /// build-time consistency findings (e.g. remote access without a buffer).
-    ///
-    /// Called by `AimDbBuilder::build()`, which fills in the record key and
-    /// reports every finding via
-    /// [`DbError::InvalidConfiguration`](crate::DbError::InvalidConfiguration).
-    fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError>;
-
-    /// Sets the writable flag for this record (type-erased)
-    ///
-    /// Used internally by the builder to apply security policy to records.
-    fn set_writable_erased(&self, writable: bool);
-
-    /// Binds the instance clock every write to this record is stamped from.
-    ///
-    /// Called by `AimDbBuilder::build()` for every record before any task
-    /// runs (design 058 §3.3).
-    fn bind_clock(&mut self, clock: Arc<dyn crate::clock::InstanceClock>);
-
-    /// Returns the record's JSON remote-access surface, if it has one.
-    ///
-    /// This accessor is the single place the `remote` cfg-gate lives
-    /// for consumers: they query the capability here instead of cfg-gating
-    /// every call site. `TypedRecord` always returns `Some`; the runtime
-    /// "configured with `.with_remote_access()`" checks stay inside the
-    /// [`JsonRecordAccess`] methods.
-    #[cfg(feature = "remote")]
-    fn json_access(&self) -> Option<&dyn JsonRecordAccess> {
-        None
-    }
-
-    // ── Graph and metadata introspection ────────────────────────────────
-
-    /// Gets the outbound connector links
-    ///
-    /// Returns outbound connector configuration list for spawning logic.
-    fn outbound_connectors(&self) -> &[crate::connector::ConnectorLink];
-
-    /// Get the inbound connector links for this record
-    fn inbound_connectors(&self) -> &[crate::connector::InboundConnectorLink];
-
-    /// The schema the record carries, if one was set while configuring it
-    fn schema(&self) -> Option<&crate::graph::SchemaInfo>;
-
-    /// Returns the number of registered consumers (tap observers)
-    fn consumer_count(&self) -> usize;
-
-    /// Returns whether a producer service is registered
-    fn has_producer(&self) -> bool;
-
-    /// Returns whether a buffer is configured
-    fn has_buffer(&self) -> bool;
-
-    /// Returns whether a transform is registered for this record
-    fn has_transform(&self) -> bool;
-
-    /// Returns how this record gets its values (for dependency graph construction)
-    fn record_origin(&self) -> crate::graph::RecordOrigin;
-
-    /// Returns the buffer type name and capacity (for dependency graph)
-    ///
-    /// Returns (buffer_type_name, optional_capacity).
-    fn buffer_info(&self) -> (String, Option<usize>);
-
-    /// Returns the transform input keys (if a transform is registered)
-    fn transform_input_keys(&self) -> Option<Vec<String>>;
-
-    /// Returns each transform input's key and the type it is read as (empty
-    /// if no transform is registered). `build()` checks them against the
-    /// input records' types.
-    fn transform_input_types(&self) -> Vec<(String, core::any::TypeId, &'static str)>;
-
-    /// Returns the name of the record's value type, for error messages.
-    fn type_name(&self) -> &'static str;
-
-    /// Collects metadata for this record
-    #[cfg(feature = "remote")]
-    fn collect_metadata(
-        &self,
-        type_id: core::any::TypeId,
-        key: crate::record_id::StringKey,
-        id: crate::record_id::RecordId,
-    ) -> crate::remote::RecordMetadata;
-
-    // ── Observability counter resets ─────────────────────────────────────
-
-    /// Resets this record's stage profiling counters (feature `observability`).
-    ///
-    /// Default implementation is a no-op; `TypedRecord` overrides it.
-    /// Consumers: `AimDb::reset_profiling`, driven by the AimX
-    /// `control.reset_buffer_metrics` RPC and the MCP buffer-metrics tool.
-    #[cfg(feature = "observability")]
-    fn reset_profiling(&self) {}
-
-    /// Resets this record's buffer introspection counters (feature `observability`).
-    ///
-    /// Default implementation is a no-op; `TypedRecord` overrides it.
-    #[cfg(feature = "observability")]
-    fn reset_buffer_metrics(&self) {}
-}
-
-/// Type-erased JSON read/subscribe/write for remote access.
-///
-/// Internal to the remote-access protocol — application code reads values
-/// via `record.latest()?.as_json()` instead. Obtained from a record through
-/// [`AnyRecord::json_access`], which is where the `remote` cfg-gate
-/// lives for consumers.
-///
-/// Consumers: `AimDbInner::try_latest_as_json` / `set_record_from_json`
-/// (`record.get` / `record.set`), the AimX session dispatch (`record.subscribe`
-/// value drain), and `remote::stream::stream_record_updates`.
-#[cfg(feature = "remote")]
-pub trait JsonRecordAccess {
-    /// Returns JSON for type-erased remote access
-    ///
-    /// Used internally by remote access protocol. **Users should use `record.latest()?.as_json()`.**
-    fn latest_json(&self) -> Option<crate::Stamped<serde_json::Value>>;
-
-    /// Returns owned JSON bytes for type-erased remote access.
-    ///
-    /// Existing implementations inherit a compatibility path through
-    /// [`latest_json`](Self::latest_json), keeping its write metadata.
-    /// `TypedRecord<T>` overrides this and asks its codec to encode `T`
-    /// directly.
-    fn latest_json_bytes(&self) -> Option<crate::Stamped<Vec<u8>>> {
-        crate::buffer::json_tree_to_bytes(self.latest_json()?).ok()
-    }
-
-    /// Subscribe to record updates as JSON stream
-    ///
-    /// Creates a type-erased subscription that emits `serde_json::Value` instead of
-    /// the concrete type `T`. This enables subscribing to a record without knowing
-    /// its type at compile time.
-    ///
-    /// Used internally by remote access protocol for `record.subscribe` functionality.
-    ///
-    /// # Returns
-    /// - `Ok(Box<dyn JsonBufferReader>)` - Successfully created subscription
-    /// - `Err(DbError)` - If serialization not configured or buffer subscription failed
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Record not configured with `.with_remote_access()`
-    /// - Buffer subscription fails (shouldn't happen in practice)
-    fn subscribe_json(&self) -> crate::DbResult<Box<dyn crate::buffer::JsonBufferReader + Send>>;
-
-    /// Sets a record value from JSON
-    ///
-    /// Deserializes JSON and produces the value to the record's buffer.
-    ///
-    /// **SAFETY:** This method enforces the "No Producer Override" rule:
-    /// - Returns error if `producer_count > 0` (prevents overriding application logic)
-    /// - Only configuration records (no producers) should be settable via remote access
-    ///
-    /// Used internally by remote access protocol for `record.set` functionality.
-    ///
-    /// # Arguments
-    /// * `json_value` - JSON representation of the value to set
-    ///
-    /// # Returns
-    /// - `Ok(())` - Successfully set the value
-    /// - `Err(DbError)` - If deserialization fails, producers exist, or no buffer
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Record has active producers (`producer_count > 0`) - **safety check**
-    /// - JSON deserialization fails (schema mismatch)
-    /// - Record not configured with buffer
-    /// - Record not configured with `.with_remote_access()`
-    fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()>;
-
-    /// Sets a record from one complete JSON value encoded as bytes.
-    ///
-    /// Existing implementations inherit a parser-backed compatibility path
-    /// through [`set_from_json`](Self::set_from_json). This accepts the exact
-    /// record value, not an AimX request/write wrapper; the wire dispatch keeps
-    /// wrapper extraction on its existing tree path.
-    fn set_from_json_bytes(&self, bytes: &[u8]) -> crate::DbResult<()> {
-        let value = serde_json::from_slice(bytes)
-            .map_err(|_| crate::DbError::runtime_error("Failed to parse JSON value"))?;
-        self.set_from_json(value)
-    }
-}
-
-// Helper extension trait for type-safe downcasting
-pub trait AnyRecordExt {
-    /// Attempts to downcast to a typed record reference
-    ///
-    /// # Type Parameters
-    /// * `T` - The expected record type
-    ///
-    /// # Returns
-    /// `Some(&TypedRecord<T>)` if types match, `None` otherwise
-    fn as_typed<T: Send + 'static + Debug + Clone>(&self) -> Option<&TypedRecord<T>>;
-
-    /// Attempts to downcast to a mutable typed record reference
-    ///
-    /// # Type Parameters
-    /// * `T` - The expected record type
-    ///
-    /// # Returns
-    /// `Some(&mut TypedRecord<T>)` if types match, `None` otherwise
-    fn as_typed_mut<T: Send + 'static + Debug + Clone>(&mut self) -> Option<&mut TypedRecord<T>>;
-}
-
-impl AnyRecordExt for Box<dyn AnyRecord> {
-    fn as_typed<T: Send + 'static + Debug + Clone>(&self) -> Option<&TypedRecord<T>> {
-        self.as_any().downcast_ref::<TypedRecord<T>>()
-    }
-
-    fn as_typed_mut<T: Send + 'static + Debug + Clone>(&mut self) -> Option<&mut TypedRecord<T>> {
-        self.as_any_mut().downcast_mut::<TypedRecord<T>>()
     }
 }
 
@@ -558,7 +178,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     ///
     /// Stored as `Arc` (not `Box`) so `Producer<T>` and `Consumer<T>` can hold
     /// a pre-resolved handle to the same buffer.
-    buffer: Option<Arc<dyn DynBuffer<crate::Stamped<T>>>>,
+    pub(super) buffer: Option<Arc<dyn DynBuffer<crate::Stamped<T>>>>,
 
     /// The instance clock, bound by `build()` before any writer exists.
     clock: Option<Arc<dyn crate::clock::InstanceClock>>,
@@ -598,7 +218,7 @@ pub struct TypedRecord<T: Send + 'static + Debug + Clone> {
     /// subscribe paths route through it. Built from a `SerdeJsonCodec` where
     /// the `T: RemoteSerialize` bound is known at the call site.
     #[cfg(feature = "remote")]
-    remote_codec: Option<RecordCodec<T>>,
+    pub(super) remote_codec: Option<RecordCodec<T>>,
 
     /// Configuration mistakes recorded during registration instead of
     /// panicking. Drained by `AimDbBuilder::build()`, which fills
@@ -831,6 +451,44 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             .unwrap_or_default()
     }
 
+    /// Attaches transform profiling for [`Self::collect_transform_futures`].
+    ///
+    /// A join gets its metrics attached to `producer` directly; a single-input
+    /// transform gets them back as the forwarder's profiling arg.
+    #[cfg(feature = "observability")]
+    fn with_transform_profiling(
+        &self,
+        mut producer: crate::Producer<T>,
+        is_single_input: bool,
+        db: &Arc<crate::AimDb>,
+    ) -> (crate::Producer<T>, TransformProfiling) {
+        let profiling_entry = self.profiling.transforms().first();
+        if !is_single_input {
+            // Join: producer cadence is the throughput proxy — attach it directly.
+            if let Some(entry) = profiling_entry {
+                producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+            }
+        }
+
+        let profiling_arg = if is_single_input {
+            profiling_entry.map(|entry| (entry.metrics.clone(), db.profiling_clock().clone()))
+        } else {
+            None
+        };
+        (producer, profiling_arg)
+    }
+
+    /// No-op without `observability`: returns `producer` unchanged.
+    #[cfg(not(feature = "observability"))]
+    fn with_transform_profiling(
+        &self,
+        producer: crate::Producer<T>,
+        _is_single_input: bool,
+        _db: &Arc<crate::AimDb>,
+    ) -> (crate::Producer<T>, TransformProfiling) {
+        (producer, ())
+    }
+
     /// Collects the transform task future and any fan-in forwarder futures.
     ///
     /// Single-input transforms return one future; join transforms return the
@@ -855,32 +513,10 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             );
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
-            #[allow(unused_mut)]
-            let mut producer = crate::typed_api::Producer::new(self.writer_handle()?);
-
-            #[cfg(feature = "observability")]
-            let profiling_arg = {
-                let is_single_input = desc.input_keys.len() == 1;
-
-                let profiling_entry = self.profiling.transforms().first();
-
-                if !is_single_input {
-                    // Join: producer cadence is the throughput proxy — attach it directly.
-                    if let Some(entry) = profiling_entry {
-                        producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
-                    }
-                }
-
-                if is_single_input {
-                    profiling_entry
-                        .map(|entry| (entry.metrics.clone(), db.profiling_clock().clone()))
-                } else {
-                    None
-                }
-            };
-            #[cfg(not(feature = "observability"))]
-            let profiling_arg: crate::transform::TransformProfiling = ();
-
+            let producer = crate::Producer::new(self.writer_handle()?);
+            let is_single_input = desc.input_keys.len() == 1;
+            let (producer, profiling_arg) =
+                self.with_transform_profiling(producer, is_single_input, db);
             let collected = (desc.build_fn)(producer, db.clone(), record_key, profiling_arg);
 
             let mut out = Vec::with_capacity(1 + collected.fanin_futures.len());
@@ -1118,6 +754,34 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         lock(&self.consumers).len()
     }
 
+    /// Attaches the `i`-th tap's profiling to `consumer`, for
+    /// [`Self::collect_consumer_futures`].
+    #[cfg(feature = "observability")]
+    fn set_consumers_profiling(
+        &self,
+        consumer: &mut crate::Consumer<T>,
+        i: usize,
+        db: &crate::AimDb,
+    ) where
+        T: Sync,
+    {
+        if let Some(entry) = self.profiling.tap(i) {
+            consumer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+        }
+    }
+
+    /// No-op without `observability`.
+    #[cfg(not(feature = "observability"))]
+    fn set_consumers_profiling(
+        &self,
+        _consumer: &mut crate::Consumer<T>,
+        _i: usize,
+        _db: &crate::AimDb,
+    ) where
+        T: Sync,
+    {
+    }
+
     /// Collects all registered consumer (`.tap()`) futures.
     ///
     /// Consumes registered consumers (FnOnce) — can only be called once. The returned
@@ -1161,21 +825,35 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             ))
         })?;
 
-        #[cfg_attr(not(feature = "observability"), allow(unused_variables))]
         for (i, consumer_fn) in consumers.into_iter().enumerate() {
             // Create a Consumer<T> bound to a pre-resolved buffer handle.
-            #[allow(unused_mut)]
             let mut consumer = crate::typed_api::Consumer::new(buffer_arc.clone());
-
-            #[cfg(feature = "observability")]
-            if let Some(entry) = self.profiling.tap(i) {
-                consumer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
-            }
+            self.set_consumers_profiling(&mut consumer, i, db);
 
             futures.push(consumer_fn(db.runtime_ctx(), consumer));
         }
 
         Ok(futures)
+    }
+
+    /// Attaches the source's profiling metrics to `producer`, for
+    /// [`Self::collect_producer_future`].
+    #[cfg(feature = "observability")]
+    fn set_source_profiling(&self, producer: &mut crate::Producer<T>, db: &Arc<crate::AimDb>)
+    where
+        T: Sync,
+    {
+        if let Some(entry) = self.profiling.source(0) {
+            producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
+        }
+    }
+
+    /// No-op without `observability`.
+    #[cfg(not(feature = "observability"))]
+    fn set_source_profiling(&self, _producer: &mut crate::Producer<T>, _db: &Arc<crate::AimDb>)
+    where
+        T: Sync,
+    {
     }
 
     /// Collects the producer-service future, if one is registered.
@@ -1200,13 +878,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             let _ = record_key;
 
             // Create Producer<T> bound to a pre-resolved write handle for this record.
-            #[allow(unused_mut)]
             let mut producer = crate::typed_api::Producer::new(self.writer_handle()?);
-
-            #[cfg(feature = "observability")]
-            if let Some(entry) = self.profiling.source(0) {
-                producer.set_profiling(entry.metrics.clone(), db.profiling_clock().clone());
-            }
+            self.set_source_profiling(&mut producer, db);
 
             Ok(Some(service_fn(db.runtime_ctx(), producer)))
         } else {
@@ -1250,6 +923,32 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
             Some(RecordValue::new(sample, None))
         }
     }
+
+    /// The build error for a remote-access record without a buffer, for
+    /// [`AnyRecord::drain_config_errors`].
+    ///
+    /// A remote-access record has no fallback storage — reads/writes go
+    /// straight to the buffer. With no buffer, `record.get`/`latest()` return
+    /// not_found and `record.set` silently discards the value. Fail at build()
+    /// so the buffer is added explicitly instead of surfacing as a silent
+    /// runtime no-op.
+    #[cfg(feature = "remote")]
+    fn missing_remote_buffer_error(&self) -> Option<crate::error::ConfigError> {
+        (self.remote_codec.is_some() && !self.has_buffer()).then(|| {
+            crate::error::ConfigError::new(
+                "",
+                None,
+                "record has .with_remote_access() but no buffer; \
+                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work",
+            )
+        })
+    }
+
+    /// No-op without `remote`.
+    #[cfg(not(feature = "remote"))]
+    fn missing_remote_buffer_error(&self) -> Option<crate::error::ConfigError> {
+        None
+    }
 }
 
 impl<T: Send + 'static + Debug + Clone> Default for TypedRecord<T> {
@@ -1276,24 +975,8 @@ impl<T: Send + Sync + 'static + Debug + Clone> AnyRecord for TypedRecord<T> {
     }
 
     fn drain_config_errors(&mut self) -> Vec<crate::error::ConfigError> {
-        #[allow(unused_mut)]
         let mut errors = core::mem::take(&mut self.config_errors);
-
-        // A remote-access record has no fallback storage — reads/writes go
-        // straight to the buffer. With
-        // no buffer, `record.get`/`latest()` return not_found and `record.set`
-        // silently discards the value. Fail at build() so the buffer is added
-        // explicitly instead of surfacing as a silent runtime no-op.
-        #[cfg(feature = "remote")]
-        if self.remote_codec.is_some() && !self.has_buffer() {
-            errors.push(crate::error::ConfigError::new(
-                "",
-                None,
-                "record has .with_remote_access() but no buffer; \
-                 add a buffer (e.g. .buffer(BufferCfg::SingleLatest)) so record.get/set work",
-            ));
-        }
-
+        errors.extend(self.missing_remote_buffer_error());
         errors
     }
 
@@ -1511,10 +1194,7 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
             .ok_or_else(|| DbError::missing_configuration("buffer"))?;
 
         // 3. Wrap in JsonReaderAdapter
-        let json_reader = JsonReaderAdapter {
-            inner: buffer.subscribe_boxed(),
-            codec,
-        };
+        let json_reader = JsonReaderAdapter::new(buffer.subscribe_boxed(), codec);
 
         log_debug!(
             "Successfully created JSON subscription for type: {}",
@@ -1563,178 +1243,5 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
         })?;
 
         self.commit_remote_write(value)
-    }
-}
-
-#[cfg(all(test, feature = "remote"))]
-mod tests {
-    use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    use crate::buffer::{BufferReader, DynBuffer};
-    use crate::codec::JsonCodec;
-    use crate::{Stamp, Stamped, WriteMetadata};
-
-    /// A sample whose stamp equals its value.
-    fn sample(v: u32) -> Stamped<u32> {
-        Stamped::new(v, WriteMetadata::new(Stamp::from_nanos(u64::from(v))))
-    }
-
-    struct OneReader(Option<Stamped<u32>>);
-
-    impl BufferReader<Stamped<u32>> for OneReader {
-        fn poll_recv(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<Stamped<u32>, crate::DbError>> {
-            Poll::Ready(self.try_recv())
-        }
-
-        fn try_recv(&mut self) -> Result<Stamped<u32>, crate::DbError> {
-            self.0.take().ok_or(crate::DbError::BufferEmpty)
-        }
-    }
-
-    struct PeekBuffer(u32);
-
-    impl DynBuffer<Stamped<u32>> for PeekBuffer {
-        fn push(&self, _value: Stamped<u32>) {}
-
-        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<u32>> + Send> {
-            Box::new(OneReader(Some(sample(self.0))))
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn peek(&self) -> Option<Stamped<u32>> {
-            Some(sample(self.0))
-        }
-    }
-
-    struct TrackingCodec {
-        tree_calls: Arc<AtomicUsize>,
-        byte_calls: Arc<AtomicUsize>,
-    }
-
-    impl JsonCodec<u32> for TrackingCodec {
-        fn encode(&self, value: &u32) -> Option<serde_json::Value> {
-            self.tree_calls.fetch_add(1, Ordering::Relaxed);
-            Some(serde_json::json!(value))
-        }
-
-        fn decode(&self, value: &serde_json::Value) -> Option<u32> {
-            value.as_u64()?.try_into().ok()
-        }
-
-        fn encode_to_vec(&self, value: &u32) -> Option<Vec<u8>> {
-            self.byte_calls.fetch_add(1, Ordering::Relaxed);
-            serde_json::to_vec(value).ok()
-        }
-    }
-
-    /// A buffer where every `peek` sees a newer write: value and stamp both
-    /// equal the number of peeks so far.
-    struct AdvancingBuffer(core::sync::atomic::AtomicU32);
-
-    impl DynBuffer<Stamped<u32>> for AdvancingBuffer {
-        fn push(&self, _value: Stamped<u32>) {}
-
-        fn subscribe_boxed(&self) -> Box<dyn BufferReader<Stamped<u32>> + Send> {
-            Box::new(OneReader(None))
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn peek(&self) -> Option<Stamped<u32>> {
-            Some(sample(self.0.fetch_add(1, Ordering::SeqCst) + 1))
-        }
-    }
-
-    /// Design 058 §4.4: payload and stamp come from one buffer read. A path
-    /// that peeked twice would pair a value with a newer write's stamp.
-    #[test]
-    fn json_reads_take_payload_and_stamp_from_one_read() {
-        let mut record = TypedRecord::<u32>::new();
-        record.with_remote_access();
-        record.buffer = Some(Arc::new(AdvancingBuffer(
-            core::sync::atomic::AtomicU32::new(0),
-        )));
-
-        let tree = record.latest_json().unwrap();
-        assert_eq!(tree.stamp(), Stamp::from_nanos(1));
-        assert_eq!(tree.value, serde_json::json!(1));
-
-        let bytes = record.latest_json_bytes().unwrap();
-        assert_eq!(bytes.stamp(), Stamp::from_nanos(2));
-        assert_eq!(bytes.value, b"2");
-
-        let latest = record.latest().unwrap();
-        assert_eq!((*latest.get(), latest.stamp()), (3, Stamp::from_nanos(3)));
-    }
-
-    #[test]
-    fn typed_latest_and_subscription_select_the_codec_byte_path() {
-        let tree_calls = Arc::new(AtomicUsize::new(0));
-        let byte_calls = Arc::new(AtomicUsize::new(0));
-        let codec: RecordCodec<u32> = Arc::new(TrackingCodec {
-            tree_calls: tree_calls.clone(),
-            byte_calls: byte_calls.clone(),
-        });
-
-        let mut record = TypedRecord::<u32>::new();
-        record.remote_codec = Some(codec);
-        record.buffer = Some(Arc::new(PeekBuffer(17)));
-
-        // Payloads are the codec's output for `T` alone; each carries the
-        // stamp of the sample it was encoded from.
-        let latest = record.latest_json_bytes().unwrap();
-        assert_eq!(
-            (latest.value.as_slice(), latest.stamp()),
-            (&b"17"[..], Stamp::from_nanos(17))
-        );
-
-        let mut reader = record.subscribe_json().unwrap();
-        let received = reader.try_recv_json_bytes().unwrap();
-        assert_eq!(
-            (received.value.as_slice(), received.stamp()),
-            (&b"17"[..], Stamp::from_nanos(17))
-        );
-
-        assert_eq!(byte_calls.load(Ordering::Relaxed), 2);
-        assert_eq!(tree_calls.load(Ordering::Relaxed), 0);
-
-        let tree = record.latest_json().unwrap();
-        assert_eq!(
-            (tree.stamp(), tree.value),
-            (Stamp::from_nanos(17), serde_json::json!(17))
-        );
-        assert_eq!(tree_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn remote_write_rejection_is_typed() {
-        use events::{capture, RemoteWriteEvent};
-        let mut record = TypedRecord::<u32>::new();
-        record.with_remote_access();
-        record.set_producer(|_, _| async {});
-        let seen = Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let observer = {
-            let seen = seen.clone();
-            Arc::new(move |event: &RemoteWriteEvent<'_>| {
-                let RemoteWriteEvent::Rejected {
-                    operation,
-                    record_type,
-                } = event;
-                assert_eq!(*operation, "set_from_json");
-                assert_eq!(*record_type, core::any::type_name::<u32>());
-                seen.store(true, core::sync::atomic::Ordering::Relaxed);
-            })
-        };
-        assert!(capture::with(observer, || record.set_from_json(serde_json::json!(7))).is_err());
-        assert!(seen.load(core::sync::atomic::Ordering::Relaxed));
     }
 }
