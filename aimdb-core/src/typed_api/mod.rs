@@ -110,7 +110,8 @@ pub struct DetachedContract;
 ///
 /// - **An input yields an event, and records are built with `From`.** A
 ///   device input implements `Input<T>` for every `T: From<Event>`, so one
-///   input type serves every contract that can be built from its event. - **A device channel is an owned value that is not `Clone`.** A board
+///   input type serves every contract that can be built from its event.
+/// - **A device channel is an owned value that is not `Clone`.** A board
 ///   hands out its channels once, and an input takes one by value, so wiring
 ///   one device into two records is `use of moved value`.
 ///
