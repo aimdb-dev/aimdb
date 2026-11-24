@@ -47,17 +47,19 @@ aimdb record list
 
 Example output:
 ```
-┌─────────────────────┬────────────────────────────────────────────┬────────────────┬───────────────┬───────────┬───────────┬──────────┬────────┐
-│ Name                │ Type ID                                    │ Schema         │ Buffer Type   │ Producers │ Consumers │ Writable │ Signal │
-├─────────────────────┼────────────────────────────────────────────┼────────────────┼───────────────┼───────────┼───────────┼──────────┼────────┤
-│ server::Temperature │ TypeId(0xaee15e261d918c67cee5a96c2f604ce0) │ temperature v2 │ single_latest │ 1         │ 2         │ no       │ -      │
-├─────────────────────┼────────────────────────────────────────────┼────────────────┼───────────────┼───────────┼───────────┼──────────┼────────┤
-│ server::Config      │ TypeId(0xc2af5c8376864a24e916c87f88505fac) │ -              │ mailbox       │ 0         │ 3         │ yes      │ -      │
-└─────────────────────┴────────────────────────────────────────────┴────────────────┴───────────────┴───────────┴───────────┴──────────┴────────┘
+┌─────────────────────┬─────────────────────┬────────────────────────────────────────────┬────────────────┬───────────────┬───────────┬───────────┬──────────┬────────┐
+│ Key                 │ Name                │ Type ID                                    │ Schema         │ Buffer Type   │ Producers │ Consumers │ Writable │ Signal │
+├─────────────────────┼─────────────────────┼────────────────────────────────────────────┼────────────────┼───────────────┼───────────┼───────────┼──────────┼────────┤
+│ server::Temperature │ server::Temperature │ TypeId(0xaee15e261d918c67cee5a96c2f604ce0) │ temperature v2 │ single_latest │ 1         │ 2         │ no       │ -      │
+├─────────────────────┼─────────────────────┼────────────────────────────────────────────┼────────────────┼───────────────┼───────────┼───────────┼──────────┼────────┤
+│ server::Config      │ server::Config      │ TypeId(0xc2af5c8376864a24e916c87f88505fac) │ -              │ mailbox       │ 0         │ 3         │ yes      │ -      │
+└─────────────────────┴─────────────────────┴────────────────────────────────────────────┴────────────────┴───────────────┴───────────┴───────────┴──────────┴────────┘
 ```
 
-`Schema` is the record's declared data contract (`name vN`), or `-` when the
-record was configured without one. `--format json` carries it as
+`Key` is the record key that `aimdb record get`, `aimdb record set` and
+`aimdb watch` take; `Name` is the record's Rust type name, which can differ
+from the key. `Schema` is the record's declared data contract (`name vN`), or
+`-` when the record was configured without one. `--format json` carries it as
 `schema_type` / `schema_version`.
 
 ### 3. Get Current Record Value
