@@ -583,6 +583,11 @@ fn rpc_err(e: RpcError) -> ClientError {
             ClientError::server_error("not_found", "method or record not found", None)
         }
         RpcError::Denied => ClientError::server_error("denied", "permission denied", None),
+        RpcError::InvalidValue => ClientError::server_error(
+            "invalid_value",
+            "the value does not match the record's type",
+            None,
+        ),
         RpcError::Unsupported => ClientError::server_error(
             "unsupported",
             "not supported for this record (a ring has no current value: \

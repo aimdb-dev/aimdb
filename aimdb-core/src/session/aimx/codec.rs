@@ -149,6 +149,7 @@ fn err_code(e: &RpcError) -> &'static str {
         RpcError::NotFound => "not_found",
         RpcError::Unsupported => "unsupported",
         RpcError::Denied => "denied",
+        RpcError::InvalidValue => "invalid_value",
         RpcError::Internal => "internal",
         RpcError::VersionMismatch => "version_mismatch",
         // Client-side only; a server has no reason to send it.
@@ -161,6 +162,7 @@ fn code_err(s: &str) -> RpcError {
         "not_found" => RpcError::NotFound,
         "unsupported" => RpcError::Unsupported,
         "denied" => RpcError::Denied,
+        "invalid_value" => RpcError::InvalidValue,
         "version_mismatch" => RpcError::VersionMismatch,
         _ => RpcError::Internal,
     }
@@ -519,6 +521,7 @@ mod tests {
             RpcError::NotFound,
             RpcError::Unsupported,
             RpcError::Denied,
+            RpcError::InvalidValue,
             RpcError::Internal,
             RpcError::VersionMismatch,
         ] {

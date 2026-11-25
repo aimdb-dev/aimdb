@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A rejected `set_record` value is `invalid_value` (#454).** A value the
+  record's type cannot decode now fails with `ServerError { code:
+  "invalid_value" }` instead of `internal: engine/transport failure`.
+
 - **`get_record` on a ring returns `unsupported` (#444).** A ring has no
   current value; use `drain_record` or `subscribe`. `get_record` no longer moves
   the connection's drain cursor, so `drain_record` returns every unread event.

@@ -555,6 +555,7 @@ fn map_db_err(e: DbError) -> RpcError {
     match e {
         DbError::RecordKeyNotFound { .. } | DbError::InvalidRecordId { .. } => RpcError::NotFound,
         DbError::PermissionDenied { .. } => RpcError::Denied,
+        DbError::InvalidValue { .. } => RpcError::InvalidValue,
         _ => RpcError::Internal,
     }
 }

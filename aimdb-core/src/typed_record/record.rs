@@ -1201,8 +1201,6 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
     }
 
     fn set_from_json(&self, json_value: serde_json::Value) -> crate::DbResult<()> {
-        use crate::DbError;
-
         log_debug!(
             "set_from_json called for type: {}",
             core::any::type_name::<T>()
@@ -1210,33 +1208,23 @@ impl<T: Send + Sync + 'static + Debug + Clone> JsonRecordAccess for TypedRecord<
 
         let codec = self.remote_write_codec("set_from_json")?;
 
-        let value: T = codec.decode(&json_value).ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Failed to deserialize JSON to type '{}'. \
-                 JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ))
-        })?;
+        let value: T = codec
+            .decode(&json_value)
+            .ok_or_else(|| crate::DbError::invalid_value(core::any::type_name::<T>()))?;
 
         self.commit_remote_write(value)
     }
 
     fn set_from_json_bytes(&self, bytes: &[u8]) -> crate::DbResult<()> {
-        use crate::DbError;
-
         log_debug!(
             "set_from_json_bytes called for type: {}",
             core::any::type_name::<T>()
         );
 
         let codec = self.remote_write_codec("set_from_json_bytes")?;
-        let value: T = codec.decode_slice(bytes).ok_or_else(|| {
-            DbError::runtime_error(alloc::format!(
-                "Failed to deserialize JSON to type '{}'. \
-                 JSON structure does not match the expected schema.",
-                core::any::type_name::<T>()
-            ))
-        })?;
+        let value: T = codec
+            .decode_slice(bytes)
+            .ok_or_else(|| crate::DbError::invalid_value(core::any::type_name::<T>()))?;
 
         self.commit_remote_write(value)
     }

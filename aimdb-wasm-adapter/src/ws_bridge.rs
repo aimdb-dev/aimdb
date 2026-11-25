@@ -842,6 +842,7 @@ fn rpc_err_str(e: &RpcError) -> &'static str {
         RpcError::NotFound => "not_found",
         RpcError::Unsupported => "unsupported (a ring has no current value)",
         RpcError::Denied => "denied",
+        RpcError::InvalidValue => "invalid_value (the value does not match the record's type)",
         RpcError::VersionMismatch => {
             "version_mismatch (server rejected the client protocol version)"
         }

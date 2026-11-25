@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an unknown name answer `not_found` at once. A ring registered with
   `buffer_raw()` and no `buffer_cfg()` answers `not_found`, since core cannot
   tell it is a ring.
+- **A rejected `record.set` value answers `invalid_value` (#454).** A value
+  that does not decode into the record's type was reported as `internal`,
+  blaming the engine. It now fails with the new `DbError::InvalidValue`
+  (kind `Data`), which AimX sends as `RpcError::InvalidValue` / wire code
+  `invalid_value`. Older clients decode the unknown code as `internal`, as
+  before.
 
 ### Added
 
