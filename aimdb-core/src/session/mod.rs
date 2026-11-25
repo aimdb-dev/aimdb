@@ -275,6 +275,9 @@ pub enum RpcError {
     Unsupported,
     /// The caller lacks permission for this operation.
     Denied,
+    /// The caller's value was refused: it does not decode into the record's
+    /// type, e.g. a `record.set` value that fails the type's deserializer.
+    InvalidValue,
     /// The handler failed.
     Internal,
     /// The peer's declared protocol version is incompatible with this server's

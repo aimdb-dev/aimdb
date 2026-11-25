@@ -106,6 +106,18 @@ async fn aimx_roundtrip_over_uds_production_server() {
     assert_eq!(after_set.stamp(), set_ts);
     assert!(set_ts >= seeded);
 
+    // RPC: a value the record's type rejects is the caller's fault, not the
+    // engine's (#454): `invalid_value`, the stored value untouched, and the
+    // connection still serves the next call.
+    match conn.set_record("setting", json!({ "level": "high" })).await {
+        Err(aimdb_client::ClientError::ServerError { code, .. }) => {
+            assert_eq!(code, "invalid_value")
+        }
+        other => panic!("expected invalid_value, got {other:?}"),
+    }
+    let unchanged = conn.get_record("setting").await.unwrap();
+    assert_eq!(unchanged.value, json!({ "level": 7 }));
+
     // Streaming: a producer feeds `events`; the subscription routes updates back.
     let producer = db.producer(key_events_2).expect("producer");
     tokio::spawn(async move {

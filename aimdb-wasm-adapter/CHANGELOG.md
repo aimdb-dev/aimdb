@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking, wire)
 
+- A `record.set` value the record's type rejects now reports
+  `invalid_value` instead of `internal` (#454).
+
 - **`query()` resolves with `{ records }` (#429).** `total` is gone; use
   `records.length`.
 

@@ -155,6 +155,10 @@ pub enum DbError {
     #[error("Permission denied: {operation}")]
     PermissionDenied { operation: String },
 
+    /// A remote write's value does not decode into the record's type
+    #[error("Value rejected: it does not decode into '{type_name}'")]
+    InvalidValue { type_name: String },
+
     // ===== Configuration Errors =====
     /// Missing required configuration parameter
     #[error("Missing configuration parameter: {parameter}")]
@@ -249,6 +253,13 @@ impl DbError {
         }
     }
 
+    /// Builds an [`InvalidValue`](DbError::InvalidValue).
+    pub fn invalid_value(type_name: impl Into<String>) -> Self {
+        DbError::InvalidValue {
+            type_name: type_name.into(),
+        }
+    }
+
     /// Builds a [`RecordKeyNotFound`](DbError::RecordKeyNotFound).
     pub fn record_key_not_found(key: impl Into<String>) -> Self {
         DbError::RecordKeyNotFound { key: key.into() }
@@ -310,6 +321,8 @@ impl DbError {
             Self::BufferClosed { .. } => DbErrorKind::Closed,
 
             Self::ConnectionFailed { .. } => DbErrorKind::Transport,
+
+            Self::InvalidValue { .. } => DbErrorKind::Data,
 
             Self::MissingConfiguration { .. }
             | Self::InvalidConfiguration { .. }
@@ -402,6 +415,10 @@ mod tests {
         assert!(matches!(
             DbError::permission_denied("write"),
             DbError::PermissionDenied { .. }
+        ));
+        assert!(matches!(
+            DbError::invalid_value("T"),
+            DbError::InvalidValue { .. }
         ));
         assert!(matches!(
             DbError::record_key_not_found("k"),
