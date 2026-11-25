@@ -58,5 +58,8 @@ pub use engine::{AimxConnection, DrainResponse, RecordUpdate};
 pub use aimdb_core::{Stamp, Stamped, WriteMetadata};
 pub use error::{ClientError, ClientResult};
 pub use protocol::{RecordMetadata, WelcomeMessage, CLIENT_NAME, PROTOCOL_VERSION};
+// The type of `RecordMetadata::inbound_routes`.
+#[cfg(feature = "observability")]
+pub use aimdb_core::{InboundRouteMetrics, InboundRouteStats};
 // Arm a watch, then wait for updates written after it.
 pub use watch::{arm, await_updates, Armed, WatchOutcome, WatchStatus};

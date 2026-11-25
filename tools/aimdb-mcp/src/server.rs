@@ -191,8 +191,10 @@ impl McpServer {
                 name: "list_records".to_string(),
                 description: "List all records from a specific AimDB instance. Returns metadata including buffer type, capacity, producer/consumer counts, \
                     and the declared data contract as schema_type and schema_version. Those two fields \
-                    are absent when the record was configured without a schema. Use get_record to \
-                    see an observed value.".to_string(),
+                    are absent when the record was configured without a schema. Records with inbound \
+                    links also carry inbound_routes: per-link counters of accepted, upgraded and \
+                    rejected values (too_new, shape_mismatch, malformed, decode_error, ...). Use \
+                    get_record to see an observed value.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {

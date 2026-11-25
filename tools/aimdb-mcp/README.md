@@ -229,8 +229,9 @@ List all records in an instance:
 ```
 Query: "What records are in the demo instance?"
 
-Result: Record names, types, buffer configs, producer/consumer counts, and the
-declared schema (`schema_type`, `schema_version`) where the record has one
+Result: Record names, types, buffer configs, producer/consumer counts, the
+declared schema (`schema_type`, `schema_version`) where the record has one, and
+per-link admission counters (`inbound_routes`) where it has inbound links
 ```
 
 ### 4. get_record

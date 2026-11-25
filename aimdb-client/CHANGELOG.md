@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`InboundRouteMetrics` and `InboundRouteStats` are re-exported**
+  (feature `observability`), the type of `RecordMetadata::inbound_routes`.
+
 - **`AimxConnection::is_closed()` (#450):** whether the connection's engine has
   stopped. A caller keeping a connection open uses it to decide when to
   reconnect; an `internal` error reply does not mean the connection is gone.
