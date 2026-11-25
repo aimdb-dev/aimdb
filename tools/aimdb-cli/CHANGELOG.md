@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`aimdb record list` shows a `Key` column (#455)** as its first column:
+  the record key that `aimdb record get` / `set` and `aimdb watch` take. The
+  `Name` column (the Rust type name) stays beside it. JSON output is
+  unchanged: it already carries `record_key`.
+
 - **`aimdb record list` shows a `Schema` column** with the record's declared
   data contract (`name vN`, `-` when none), as the graph table already does.
   JSON output is unchanged: it already carries `schema_type` /

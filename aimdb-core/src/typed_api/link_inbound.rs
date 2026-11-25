@@ -427,6 +427,3 @@ where
         reg.push_inbound(self);
     }
 }
-
-#[cfg(test)]
-mod tests {}

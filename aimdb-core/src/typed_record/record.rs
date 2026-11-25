@@ -757,12 +757,8 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
     /// Attaches the `i`-th tap's profiling to `consumer`, for
     /// [`Self::collect_consumer_futures`].
     #[cfg(feature = "observability")]
-    fn set_consumers_profiling(
-        &self,
-        consumer: &mut crate::Consumer<T>,
-        i: usize,
-        db: &crate::AimDb,
-    ) where
+    fn set_consumer_profiling(&self, consumer: &mut crate::Consumer<T>, i: usize, db: &crate::AimDb)
+    where
         T: Sync,
     {
         if let Some(entry) = self.profiling.tap(i) {
@@ -772,7 +768,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
 
     /// No-op without `observability`.
     #[cfg(not(feature = "observability"))]
-    fn set_consumers_profiling(
+    fn set_consumer_profiling(
         &self,
         _consumer: &mut crate::Consumer<T>,
         _i: usize,
@@ -828,7 +824,7 @@ impl<T: Send + 'static + Debug + Clone> TypedRecord<T> {
         for (i, consumer_fn) in consumers.into_iter().enumerate() {
             // Create a Consumer<T> bound to a pre-resolved buffer handle.
             let mut consumer = crate::typed_api::Consumer::new(buffer_arc.clone());
-            self.set_consumers_profiling(&mut consumer, i, db);
+            self.set_consumer_profiling(&mut consumer, i, db);
 
             futures.push(consumer_fn(db.runtime_ctx(), consumer));
         }

@@ -20,6 +20,40 @@ use crate::typed_api::{
 use crate::typed_record::TypedRecord;
 use crate::AimDb;
 
+/// Builds the [`Consumer<T>`] an outbound link reads from, timed against the
+/// link's profiling stage.
+#[cfg(feature = "observability")]
+fn link_consumer<T>(
+    buffer: Arc<dyn crate::buffer::DynBuffer<crate::Stamped<T>>>,
+    link_metrics: &Arc<crate::profiling::StageMetrics>,
+    db: &AimDb,
+) -> Consumer<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    let mut consumer = Consumer::new(buffer);
+    consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
+    consumer
+}
+
+/// Stands in for a link's stage metrics without `observability`.
+#[cfg(not(feature = "observability"))]
+#[derive(Clone, Copy)]
+struct NoLinkMetrics;
+
+/// Without `observability` there is no stage to time: a plain consumer.
+#[cfg(not(feature = "observability"))]
+fn link_consumer<T>(
+    buffer: Arc<dyn crate::buffer::DynBuffer<crate::Stamped<T>>>,
+    _link_metrics: &NoLinkMetrics,
+    _db: &AimDb,
+) -> Consumer<T>
+where
+    T: Send + Sync + 'static + Debug + Clone,
+{
+    Consumer::new(buffer)
+}
+
 // ============================================================================
 // RecordRegistrar - Fluent registration API
 // ============================================================================
@@ -556,9 +590,10 @@ where
             metrics
         };
         #[cfg(not(feature = "observability"))]
-        {
+        let link_metrics = {
             self.last_stage = Some((StageKind::Link, 0));
-        }
+            NoLinkMetrics
+        };
 
         // Resolves the record and builds a `Consumer<T>` bound to its buffer
         // handle, once per route (not per message) — same pattern as the
@@ -590,11 +625,7 @@ where
                     )
                 });
 
-                #[allow(unused_mut)]
-                let mut consumer = Consumer::<T>::new(buffer);
-                #[cfg(feature = "observability")]
-                consumer.set_profiling(link_metrics.clone(), db.profiling_clock().clone());
-                consumer
+                link_consumer(buffer, &link_metrics, db)
             })
         };
 
