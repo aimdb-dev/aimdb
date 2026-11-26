@@ -1,6 +1,6 @@
 //! Record Management Commands
 
-use crate::commands::connect_endpoint;
+use crate::commands::Target;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
 use clap::Args;
@@ -48,27 +48,27 @@ pub enum RecordSubcommand {
 }
 
 impl RecordCommand {
-    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
+    pub async fn execute(self, target: Target<'_>) -> CliResult<()> {
         match self.subcommand {
             RecordSubcommand::List { format, writable } => {
-                list_records(endpoint, format, writable).await
+                list_records(target, format, writable).await
             }
-            RecordSubcommand::Get { record, format } => get_record(&record, endpoint, format).await,
+            RecordSubcommand::Get { record, format } => get_record(&record, target, format).await,
             RecordSubcommand::Set {
                 name,
                 value,
                 dry_run,
-            } => set_record(&name, &value, endpoint, dry_run).await,
+            } => set_record(&name, &value, target, dry_run).await,
         }
     }
 }
 
 async fn list_records(
-    endpoint: Option<&str>,
+    target: Target<'_>,
     format: OutputFormat,
     writable_only: bool,
 ) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+    let client = target.connect().await?;
 
     let mut records = client.list_records().await?;
 
@@ -90,8 +90,8 @@ async fn list_records(
     Ok(())
 }
 
-async fn get_record(name: &str, endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+async fn get_record(name: &str, target: Target<'_>, format: OutputFormat) -> CliResult<()> {
+    let client = target.connect().await?;
 
     let sample = client.get_record(name).await?;
 
@@ -116,7 +116,7 @@ async fn get_record(name: &str, endpoint: Option<&str>, format: OutputFormat) ->
 async fn set_record(
     name: &str,
     value_str: &str,
-    endpoint: Option<&str>,
+    target: Target<'_>,
     dry_run: bool,
 ) -> CliResult<()> {
     // Parse JSON value
@@ -130,7 +130,7 @@ async fn set_record(
         return Ok(());
     }
 
-    let client = connect_endpoint(endpoint).await?;
+    let client = target.connect().await?;
 
     let result = client.set_record(name, value).await?;
 

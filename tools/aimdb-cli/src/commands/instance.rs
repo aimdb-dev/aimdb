@@ -1,5 +1,6 @@
 //! Instance Management Commands
 
+use crate::commands::Target;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
 use aimdb_client::discovery::{discover_instances, find_instance, InstanceInfo};
@@ -37,14 +38,14 @@ pub enum InstanceSubcommand {
 }
 
 impl InstanceCommand {
-    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
+    pub async fn execute(self, target: Target<'_>) -> CliResult<()> {
         match self.subcommand {
             // `list` is discovery-only (a Unix-socket scan); it ignores --connect.
             InstanceSubcommand::List { format } => list_instances(format).await,
             InstanceSubcommand::Info { format, post_link } => {
-                show_instance_info(endpoint, format, post_link).await
+                show_instance_info(target, format, post_link).await
             }
-            InstanceSubcommand::Ping {} => ping_instance(endpoint).await,
+            InstanceSubcommand::Ping {} => ping_instance(target.endpoint).await,
         }
     }
 }
@@ -81,16 +82,18 @@ async fn list_instances(format: OutputFormat) -> CliResult<()> {
 }
 
 async fn show_instance_info(
-    endpoint: Option<&str>,
+    target: Target<'_>,
     format: OutputFormat,
     with_post_link: bool,
 ) -> CliResult<()> {
     // `instance.info` needs a connection, so discovery only picks the endpoint.
-    let endpoint = match endpoint {
+    let endpoint = match target.endpoint {
         Some(ep) => ep.to_string(),
         None => find_instance(None).await?.endpoint.display().to_string(),
     };
-    let conn = AimxConnection::connect(&endpoint).await?;
+    let conn = AimxConnection::connect(&endpoint)
+        .await?
+        .with_request_timeout(target.request_timeout);
     let instance = InstanceInfo::from((PathBuf::from(&endpoint), conn.server_info().clone()));
     let reply = conn.instance_info().await?;
     let post_link = match with_post_link {

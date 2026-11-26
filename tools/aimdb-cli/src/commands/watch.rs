@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use crate::commands::connect_endpoint;
+use crate::commands::Target;
 use crate::error::{CliError, CliResult, EXIT_ENVIRONMENT, EXIT_REJECTED};
 use crate::output::live;
 use aimdb_client::watch::{self, WatchOutcome, WatchStatus};
@@ -55,7 +55,7 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
-    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
+    pub async fn execute(self, target: Target<'_>) -> CliResult<()> {
         let mut watcher =
             Watcher::new(self.format, self.full, std::io::stdout(), std::io::stderr());
         let options = WatchOptions {
@@ -63,7 +63,7 @@ impl WatchCommand {
             new: self.new,
             timeout: self.timeout.map(Duration::from_secs),
         };
-        let result = watch_record(&self.record, endpoint, options, &mut watcher).await;
+        let result = watch_record(&self.record, target, options, &mut watcher).await;
         if let Err(e) = &result {
             watcher.failed(e)?;
         }
@@ -79,11 +79,11 @@ struct WatchOptions {
 
 async fn watch_record<O: Write, E: Write>(
     record_name: &str,
-    endpoint: Option<&str>,
+    target: Target<'_>,
     options: WatchOptions,
     watcher: &mut Watcher<O, E>,
 ) -> CliResult<()> {
-    let conn = connect_endpoint(endpoint).await?;
+    let conn = target.connect().await?;
 
     // The stream is loss-aware, so the watcher reports gaps instead of
     // skipping over them silently. With `--new`, the record's current stamp
@@ -126,7 +126,7 @@ async fn watch_record<O: Write, E: Write>(
             wanted: outcome.wanted,
         }),
         WatchStatus::Disconnected => Err(CliError::connection_failed(
-            endpoint.unwrap_or("auto-discovered instance"),
+            target.endpoint.unwrap_or("auto-discovered instance"),
             format!(
                 "the subscription ended after {} of {} updates",
                 outcome.received, outcome.wanted

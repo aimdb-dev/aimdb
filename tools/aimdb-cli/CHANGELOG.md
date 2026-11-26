@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--request-timeout <SECS>` (#474),** a global option, default 5. A
+  command whose instance stops answering after the handshake (`record get` /
+  `set`, `graph …`, `instance info`) now fails with exit code 3 instead of
+  hanging. `watch --timeout` is unchanged and still governs how long `watch`
+  waits for updates.
+
 - **`aimdb record list` shows a `Key` column (#455)** as its first column:
   the record key that `aimdb record get` / `set` and `aimdb watch` take. The
   `Name` column (the Rust type name) stays beside it. JSON output is

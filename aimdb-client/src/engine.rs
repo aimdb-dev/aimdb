@@ -39,6 +39,14 @@ use aimdb_core::{Stamp, Stamped};
 /// no handshake timeout of its own, so the wait would otherwise be unbounded.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default deadline for each request after the handshake (`record.get`,
+/// `record.set`, `record.list`, …). Bounds the case where an instance stops
+/// answering mid-session — a hung task, a board held by a watchdog, a link that
+/// dropped without closing — which the engine cannot tell from a slow reply.
+/// Subscriptions are not bounded by it. See
+/// [`AimxConnection::with_request_timeout`].
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Response from a `record.drain` call: the values accumulated since the
 /// previous drain for this connection's per-record cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +118,7 @@ pub struct AimxConnection {
     handle: ClientHandle,
     engine: JoinHandle<()>,
     server_info: WelcomeMessage,
+    request_timeout: Duration,
 }
 
 impl AimxConnection {
@@ -211,6 +220,7 @@ impl AimxConnection {
                 handle,
                 engine,
                 server_info,
+                request_timeout: DEFAULT_REQUEST_TIMEOUT,
             }),
             Err(e) => {
                 // Don't leave the engine task blocked on a stalled dial/connection.
@@ -220,8 +230,29 @@ impl AimxConnection {
         }
     }
 
+    /// Set the deadline for each request on this connection, replacing
+    /// [`DEFAULT_REQUEST_TIMEOUT`].
+    ///
+    /// A request that gets no reply in time fails with
+    /// [`ClientError::Timeout`]; the connection stays open, and a reply that
+    /// arrives later is discarded. It covers every typed call that awaits a
+    /// reply — not [`subscribe`](Self::subscribe), not
+    /// [`write_record`](Self::write_record), and not raw calls made through
+    /// [`handle`](Self::handle). [`post_link`](Self::post_link) applies it to
+    /// each chunk.
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    /// The deadline each request on this connection gets.
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
     /// The raw engine handle — `call` / `subscribe` / `write` for methods the
-    /// typed wrappers below don't cover.
+    /// typed wrappers below don't cover. Calls made through it have no
+    /// deadline.
     pub fn handle(&self) -> &ClientHandle {
         &self.handle
     }
@@ -358,7 +389,7 @@ impl AimxConnection {
     /// Which build and which instance this is (`instance.info`, since protocol
     /// 3.1). `None` from a server that does not know the method.
     pub async fn instance_info(&self) -> ClientResult<Option<InstanceInfoReply>> {
-        match self.handle.call("instance.info", null_payload()).await {
+        match self.rpc("instance.info", null_payload()).await? {
             Ok(reply) => Ok(Some(from_payload(&reply)?)),
             Err(RpcError::NotFound) => Ok(None),
             Err(e) => Err(rpc_err(e)),
@@ -381,15 +412,12 @@ impl AimxConnection {
         loop {
             let offset = data.len();
             let params = json!({ "offset": offset, "len": POST_LINK_CHUNK_MAX });
-            let chunk: PostLinkChunk = match self
-                .handle
-                .call("instance.post_link", to_payload(&params)?)
-                .await
-            {
-                Ok(reply) => from_payload(&reply)?,
-                Err(RpcError::NotFound) => return Ok(None),
-                Err(e) => return Err(rpc_err(e)),
-            };
+            let chunk: PostLinkChunk =
+                match self.rpc("instance.post_link", to_payload(&params)?).await? {
+                    Ok(reply) => from_payload(&reply)?,
+                    Err(RpcError::NotFound) => return Ok(None),
+                    Err(e) => return Err(rpc_err(e)),
+                };
             let total = *total.get_or_insert(chunk.total);
             let bytes = check_chunk(&chunk, offset, total)?;
             data.extend_from_slice(&bytes);
@@ -433,7 +461,19 @@ impl AimxConnection {
 
     /// Issue a raw RPC and map a transport/engine failure to [`ClientError`].
     async fn call(&self, method: &str, params: Payload) -> ClientResult<Payload> {
-        self.handle.call(method, params).await.map_err(rpc_err)
+        self.rpc(method, params).await?.map_err(rpc_err)
+    }
+
+    /// Issue a raw RPC bounded by the request timeout. The outer error is the
+    /// timeout; the inner result is the engine's, for callers that treat some
+    /// replies (`not_found`) as an answer rather than a failure.
+    ///
+    /// Dropping the timed-out call is safe: the engine reclaims the abandoned
+    /// pending entry and discards a reply that turns up later.
+    async fn rpc(&self, method: &str, params: Payload) -> ClientResult<Result<Payload, RpcError>> {
+        timeout(self.request_timeout, self.handle.call(method, params))
+            .await
+            .map_err(|_| ClientError::timeout(method, self.request_timeout))
     }
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Commands for exploring the dependency graph of records in an AimDB instance.
 
-use crate::commands::connect_endpoint;
+use crate::commands::Target;
 use crate::error::CliResult;
 use crate::output::{json, table, OutputFormat};
 use clap::Args;
@@ -44,18 +44,18 @@ pub enum GraphSubcommand {
 }
 
 impl GraphCommand {
-    pub async fn execute(self, endpoint: Option<&str>) -> CliResult<()> {
+    pub async fn execute(self, target: Target<'_>) -> CliResult<()> {
         match self.subcommand {
-            GraphSubcommand::Nodes { format } => list_nodes(endpoint, format).await,
-            GraphSubcommand::Edges { format } => list_edges(endpoint, format).await,
-            GraphSubcommand::Order { format } => show_topo_order(endpoint, format).await,
-            GraphSubcommand::Dot { name } => export_dot(endpoint, &name).await,
+            GraphSubcommand::Nodes { format } => list_nodes(target, format).await,
+            GraphSubcommand::Edges { format } => list_edges(target, format).await,
+            GraphSubcommand::Order { format } => show_topo_order(target, format).await,
+            GraphSubcommand::Dot { name } => export_dot(target, &name).await,
         }
     }
 }
 
-async fn list_nodes(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+async fn list_nodes(target: Target<'_>, format: OutputFormat) -> CliResult<()> {
+    let client = target.connect().await?;
 
     let nodes = client.graph_nodes().await?;
 
@@ -72,8 +72,8 @@ async fn list_nodes(endpoint: Option<&str>, format: OutputFormat) -> CliResult<(
     Ok(())
 }
 
-async fn list_edges(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+async fn list_edges(target: Target<'_>, format: OutputFormat) -> CliResult<()> {
+    let client = target.connect().await?;
 
     let edges = client.graph_edges().await?;
 
@@ -90,8 +90,8 @@ async fn list_edges(endpoint: Option<&str>, format: OutputFormat) -> CliResult<(
     Ok(())
 }
 
-async fn show_topo_order(endpoint: Option<&str>, format: OutputFormat) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+async fn show_topo_order(target: Target<'_>, format: OutputFormat) -> CliResult<()> {
+    let client = target.connect().await?;
 
     let order = client.graph_topo_order().await?;
 
@@ -108,8 +108,8 @@ async fn show_topo_order(endpoint: Option<&str>, format: OutputFormat) -> CliRes
     Ok(())
 }
 
-async fn export_dot(endpoint: Option<&str>, name: &str) -> CliResult<()> {
-    let client = connect_endpoint(endpoint).await?;
+async fn export_dot(target: Target<'_>, name: &str) -> CliResult<()> {
+    let client = target.connect().await?;
 
     let nodes = client.graph_nodes().await?;
     let edges = client.graph_edges().await?;
