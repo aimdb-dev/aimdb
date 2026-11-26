@@ -473,19 +473,19 @@ impl McpServer {
         };
 
         let result = match params.name.as_str() {
-            "discover_instances" => tools::discover_instances(params.arguments).await?,
-            "list_records" => tools::list_records(params.arguments).await?,
-            "get_record" => tools::get_record(params.arguments).await?,
-            "set_record" => tools::set_record(params.arguments).await?,
-            "get_instance_info" => tools::get_instance_info(params.arguments).await?,
-            "drain_record" => tools::drain_record(params.arguments).await?,
-            "graph_nodes" => tools::graph_nodes(params.arguments).await?,
-            "graph_edges" => tools::graph_edges(params.arguments).await?,
-            "graph_topo_order" => tools::graph_topo_order(params.arguments).await?,
-            "get_buffer_metrics" => tools::get_buffer_metrics(params.arguments).await?,
-            "reset_buffer_metrics" => tools::reset_buffer_metrics(params.arguments).await?,
-            "get_stage_profiling" => tools::get_stage_profiling(params.arguments).await?,
-            "reset_stage_profiling" => tools::reset_stage_profiling(params.arguments).await?,
+            "discover_instances" => tools::discover_instances(params.arguments).await,
+            "list_records" => tools::list_records(params.arguments).await,
+            "get_record" => tools::get_record(params.arguments).await,
+            "set_record" => tools::set_record(params.arguments).await,
+            "get_instance_info" => tools::get_instance_info(params.arguments).await,
+            "drain_record" => tools::drain_record(params.arguments).await,
+            "graph_nodes" => tools::graph_nodes(params.arguments).await,
+            "graph_edges" => tools::graph_edges(params.arguments).await,
+            "graph_topo_order" => tools::graph_topo_order(params.arguments).await,
+            "get_buffer_metrics" => tools::get_buffer_metrics(params.arguments).await,
+            "reset_buffer_metrics" => tools::reset_buffer_metrics(params.arguments).await,
+            "get_stage_profiling" => tools::get_stage_profiling(params.arguments).await,
+            "reset_stage_profiling" => tools::reset_stage_profiling(params.arguments).await,
             _ => {
                 return Err(McpError::MethodNotFound(format!(
                     "Unknown tool: {}",
@@ -494,15 +494,7 @@ impl McpServer {
             }
         };
 
-        // Wrap result in ToolCallResult
-        let content = vec![ToolContent::Text {
-            text: serde_json::to_string_pretty(&result)?,
-        }];
-
-        Ok(ToolCallResult {
-            content,
-            is_error: Some(false),
-        })
+        tool_call_result(result)
     }
 
     /// Handle resources/list request
@@ -586,6 +578,26 @@ impl Default for McpServer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Wrap a tool's outcome in a [`ToolCallResult`].
+///
+/// A request the instance did not answer in time is a tool error
+/// (`isError: true`) the agent sees and can act on — retry, or report the
+/// instance as unresponsive — not a JSON-RPC protocol error. Every other error
+/// stays a protocol error, as before.
+fn tool_call_result(result: McpResult<serde_json::Value>) -> McpResult<ToolCallResult> {
+    let (text, is_error) = match result {
+        Ok(value) => (serde_json::to_string_pretty(&value)?, false),
+        Err(McpError::Client(e @ aimdb_client::ClientError::Timeout { .. })) => {
+            (e.to_string(), true)
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(ToolCallResult {
+        content: vec![ToolContent::Text { text }],
+        is_error: Some(is_error),
+    })
 }
 
 #[cfg(test)]
@@ -719,6 +731,29 @@ mod tests {
             !matches!(result, Err(McpError::MethodNotFound(_))),
             "set_record blocked despite --allow-writes: {result:?}"
         );
+    }
+
+    /// A request timeout reaches the agent as a tool error (#474); other
+    /// failures stay protocol errors.
+    #[test]
+    fn a_request_timeout_is_a_tool_error() {
+        let timeout =
+            aimdb_client::ClientError::timeout("record.get", std::time::Duration::from_secs(5));
+        let result = tool_call_result(Err(McpError::Client(timeout))).unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let ToolContent::Text { text } = &result.content[0] else {
+            panic!("expected text content");
+        };
+        assert!(text.contains("record.get"), "{text}");
+        assert!(text.contains("did not answer"), "{text}");
+
+        let ok = tool_call_result(Ok(json!({ "n": 1 }))).unwrap();
+        assert_eq!(ok.is_error, Some(false));
+
+        let other = tool_call_result(Err(McpError::Client(
+            aimdb_client::ClientError::NoInstancesFound,
+        )));
+        assert!(matches!(other, Err(McpError::Client(_))));
     }
 
     #[tokio::test]

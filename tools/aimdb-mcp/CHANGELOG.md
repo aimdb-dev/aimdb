@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A silent instance no longer hangs a tool (#474).** Each request on the
-  persistent client times out after 5 s and the tool call returns an error
-  naming the method, releasing the client for the next call. The session is
-  kept: a timeout does not reconnect.
+  persistent client times out after 5 s, releasing the client for the next
+  call. The timeout reaches the agent as a tool error (`isError: true`, text
+  naming the method) rather than a JSON-RPC error, so it can retry or report
+  the instance as unresponsive. The session is kept: a timeout does not
+  reconnect.
 
 - **Every tool shares one session per endpoint (#451).** Tools opened a new
   connection per call, which over serial failed (the tty was already open) or
