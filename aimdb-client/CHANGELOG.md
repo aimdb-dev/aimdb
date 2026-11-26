@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Requests time out (#474).** Every typed call that awaits a reply
+  (`get_record`, `set_record`, `list_records`, `drain_record`, `query`,
+  `graph_*`, `instance_info`, each `post_link` chunk, the resets) is bounded by
+  the connection's request timeout, `DEFAULT_REQUEST_TIMEOUT` (5 s), and fails
+  with the new `ClientError::Timeout { method, after }` instead of waiting
+  forever on an instance that stopped answering after the handshake. Set it
+  with `AimxConnection::with_request_timeout`. The connection stays open and a
+  late reply is discarded. Subscriptions, `write_record` and raw
+  `handle().call(…)` are not bounded.
+
 ### Changed
 
 - **A rejected `set_record` value is `invalid_value` (#454).** A value the

@@ -108,6 +108,11 @@ instance (see [Connecting to an Instance](#connecting-to-an-instance)). When
 omitted, the CLI reads the `AIMDB_CONNECT` env var, then falls back to UDS
 auto-discovery. `instance list` is discovery-only and ignores `--connect`.
 
+`--request-timeout <SECS>` (global, default 5) bounds each reply after the
+handshake, so a hung instance or a link that dropped without closing fails
+with exit code 3 instead of hanging the command. It does not limit how long
+`watch` waits for updates; that is `watch --timeout`.
+
 ### Instance Commands
 
 #### `instance list`
@@ -442,7 +447,7 @@ unreachable instance without retrying a rejected request:
 | 0 | Success | |
 | 1 | Rejected: the instance or a remote service refused the request | record not found, record not writable, server error |
 | 2 | Usage: bad arguments or malformed input | unknown subcommand or flag, unsupported `--connect` endpoint, invalid JSON for `record set` |
-| 3 | Environment: worth retrying | connection failed, no instance found, protocol mismatch, I/O error, a reply that does not parse |
+| 3 | Environment: worth retrying | connection failed, no instance found, protocol mismatch, I/O error, a reply that does not parse, no reply within `--request-timeout` |
 | 4 | Timeout | `watch --timeout` passed before `--count` updates arrived |
 
 ```bash

@@ -76,6 +76,13 @@ pub enum CliError {
         wanted: usize,
     },
 
+    /// The instance did not answer a request in time
+    #[error("Request timed out: {method} got no reply within {after:?}\n  Hint: the instance may be hung or the link down; raise --request-timeout if it is just slow")]
+    RequestTimeout {
+        method: String,
+        after: std::time::Duration,
+    },
+
     /// I/O error occurred
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -109,6 +116,9 @@ impl From<aimdb_client::ClientError> for CliError {
                 details,
             },
             aimdb_client::ClientError::Protocol { reason } => CliError::Protocol { reason },
+            aimdb_client::ClientError::Timeout { method, after } => {
+                CliError::RequestTimeout { method, after }
+            }
             aimdb_client::ClientError::Io(e) => CliError::Io(e),
             aimdb_client::ClientError::Json(e) => CliError::Json(e),
             aimdb_client::ClientError::Other(e) => CliError::Other(e),
@@ -126,6 +136,8 @@ impl CliError {
             | Self::NoInstancesFound
             | Self::ProtocolMismatch { .. }
             | Self::Protocol { .. }
+            // A silent instance: worth retrying, unlike `watch --timeout`.
+            | Self::RequestTimeout { .. }
             | Self::Io(_)
             // A reply or file that does not parse.
             | Self::Json(_) => EXIT_ENVIRONMENT,
@@ -211,6 +223,9 @@ mod tests {
             CliError::NoInstancesFound,
             CliError::protocol_mismatch("m", "2", "1"),
             CliError::Io(std::io::Error::other("io")),
+            // A silent instance (#474), as the client reports it.
+            aimdb_client::ClientError::timeout("record.get", std::time::Duration::from_secs(5))
+                .into(),
             CliError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
         ];
         let usage = [

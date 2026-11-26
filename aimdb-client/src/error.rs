@@ -34,6 +34,15 @@ pub enum ClientError {
     #[error("Protocol error: {reason}")]
     Protocol { reason: String },
 
+    /// A request got no reply within the connection's request timeout. The
+    /// instance may be hung, busy, or unreachable over a link that did not
+    /// close; the connection itself stays open.
+    #[error("Request {method} timed out after {after:?}: the instance did not answer")]
+    Timeout {
+        method: String,
+        after: std::time::Duration,
+    },
+
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -68,6 +77,14 @@ impl ClientError {
         Self::UnsupportedEndpoint {
             endpoint: endpoint.into(),
             reason: reason.into(),
+        }
+    }
+
+    /// Create a request timeout error
+    pub fn timeout(method: impl Into<String>, after: std::time::Duration) -> Self {
+        Self::Timeout {
+            method: method.into(),
+            after,
         }
     }
 
