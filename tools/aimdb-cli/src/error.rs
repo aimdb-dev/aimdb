@@ -223,6 +223,9 @@ mod tests {
             CliError::NoInstancesFound,
             CliError::protocol_mismatch("m", "2", "1"),
             CliError::Io(std::io::Error::other("io")),
+            // A silent instance (#474), as the client reports it.
+            aimdb_client::ClientError::timeout("record.get", std::time::Duration::from_secs(5))
+                .into(),
             CliError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
         ];
         let usage = [

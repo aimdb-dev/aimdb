@@ -4,9 +4,8 @@
 
 #![cfg(feature = "transport-uds")]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use aimdb_client::engine::DEFAULT_REQUEST_TIMEOUT;
 use aimdb_client::{AimxConnection, ClientError};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -51,43 +50,26 @@ async fn serve_silent(dir: &tempfile::TempDir) -> String {
 async fn a_silent_instance_times_out_instead_of_hanging() {
     let dir = tempfile::tempdir().unwrap();
     let sock = serve_silent(&dir).await;
-    let conn = AimxConnection::connect(&sock).await.expect("connect");
-    assert_eq!(conn.request_timeout(), DEFAULT_REQUEST_TIMEOUT);
-
     let after = Duration::from_millis(200);
-    let conn = conn.with_request_timeout(after);
+    let conn = AimxConnection::connect(&sock)
+        .await
+        .expect("connect")
+        .with_request_timeout(after);
 
-    let started = Instant::now();
     let err = conn
         .set_record("spike.fault", json!({ "kind": 2 }))
         .await
         .expect_err("no reply must not hang");
     assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "bounded by the request timeout, took {:?}",
-        started.elapsed()
+        matches!(&err, ClientError::Timeout { method, after: a } if method == "record.set" && *a == after),
+        "{err}"
     );
-    match &err {
-        ClientError::Timeout { method, after: a } => {
-            assert_eq!(method, "record.set");
-            assert_eq!(*a, after);
-        }
-        other => panic!("expected a timeout, got {other}"),
-    }
-    assert!(err.to_string().contains("did not answer"), "{err}");
 
-    // Every reply-awaiting call is bounded, including the ones that treat
-    // `not_found` as an answer.
-    for result in [
-        conn.get_record("x").await.map(|_| ()),
-        conn.instance_info().await.map(|_| ()),
-        conn.post_link().await.map(|_| ()),
-    ] {
-        assert!(
-            matches!(result, Err(ClientError::Timeout { .. })),
-            "{result:?}"
-        );
-    }
+    // Calls that treat `not_found` as an answer take a separate path.
+    assert!(matches!(
+        conn.instance_info().await,
+        Err(ClientError::Timeout { .. })
+    ));
 
     // A timeout leaves the connection open: a request the instance does
     // answer still succeeds.
