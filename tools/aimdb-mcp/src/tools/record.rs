@@ -74,6 +74,10 @@ struct RecordInfo {
     /// declares no schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_version: Option<u32>,
+    /// Per-link ingress counters (accepted, upgraded and each rejection
+    /// reason), one entry per inbound link. Absent when the record has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inbound_routes: Vec<aimdb_client::InboundRouteMetrics>,
 }
 
 /// List all records from a specific AimDB instance
@@ -119,6 +123,7 @@ pub async fn list_records(args: Option<Value>) -> McpResult<Value> {
             outbound_connector_count: r.outbound_connector_count,
             schema_type: r.schema_type,
             schema_version: r.schema_version,
+            inbound_routes: r.inbound_routes,
         })
         .collect();
 
@@ -301,6 +306,7 @@ mod tests {
             outbound_connector_count: 0,
             schema_type: schema_type.map(str::to_string),
             schema_version,
+            inbound_routes: Vec::new(),
         }
     }
 
@@ -319,6 +325,33 @@ mod tests {
         let obj = v.as_object().unwrap();
         assert!(!obj.contains_key("schema_type"));
         assert!(!obj.contains_key("schema_version"));
+    }
+
+    /// `list_records` passes each inbound link's admission counters through,
+    /// so an agent can see why values were rejected (#494).
+    #[test]
+    fn record_info_includes_inbound_routes() {
+        let mut info = record_info(None, None);
+        info.inbound_routes = vec![aimdb_client::InboundRouteMetrics {
+            link: "mqtt://sensors/temp".into(),
+            stats: aimdb_client::InboundRouteStats {
+                accepted: 3,
+                too_new: 1,
+                ..Default::default()
+            },
+        }];
+        let v = serde_json::to_value(info).unwrap();
+        let route = &v["inbound_routes"][0];
+        assert_eq!(route["link"], json!("mqtt://sensors/temp"));
+        assert_eq!(route["stats"]["accepted"], json!(3));
+        assert_eq!(route["stats"]["too_new"], json!(1));
+    }
+
+    /// A record without inbound links omits the field, as the metadata does.
+    #[test]
+    fn record_info_omits_empty_inbound_routes() {
+        let v = serde_json::to_value(record_info(None, None)).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("inbound_routes"));
     }
 
     #[tokio::test]

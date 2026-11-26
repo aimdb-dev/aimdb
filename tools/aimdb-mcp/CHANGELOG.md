@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`list_records` returns `inbound_routes` (#494):** each inbound link's
+  admission counters (`accepted`, `upgraded`, `too_new`, `shape_mismatch`,
+  `malformed`, `decode_error`, ...), so an agent can see why values were
+  rejected. Omitted for records without inbound links.
+
 - **`list_records` returns `schema_type` and `schema_version` (#420)** for
   records configured with a data-contract schema; both are omitted otherwise.
 
